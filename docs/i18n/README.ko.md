@@ -7,12 +7,12 @@
 [![상태](https://img.shields.io/badge/상태-설계중-blue?style=flat-square)](https://github.com/)
 [![언어](https://img.shields.io/badge/언어-Rust-E57324?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![출처](https://img.shields.io/badge/출처-Claude_Code_TS-8A2BE2?style=flat-square)](https://docs.anthropic.com/en/docs/claude-code)
-[![라이선스](https://img.shields.io/badge/라이선스-MIT-green?style=flat-square)](./LICENSE)
+[![라이선스](https://img.shields.io/badge/라이선스-MIT-green?style=flat-square)](../../LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/)
 
-[English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md) | [한국어](./README.ko.md) | [Español](./README.es.md) | [Français](./README.fr.md)
+[English](../../README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md) | [한국어](./README.ko.md) | [Español](./README.es.md) | [Français](./README.fr.md)
 
-<img src="./docs/assets/overview.svg" alt="프로젝트 개요" width="100%" />
+<img src="../assets/overview.svg" alt="프로젝트 개요" width="100%" />
 
 </div>
 
@@ -74,7 +74,7 @@ Claude Code는 엔지니어링 품질이 뛰어나지만 **완성된 제품**이
 ## 🏗 아키텍처
 
 <div align="center">
-<img src="./docs/assets/architecture.svg" alt="아키텍처 개요" width="100%" />
+<img src="../assets/architecture.svg" alt="아키텍처 개요" width="100%" />
 </div>
 
 ### Crate Map
@@ -156,7 +156,7 @@ model 백엔드 간 차이를 시스템으로부터 격리합니다. 스트리�
 ## 🗺 로드맵
 
 <div align="center">
-<img src="./docs/assets/roadmap.svg" alt="로드맵" width="100%" />
+<img src="../assets/roadmap.svg" alt="로드맵" width="100%" />
 </div>
 
 ### Phase 1: 먼저 실행하기
@@ -216,13 +216,13 @@ issue를 열거나 pull request를 보내 주셔도 됩니다.
 
 ## 📚 참고 자료
 
-- [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) — Claude Code TypeScript 아키텍처에 대한 상세 분해
+- [ARCHITECTURE.zh-CN.md](../../ARCHITECTURE.zh-CN.md) — Claude Code TypeScript 아키텍처에 대한 상세 분해
 - [Claude Code Official Docs](https://docs.anthropic.com/en/docs/claude-code)
 - [Model Context Protocol](https://modelcontextprotocol.io/)
 
 ## 📄 라이선스
 
-이 프로젝트는 [MIT License](./LICENSE)를 따릅니다.
+이 프로젝트는 [MIT License](../../LICENSE)를 따릅니다.
 
 ---
 

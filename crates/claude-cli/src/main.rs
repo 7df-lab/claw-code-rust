@@ -3,10 +3,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::info;
 
 use agent_core::{query, Message, QueryEvent, SessionConfig, SessionState};
-use agent_permissions::{PermissionMode, RuleBasedPolicy};
+use agent_permissions::PermissionMode;
 use agent_provider::ModelProvider;
 use agent_tools::{ToolOrchestrator, ToolRegistry};
 
@@ -19,7 +18,8 @@ struct Cli {
     model: String,
 
     /// System prompt
-    #[arg(short, long, default_value = "You are a helpful coding assistant.")]
+    #[arg(short, long, default_value = "You are a helpful coding assistant. \
+        Use tools when appropriate to help the user. Be concise.")]
     system: String,
 
     /// Permission mode: auto, interactive, deny
@@ -47,7 +47,6 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
 
-    // Build session config
     let config = SessionConfig {
         model: cli.model.clone(),
         system_prompt: cli.system.clone(),
@@ -55,8 +54,7 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
-    // Set up permission policy
-    let perm_mode = match cli.permission.as_str() {
+    let _perm_mode = match cli.permission.as_str() {
         "auto" => PermissionMode::AutoApprove,
         "interactive" => PermissionMode::Interactive,
         "deny" => PermissionMode::Deny,
@@ -65,7 +63,6 @@ async fn main() -> Result<()> {
             PermissionMode::AutoApprove
         }
     };
-    let _policy = Arc::new(RuleBasedPolicy::new(perm_mode));
 
     // Register tools
     let mut registry = ToolRegistry::new();
@@ -73,13 +70,21 @@ async fn main() -> Result<()> {
     let registry = Arc::new(registry);
     let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
 
-    // Create a stub provider (prints a message about needing a real API key)
-    let provider: Box<dyn ModelProvider> = Box::new(StubProvider);
+    // Pick provider based on environment
+    let provider: Box<dyn ModelProvider> = match std::env::var("ANTHROPIC_API_KEY") {
+        Ok(key) if !key.is_empty() => {
+            eprintln!("Using Anthropic API (model: {})", cli.model);
+            Box::new(agent_provider::anthropic::AnthropicProvider::new(key))
+        }
+        _ => {
+            eprintln!("⚠ ANTHROPIC_API_KEY not set — running with stub provider.");
+            eprintln!("  Set the env var to use a real model.\n");
+            Box::new(StubProvider)
+        }
+    };
 
-    // Session state
-    let mut session = SessionState::new(config, cwd.clone());
+    let mut session = SessionState::new(config, cwd);
 
-    // Event callback for printing streaming output
     let on_event: Arc<dyn Fn(QueryEvent) + Send + Sync> = Arc::new(|event| match event {
         QueryEvent::TextDelta(text) => {
             print!("{}", text);
@@ -136,7 +141,7 @@ async fn main() -> Result<()> {
 
         let mut line = String::new();
         if stdin.lock().read_line(&mut line)? == 0 {
-            break; // EOF
+            break;
         }
         let line = line.trim();
         if line.is_empty() {
@@ -161,11 +166,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    info!(
-        turns = session.turn_count,
-        input_tokens = session.total_input_tokens,
-        output_tokens = session.total_output_tokens,
-        "session ended"
+    eprintln!(
+        "\n[session: {} turns, {} in / {} out tokens]",
+        session.turn_count, session.total_input_tokens, session.total_output_tokens
     );
 
     Ok(())
@@ -189,8 +192,7 @@ fn byte_summary(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Stub provider — used when no real API key is configured.
-// Replace with a real Anthropic provider implementation.
+// Stub provider — fallback when no API key is configured
 // ---------------------------------------------------------------------------
 
 use std::pin::Pin;
@@ -207,8 +209,7 @@ impl ModelProvider for StubProvider {
         Ok(ModelResponse {
             id: "stub".into(),
             content: vec![ResponseContent::Text(
-                "[stub] No model provider configured. Set ANTHROPIC_API_KEY to use a real model."
-                    .into(),
+                "[stub provider] Set ANTHROPIC_API_KEY to enable real model calls.".into(),
             )],
             stop_reason: Some(StopReason::EndTurn),
             usage: Usage::default(),
@@ -221,9 +222,12 @@ impl ModelProvider for StubProvider {
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>> {
         let response = self.complete(request).await?;
         let events = vec![
-            Ok(StreamEvent::ContentBlockStart {
+            Ok(StreamEvent::TextDelta {
                 index: 0,
-                content: response.content[0].clone(),
+                text: match &response.content[0] {
+                    ResponseContent::Text(t) => t.clone(),
+                    _ => String::new(),
+                },
             }),
             Ok(StreamEvent::MessageDone { response }),
         ];

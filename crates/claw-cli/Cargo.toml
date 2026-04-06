@@ -15,7 +15,6 @@ clawcr-tools = { workspace = true }
 clawcr-provider = { workspace = true }
 clawcr-permissions = { workspace = true }
 clawcr-tasks = { workspace = true }
-clawcr-compact = { workspace = true }
 
 tokio = { workspace = true }
 futures = { workspace = true }

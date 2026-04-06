@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 
-use clawcr_compact::TokenBudget;
 use clawcr_permissions::PermissionMode;
 
-use crate::Message;
+use crate::{Message, TokenBudget};
 
 /// Configuration for a session.
 #[derive(Debug, Clone)]

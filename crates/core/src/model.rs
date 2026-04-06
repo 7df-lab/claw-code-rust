@@ -134,9 +134,11 @@ impl ModelCatalog for InMemoryModelCatalog {
 
     fn resolve_for_turn(&self, requested: Option<&str>) -> Result<&ModelConfig, ModelConfigError> {
         if let Some(slug) = requested {
-            return self.get(slug).ok_or_else(|| ModelConfigError::ModelNotFound {
-                slug: slug.to_string(),
-            });
+            return self
+                .get(slug)
+                .ok_or_else(|| ModelConfigError::ModelNotFound {
+                    slug: slug.to_string(),
+                });
         }
 
         self.list_visible()

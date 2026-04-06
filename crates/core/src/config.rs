@@ -436,9 +436,11 @@ where
 {
     match selection.model_slug() {
         None => Ok(turn_model),
-        Some(model_slug) => catalog.get(model_slug).ok_or_else(|| AppConfigError::ModelLookup {
-            slug: model_slug.to_string(),
-        }),
+        Some(model_slug) => catalog
+            .get(model_slug)
+            .ok_or_else(|| AppConfigError::ModelLookup {
+                slug: model_slug.to_string(),
+            }),
     }
 }
 
@@ -726,7 +728,10 @@ impl RawToolRuntimeConfig {
         ToolRuntimeConfig {
             enabled_tools: self.enabled_tools.unwrap_or(defaults.enabled_tools),
             shell: self.shell.unwrap_or_default().apply(defaults.shell),
-            file_search: self.file_search.unwrap_or_default().apply(defaults.file_search),
+            file_search: self
+                .file_search
+                .unwrap_or_default()
+                .apply(defaults.file_search),
             max_parallel_read_tools: self
                 .max_parallel_read_tools
                 .unwrap_or(defaults.max_parallel_read_tools),

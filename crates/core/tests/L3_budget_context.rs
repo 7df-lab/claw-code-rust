@@ -1,12 +1,12 @@
-//! L3: Token budget and compaction tests.
+//! L3: Token budget and context-management tests.
 //!
 //! These tests define the expected behavior for P1 budget control and
 //! auto-compaction capabilities. All are `#[ignore]` until the corresponding
 //! features are wired into the query loop.
 //!
 //! Capability mapping:
-//!   - 1.3  Auto Compact (triggered by budget threshold)
-//!   - 1.4  Micro Compact (per-tool-result truncation)
+//!   - 1.3  Automatic context compaction (triggered by budget threshold)
+//!   - 1.4  Per-item truncation before prompt reconstruction
 //!   - 1.7  Token Budget control (input_budget / should_compact integration)
 
 #[allow(dead_code, unused_imports)]
@@ -16,12 +16,11 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use clawcr_compact::TokenBudget;
 use clawcr_permissions::PermissionMode;
 use clawcr_provider::{StopReason, Usage};
 use clawcr_tools::{ToolOrchestrator, ToolOutput, ToolRegistry};
 
-use clawcr_core::{query, ContentBlock, Message, SessionConfig};
+use clawcr_core::{query, ContentBlock, Message, SessionConfig, TokenBudget};
 
 use harness::builders::*;
 use harness::{ScriptedProvider, SpyTool};
@@ -45,7 +44,7 @@ fn setup_registry_with_tool(tool: SpyTool) -> (Arc<ToolRegistry>, ToolOrchestrat
 // ---------------------------------------------------------------------------
 
 /// When accumulated token usage exceeds the budget threshold, the query loop
-/// should run CompactStrategy on session.messages before the next request.
+/// should run context compaction on session.messages before the next request.
 #[tokio::test]
 async fn auto_compact_triggered_at_threshold() {
     let spy = SpyTool::new("my_tool", false);
@@ -388,13 +387,13 @@ async fn micro_compact_small_tool_result_untouched() {
     );
 }
 
-/// The compact strategy should be pluggable — a custom strategy implementation
+/// The context compactor should be pluggable — a custom strategy implementation
 /// should be used when provided.
 #[tokio::test]
-#[ignore = "1.3 compact strategy pluggability not yet wired"]
-async fn compact_strategy_pluggable() {
-    // This test verifies that a custom CompactStrategy (not TruncateStrategy)
-    // can be injected and will be called during auto-compaction.
+#[ignore = "1.3 context compactor pluggability not yet wired"]
+async fn context_compactor_pluggable() {
+    // This test verifies that a custom context compactor can be injected and
+    // will be called during automatic compaction.
     //
     // Implementation sketch:
     //   1. Create a SpyCompactStrategy that records calls
@@ -411,9 +410,9 @@ async fn compact_strategy_pluggable() {
     let (registry, orchestrator) = setup_registry();
     let mut session = make_session();
 
-    // TODO: inject custom CompactStrategy into session/query
+    // TODO: inject custom context compactor into session/query
     let _ = query(&mut session, &provider, registry, &orchestrator, None).await;
 
     // TODO: assert custom strategy was called
-    panic!("compact_strategy_pluggable: test body not yet implemented");
+    panic!("context_compactor_pluggable: test body not yet implemented");
 }

@@ -10,8 +10,7 @@ macro_rules! define_id {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
         pub struct $name(
-            #[doc = "The underlying UUID value carried by this typed identifier."]
-            Uuid,
+            #[doc = "The underlying UUID value carried by this typed identifier."] Uuid,
         );
 
         impl $name {

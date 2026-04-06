@@ -15,9 +15,9 @@ mod harness;
 
 use std::sync::{Arc, Mutex};
 
-use clawcr_compact::TokenBudget;
 use clawcr_core::{
     query, ContentBlock, EventCallback, Message, QueryEvent, Role, SessionConfig, SessionState,
+    TokenBudget,
 };
 use clawcr_permissions::PermissionMode;
 use clawcr_provider::openai_compat::OpenAICompatProvider;

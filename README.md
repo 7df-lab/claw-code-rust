@@ -158,7 +158,7 @@ This project aims to:
 | `clawcr-tasks` | Long task lifecycle and notification mechanism | `Task.ts`, `tasks.ts` |
 | `clawcr-permissions` | Tool call authorization and rule matching | `types/permissions.ts`, `utils/permissions/` |
 | `clawcr-provider` | Unified model interface, streaming, retry | `services/api/` |
-| `clawcr-compact` | Context trimming and token budget control | `services/compact/`, `query/tokenBudget.ts` |
+| `clawcr-core::context` | Context management, compaction, and token budget control | `services/compact/`, `query/tokenBudget.ts` |
 | `clawcr-mcp` | MCP client, connection, discovery, reconnect | `services/mcp/` |
 | `clawcr-cli` | Executable entry point, assembles all crates | CLI layer |
 
@@ -195,7 +195,7 @@ Shields the system from differences between model backends. Unifies streaming ou
 </details>
 
 <details>
-<summary><b>clawcr-compact</b> — Context management</summary>
+<summary><b>clawcr-core::context</b> — Context management</summary>
 
 Ensures long session stability. Not just "summarization" — applies different compression levels and budget controls based on context to prevent unbounded growth.
 </details>

@@ -9,7 +9,6 @@ license.workspace = true
 clawcr-tools = { workspace = true }
 clawcr-provider = { workspace = true }
 clawcr-permissions = { workspace = true }
-clawcr-compact = { workspace = true }
 
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -35,4 +34,3 @@ uuid = { workspace = true }
 clawcr-provider = { workspace = true }
 clawcr-tools = { workspace = true }
 clawcr-permissions = { workspace = true }
-clawcr-compact = { workspace = true }

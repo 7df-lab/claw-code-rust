@@ -82,7 +82,7 @@ pub struct AgentCli {
 }
 
 /// Runs the interactive or one-shot coding-agent entrypoint.
-pub async fn run_agent(cli: AgentCli) -> Result<()> {
+pub async fn run_agent(cli: AgentCli, force_onboarding: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let single_prompt = cli.query.or(cli.print);
     let interactive = single_prompt.is_none();
@@ -110,7 +110,8 @@ pub async fn run_agent(cli: AgentCli) -> Result<()> {
     let server_env = server_env_overrides(&resolved);
     let model_catalog = BuiltinModelCatalog::load()?;
     let stored_config = config::load_config().unwrap_or_default();
-    let show_model_onboarding = interactive && cli.model.is_none() && stored_config.model.is_none();
+    let show_model_onboarding =
+        interactive && (force_onboarding || (cli.model.is_none() && stored_config.model.is_none()));
 
     if interactive {
         run_interactive_tui(InteractiveTuiConfig {

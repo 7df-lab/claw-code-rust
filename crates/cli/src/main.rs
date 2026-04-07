@@ -25,6 +25,8 @@ struct Cli {
 enum Commands {
     /// Start the transport-facing server runtime.
     Server(ServerProcessArgs),
+    /// Open the interactive model onboarding flow.
+    Onboard,
 }
 
 #[tokio::main]
@@ -40,6 +42,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(Commands::Server(args)) => run_server_process(args).await,
-        None => run_agent(cli.agent).await,
+        Some(Commands::Onboard) => {
+            let mut agent = cli.agent;
+            agent.query = None;
+            agent.print = None;
+            run_agent(agent, true).await
+        }
+        None => run_agent(cli.agent, false).await,
     }
 }

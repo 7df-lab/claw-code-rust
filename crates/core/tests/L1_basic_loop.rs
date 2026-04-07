@@ -416,10 +416,9 @@ async fn system_prompt_forwarded() {
 
     let requests = captured.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert_eq!(
-        requests[0].system,
-        Some("You are a helpful assistant.".to_string())
-    );
+    let system = requests[0].system.as_deref().expect("system prompt");
+    assert!(system.contains("You are a helpful assistant."));
+    assert!(system.contains("Environment context (read only):"));
 }
 
 // ---------------------------------------------------------------------------

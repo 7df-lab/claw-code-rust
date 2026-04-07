@@ -92,6 +92,8 @@ pub(crate) struct TuiApp {
     model_catalog: BuiltinModelCatalog,
     /// Whether the app should open the model picker on startup.
     show_model_onboarding: bool,
+    /// Whether onboarding completion has already been announced.
+    onboarding_announced: bool,
     /// Timestamp of the most recent Ctrl+C press used for interrupt/exit confirmation.
     last_ctrl_c_at: Option<Instant>,
     /// Buffered rapid keypresses that should be applied as one pasted string.
@@ -146,6 +148,7 @@ impl TuiApp {
             worker,
             model_catalog: config.model_catalog,
             show_model_onboarding: config.show_model_onboarding,
+            onboarding_announced: false,
             aux_panel_selection: 0,
             last_ctrl_c_at: None,
             paste_burst: PasteBurst::default(),
@@ -154,7 +157,7 @@ impl TuiApp {
 
         if app.show_model_onboarding {
             app.show_model_panel();
-            app.status_message = "Choose a starting model".to_string();
+            app.status_message = "Choose a builtin model to start".to_string();
         }
 
         if let Some(prompt) = startup_prompt {
@@ -210,7 +213,7 @@ impl TuiApp {
                     }
                 }
                 _ = tick.tick() => {
-                    let mut redraw = false;
+                    let mut redraw = app.advance_transcript_folds(Instant::now());
                     if app.busy {
                         app.spinner_index = app.spinner_index.wrapping_add(1);
                         redraw = true;
@@ -236,8 +239,9 @@ impl TuiApp {
     fn transcript_area(&self, full_area: Rect) -> Rect {
         let content_area = render::centered_content_area(full_area);
         let composer_height = render::composer_height(self, content_area);
+        let transcript_height = render::transcript_height(self, content_area);
         let [transcript_area, _, _, _] = Layout::vertical([
-            Constraint::Min(6),
+            Constraint::Length(transcript_height),
             Constraint::Length(1),
             Constraint::Length(composer_height),
             Constraint::Length(1),
@@ -531,7 +535,11 @@ impl TuiApp {
             .position(|entry| entry.is_current)
             .unwrap_or(0);
         self.aux_panel = Some(AuxPanel {
-            title: "Models".to_string(),
+            title: if self.show_model_onboarding {
+                "✨".to_string()
+            } else {
+                "Models".to_string()
+            },
             content: AuxPanelContent::ModelList(entries),
         });
     }
@@ -545,6 +553,7 @@ impl TuiApp {
                 display_name: model.display_name.clone(),
                 description: model.description.clone(),
                 is_current: model.slug == self.model,
+                is_builtin: true,
             });
         }
 
@@ -556,6 +565,7 @@ impl TuiApp {
                     display_name: self.model.clone(),
                     description: Some("current model".to_string()),
                     is_current: true,
+                    is_builtin: false,
                 },
             );
         }
@@ -566,6 +576,7 @@ impl TuiApp {
                 display_name: self.model.clone(),
                 description: Some("current model".to_string()),
                 is_current: true,
+                is_builtin: false,
             });
         }
 
@@ -575,7 +586,6 @@ impl TuiApp {
     fn set_model(&mut self, model: String) -> Result<()> {
         self.worker.set_model(model.clone())?;
         self.model = model;
-        self.show_model_panel();
         Ok(())
     }
 
@@ -688,18 +698,12 @@ impl TuiApp {
                 }
 
                 self.set_model(argument.to_string())?;
+                self.aux_panel = None;
+                self.aux_panel_selection = 0;
                 self.status_message = format!("Model set to {}", self.model);
                 Ok(())
             }
-            _ => {
-                self.push_item(
-                    TranscriptItemKind::Error,
-                    "Unknown command",
-                    "Available commands: /model [name], /new, /rename <title>, /sessions, /status, /exit",
-                );
-                self.status_message = "Unknown command".to_string();
-                Ok(())
-            }
+            _ => self.submit_prompt(prompt),
         }
     }
 
@@ -747,7 +751,15 @@ impl TuiApp {
                     "Tool output"
                 };
                 let body = preview.trim().to_string();
-                self.push_item(kind, title, body);
+                if kind == TranscriptItemKind::ToolResult {
+                    self.transcript
+                        .push(TranscriptItem::new(kind, title, body).with_tool_fold());
+                    if self.follow_output {
+                        self.scroll = 0;
+                    }
+                } else {
+                    self.push_item(kind, title, body);
+                }
                 if self.busy {
                     self.show_turn_status_line("Thinking");
                 }
@@ -894,6 +906,16 @@ impl TuiApp {
         self.transcript.len() - 1
     }
 
+    fn advance_transcript_folds(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+        for item in &mut self.transcript {
+            if item.advance_fold(now) {
+                changed = true;
+            }
+        }
+        changed
+    }
+
     fn set_turn_status_line(&mut self, title: impl Into<String>) {
         if let Some(index) = self.pending_status_index {
             if let Some(item) = self.transcript.get_mut(index) {
@@ -1027,7 +1049,18 @@ impl TuiApp {
                     );
                     self.status_message = "Failed to switch model".to_string();
                 } else {
+                    self.aux_panel = None;
+                    self.aux_panel_selection = 0;
                     self.status_message = format!("Model set to {selected}");
+                    if self.show_model_onboarding && !self.onboarding_announced {
+                        self.push_item(
+                            TranscriptItemKind::System,
+                            "Onboarding",
+                            "Onboarding complete. Run `clawcr onboard` any time to revisit builtin models.",
+                        );
+                        self.onboarding_announced = true;
+                        self.show_model_onboarding = false;
+                    }
                 }
                 true
             }
@@ -1044,6 +1077,7 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::Instant;
 
     use clawcr_core::{BuiltinModelCatalog, SessionId};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1054,6 +1088,7 @@ mod tests {
     use crate::{
         events::{SessionListEntry, TranscriptItem, TranscriptItemKind, WorkerEvent},
         input::InputBuffer,
+        render,
         worker::QueryWorkerHandle,
     };
 
@@ -1077,6 +1112,7 @@ mod tests {
             worker: QueryWorkerHandle::stub(),
             model_catalog: BuiltinModelCatalog::default(),
             show_model_onboarding: false,
+            onboarding_announced: false,
             aux_panel: None,
             aux_panel_selection: 0,
             last_ctrl_c_at: None,
@@ -1108,6 +1144,30 @@ mod tests {
         assert_eq!(app.transcript.len(), 1);
         assert_eq!(app.transcript[0].kind, TranscriptItemKind::ToolResult);
         assert_eq!(app.transcript[0].body, "done");
+    }
+
+    #[tokio::test]
+    async fn tool_result_fold_progresses_to_three_line_compact_state() {
+        let mut item = TranscriptItem::new(
+            TranscriptItemKind::ToolResult,
+            "Tool output",
+            (1..=12)
+                .map(|index| format!("line {index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .with_tool_fold();
+
+        let first = item.fold_next_at.expect("fold deadline");
+        assert!(!item.advance_fold(Instant::now()));
+        assert!(item.advance_fold(first));
+        assert_eq!(item.fold_stage, 1);
+
+        let second = item.fold_next_at.expect("second fold deadline");
+        assert!(item.advance_fold(second));
+        assert_eq!(item.fold_stage, 2);
+        assert!(item.fold_next_at.is_none());
+        assert!(!item.advance_fold(second));
     }
 
     #[tokio::test]
@@ -1322,16 +1382,15 @@ mod tests {
             truncated: false,
         });
 
+        assert_eq!(app.transcript.len(), 2);
+        assert_eq!(app.transcript[0].kind, TranscriptItemKind::ToolResult);
+        assert_eq!(app.transcript[0].title, "Tool output");
+        assert_eq!(app.transcript[0].body, "2026-04-06 23:58:56");
+        assert_eq!(app.transcript[0].fold_stage, 0);
+        assert!(app.transcript[0].fold_next_at.is_some());
         assert_eq!(
-            app.transcript,
-            vec![
-                TranscriptItem::new(
-                    TranscriptItemKind::ToolResult,
-                    "Tool output",
-                    "2026-04-06 23:58:56"
-                ),
-                TranscriptItem::new(TranscriptItemKind::System, "Thinking", ""),
-            ]
+            app.transcript[1],
+            TranscriptItem::new(TranscriptItemKind::System, "Thinking", "")
         );
     }
 
@@ -1349,6 +1408,15 @@ mod tests {
                 TranscriptItem::new(TranscriptItemKind::System, "Thinking", ""),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn transcript_area_tracks_content_height_when_short() {
+        let app = test_app();
+        let area = Rect::new(0, 0, 80, 24);
+
+        assert_eq!(render::transcript_height(&app, area), 7);
+        assert!(app.transcript_area(area).height < area.height);
     }
 
     #[tokio::test]

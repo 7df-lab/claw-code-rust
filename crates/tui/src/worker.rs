@@ -456,12 +456,10 @@ fn handle_completed_item(payload: ItemEventPayload, event_tx: &mpsc::UnboundedSe
                 .get("is_error")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
-            let preview = truncate_tool_output(&content);
-            let truncated = preview != content;
             let _ = event_tx.send(WorkerEvent::ToolResult {
-                preview,
+                preview: content,
                 is_error,
-                truncated,
+                truncated: false,
             });
         }
         _ => {}

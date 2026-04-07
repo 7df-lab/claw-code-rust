@@ -248,11 +248,9 @@ async fn memory_prefetch_missing_file() {
         .unwrap();
 
     let requests = captured.lock().unwrap();
-    assert_eq!(
-        requests[0].system,
-        Some("base prompt".to_string()),
-        "system prompt should be unchanged when instruction files are missing"
-    );
+    let system = requests[0].system.as_deref().expect("system prompt");
+    assert!(system.contains("base prompt"));
+    assert!(system.contains("Environment context (read only):"));
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

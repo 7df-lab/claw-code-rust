@@ -17,8 +17,9 @@ use crate::{
 pub(crate) fn draw(frame: &mut Frame, app: &TuiApp) {
     let content_area = centered_content_area(frame.area());
     let composer_height = composer_height(app, content_area);
+    let transcript_height = transcript_height(app, content_area);
     let [transcript_area, spacer_area, composer_area, footer_area] = Layout::vertical([
-        Constraint::Min(6),
+        Constraint::Length(transcript_height),
         Constraint::Length(1),
         Constraint::Length(composer_height),
         Constraint::Length(1),
@@ -55,6 +56,15 @@ pub(crate) fn centered_content_area(area: Rect) -> Rect {
 pub(crate) fn get_max_scroll(app: &TuiApp, area: Rect) -> u16 {
     let line_count = transcript_line_count(app, area.width.max(1));
     line_count.saturating_sub(area.height)
+}
+
+pub(crate) fn transcript_height(app: &TuiApp, area: Rect) -> u16 {
+    let line_count = transcript_line_count(app, area.width.max(1)).max(1);
+    let composer_height = composer_height(app, area);
+    let available = area
+        .height
+        .saturating_sub(composer_height.saturating_add(2));
+    line_count.min(available.max(1))
 }
 
 fn render_transcript(app: &TuiApp, area: Rect) -> Paragraph<'static> {
@@ -193,6 +203,7 @@ fn render_composer(app: &TuiApp, inner_width: u16) -> Paragraph<'_> {
                     let selected =
                         index == app.aux_panel_selection.min(entries.len().saturating_sub(1));
                     let marker = if entry.is_current { "*" } else { " " };
+                    let label = if entry.is_builtin { "✨" } else { "custom" };
                     let style = if selected {
                         Style::new().black().on_gray()
                     } else {
@@ -208,7 +219,7 @@ fn render_composer(app: &TuiApp, inner_width: u16) -> Paragraph<'_> {
                         .description
                         .as_deref()
                         .filter(|description| !description.trim().is_empty())
-                        .unwrap_or("custom model");
+                        .unwrap_or(label);
                     append_wrapped_composer_session_entry(
                         &mut lines,
                         &format!(
@@ -269,8 +280,21 @@ fn transcript_text(app: &TuiApp, inner_width: u16) -> Text<'static> {
         return Text::from(lines);
     }
 
+    let mut previous_kind = None;
     for item in &app.transcript {
+        if matches!(item.kind, TranscriptItemKind::User)
+            && previous_kind.is_some()
+            && !matches!(previous_kind, Some(TranscriptItemKind::User))
+        {
+            lines.push(Line::from(""));
+        }
+        if matches!(previous_kind, Some(TranscriptItemKind::User))
+            && !matches!(item.kind, TranscriptItemKind::User)
+        {
+            lines.push(Line::from(""));
+        }
         append_transcript_item(&mut lines, item, app.spinner_index, inner_width);
+        previous_kind = Some(item.kind);
     }
     Text::from(lines)
 }
@@ -370,7 +394,8 @@ fn append_transcript_body(
     item: &crate::events::TranscriptItem,
     inner_width: u16,
 ) {
-    if item.body.is_empty() {
+    let body = rendered_transcript_body(item);
+    if body.is_empty() {
         return;
     }
     let style = match item.kind {
@@ -378,14 +403,33 @@ fn append_transcript_body(
         TranscriptItemKind::ToolCall | TranscriptItemKind::ToolResult => Style::new().dark_gray(),
         _ => Style::new(),
     };
-    append_wrapped_styled_text(
-        lines,
-        item.body.trim_end_matches('\n'),
-        "  └ ",
-        "    ",
-        inner_width,
-        style,
-    );
+    append_wrapped_styled_text(lines, &body, "  └ ", "    ", inner_width, style);
+}
+
+fn rendered_transcript_body(item: &crate::events::TranscriptItem) -> String {
+    match item.kind {
+        TranscriptItemKind::ToolResult => match item.fold_stage {
+            0 => item.body.trim_end_matches('\n').to_string(),
+            1 => fold_tool_output(&item.body, 6),
+            _ => fold_tool_output(&item.body, 3),
+        },
+        _ => item.body.trim_end_matches('\n').to_string(),
+    }
+}
+
+fn fold_tool_output(body: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = body.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    if lines.len() <= max_lines {
+        return body.trim_end_matches('\n').to_string();
+    }
+
+    let mut folded = lines[..max_lines].join("\n");
+    folded.push_str("\n...");
+    folded
 }
 
 fn title_style(kind: TranscriptItemKind) -> Style {

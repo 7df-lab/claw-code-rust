@@ -145,11 +145,9 @@ async fn auto_compact_preserves_system_prompt() {
 
     let requests = captured.lock().unwrap();
     for req in requests.iter() {
-        assert_eq!(
-            req.system,
-            Some("You are a coding assistant.".to_string()),
-            "system prompt must survive compaction"
-        );
+        let system = req.system.as_deref().expect("system prompt");
+        assert!(system.contains("You are a coding assistant."));
+        assert!(system.contains("Environment context (read only):"));
     }
 }
 

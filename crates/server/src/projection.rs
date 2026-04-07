@@ -69,7 +69,7 @@ impl DefaultProjection {
                             } else {
                                 "Tool output".to_string()
                             },
-                            body: truncate_tool_output(content),
+                            body: content.clone(),
                         });
                     }
                     ContentBlock::Text { .. } => {}
@@ -122,8 +122,8 @@ pub(crate) fn history_item_from_turn_item(item: &TurnItem) -> Option<SessionHist
                 "Tool output".to_string()
             },
             body: match output {
-                serde_json::Value::String(text) => truncate_tool_output(text),
-                other => truncate_tool_output(&other.to_string()),
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
             },
         }),
         TurnItem::ToolProgress(_)

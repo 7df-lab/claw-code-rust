@@ -72,6 +72,7 @@ fn render_transcript(app: &TuiApp, area: Rect) -> Paragraph<'static> {
 fn render_composer(app: &TuiApp, inner_width: u16) -> Paragraph<'_> {
     let mut lines = Vec::new();
     let rendered_input = app.input.rendered_lines(inner_width);
+
     if app.input.text().is_empty() {
         lines.push(Line::from(vec![
             Span::styled("> ", Style::new().cyan().add_modifier(Modifier::BOLD)),
@@ -94,44 +95,39 @@ fn render_composer(app: &TuiApp, inner_width: u16) -> Paragraph<'_> {
             }
         }
     }
+
     let suggestions = app.slash_suggestions();
     if !suggestions.is_empty() {
         lines.push(Line::from(""));
+
         for (index, suggestion) in suggestions.iter().enumerate() {
             let selected = index == app.slash_selection.min(suggestions.len() - 1);
-            let bullet_style = if selected {
+
+            let text_style = if selected {
                 Style::new().black().on_gray().add_modifier(Modifier::BOLD)
             } else {
                 Style::new().dark_gray()
             };
-            let text_style = if selected {
-                Style::new().black().on_gray()
-            } else {
-                Style::new().dark_gray()
-            };
+
             append_wrapped_composer_text(
                 &mut lines,
-                &format!(
-                    "  {} {}  {}",
-                    if selected { ">" } else { "•" },
-                    suggestion.name,
-                    suggestion.description
-                ),
+                &format!("  {}  {}", suggestion.name, suggestion.description),
                 inner_width,
                 text_style,
-                bullet_style,
-                selected,
             );
         }
     }
+
     if let Some(panel) = &app.aux_panel {
         lines.push(Line::from(""));
+
         append_wrapped_composer_line(
             &mut lines,
             &format!("  {}", panel.title),
             inner_width,
             Style::new().dark_gray().add_modifier(Modifier::BOLD),
         );
+
         match &panel.content {
             AuxPanelContent::Text(body) => {
                 for line in body.lines() {
@@ -152,6 +148,7 @@ fn render_composer(app: &TuiApp, inner_width: u16) -> Paragraph<'_> {
                         Style::new().dark_gray(),
                     );
                 }
+
                 for (index, entry) in entries.iter().enumerate() {
                     let selected =
                         index == app.aux_panel_selection.min(entries.len().saturating_sub(1));
@@ -166,6 +163,7 @@ fn render_composer(app: &TuiApp, inner_width: u16) -> Paragraph<'_> {
                     } else {
                         Style::new().dark_gray().add_modifier(Modifier::BOLD)
                     };
+
                     append_wrapped_composer_session_entry(
                         &mut lines,
                         &format!(
@@ -182,6 +180,7 @@ fn render_composer(app: &TuiApp, inner_width: u16) -> Paragraph<'_> {
                 }
             }
         }
+
         lines.push(Line::from(""));
         append_wrapped_composer_line(
             &mut lines,
@@ -193,7 +192,6 @@ fn render_composer(app: &TuiApp, inner_width: u16) -> Paragraph<'_> {
 
     Paragraph::new(Text::from(lines))
 }
-
 fn render_footer(app: &TuiApp) -> Paragraph<'static> {
     let cwd_name = app
         .cwd
@@ -471,31 +469,15 @@ fn append_wrapped_composer_text(
     text: &str,
     inner_width: u16,
     text_style: Style,
-    bullet_style: Style,
-    selected: bool,
 ) {
     let content_width = inner_width.max(1) as usize;
     let wrapped = textwrap::wrap(text, Options::new(content_width).break_words(false));
-    for (index, segment) in wrapped.iter().enumerate() {
-        if index == 0 && selected {
-            lines.push(Line::from(vec![
-                Span::styled("  ", text_style),
-                Span::styled(">", bullet_style),
-                Span::styled(
-                    segment
-                        .strip_prefix("  >")
-                        .or_else(|| segment.strip_prefix("  •"))
-                        .unwrap_or(segment)
-                        .to_string(),
-                    text_style,
-                ),
-            ]));
-        } else {
-            lines.push(Line::from(vec![Span::styled(
-                segment.to_string(),
-                text_style,
-            )]));
-        }
+
+    for segment in wrapped {
+        lines.push(Line::from(vec![Span::styled(
+            segment.to_string(),
+            text_style,
+        )]));
     }
 }
 

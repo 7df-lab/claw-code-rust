@@ -17,7 +17,6 @@ use crate::{
     slash::{matching_slash_commands, SlashCommandSpec},
     terminal::ManagedTerminal,
     worker::{QueryWorkerConfig, QueryWorkerHandle},
-    InteractiveTuiConfig,
 };
 
 /// Summary returned when the interactive TUI exits.
@@ -95,6 +94,18 @@ pub(crate) struct TuiApp {
     should_quit: bool,
 }
 
+/// Immutable configuration used to launch the interactive terminal UI.
+pub struct InteractiveTuiConfig {
+    /// Model identifier used for requests and shown in the header.
+    pub model: String,
+    /// Working directory shown in the header and passed to the session.
+    pub cwd: PathBuf,
+    /// Environment overrides applied to the spawned stdio server process.
+    pub server_env: Vec<(String, String)>,
+    /// Optional prompt submitted immediately after the UI opens.
+    pub startup_prompt: Option<String>,
+}
+
 impl TuiApp {
     /// Runs the full interactive UI until the user exits.
     pub(crate) async fn run(config: InteractiveTuiConfig) -> Result<AppExit> {
@@ -132,6 +143,13 @@ impl TuiApp {
         if let Some(prompt) = startup_prompt {
             app.submit_prompt(prompt)?;
         }
+
+        // TODO:
+        // Replace the fixed 80ms redraw loop with an event-driven loop.
+        // - separate tick rate from render rate
+        // - redraw only on input/worker/resize/render events or when state is dirty
+        // - keep tick only for spinner / paste-burst flushing / timed UX updates
+        // - make this compatible with future non-alt-screen mode
 
         let mut terminal = ManagedTerminal::new()?;
         let mut event_stream = EventStream::new();
@@ -886,6 +904,11 @@ impl TuiApp {
         }
         true
     }
+}
+
+/// Runs the interactive alternate-screen terminal UI until the user exits.
+pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit> {
+    TuiApp::run(config).await
 }
 
 #[cfg(test)]

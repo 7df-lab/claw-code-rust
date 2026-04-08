@@ -99,7 +99,7 @@ impl ConfigPathResolver for FileSystemConfigPathResolver {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{current_config_paths, ConfigPathResolver, FileSystemConfigPathResolver};
+    use super::{ConfigPathResolver, FileSystemConfigPathResolver};
 
     #[test]
     fn resolver_builds_user_and_project_paths() {

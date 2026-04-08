@@ -39,7 +39,7 @@ impl TokenBudget {
 
 impl Default for TokenBudget {
     fn default() -> Self {
-        Self::new(200_000, 16_000)
+        Self::new(200_000, 8192)
     }
 }
 

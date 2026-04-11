@@ -7,7 +7,6 @@ use clawcr_server::{ServerProcessArgs, run_server_process};
 use clawcr_utils::find_clawcr_home;
 
 mod agent;
-mod config;
 
 use agent::run_agent;
 

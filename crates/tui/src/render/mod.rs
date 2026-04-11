@@ -195,10 +195,10 @@ fn render_footer(app: &TuiApp) -> Paragraph<'static> {
 
 fn render_context_usage(app: &TuiApp) -> String {
     let Some(catalog) = &*BUILTIN_MODEL_CATALOG else {
-        return "ctx n/a".to_string();
+        return "context n/a".to_string();
     };
     let Some(model) = catalog.get(&app.model) else {
-        return "ctx n/a".to_string();
+        return "context n/a".to_string();
     };
 
     let input_budget = usize::try_from(model.context_window)
@@ -206,13 +206,13 @@ fn render_context_usage(app: &TuiApp) -> String {
         .saturating_mul(usize::from(model.effective_context_window_percent))
         / 100;
     if input_budget == 0 {
-        return "ctx n/a".to_string();
+        return "context n/a".to_string();
     }
 
     let used = app.total_input_tokens.min(input_budget);
     let used_percent = used.saturating_mul(100) / input_budget;
     format!(
-        "ctx {} / {} ({used_percent}%)",
+        "context {} / {} ({used_percent}%)",
         format_token_count(used),
         format_token_count(input_budget),
     )

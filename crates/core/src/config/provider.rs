@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
-use clawcr_core::ProviderKind;
-use clawcr_utils::current_user_config_file;
 use serde::{Deserialize, Serialize};
 
+use clawcr_utils::current_user_config_file;
+
+use crate::ProviderKind;
+
 /// One model entry stored under a provider section in `config.toml`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfiguredModel {
     /// The model slug or custom model name.
     pub model: String,
@@ -15,7 +17,7 @@ pub struct ConfiguredModel {
 }
 
 /// One provider-specific configuration block that can store many model entries.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderProfile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_model: Option<String>,
@@ -30,7 +32,8 @@ pub struct ProviderProfile {
 }
 
 impl ProviderProfile {
-    pub(crate) fn is_empty(&self) -> bool {
+    /// Returns whether the profile has no configured values.
+    pub fn is_empty(&self) -> bool {
         self.last_model.is_none()
             && self.default_model.is_none()
             && self.base_url.is_none()
@@ -40,8 +43,8 @@ impl ProviderProfile {
 }
 
 /// Persisted provider configuration grouped by provider family.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AppConfig {
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderConfigFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_provider: Option<ProviderKind>,
     #[serde(default, skip_serializing_if = "ProviderProfile::is_empty")]
@@ -53,6 +56,7 @@ pub struct AppConfig {
 }
 
 /// The fully-resolved provider settings that can be forwarded to a server process.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedProviderSettings {
     /// Normalized provider name.
     pub provider: ProviderKind,
@@ -64,33 +68,28 @@ pub struct ResolvedProviderSettings {
     pub api_key: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Config file I/O
-// ---------------------------------------------------------------------------
-
-pub fn load_config() -> Result<AppConfig> {
+/// Loads the user's provider config file from the standard config path.
+pub fn load_config() -> Result<ProviderConfigFile> {
     let path = current_user_config_file().context("could not determine user config path")?;
     if path.exists() {
         let data = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        let config: AppConfig =
+        let config: ProviderConfigFile =
             toml::from_str(&data).with_context(|| format!("failed to parse {}", path.display()))?;
         return Ok(config);
     }
 
-    Ok(AppConfig::default())
+    Ok(ProviderConfigFile::default())
 }
-
-// ---------------------------------------------------------------------------
-// Provider resolution: config file > onboarding
-// ---------------------------------------------------------------------------
 
 /// Resolves provider settings without constructing a local provider instance.
 pub fn resolve_provider_settings() -> Result<ResolvedProviderSettings> {
     resolve_provider_settings_from_config(&load_config().unwrap_or_default())
 }
 
-fn resolve_provider_settings_from_config(file: &AppConfig) -> Result<ResolvedProviderSettings> {
+fn resolve_provider_settings_from_config(
+    file: &ProviderConfigFile,
+) -> Result<ResolvedProviderSettings> {
     let requested_model = file
         .default_provider
         .and_then(|provider| profile_for_provider(file, provider).last_model.clone())
@@ -131,7 +130,7 @@ fn resolve_provider_settings_from_config(file: &AppConfig) -> Result<ResolvedPro
     })
 }
 
-fn profile_for_provider(config: &AppConfig, provider: ProviderKind) -> &ProviderProfile {
+fn profile_for_provider(config: &ProviderConfigFile, provider: ProviderKind) -> &ProviderProfile {
     match provider {
         ProviderKind::Anthropic => &config.anthropic,
         ProviderKind::Openai => &config.openai,
@@ -139,7 +138,7 @@ fn profile_for_provider(config: &AppConfig, provider: ProviderKind) -> &Provider
     }
 }
 
-fn first_configured_model(config: &AppConfig) -> Option<String> {
+fn first_configured_model(config: &ProviderConfigFile) -> Option<String> {
     for profile in [&config.anthropic, &config.openai, &config.ollama] {
         if let Some(model) = profile.last_model.clone() {
             return Some(model);
@@ -154,7 +153,7 @@ fn first_configured_model(config: &AppConfig) -> Option<String> {
     None
 }
 
-fn first_configured_provider(config: &AppConfig) -> Option<ProviderKind> {
+fn first_configured_provider(config: &ProviderConfigFile) -> Option<ProviderKind> {
     if !config.anthropic.is_empty() {
         Some(ProviderKind::Anthropic)
     } else if !config.openai.is_empty() {
@@ -166,7 +165,7 @@ fn first_configured_provider(config: &AppConfig) -> Option<ProviderKind> {
     }
 }
 
-fn provider_for_model(config: &AppConfig, requested_model: &str) -> Option<ProviderKind> {
+fn provider_for_model(config: &ProviderConfigFile, requested_model: &str) -> Option<ProviderKind> {
     for (provider, profile) in [
         (ProviderKind::Anthropic, &config.anthropic),
         (ProviderKind::Openai, &config.openai),
@@ -190,31 +189,20 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::{
-        AppConfig, ConfiguredModel, ProviderKind, ProviderProfile,
-        resolve_provider_settings_from_config,
+        ProviderConfigFile, ProviderKind, ProviderProfile, resolve_provider_settings_from_config,
     };
 
     #[test]
     fn resolves_provider_from_model_profile_when_default_provider_is_stale() {
-        let config = AppConfig {
+        let config = ProviderConfigFile {
             default_provider: Some(ProviderKind::Anthropic),
-            anthropic: ProviderProfile {
+            anthropic: ProviderProfile::default(),
+            openai: ProviderProfile {
                 last_model: Some("qwen3-coder-next".to_string()),
                 default_model: None,
-                base_url: None,
-                api_key: None,
-                models: Vec::new(),
-            },
-            openai: ProviderProfile {
-                last_model: None,
-                default_model: Some("glm-5.1".to_string()),
-                base_url: Some("https://open.bigmodel.cn/api/paas/v4/".to_string()),
+                base_url: Some("https://api.example.com".to_string()),
                 api_key: Some("profile-key".to_string()),
-                models: vec![ConfiguredModel {
-                    model: "qwen3-coder-next".to_string(),
-                    base_url: Some("https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
-                    api_key: Some("model-key".to_string()),
-                }],
+                models: Vec::new(),
             },
             ollama: ProviderProfile::default(),
         };
@@ -226,8 +214,8 @@ mod tests {
         assert_eq!(resolved.model, "qwen3-coder-next");
         assert_eq!(
             resolved.base_url,
-            Some("https://dashscope.aliyuncs.com/compatible-mode/v1".to_string())
+            Some("https://api.example.com".to_string())
         );
-        assert_eq!(resolved.api_key, Some("model-key".to_string()));
+        assert_eq!(resolved.api_key, Some("profile-key".to_string()));
     }
 }

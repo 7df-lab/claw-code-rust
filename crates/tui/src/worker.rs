@@ -184,9 +184,11 @@ impl QueryWorkerHandle {
     /// Stops the worker task and waits for it to finish.
     pub(crate) async fn shutdown(self) -> Result<()> {
         let _ = self.command_tx.send(OperationCommand::Shutdown);
-        self.join_handle.abort();
-        let _ = self.join_handle.await.map_err(map_join_error);
-        Ok(())
+        match self.join_handle.await {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_cancelled() => Ok(()),
+            Err(error) => Err(map_join_error(error)),
+        }
     }
 }
 
@@ -562,6 +564,7 @@ async fn run_worker_inner(
         }
     }
 
+    client.shutdown().await?;
     Ok(())
 }
 

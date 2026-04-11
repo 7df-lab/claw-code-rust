@@ -405,11 +405,14 @@ async fn slash_rename_requires_title() {
 #[tokio::test]
 async fn slash_exit_requests_shutdown() {
     let mut app = test_app();
+    app.input.replace("/exit");
 
     app.handle_slash_command("/exit".to_string())
         .expect("exit command should succeed");
 
     assert!(app.should_quit);
+    assert!(app.aux_panel.is_none());
+    assert_eq!(app.input.text(), "");
 }
 
 #[tokio::test]
@@ -1075,6 +1078,34 @@ async fn slash_selection_wraps_around() {
 
     app.move_slash_selection(1);
     assert_eq!(app.slash_selection, 0);
+}
+
+#[tokio::test]
+async fn escape_dismisses_slash_popup_and_clears_input() {
+    let mut app = test_app();
+    app.input.replace("/mo");
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        Rect::new(0, 0, 80, 24),
+    );
+
+    assert_eq!(app.input.text(), "");
+    assert!(!app.has_slash_suggestions());
+}
+
+#[tokio::test]
+async fn typing_with_aux_panel_open_dismisses_panel_and_starts_input() {
+    let mut app = test_app();
+    app.show_aux_panel("Status", "details");
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+        Rect::new(0, 0, 80, 24),
+    );
+
+    assert!(app.aux_panel.is_none());
+    assert_eq!(app.input.text(), "h");
 }
 
 #[tokio::test]

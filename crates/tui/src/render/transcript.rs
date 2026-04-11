@@ -29,8 +29,7 @@ pub(super) fn line_count(app: &TuiApp, inner_width: u16) -> u16 {
 }
 
 fn transcript_text(app: &TuiApp, inner_width: u16) -> Text<'static> {
-    let mut lines = brand_lines();
-    lines.push(Line::from(""));
+    let mut lines = Vec::new();
 
     if app.transcript.is_empty() {
         lines.push(Line::from(vec![Span::styled(
@@ -42,14 +41,12 @@ fn transcript_text(app: &TuiApp, inner_width: u16) -> Text<'static> {
 
     let mut previous_kind = None;
     for item in &app.transcript {
-        if matches!(item.kind, TranscriptItemKind::User)
-            && previous_kind.is_some()
-            && !matches!(previous_kind, Some(TranscriptItemKind::User))
-        {
-            lines.push(Line::from(""));
-        }
-        if matches!(previous_kind, Some(TranscriptItemKind::User))
-            && !matches!(item.kind, TranscriptItemKind::User)
+        if previous_kind.is_some()
+            && (matches!(item.kind, TranscriptItemKind::User)
+                || matches!(previous_kind, Some(TranscriptItemKind::User))
+                || matches!(item.kind, TranscriptItemKind::ToolCall)
+                || matches!(item.kind, TranscriptItemKind::Error)
+                || matches!(item.kind, TranscriptItemKind::System))
         {
             lines.push(Line::from(""));
         }
@@ -57,31 +54,6 @@ fn transcript_text(app: &TuiApp, inner_width: u16) -> Text<'static> {
         previous_kind = Some(item.kind);
     }
     Text::from(lines)
-}
-
-fn brand_lines() -> Vec<Line<'static>> {
-    vec![
-        Line::from(vec![Span::styled(
-            "   ________               _______ ",
-            theme::prompt(),
-        )]),
-        Line::from(vec![Span::styled(
-            "  / ____/ /___ __      __/ ____/ |",
-            theme::prompt(),
-        )]),
-        Line::from(vec![Span::styled(
-            " / /   / / __ `/ | /| / / /   | |",
-            theme::prompt(),
-        )]),
-        Line::from(vec![Span::styled(
-            "/ /___/ / /_/ /| |/ |/ / /___ | |",
-            theme::prompt(),
-        )]),
-        Line::from(vec![Span::styled(
-            "\\____/_/\\__,_/ |__/|__/\\____/ |_|",
-            theme::prompt(),
-        )]),
-    ]
 }
 
 fn append_transcript_item(
@@ -122,7 +94,12 @@ fn append_transcript_item(
         | TranscriptItemKind::ToolResult
         | TranscriptItemKind::System
         | TranscriptItemKind::Error => {
-            append_wrapped_title(lines, &item.title, item.kind, inner_width);
+            let title_kind = if item.kind == TranscriptItemKind::ToolResult {
+                TranscriptItemKind::ToolCall
+            } else {
+                item.kind
+            };
+            append_wrapped_title(lines, &item.title, title_kind, inner_width);
             if item.kind != TranscriptItemKind::ToolCall {
                 append_transcript_body(lines, item, inner_width);
             }
@@ -143,7 +120,7 @@ fn append_plain_message(
         first_prefix,
         continuation_prefix,
         inner_width,
-        Style::new().fg(item.kind.accent()),
+        theme::transcript_body(item.kind),
     );
 }
 
@@ -203,10 +180,7 @@ fn append_wrapped_title(
     for (index, segment) in wrapped.iter().enumerate() {
         let prefix_text = if index == 0 { prefix } else { continuation };
         lines.push(Line::from(vec![
-            Span::styled(
-                prefix_text,
-                Style::new().fg(kind.accent()).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(prefix_text, theme::transcript_prefix(kind)),
             Span::styled(segment.to_string(), theme::transcript_title(kind)),
         ]));
     }
@@ -220,7 +194,13 @@ fn append_wrapped_styled_text(
     inner_width: u16,
     style: Style,
 ) {
-    let prefix_style = style.add_modifier(Modifier::BOLD);
+    let prefix_kind = match first_prefix {
+        "> " => TranscriptItemKind::User,
+        "• " => TranscriptItemKind::Assistant,
+        "  └ " => TranscriptItemKind::ToolResult,
+        _ => TranscriptItemKind::System,
+    };
+    let prefix_style = theme::transcript_prefix(prefix_kind);
     if text.is_empty() {
         lines.push(Line::from(vec![Span::styled(first_prefix, prefix_style)]));
         return;

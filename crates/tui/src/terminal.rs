@@ -19,7 +19,7 @@ pub enum TerminalMode {
     Always,
     /// Never use the alternate screen.
     Never,
-    /// Use the alternate screen only when explicitly enabled by environment.
+    /// Prefer the alternate screen by default.
     Auto,
 }
 
@@ -167,7 +167,7 @@ fn should_use_alternate_screen(mode: TerminalMode) -> bool {
     match mode {
         TerminalMode::Always => true,
         TerminalMode::Never => false,
-        TerminalMode::Auto => false,
+        TerminalMode::Auto => true,
     }
 }
 
@@ -182,8 +182,8 @@ mod tests {
     }
 
     #[test]
-    fn auto_mode_defaults_to_inline() {
-        assert!(!should_use_alternate_screen(TerminalMode::Auto));
+    fn auto_mode_defaults_to_alternate_screen() {
+        assert!(should_use_alternate_screen(TerminalMode::Auto));
     }
 
     #[test]

@@ -455,3 +455,70 @@ async fn run_with_pty(
         })),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_shell_prefers_powershell_alias() {
+        let spec = resolve_shell(Some("pwsh"), true);
+        assert_eq!(spec.program, "powershell");
+        assert_eq!(spec.args, &["-NoLogo", "-NoProfile", "-Command"]);
+    }
+
+    #[test]
+    fn resolve_shell_prefers_cmd_alias() {
+        let spec = resolve_shell(Some("cmd.exe"), true);
+        assert_eq!(spec.program, "cmd");
+        assert_eq!(spec.args, &["/C"]);
+    }
+
+    #[test]
+    fn resolve_shell_defaults_to_platform_shell_login() {
+        let expected = platform_shell(true);
+        let spec = resolve_shell(None, true);
+        assert_eq!(spec.program, expected.program);
+        assert_eq!(spec.args, expected.args);
+    }
+
+    #[test]
+    fn preview_truncates_long_text() {
+        let long = "a".repeat(MAX_METADATA_LENGTH + 1);
+        let result = preview(&long);
+        assert!(result.ends_with("\n\n..."));
+        assert_eq!(result.len(), MAX_METADATA_LENGTH + 5); // adds newline newline ...
+    }
+
+    #[test]
+    fn truncate_output_handles_zero_tokens() {
+        assert_eq!(truncate_output("text", 0), "");
+    }
+
+    #[test]
+    fn truncate_output_limits_length() {
+        let input = "a".repeat(200);
+        let result = truncate_output(&input, 10);
+        assert!(result.ends_with("\n\n... [truncated]"));
+        assert!(result.len() < input.len());
+    }
+
+    #[test]
+    fn merge_streams_combines_stdout_and_stderr() {
+        let result = merge_streams("out", "err");
+        assert!(result.contains("out"));
+        assert!(result.contains("[stderr]"));
+        assert!(result.contains("err"));
+    }
+
+    #[test]
+    fn merge_streams_no_output() {
+        assert_eq!(merge_streams("", ""), "(no output)");
+    }
+
+    #[test]
+    fn truncate_output_keeps_short_text() {
+        let input = "short";
+        assert_eq!(truncate_output(input, 10), input);
+    }
+}

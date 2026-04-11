@@ -335,3 +335,106 @@ fn missing_file_message(filepath: &str) -> String {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        env,
+        fs::{self, File},
+        io::Write,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn create_temp_dir(prefix: &str) -> PathBuf {
+        let mut path = env::temp_dir();
+        let ticks = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("clawcr-tools-read-{prefix}-{ticks}"));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn write_lines(path: &Path, lines: &[&str]) {
+        let mut file = File::create(path).unwrap();
+        for line in lines {
+            writeln!(file, "{line}").unwrap();
+        }
+    }
+
+    #[test]
+    fn read_directory_sorts_entries_and_reports_truncation() {
+        let dir = create_temp_dir("dir");
+        File::create(dir.join("b.txt")).unwrap();
+        File::create(dir.join("a.txt")).unwrap();
+        fs::create_dir_all(dir.join("subdir")).unwrap();
+
+        let output = read_directory(&dir, 1, 2).unwrap();
+        assert!(output.content.contains("<type>directory</type>"));
+        assert!(output.content.contains("b.txt"));
+        assert!(
+            output.content.contains(
+                "(Showing 1 of 3 entries. Use 'offset' parameter to read beyond entry 3)"
+            )
+        );
+
+        let metadata = output.metadata.unwrap();
+        assert!(metadata.get("truncated").and_then(|value| value.as_bool()) == Some(true));
+    }
+
+    #[test]
+    fn read_file_applies_limit_and_reports_more() {
+        let dir = create_temp_dir("file");
+        let path = dir.join("sample.txt");
+        write_lines(&path, &["line1", "line2", "line3", "line4", "line5"]);
+
+        let output = read_file(&path, 2, 2).unwrap();
+        assert!(!output.is_error);
+        assert!(output.content.contains("2: line2"));
+        assert!(output.content.contains("3: line3"));
+        assert!(
+            output
+                .content
+                .contains("(Showing lines 2-3 of 5. Use offset=4 to continue.)")
+        );
+
+        let metadata = output.metadata.unwrap();
+        assert!(metadata.get("truncated").and_then(|value| value.as_bool()) == Some(true));
+    }
+
+    #[test]
+    fn read_file_reports_offset_out_of_range() {
+        let dir = create_temp_dir("error");
+        let path = dir.join("short.txt");
+        write_lines(&path, &["hello", "world"]);
+
+        let output = read_file(&path, 10, 5).unwrap();
+        assert!(output.is_error);
+        assert!(output.content.contains("Offset 5 is out of range"));
+    }
+
+    #[test]
+    fn is_binary_file_detects_null_bytes() {
+        let dir = create_temp_dir("binary");
+        let path = dir.join("payload.bin");
+        fs::write(&path, &[0u8, 1, 2]).unwrap();
+
+        assert!(is_binary_file(&path).unwrap());
+    }
+
+    #[test]
+    fn missing_file_message_includes_suggestions() {
+        let dir = create_temp_dir("missing");
+        let target = dir.join("example.txt");
+        write_lines(&target, &["content"]);
+
+        let missing = dir.join("example");
+        let message = missing_file_message(&missing.to_string_lossy());
+        assert!(message.contains("Did you mean"));
+        assert!(message.contains("example.txt"));
+    }
+}

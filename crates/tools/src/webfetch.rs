@@ -201,3 +201,52 @@ fn convert_html_to_markdown(html: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ToolContext;
+    use clawcr_safety::legacy_permissions::{PermissionMode, RuleBasedPolicy};
+    use serde_json::json;
+    use std::{path::PathBuf, sync::Arc};
+
+    fn default_context() -> ToolContext {
+        ToolContext {
+            cwd: PathBuf::from("."),
+            permissions: Arc::new(RuleBasedPolicy::new(PermissionMode::AutoApprove)),
+            session_id: "test".into(),
+        }
+    }
+
+    #[test]
+    fn image_mime_detects_known_images() {
+        assert!(is_image_mime("image/png"));
+        assert!(is_image_mime("image/jpeg"));
+        assert!(!is_image_mime("image/svg+xml"));
+        assert!(!is_image_mime("image/vnd.fastbidsheet"));
+    }
+
+    #[test]
+    fn extract_text_strips_scripts_and_tags() {
+        let html = r#"<html><body><h1>Hi</h1><script>alert()</script><p>There</p></body></html>"#;
+        assert_eq!(extract_text_from_html(html), "HiThere");
+    }
+
+    #[test]
+    fn convert_html_to_plaintext() {
+        let html = "<div><p>hello</p><span> world</span></div>";
+        assert_eq!(convert_html_to_markdown(html), "hello world");
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_invalid_url() {
+        let tool = WebFetchTool;
+        let ctx = default_context();
+        let output = tool
+            .execute(&ctx, json!({"url": "ftp://example.com"}))
+            .await
+            .expect("execution should succeed even for invalid URL");
+        assert!(output.is_error);
+        assert_eq!(output.content, "URL must start with http:// or https://");
+    }
+}

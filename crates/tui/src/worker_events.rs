@@ -373,6 +373,11 @@ impl TuiApp {
                     self.pending_assistant_index = None;
                 }
             }
+            for pending_tool_index in self.pending_tool_items.values_mut() {
+                if *pending_tool_index > index {
+                    *pending_tool_index -= 1;
+                }
+            }
         }
     }
 

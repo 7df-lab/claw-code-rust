@@ -7,6 +7,16 @@ use std::io::{BufRead, BufReader};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 impl TuiApp {
+    pub(crate) fn dismiss_aux_panel(&mut self) {
+        self.aux_panel = None;
+        self.aux_panel_selection = 0;
+    }
+
+    pub(crate) fn dismiss_slash_popup(&mut self) {
+        self.input.clear();
+        self.reset_slash_selection();
+    }
+
     fn emit_inline_command_echo(&mut self, command: &str) {
         if self.inline_mode {
             self.pending_inline_history
@@ -244,6 +254,10 @@ impl TuiApp {
         match command {
             "/exit" => {
                 self.emit_inline_command_echo(trimmed);
+                self.dismiss_aux_panel();
+                self.dismiss_slash_popup();
+                self.reset_slash_selection();
+                self.busy = false;
                 self.last_ctrl_c_at = None;
                 self.status_message = "Exiting".to_string();
                 self.should_quit = true;

@@ -18,3 +18,6 @@ tracing = { workspace = true }
 reqwest = { workspace = true }
 reqwest-eventsource = { workspace = true }
 async-stream = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

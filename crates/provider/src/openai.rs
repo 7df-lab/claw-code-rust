@@ -446,3 +446,192 @@ fn map_reasoning_effort(thinking: Option<&str>) -> Option<&'static str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    use super::{
+        debug_request_body, map_reasoning_effort, parse_finish_reason, parse_response, parse_usage,
+    };
+    use crate::{
+        ModelRequest, RequestContent, RequestMessage, ResponseContent, StopReason, ToolDefinition,
+    };
+
+    #[test]
+    fn debug_request_body_includes_tools_and_reasoning_effort() {
+        let request = ModelRequest {
+            model: "gpt-4o-mini".to_string(),
+            system: Some("You are helpful.".to_string()),
+            messages: vec![
+                RequestMessage {
+                    role: "assistant".to_string(),
+                    content: vec![
+                        RequestContent::Text {
+                            text: "Calling tool".to_string(),
+                        },
+                        RequestContent::ToolUse {
+                            id: "call_123".to_string(),
+                            name: "get_weather".to_string(),
+                            input: json!({"city": "Boston"}),
+                        },
+                    ],
+                },
+                RequestMessage {
+                    role: "user".to_string(),
+                    content: vec![RequestContent::ToolResult {
+                        tool_use_id: "call_123".to_string(),
+                        content: "{\"temp\":72}".to_string(),
+                        is_error: Some(false),
+                    }],
+                },
+            ],
+            max_tokens: 256,
+            tools: Some(vec![ToolDefinition {
+                name: "get_weather".to_string(),
+                description: "Get weather by city".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "city": { "type": "string" } },
+                    "required": ["city"]
+                }),
+            }]),
+            temperature: Some(0.2),
+            thinking: Some("medium".to_string()),
+        };
+
+        let body = debug_request_body(&request, true);
+
+        assert_eq!(body["model"], json!("gpt-4o-mini"));
+        assert_eq!(body["stream"], json!(true));
+        assert_eq!(body["max_tokens"], json!(256));
+        assert_eq!(body["reasoning_effort"], json!("medium"));
+        assert_eq!(body["temperature"], json!(0.2));
+        assert_eq!(body["tools"][0]["type"], json!("function"));
+        assert_eq!(body["messages"][1]["role"], json!("assistant"));
+        assert_eq!(
+            body["messages"][1]["tool_calls"][0]["function"]["arguments"],
+            json!("{\"city\":\"Boston\"}")
+        );
+        assert_eq!(body["messages"][1]["content"], json!("Calling tool"));
+        assert_eq!(body["messages"][2]["role"], json!("tool"));
+        assert_eq!(body["messages"][2]["tool_call_id"], json!("call_123"));
+    }
+
+    #[test]
+    fn parse_response_extracts_text_tool_calls_and_usage() {
+        let response = parse_response(json!({
+            "id": "chatcmpl-123",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "id": "call_abc123",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_weather",
+                                    "arguments": "{\"location\":\"Boston, MA\"}"
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 82,
+                "completion_tokens": 17,
+                "total_tokens": 99
+            }
+        }))
+        .expect("parse response");
+
+        assert_eq!(response.id, "chatcmpl-123");
+        assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
+        assert_eq!(response.usage.input_tokens, 82);
+        assert_eq!(response.usage.output_tokens, 17);
+        assert_eq!(response.content.len(), 1);
+        match &response.content[0] {
+            ResponseContent::ToolUse { id, name, input } => {
+                assert_eq!(id, "call_abc123");
+                assert_eq!(name, "get_weather");
+                assert_eq!(input, &json!({"location": "Boston, MA"}));
+            }
+            other => panic!("expected tool use, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_response_preserves_text_content() {
+        let response = parse_response(json!({
+            "id": "chatcmpl-456",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello! How can I assist you today?"
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 8
+            }
+        }))
+        .expect("parse response");
+
+        assert_eq!(response.stop_reason, Some(StopReason::EndTurn));
+        assert_eq!(response.content.len(), 1);
+        match &response.content[0] {
+            ResponseContent::Text(text) => {
+                assert_eq!(text, "Hello! How can I assist you today?");
+            }
+            other => panic!("expected text response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_usage_reads_chat_completion_usage_shape() {
+        let usage = parse_usage(&json!({
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18
+        }))
+        .expect("parse usage");
+
+        assert_eq!(usage.input_tokens, 11);
+        assert_eq!(usage.output_tokens, 7);
+        assert_eq!(usage.cache_creation_input_tokens, None);
+        assert_eq!(usage.cache_read_input_tokens, None);
+    }
+
+    #[test]
+    fn parse_finish_reason_matches_chat_completion_contract() {
+        assert_eq!(parse_finish_reason("tool_calls"), StopReason::ToolUse);
+        assert_eq!(parse_finish_reason("length"), StopReason::MaxTokens);
+        assert_eq!(parse_finish_reason("stop"), StopReason::EndTurn);
+        assert_eq!(
+            parse_finish_reason("content_filter"),
+            StopReason::StopSequence
+        );
+        assert_eq!(parse_finish_reason("function_call"), StopReason::EndTurn);
+    }
+
+    #[test]
+    fn map_reasoning_effort_maps_supported_values() {
+        assert_eq!(map_reasoning_effort(Some("disabled")), Some("none"));
+        assert_eq!(map_reasoning_effort(Some("enabled")), Some("medium"));
+        assert_eq!(map_reasoning_effort(Some("low")), Some("low"));
+        assert_eq!(map_reasoning_effort(Some("medium")), Some("medium"));
+        assert_eq!(map_reasoning_effort(Some("high")), Some("high"));
+        assert_eq!(map_reasoning_effort(Some("xhigh")), Some("xhigh"));
+        assert_eq!(map_reasoning_effort(Some("unknown")), None);
+    }
+}

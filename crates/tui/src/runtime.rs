@@ -83,11 +83,11 @@ impl TuiApp {
             // avoids unnecessary full-screen redraws.
             if needs_redraw {
                 if app.inline_mode {
-                    terminal.flush_pending_inline_history(&mut app.pending_inline_history)?;
                     terminal.set_inline_viewport_height(render::inline_viewport_height(
                         &app,
                         terminal.area().width,
                     ))?;
+                    terminal.flush_pending_inline_history(&mut app.pending_inline_history)?;
                 }
                 terminal
                     .terminal_mut()
@@ -379,11 +379,13 @@ impl TuiApp {
             }
             KeyCode::Esc => {
                 self.flush_pending_paste_burst(true);
-                if !self.handle_escape() {
+                if self.has_slash_suggestions() {
+                    self.dismiss_slash_popup();
+                    self.dismiss_aux_panel();
+                } else if !self.handle_escape() {
                     self.input.clear();
                     self.reset_slash_selection();
-                    self.aux_panel = None;
-                    self.aux_panel_selection = 0;
+                    self.dismiss_aux_panel();
                 }
             }
             KeyCode::Char(ch)
@@ -395,18 +397,13 @@ impl TuiApp {
                     self.begin_custom_model_onboarding();
                 }
             }
-            KeyCode::Char(_ch)
-                if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && self.has_selectable_aux_panel()
-                    && self.input.is_blank() => {}
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.paste_burst.push_char(ch, Instant::now()) {
                     return;
                 }
                 self.input.insert_char(ch);
                 self.reset_slash_selection();
-                self.aux_panel = None;
-                self.aux_panel_selection = 0;
+                self.dismiss_aux_panel();
             }
             _ => {}
         }

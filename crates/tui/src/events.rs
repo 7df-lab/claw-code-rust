@@ -1,8 +1,6 @@
 use std::time::{Duration, Instant};
 
 use clawcr_core::{ProviderKind, SessionId};
-use ratatui::style::Color;
-
 const TOOL_RESULT_FOLD_INITIAL_DELAY_MS: u64 = 420;
 const TOOL_RESULT_FOLD_STEP_DELAY_MS: u64 = 90;
 const TOOL_RESULT_FOLD_FINAL_STAGE: u8 = 3;
@@ -284,18 +282,4 @@ pub(crate) enum TranscriptItemKind {
     Error,
     /// Local UI/system note that is not model-authored content.
     System,
-}
-
-impl TranscriptItemKind {
-    /// Returns the accent color used for the item title.
-    pub(crate) fn accent(self) -> Color {
-        match self {
-            TranscriptItemKind::User => Color::Cyan,
-            TranscriptItemKind::Assistant => Color::Rgb(232, 232, 224),
-            TranscriptItemKind::ToolCall => Color::DarkGray,
-            TranscriptItemKind::ToolResult => Color::DarkGray,
-            TranscriptItemKind::Error => Color::Red,
-            TranscriptItemKind::System => Color::DarkGray,
-        }
-    }
 }

@@ -6,7 +6,6 @@ mod glob;
 mod grep;
 mod invalid;
 mod lsp;
-mod multiedit;
 mod orchestrator;
 mod plan;
 mod question;
@@ -28,7 +27,6 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use invalid::InvalidTool;
 pub use lsp::LspTool;
-pub use multiedit::MultiEditTool;
 pub use orchestrator::*;
 pub use plan::PlanTool;
 pub use question::QuestionTool;
@@ -60,7 +58,6 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     registry.register(Arc::new(SkillTool));
     registry.register(Arc::new(ApplyPatchTool));
     registry.register(Arc::new(LspTool));
-    registry.register(Arc::new(MultiEditTool));
     registry.register(Arc::new(PlanTool));
 }
 

@@ -1,17 +1,41 @@
-use std::pin::Pin;
+use std::{fmt, pin::Pin};
 
 use async_trait::async_trait;
 use futures::Stream;
+use serde::{Deserialize, Serialize};
 
 use crate::{ModelRequest, ModelResponse, RequestRole, StreamEvent};
 
 /// High-level provider families supported by the provider layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProviderFamily {
     /// OpenAI chat completions, Responses, and OpenAI-compatible vendors.
     OpenAI,
     /// Anthropic Messages API and Anthropic-compatible vendors.
     Anthropic,
+}
+
+impl ProviderFamily {
+    /// Returns the stable wire label for this provider family.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAI => "openai",
+            Self::Anthropic => "anthropic",
+        }
+    }
+}
+
+impl fmt::Display for ProviderFamily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<ProviderFamily> for &'static str {
+    fn from(value: ProviderFamily) -> Self {
+        value.as_str()
+    }
 }
 
 /// Capability flags that describe what a provider family or model can emit.

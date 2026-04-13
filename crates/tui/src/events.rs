@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
-use clawcr_core::{ProviderKind, SessionId};
+use clawcr_core::SessionId;
+use clawcr_provider::ProviderFamily;
 const TOOL_RESULT_FOLD_INITIAL_DELAY_MS: u64 = 420;
 const TOOL_RESULT_FOLD_STEP_DELAY_MS: u64 = 90;
 const TOOL_RESULT_FOLD_FINAL_STAGE: u8 = 3;
@@ -39,7 +40,7 @@ pub(crate) struct ModelListEntry {
     /// Human-readable display name shown to the user.
     pub display_name: String,
     /// Provider family for the model.
-    pub provider: ProviderKind,
+    pub provider: ProviderFamily,
     /// Optional descriptive text rendered beneath the model name.
     pub description: Option<String>,
     /// Whether this entry is the currently active model.
@@ -56,7 +57,7 @@ pub struct SavedModelEntry {
     /// Stable model slug or custom model name.
     pub model: String,
     /// Provider family the model belongs to.
-    pub provider: ProviderKind,
+    pub provider: ProviderFamily,
     /// Optional provider base URL override stored with the model.
     pub base_url: Option<String>,
     /// Optional API key override stored with the model.

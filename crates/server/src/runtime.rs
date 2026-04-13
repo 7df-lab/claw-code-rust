@@ -674,14 +674,7 @@ impl ServerRuntime {
                     .deps
                     .model_catalog
                     .get(&model)
-                    .map(|model| match model.effective_thinking_capability() {
-                        clawcr_core::ThinkingCapability::Disabled => None,
-                        clawcr_core::ThinkingCapability::Toggle => Some(String::from("enabled")),
-                        clawcr_core::ThinkingCapability::Levels(_) => {
-                            Some(model.default_reasoning_level.label().to_lowercase())
-                        }
-                    })
-                    .unwrap_or_default();
+                    .and_then(clawcr_core::ModelPreset::default_thinking_selection);
                 let mut core_session = session.core_session.lock().await;
                 core_session.config.model = model;
                 core_session.config.base_instructions = base_instructions;

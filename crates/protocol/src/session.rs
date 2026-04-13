@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use clawcr_core::{SessionId, SessionTitleState};
 use serde::{Deserialize, Serialize};
 
 use crate::turn::TurnSummary;
+use crate::{SessionId, SessionTitleState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

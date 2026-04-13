@@ -1,10 +1,8 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use clawcr_core::{
-    BuiltinModelCatalog, ModelConfig, ModelVisibility, ProviderKind, ReasoningLevel, SessionId,
-    ThinkingCapability,
-};
+use clawcr_core::{ModelPreset, PresetModelCatalog, SessionId};
+use clawcr_provider::ProviderFamily;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pretty_assertions::assert_eq;
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
@@ -21,7 +19,7 @@ use crate::{
 fn test_app() -> TuiApp {
     TuiApp {
         model: "test-model".to_string(),
-        provider: ProviderKind::Anthropic,
+        provider: ProviderFamily::Anthropic,
         cwd: PathBuf::from("."),
         transcript: Vec::new(),
         input: InputBuffer::new(),
@@ -37,31 +35,14 @@ fn test_app() -> TuiApp {
         pending_status_index: None,
         pending_assistant_index: None,
         worker: QueryWorkerHandle::stub(),
-        model_catalog: BuiltinModelCatalog::new(vec![ModelConfig {
+        model_catalog: PresetModelCatalog::new(vec![ModelPreset {
             slug: "test-model".to_string(),
-            display_name: "test-model".to_string(),
-            provider: ProviderKind::Anthropic,
-            description: None,
-            default_reasoning_level: ReasoningLevel::Medium,
-            supported_reasoning_levels: vec![ReasoningLevel::Low, ReasoningLevel::Medium],
-            thinking_capability: Some(ThinkingCapability::Toggle),
-            base_instructions: String::new(),
-            context_window: 200_000,
-            effective_context_window_percent: 90,
-            auto_compact_token_limit: None,
-            truncation_policy: clawcr_core::TruncationPolicyConfig::default(),
-            input_modalities: vec![clawcr_core::InputModality::Text],
-            supports_image_detail_original: false,
-            visibility: ModelVisibility::Visible,
-            supported_in_api: true,
-            priority: 0,
+            display_name: "Test Model".to_string(),
+            provider_family: ProviderFamily::Anthropic,
+            thinking_capability: clawcr_core::ThinkingCapability::Toggle,
+            ..ModelPreset::default()
         }]),
-        saved_models: vec![SavedModelEntry {
-            model: "test-model".to_string(),
-            provider: ProviderKind::Anthropic,
-            base_url: None,
-            api_key: None,
-        }],
+        saved_models: vec![],
         show_model_onboarding: false,
         onboarding_announced: false,
         onboarding_custom_model_pending: false,
@@ -674,17 +655,16 @@ async fn onboarding_model_picker_enter_on_builtin_row_prompts_for_connection() {
     app.show_model_onboarding = true;
     app.saved_models = vec![SavedModelEntry {
         model: "existing-model".to_string(),
-        provider: ProviderKind::Anthropic,
+        provider: ProviderFamily::Anthropic,
         base_url: Some("https://example.invalid/v1".to_string()),
         api_key: Some("secret".to_string()),
     }];
-    app.model_catalog = BuiltinModelCatalog::new(vec![ModelConfig {
+    app.model_catalog = PresetModelCatalog::new(vec![ModelPreset {
         slug: "new-anthropic-model".to_string(),
         display_name: "New Anthropic Model".to_string(),
-        provider: ProviderKind::Anthropic,
+        provider_family: ProviderFamily::Anthropic,
         description: Some("test model".to_string()),
-        visibility: ModelVisibility::Visible,
-        ..ModelConfig::default()
+        ..ModelPreset::default()
     }]);
     app.show_model_panel();
     app.aux_panel_selection = app

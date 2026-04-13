@@ -294,7 +294,7 @@ pub async fn query(
                     .config
                     .thinking_selection
                     .clone()
-                    .unwrap_or_else(|| session.config.reasoning_level.label().to_lowercase()),
+                    .unwrap_or_else(|| session.config.reasoning_effort.label().to_lowercase()),
             ),
         };
         debug!(

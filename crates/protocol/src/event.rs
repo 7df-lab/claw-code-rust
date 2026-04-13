@@ -1,9 +1,9 @@
-use clawcr_core::{ItemId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::session::{SessionRuntimeStatus, SessionSummary};
 use crate::turn::TurnSummary;
+use crate::{ItemId, SessionId, TurnId, TurnUsage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventContext {
@@ -44,7 +44,7 @@ pub struct TurnEventPayload {
 pub struct TurnUsageUpdatedPayload {
     pub session_id: SessionId,
     pub turn_id: TurnId,
-    pub usage: clawcr_core::TurnUsage,
+    pub usage: TurnUsage,
     pub total_input_tokens: usize,
     pub total_output_tokens: usize,
 }

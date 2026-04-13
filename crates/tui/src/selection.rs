@@ -110,7 +110,7 @@ impl TuiApp {
                     .map(|model| ModelListEntry {
                         slug: model.slug.clone(),
                         display_name: model.display_name.clone(),
-                        provider: model.provider,
+                        provider: model.provider_family,
                         description: model.description.clone(),
                         is_current: model.slug == self.model,
                         is_builtin: true,
@@ -165,7 +165,7 @@ impl TuiApp {
             entries.push(ModelListEntry {
                 slug: model.slug.clone(),
                 display_name: model.display_name.clone(),
-                provider: model.provider,
+                provider: model.provider_family,
                 description: model.description.clone(),
                 is_current: model.slug == self.model,
                 is_builtin: true,
@@ -698,7 +698,7 @@ impl TuiApp {
             .thinking_selection
             .as_deref()
             .map(str::to_lowercase)
-            .unwrap_or_else(|| model.default_reasoning_level.label().to_lowercase());
+            .unwrap_or_else(|| model.default_thinking_selection().unwrap_or_default());
 
         options
             .into_iter()

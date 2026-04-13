@@ -9,9 +9,16 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-clawcr-core = { workspace = true }
+clawcr-provider = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 smol_str = { workspace = true }
+uuid = { workspace = true }
+schemars = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

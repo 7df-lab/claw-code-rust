@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
+use clawcr_provider::ProviderFamily;
 use serde::{Deserialize, Serialize};
 
 use clawcr_utils::current_user_config_file;
-
-use crate::ProviderKind;
 
 /// One model entry stored under a provider section in `config.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +45,7 @@ impl ProviderProfile {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderConfigFile {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_provider: Option<ProviderKind>,
+    pub default_provider: Option<ProviderFamily>,
     #[serde(default, skip_serializing_if = "ProviderProfile::is_empty")]
     pub anthropic: ProviderProfile,
     #[serde(default, skip_serializing_if = "ProviderProfile::is_empty")]
@@ -59,7 +58,7 @@ pub struct ProviderConfigFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedProviderSettings {
     /// Normalized provider name.
-    pub provider: ProviderKind,
+    pub provider: ProviderFamily,
     /// Final model identifier.
     pub model: String,
     /// Optional provider base URL override.
@@ -130,11 +129,10 @@ fn resolve_provider_settings_from_config(
     })
 }
 
-fn profile_for_provider(config: &ProviderConfigFile, provider: ProviderKind) -> &ProviderProfile {
+fn profile_for_provider(config: &ProviderConfigFile, provider: ProviderFamily) -> &ProviderProfile {
     match provider {
-        ProviderKind::Anthropic => &config.anthropic,
-        ProviderKind::Openai => &config.openai,
-        ProviderKind::Ollama => &config.ollama,
+        ProviderFamily::Anthropic => &config.anthropic,
+        ProviderFamily::OpenAI => &config.openai,
     }
 }
 
@@ -153,23 +151,23 @@ fn first_configured_model(config: &ProviderConfigFile) -> Option<String> {
     None
 }
 
-fn first_configured_provider(config: &ProviderConfigFile) -> Option<ProviderKind> {
+fn first_configured_provider(config: &ProviderConfigFile) -> Option<ProviderFamily> {
     if !config.anthropic.is_empty() {
-        Some(ProviderKind::Anthropic)
+        Some(ProviderFamily::Anthropic)
     } else if !config.openai.is_empty() {
-        Some(ProviderKind::Openai)
-    } else if !config.ollama.is_empty() {
-        Some(ProviderKind::Ollama)
+        Some(ProviderFamily::OpenAI)
     } else {
         None
     }
 }
 
-fn provider_for_model(config: &ProviderConfigFile, requested_model: &str) -> Option<ProviderKind> {
+fn provider_for_model(
+    config: &ProviderConfigFile,
+    requested_model: &str,
+) -> Option<ProviderFamily> {
     for (provider, profile) in [
-        (ProviderKind::Anthropic, &config.anthropic),
-        (ProviderKind::Openai, &config.openai),
-        (ProviderKind::Ollama, &config.ollama),
+        (ProviderFamily::Anthropic, &config.anthropic),
+        (ProviderFamily::OpenAI, &config.openai),
     ] {
         if profile.last_model.as_deref() == Some(requested_model)
             || profile.default_model.as_deref() == Some(requested_model)
@@ -189,13 +187,13 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::{
-        ProviderConfigFile, ProviderKind, ProviderProfile, resolve_provider_settings_from_config,
+        ProviderConfigFile, ProviderFamily, ProviderProfile, resolve_provider_settings_from_config,
     };
 
     #[test]
     fn resolves_provider_from_model_profile_when_default_provider_is_stale() {
         let config = ProviderConfigFile {
-            default_provider: Some(ProviderKind::Openai),
+            default_provider: Some(ProviderFamily::OpenAI),
             anthropic: ProviderProfile::default(),
             openai: ProviderProfile {
                 last_model: Some("qwen3-coder-next".to_string()),
@@ -210,7 +208,7 @@ mod tests {
         let resolved =
             resolve_provider_settings_from_config(&config).expect("resolve provider settings");
 
-        assert_eq!(resolved.provider, ProviderKind::Openai);
+        assert_eq!(resolved.provider, ProviderFamily::OpenAI);
         assert_eq!(resolved.model, "qwen3-coder-next");
         assert_eq!(
             resolved.base_url,

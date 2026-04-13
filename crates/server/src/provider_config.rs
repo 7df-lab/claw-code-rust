@@ -1,10 +1,11 @@
 use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
-use clawcr_core::ProviderKind;
 use serde::Deserialize;
 
-use clawcr_provider::{ModelProvider, anthropic::AnthropicProvider, openai::OpenAIProvider};
+use clawcr_provider::{
+    ModelProvider, ProviderFamily, anthropic::AnthropicProvider, openai::OpenAIProvider,
+};
 
 /// Resolved provider bootstrap owned by the server runtime.
 pub struct ResolvedServerProvider {
@@ -39,13 +40,11 @@ struct ModelProfile {
 #[derive(Debug, Clone, Default, Deserialize)]
 struct AppConfigFile {
     #[serde(default)]
-    default_provider: Option<ProviderKind>,
+    default_provider: Option<ProviderFamily>,
     #[serde(default)]
     anthropic: ProviderProfile,
     #[serde(default)]
     openai: ProviderProfile,
-    #[serde(default)]
-    ollama: ProviderProfile,
     #[serde(default)]
     provider: Option<String>,
     #[serde(default)]
@@ -79,7 +78,7 @@ pub fn load_server_provider(
                 .and_then(parse_provider_kind)
         })
         .or_else(|| infer_default_provider(&file_config))
-        .unwrap_or(ProviderKind::Openai);
+        .unwrap_or(ProviderFamily::OpenAI);
 
     let profile = profile_for_provider(&file_config, provider_name);
     let selected_model = select_configured_model(
@@ -110,20 +109,16 @@ pub fn load_server_provider(
         .or_else(|| env_non_empty("OPENAI_API_KEY"));
 
     let provider: std::sync::Arc<dyn ModelProvider> = match provider_name {
-        ProviderKind::Anthropic => {
+        ProviderFamily::Anthropic => {
             let api_key = api_key.context("anthropic provider requires an API key")?;
             let base_url = base_url.unwrap_or_else(|| "https://api.anthropic.com".to_string());
             std::sync::Arc::new(AnthropicProvider::new(base_url).with_api_key(api_key))
         }
-        ProviderKind::Ollama | ProviderKind::Openai => {
+        ProviderFamily::OpenAI => {
             let base_url = normalize_openai_base_url(&base_url.unwrap_or_else(|| {
                 // TODO: Figure out, should we put default base url here?
                 // Maybe throw an error.
-                if provider_name == ProviderKind::Ollama {
-                    "http://localhost:11434".to_string()
-                } else {
-                    "https://api.openai.com".to_string()
-                }
+                "https://api.openai.com".to_string()
             }));
             let mut provider = OpenAIProvider::new(base_url);
             if let Some(api_key) = api_key {
@@ -172,43 +167,35 @@ fn read_provider_config(config_file: &Path) -> Result<AppConfigFile> {
     Ok(legacy.into_app_config_file())
 }
 
-fn profile_for_provider(config: &AppConfigFile, provider: ProviderKind) -> &ProviderProfile {
+fn profile_for_provider(config: &AppConfigFile, provider: ProviderFamily) -> &ProviderProfile {
     match provider {
-        ProviderKind::Anthropic => &config.anthropic,
-        ProviderKind::Openai => &config.openai,
-        ProviderKind::Ollama => &config.ollama,
+        ProviderFamily::Anthropic => &config.anthropic,
+        ProviderFamily::OpenAI => &config.openai,
     }
 }
 
-fn infer_default_provider(config: &AppConfigFile) -> Option<ProviderKind> {
+fn infer_default_provider(config: &AppConfigFile) -> Option<ProviderFamily> {
     if config.anthropic.default_model.is_some()
         || config.anthropic.base_url.is_some()
         || config.anthropic.api_key.is_some()
         || !config.anthropic.models.is_empty()
     {
-        Some(ProviderKind::Anthropic)
+        Some(ProviderFamily::Anthropic)
     } else if config.openai.default_model.is_some()
         || config.openai.base_url.is_some()
         || config.openai.api_key.is_some()
         || !config.openai.models.is_empty()
     {
-        Some(ProviderKind::Openai)
-    } else if config.ollama.default_model.is_some()
-        || config.ollama.base_url.is_some()
-        || config.ollama.api_key.is_some()
-        || !config.ollama.models.is_empty()
-    {
-        Some(ProviderKind::Ollama)
+        Some(ProviderFamily::OpenAI)
     } else {
         None
     }
 }
 
-fn default_model_for_provider(provider: ProviderKind) -> String {
+fn default_model_for_provider(provider: ProviderFamily) -> String {
     match provider {
-        ProviderKind::Anthropic => "claude-sonnet-4-20250514".to_string(),
-        ProviderKind::Ollama => "qwen3.5:9b".to_string(),
-        ProviderKind::Openai => "gpt-4o".to_string(),
+        ProviderFamily::Anthropic => "claude-sonnet-4-20250514".to_string(),
+        ProviderFamily::OpenAI => "gpt-4o".to_string(),
     }
 }
 
@@ -229,12 +216,11 @@ fn select_configured_model<'a>(
 fn provider_for_model(
     config: &AppConfigFile,
     requested_model: Option<&str>,
-) -> Option<ProviderKind> {
+) -> Option<ProviderFamily> {
     let requested_model = requested_model?;
     for (provider, profile) in [
-        (ProviderKind::Anthropic, &config.anthropic),
-        (ProviderKind::Openai, &config.openai),
-        (ProviderKind::Ollama, &config.ollama),
+        (ProviderFamily::Anthropic, &config.anthropic),
+        (ProviderFamily::OpenAI, &config.openai),
     ] {
         if profile
             .models
@@ -266,7 +252,7 @@ impl LegacyFlatAppConfig {
             .provider
             .as_deref()
             .and_then(parse_provider_kind)
-            .unwrap_or(ProviderKind::Anthropic);
+            .unwrap_or(ProviderFamily::Anthropic);
         let model = self
             .model
             .unwrap_or_else(|| default_model_for_provider(provider));
@@ -281,31 +267,19 @@ impl LegacyFlatAppConfig {
             }],
         };
         match provider {
-            ProviderKind::Anthropic => AppConfigFile {
+            ProviderFamily::Anthropic => AppConfigFile {
                 default_provider: Some(provider),
                 anthropic: profile,
                 openai: ProviderProfile::default(),
-                ollama: ProviderProfile::default(),
                 provider: None,
                 model: None,
                 base_url: None,
                 api_key: None,
             },
-            ProviderKind::Openai => AppConfigFile {
+            ProviderFamily::OpenAI => AppConfigFile {
                 default_provider: Some(provider),
                 anthropic: ProviderProfile::default(),
                 openai: profile,
-                ollama: ProviderProfile::default(),
-                provider: None,
-                model: None,
-                base_url: None,
-                api_key: None,
-            },
-            ProviderKind::Ollama => AppConfigFile {
-                default_provider: Some(provider),
-                anthropic: ProviderProfile::default(),
-                openai: ProviderProfile::default(),
-                ollama: profile,
                 provider: None,
                 model: None,
                 base_url: None,
@@ -318,13 +292,11 @@ impl LegacyFlatAppConfig {
 #[derive(Debug, Clone, Deserialize)]
 struct LegacySectionAppConfig {
     #[serde(default)]
-    default_provider: Option<ProviderKind>,
+    default_provider: Option<ProviderFamily>,
     #[serde(default)]
     anthropic: LegacySectionProviderProfile,
     #[serde(default)]
     openai: LegacySectionProviderProfile,
-    #[serde(default)]
-    ollama: LegacySectionProviderProfile,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -343,7 +315,6 @@ impl LegacySectionAppConfig {
             default_provider: self.default_provider,
             anthropic: legacy_section_profile_into_provider_profile(self.anthropic),
             openai: legacy_section_profile_into_provider_profile(self.openai),
-            ollama: legacy_section_profile_into_provider_profile(self.ollama),
             provider: None,
             model: None,
             base_url: None,
@@ -371,11 +342,10 @@ fn legacy_section_profile_into_provider_profile(
     }
 }
 
-fn parse_provider_kind(value: &str) -> Option<ProviderKind> {
+fn parse_provider_kind(value: &str) -> Option<ProviderFamily> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "anthropic" => Some(ProviderKind::Anthropic),
-        "openai" => Some(ProviderKind::Openai),
-        "ollama" => Some(ProviderKind::Ollama),
+        "anthropic" => Some(ProviderFamily::Anthropic),
+        "openai" => Some(ProviderFamily::OpenAI),
         _ => None,
     }
 }

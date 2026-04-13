@@ -1,54 +1,46 @@
-use serde::Deserialize;
-
-use crate::{
-    InputModality, ModelCatalog, ModelConfig, ModelConfigError, ModelVisibility, ProviderKind,
-    ReasoningLevel, ThinkingCapability, TruncationPolicyConfig,
-};
+use crate::{ModelCatalog, ModelPreset, ModelPresetError};
 
 const DEFAULT_BASE_INSTRUCTIONS: &str = include_str!("../default_base_instructions.txt");
 
 /// Filesystem-independent loader for the built-in model catalog bundled with the binary.
 #[derive(Debug, Clone, Default)]
-pub struct BuiltinModelCatalog {
-    models: Vec<ModelConfig>,
+pub struct PresetModelCatalog {
+    models: Vec<ModelPreset>,
 }
 
-impl BuiltinModelCatalog {
+impl PresetModelCatalog {
     /// Loads the built-in catalog from `crates/core/models.json`.
-    pub fn load() -> Result<Self, BuiltinModelCatalogError> {
+    pub fn load() -> Result<Self, PresetModelCatalogError> {
         Ok(Self {
             models: load_builtin_models()?,
         })
     }
 
     /// Creates a catalog from an already-loaded model list.
-    pub fn new(models: Vec<ModelConfig>) -> Self {
+    pub fn new(models: Vec<ModelPreset>) -> Self {
         Self { models }
     }
 
     /// Returns the loaded models by value.
-    pub fn into_inner(self) -> Vec<ModelConfig> {
+    pub fn into_inner(self) -> Vec<ModelPreset> {
         self.models
     }
 }
 
-impl ModelCatalog for BuiltinModelCatalog {
-    fn list_visible(&self) -> Vec<&ModelConfig> {
-        self.models
-            .iter()
-            .filter(|model| model.visibility == ModelVisibility::Visible)
-            .collect()
+impl ModelCatalog for PresetModelCatalog {
+    fn list_visible(&self) -> Vec<&ModelPreset> {
+        self.models.iter().collect()
     }
 
-    fn get(&self, slug: &str) -> Option<&ModelConfig> {
+    fn get(&self, slug: &str) -> Option<&ModelPreset> {
         self.models.iter().find(|model| model.slug == slug)
     }
 
-    fn resolve_for_turn(&self, requested: Option<&str>) -> Result<&ModelConfig, ModelConfigError> {
+    fn resolve_for_turn(&self, requested: Option<&str>) -> Result<&ModelPreset, ModelPresetError> {
         if let Some(slug) = requested {
             return self
                 .get(slug)
-                .ok_or_else(|| ModelConfigError::ModelNotFound {
+                .ok_or_else(|| ModelPresetError::ModelNotFound {
                     slug: slug.to_string(),
                 });
         }
@@ -56,18 +48,13 @@ impl ModelCatalog for BuiltinModelCatalog {
         self.list_visible()
             .into_iter()
             .max_by_key(|model| model.priority)
-            .ok_or(ModelConfigError::NoVisibleModels)
+            .ok_or(ModelPresetError::NoVisibleModels)
     }
 }
 
 /// Loads the built-in model list bundled with the crate.
-pub fn load_builtin_models() -> Result<Vec<ModelConfig>, BuiltinModelCatalogError> {
-    let raw_models: Vec<RawBuiltinModelConfig> =
-        serde_json::from_str(include_str!("../models.json"))?;
-    Ok(raw_models
-        .into_iter()
-        .map(RawBuiltinModelConfig::into_model)
-        .collect())
+pub fn load_builtin_models() -> Result<Vec<ModelPreset>, PresetModelCatalogError> {
+    serde_json::from_str(include_str!("../models.json")).map_err(Into::into)
 }
 
 /// Returns the shared fallback base instructions used when a model has no catalog entry.
@@ -77,133 +64,17 @@ pub fn default_base_instructions() -> &'static str {
 
 /// Errors produced while loading the builtin catalog.
 #[derive(Debug, thiserror::Error)]
-pub enum BuiltinModelCatalogError {
+pub enum PresetModelCatalogError {
     /// Parsing the bundled JSON file failed.
     #[error("failed to parse builtin model catalog: {0}")]
     Parse(#[from] serde_json::Error),
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RawBuiltinModelConfig {
-    slug: String,
-    display_name: String,
-    provider: ProviderKind,
-    #[serde(default)]
-    description: String,
-    #[serde(default, deserialize_with = "deserialize_reasoning_level")]
-    default_reasoning_level: ReasoningLevel,
-    #[serde(default)]
-    supported_reasoning_levels: Vec<ReasoningLevel>,
-    #[serde(default)]
-    thinking_capability: Option<RawThinkingCapability>,
-    base_instructions: String,
-    #[serde(default)]
-    context_window: Option<u32>,
-    #[serde(default)]
-    effective_context_window_percent: Option<u8>,
-    #[serde(default, deserialize_with = "deserialize_truncation_policy")]
-    truncation_policy: TruncationPolicyConfig,
-    #[serde(default)]
-    input_modalities: Vec<InputModality>,
-    #[serde(default)]
-    supports_image_detail_original: bool,
-    #[serde(default)]
-    visibility: ModelVisibility,
-    #[serde(default)]
-    supported_in_api: bool,
-    #[serde(default)]
-    priority: i32,
-}
-
-impl RawBuiltinModelConfig {
-    fn into_model(self) -> ModelConfig {
-        let mut model = ModelConfig::default();
-        model.slug = self.slug;
-        model.display_name = self.display_name;
-        model.provider = self.provider;
-        model.description = if self.description.trim().is_empty() {
-            None
-        } else {
-            Some(self.description)
-        };
-        model.default_reasoning_level = self.default_reasoning_level;
-        model.supported_reasoning_levels = if self.supported_reasoning_levels.is_empty() {
-            vec![model.default_reasoning_level.clone()]
-        } else {
-            self.supported_reasoning_levels
-        };
-        model.thinking_capability = self.thinking_capability.map(|capability| match capability {
-            RawThinkingCapability::Levels => {
-                ThinkingCapability::Levels(model.supported_reasoning_levels.clone())
-            }
-            RawThinkingCapability::Toggle => ThinkingCapability::Toggle,
-            RawThinkingCapability::Disabled => ThinkingCapability::Disabled,
-        });
-        model.base_instructions = self.base_instructions;
-        model.context_window = self.context_window.unwrap_or(model.context_window);
-        model.effective_context_window_percent = self
-            .effective_context_window_percent
-            .unwrap_or(model.effective_context_window_percent);
-        model.truncation_policy = self.truncation_policy;
-        model.input_modalities = if self.input_modalities.is_empty() {
-            vec![InputModality::Text]
-        } else {
-            self.input_modalities
-        };
-        model.supports_image_detail_original = self.supports_image_detail_original;
-        model.visibility = self.visibility;
-        model.supported_in_api = self.supported_in_api;
-        model.priority = self.priority;
-        model
-    }
-}
-
-fn deserialize_reasoning_level<'de, D>(deserializer: D) -> Result<ReasoningLevel, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    match value {
-        serde_json::Value::String(text) if text.trim().is_empty() => Ok(ReasoningLevel::default()),
-        other => serde_json::from_value(other).map_err(serde::de::Error::custom),
-    }
-}
-
-fn deserialize_truncation_policy<'de, D>(
-    deserializer: D,
-) -> Result<TruncationPolicyConfig, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    match value {
-        serde_json::Value::Null => Ok(TruncationPolicyConfig::default()),
-        serde_json::Value::String(text) if text.trim().is_empty() => {
-            Ok(TruncationPolicyConfig::default())
-        }
-        other @ serde_json::Value::Object(_) => {
-            serde_json::from_value(other).map_err(serde::de::Error::custom)
-        }
-        other => Err(serde::de::Error::custom(format!(
-            "expected truncation policy object or empty string, got {other}"
-        ))),
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-enum RawThinkingCapability {
-    #[default]
-    Levels,
-    Toggle,
-    Disabled,
 }
 
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
 
-    use super::{BuiltinModelCatalog, default_base_instructions, load_builtin_models};
+    use super::{PresetModelCatalog, default_base_instructions, load_builtin_models};
     use crate::ModelCatalog;
 
     #[test]
@@ -216,7 +87,7 @@ mod tests {
 
     #[test]
     fn builtin_catalog_resolves_visible_defaults() {
-        let catalog = BuiltinModelCatalog::load().expect("load catalog");
+        let catalog = PresetModelCatalog::load().expect("load catalog");
         let model = catalog.resolve_for_turn(None).expect("resolve default");
         assert!(!model.slug.is_empty());
     }

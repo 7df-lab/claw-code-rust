@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use clawcr_core::{ItemId, SessionId, TurnId, TurnStatus, TurnUsage};
 use serde::{Deserialize, Serialize};
 
+use crate::{ItemId, SessionId, TurnId, TurnStatus, TurnUsage};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnSummary {
     pub turn_id: TurnId,

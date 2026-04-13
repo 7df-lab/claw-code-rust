@@ -1,6 +1,7 @@
-use clawcr_core::{SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
+
+use crate::{SessionId, TurnId};
 
 /// Describes a client response to a pending approval request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

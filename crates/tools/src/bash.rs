@@ -23,6 +23,13 @@ const DESCRIPTION_MAX_BYTES_LABEL: &str = "64 KB";
 /// process and captures stdout/stderr.
 pub struct BashTool;
 
+#[allow(dead_code)]
+fn windows_destructive_filesystem_guidance() -> &'static str {
+    r#"Windows safety rules:
+- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.
+- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked."#
+}
+
 #[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {

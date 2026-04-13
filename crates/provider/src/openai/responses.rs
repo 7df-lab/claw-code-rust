@@ -21,7 +21,7 @@ use super::{
 };
 
 /// OpenAI Responses API provider.
-///
+/// <https://developers.openai.com/api/reference/resources/responses>
 /// This adapter keeps the new Responses wire format isolated from the legacy
 /// chat-completions adapter so the transport can evolve independently.
 pub struct OpenAIResponsesProvider {

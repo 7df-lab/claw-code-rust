@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+clawcr-protocol = { workspace = true }
 clawcr-tools = { workspace = true }
 clawcr-provider = { workspace = true }
 clawcr-safety = { workspace = true }

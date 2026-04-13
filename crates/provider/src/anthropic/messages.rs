@@ -16,6 +16,7 @@ use crate::{
     Usage,
 };
 
+/// <https://platform.claude.com/docs/en/api/messages>
 /// Anthropic provider backed by the official HTTP API.
 pub struct AnthropicProvider {
     client: Client,

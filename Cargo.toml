@@ -77,3 +77,6 @@ smol_str = { version = "0.3", features = ["serde"] }
 dirs = "6"
 tempfile = "3.23.0"
 pretty_assertions = "1.4.1"
+strum = "0.27.2"
+strum_macros = "0.28.0"
+schemars = "0.8.22"

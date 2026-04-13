@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
-use clawcr_core::ProviderKind;
+use clawcr_provider::ProviderFamily;
 use clawcr_utils::find_clawcr_home;
 use toml::Value;
 
 /// Persists the onboarding choice into the user's `config.toml`.
 pub(crate) fn save_onboarding_config(
-    provider: ProviderKind,
+    provider: ProviderFamily,
     model: &str,
     base_url: Option<&str>,
     api_key: Option<&str>,
@@ -33,7 +33,7 @@ pub(crate) fn save_onboarding_config(
     Ok(())
 }
 
-pub(crate) fn save_last_used_model(provider: ProviderKind, model: &str) -> Result<()> {
+pub(crate) fn save_last_used_model(provider: ProviderFamily, model: &str) -> Result<()> {
     let path = find_clawcr_home()
         .context("could not determine user config path")?
         .join("config.toml");
@@ -59,7 +59,7 @@ pub(crate) fn save_last_used_model(provider: ProviderKind, model: &str) -> Resul
 
 fn merge_onboarding_config(
     mut root: Value,
-    provider: ProviderKind,
+    provider: ProviderFamily,
     model: &str,
     base_url: Option<&str>,
     api_key: Option<&str>,
@@ -122,7 +122,7 @@ fn merge_onboarding_config(
     Ok(root)
 }
 
-fn merge_last_used_model(mut root: Value, provider: ProviderKind, model: &str) -> Result<Value> {
+fn merge_last_used_model(mut root: Value, provider: ProviderFamily, model: &str) -> Result<Value> {
     let table = root
         .as_table_mut()
         .context("config root must be a TOML table")?;
@@ -201,7 +201,7 @@ mod tests {
         let root = Value::Table(Default::default());
         let merged = merge_onboarding_config(
             root,
-            ProviderKind::Openai,
+            ProviderFamily::OpenAI,
             "qwen3-coder-next",
             Some("https://example.com/v1"),
             Some("secret"),
@@ -276,7 +276,7 @@ mod tests {
 
         let merged = merge_onboarding_config(
             root,
-            ProviderKind::Openai,
+            ProviderFamily::OpenAI,
             "qwen3-coder-next",
             Some("https://new.example/v1"),
             Some("new-secret"),

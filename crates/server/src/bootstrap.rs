@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use clawcr_core::{AppConfigLoader, BuiltinModelCatalog, FileSystemAppConfigLoader, ModelCatalog};
+use clawcr_core::{AppConfigLoader, FileSystemAppConfigLoader, ModelCatalog, PresetModelCatalog};
 use clawcr_tools::ToolRegistry;
 use clawcr_utils::FileSystemConfigPathResolver;
 
@@ -52,7 +52,7 @@ pub async fn run_server_process(args: ServerProcessArgs) -> Result<()> {
     let mut registry = ToolRegistry::new();
     clawcr_tools::register_builtin_tools(&mut registry);
     let provider = load_server_provider(&resolver.user_config_file(), None)?;
-    let model_catalog: Arc<dyn ModelCatalog> = Arc::new(BuiltinModelCatalog::load()?);
+    let model_catalog: Arc<dyn ModelCatalog> = Arc::new(PresetModelCatalog::load()?);
     let runtime = ServerRuntime::new(
         resolver.user_config_dir(),
         ServerRuntimeDependencies::new(

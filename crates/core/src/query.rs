@@ -1,9 +1,11 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clawcr_protocol::ResolvedThinkingRequest;
 use futures::StreamExt;
 use serde_json::json;
+use tokio::time::sleep;
 use tracing::{debug, info, info_span, warn};
 
 use clawcr_provider::{
@@ -60,7 +62,14 @@ pub type EventCallback = Arc<dyn Fn(QueryEvent) + Send + Sync>;
 
 enum ErrorClass {
     ContextTooLong,
+    ParameterError,
+    FileContentAnomaly,
+    AuthenticationFailure,
+    FeatureUnavailable,
+    TaskNotFound,
     RateLimit,
+    NoApiPermission,
+    FileTooLarge,
     ServerError,
     Unretryable,
 }
@@ -69,13 +78,53 @@ fn classify_error(e: &anyhow::Error) -> ErrorClass {
     let msg = e.to_string().to_lowercase();
     if msg.contains("context_too_long") {
         ErrorClass::ContextTooLong
+    } else if msg.contains("401")
+        || msg.contains("authentication failure")
+        || msg.contains("token timeout")
+        || msg.contains("unauthorized")
+        || msg.contains("api key")
+    {
+        ErrorClass::AuthenticationFailure
+    } else if msg.contains("404")
+        && (msg.contains("feature not available")
+            || msg.contains("fine-tuning feature not available"))
+    {
+        ErrorClass::FeatureUnavailable
+    } else if msg.contains("404")
+        && (msg.contains("task does not exist")
+            || msg.contains("does not exist")
+            || msg.contains("not found"))
+    {
+        ErrorClass::TaskNotFound
     } else if msg.contains("429") || msg.contains("rate limit") {
         ErrorClass::RateLimit
+    } else if msg.contains("434") || msg.contains("no api permission") || msg.contains("beta phase")
+    {
+        ErrorClass::NoApiPermission
+    } else if msg.contains("435")
+        || msg.contains("file size exceeds 100mb")
+        || msg.contains("smaller than 100mb")
+    {
+        ErrorClass::FileTooLarge
+    } else if msg.contains("400")
+        && (msg.contains("file content anomaly")
+            || msg.contains("jsonl file content")
+            || msg.contains("jsonl"))
+    {
+        ErrorClass::FileContentAnomaly
+    } else if msg.contains("400")
+        || msg.contains("parameter error")
+        || msg.contains("invalid parameter")
+        || msg.contains("bad request")
+    {
+        ErrorClass::ParameterError
     } else if msg.starts_with('5')
         || msg.contains("500")
         || msg.contains("502")
         || msg.contains("503")
+        || msg.contains("504")
         || msg.contains("internal server error")
+        || msg.contains("server error occurred while processing the request")
     {
         ErrorClass::ServerError
     } else {
@@ -170,22 +219,12 @@ fn load_prompt_md(cwd: &std::path::Path) -> Option<String> {
     }
 }
 
-/// TODO: At the current design, we take base_instructions as system prompt,
-/// so there is no nesscerry to keep `system_prompt`, should be removed.
-fn build_system_prompt(
-    base_instructions: &str,
-    system_prompt: &str,
-    memory: &Option<String>,
-    cwd: &Path,
-) -> String {
+fn build_system_prompt(base_instructions: &str, memory: &Option<String>, cwd: &Path) -> String {
     let mut sections = Vec::new();
     if !base_instructions.is_empty() {
         sections.push(base_instructions.to_string());
     }
     sections.push(build_environment_context(cwd));
-    if !system_prompt.is_empty() {
-        sections.push(system_prompt.to_string());
-    }
     if let Some(mem) = memory {
         if !mem.is_empty() {
             sections.push(mem.clone());
@@ -216,7 +255,11 @@ fn build_environment_context(cwd: &Path) -> String {
 // Main query loop
 // ---------------------------------------------------------------------------
 
-const MAX_RETRIES: usize = 3;
+const MAX_RETRIES: usize = 5;
+const INITIAL_RETRY_BACKOFF_MS: u64 = 250;
+
+/// TODO: The body of `query` is too lengthy, we should move out `stream lop` out, I am
+/// not sure whether we should do this.
 
 /// The recursive agent loop — the beating heart of the runtime.
 ///
@@ -233,10 +276,6 @@ const MAX_RETRIES: usize = 3;
 /// The loop terminates when:
 /// - The model emits `end_turn` with no tool calls
 /// - An unrecoverable error occurs
-/// TODO: Not sure should we put `provider: &dyn ModelProviderSDK` into runtime `Model`,
-/// so that the turn_config has the `provider`.
-/// TODO: The body of `query` is too lengthy, we should move out `stream lop` out, I am
-/// not sure whether we should do this.
 pub async fn query(
     session: &mut SessionState,
     turn_config: &TurnConfig,
@@ -254,7 +293,6 @@ pub async fn query(
     // 1.9: Memory prefetch — load CLAUDE.md/AGETNS.md once before the loop
     let memory_content = load_prompt_md(&session.cwd);
 
-    // TODO: Implement retry with exponential backoff strategy.
     let mut retry_count: usize = 0;
     let mut context_compacted = false;
 
@@ -284,7 +322,6 @@ pub async fn query(
         // Build model request
         let system = build_system_prompt(
             &turn_config.model.base_instructions,
-            &session.config.system_prompt,
             &memory_content,
             &session.cwd,
         );
@@ -314,8 +351,11 @@ pub async fn query(
                     value as usize
                 }),
             tools: Some(registry.tool_definitions()),
-            // TODO: Should add temperature, top_k, top_p .. etc paratermer
-            sampling: SamplingControls::default(),
+            sampling: SamplingControls {
+                temperature: turn_config.model.temperature.map(f64::from),
+                top_p: turn_config.model.top_p.map(f64::from),
+                top_k: turn_config.model.top_k.map(|value| value as u32),
+            },
             thinking: request_thinking,
             extra_body,
         };
@@ -359,13 +399,26 @@ pub async fn query(
                     ErrorClass::RateLimit | ErrorClass::ServerError => {
                         if retry_count < MAX_RETRIES {
                             retry_count += 1;
-                            warn!(attempt = retry_count, "transient error — retrying");
+                            let backoff = retry_backoff_duration(retry_count);
+                            warn!(
+                                attempt = retry_count,
+                                backoff_ms = backoff.as_millis(),
+                                "transient error — retrying with exponential backoff"
+                            );
+                            sleep(backoff).await;
                             session.turn_count -= 1;
                             continue;
                         }
                         return Err(AgentError::Provider(e));
                     }
-                    ErrorClass::Unretryable => {
+                    ErrorClass::ParameterError
+                    | ErrorClass::FileContentAnomaly
+                    | ErrorClass::AuthenticationFailure
+                    | ErrorClass::FeatureUnavailable
+                    | ErrorClass::TaskNotFound
+                    | ErrorClass::NoApiPermission
+                    | ErrorClass::FileTooLarge
+                    | ErrorClass::Unretryable => {
                         return Err(AgentError::Provider(e));
                     }
                 }
@@ -520,6 +573,12 @@ pub async fn query(
     }
 }
 
+fn retry_backoff_duration(attempt: usize) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(10) as u32;
+    let multiplier = 2u64.pow(exponent);
+    Duration::from_millis(INITIAL_RETRY_BACKOFF_MS.saturating_mul(multiplier))
+}
+
 #[cfg(test)]
 mod tests {
     use std::pin::Pin;
@@ -620,7 +679,6 @@ mod tests {
     fn system_prompt_includes_environment_context() {
         let prompt = super::build_system_prompt(
             "base instructions",
-            "system prompt",
             &Some("memory".to_string()),
             std::path::Path::new("/tmp/project"),
         );
@@ -629,7 +687,6 @@ mod tests {
         assert!(prompt.contains("Environment context (read only):"));
         assert!(prompt.contains("\"OS\""));
         assert!(prompt.contains("/tmp/project"));
-        assert!(prompt.contains("system prompt"));
         assert!(prompt.contains("memory"));
     }
 

@@ -7,7 +7,6 @@ use crate::{Message, Model, TokenBudget};
 /// Configuration for a session.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
-    pub system_prompt: String,
     pub token_budget: TokenBudget,
     pub permission_mode: PermissionMode,
 }
@@ -15,7 +14,6 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            system_prompt: String::new(),
             token_budget: TokenBudget::default(),
             permission_mode: PermissionMode::AutoApprove,
         }
@@ -83,7 +81,6 @@ mod tests {
     #[test]
     fn session_config_default_values() {
         let config = SessionConfig::default();
-        assert!(config.system_prompt.is_empty());
         assert_eq!(config.permission_mode, PermissionMode::AutoApprove);
     }
 

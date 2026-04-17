@@ -11,19 +11,12 @@ pub async fn run_agent(
     force_onboarding: bool,
     no_alt_screen: bool,
     log_level: Option<&str>,
-    model_override: Option<&str>,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let model_catalog = PresetModelCatalog::load()?;
     let stored_config = load_config().unwrap_or_default();
     let (onboarding_mode, resolved) =
         resolve_initial_provider_settings(force_onboarding, &stored_config, &model_catalog)?;
-
-    let effective_model = model_override.unwrap_or(&resolved.model);
-    let resolved = ResolvedProviderSettings {
-        model: effective_model.to_string(),
-        ..resolved
-    };
     let saved_models = stored_config
         .model_providers
         .values()

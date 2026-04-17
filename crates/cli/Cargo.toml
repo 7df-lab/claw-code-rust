@@ -30,7 +30,6 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }
-colored = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = "1"

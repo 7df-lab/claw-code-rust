@@ -30,15 +30,8 @@ pub struct OpenAIProvider {
 
 impl OpenAIProvider {
     pub fn new(base_url: impl Into<String>) -> Self {
-        let timeout_secs = std::env::var("CLAWCR_REQUEST_TIMEOUT")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(300);
         Self {
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(timeout_secs))
-                .build()
-                .unwrap_or_else(|_| Client::new()),
+            client: Client::new(),
             base_url: base_url.into(),
             api_key: None,
         }

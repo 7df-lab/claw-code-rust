@@ -524,6 +524,7 @@ name = "clawcr-utils"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "pretty_assertions",
  "serde",
  "tempfile",
  "thiserror 2.0.18",

@@ -1,7 +1,7 @@
 mod config_paths;
 mod home_dir;
-mod arithmetic;
+pub mod sorting;
 
 pub use config_paths::*;
 pub use home_dir::*;
-pub use arithmetic::*;
+pub use sorting::*;

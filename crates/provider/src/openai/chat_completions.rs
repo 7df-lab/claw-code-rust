@@ -36,7 +36,8 @@ impl OpenAIProvider {
             .unwrap_or(300);
         Self {
             client: Client::builder()
-                .timeout(std::time::Duration::from_secs(timeout_secs))
+                .read_timeout(std::time::Duration::from_secs(timeout_secs))
+                .connect_timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|_| Client::new()),
             base_url: base_url.into(),

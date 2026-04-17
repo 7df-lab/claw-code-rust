@@ -82,7 +82,25 @@ pub(super) async fn completion_stream(
         futures::pin_mut!(event_source);
         while let Some(event) = event_source.next().await {
             let event = event.map_err(|error| {
-                anyhow::anyhow!("openai stream error for model {}: {error}", request.model)
+                let error_msg = error.to_string();
+                if error_msg.contains("decoding")
+                    || error_msg.contains("timeout")
+                    || error_msg.contains("timed out")
+                {
+                    anyhow::anyhow!(
+                        "openai stream error for model {model}: the response was interrupted. \
+                         This usually means the server stopped sending data within the read timeout \
+                         (CLAWCR_REQUEST_TIMEOUT={timeout}s). For long responses, try increasing \
+                         the timeout or using a faster model. Original error: {error}",
+                        model = request.model,
+                        timeout = std::env::var("CLAWCR_REQUEST_TIMEOUT")
+                            .ok()
+                            .and_then(|v| v.parse::<u64>().ok())
+                            .unwrap_or(300),
+                    )
+                } else {
+                    anyhow::anyhow!("openai stream error for model {}: {error}", request.model)
+                }
             })?;
 
             match event {

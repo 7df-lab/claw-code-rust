@@ -70,7 +70,7 @@ impl OpenAIProvider {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(super) struct OpenAIChatCompletionResponse {
     id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default_vec")]
     choices: Vec<OpenAIChatCompletionChoice>,
     #[serde(default)]
     created: Option<u64>,
@@ -132,16 +132,26 @@ pub(super) struct OpenAIChatCompletionMessage {
     refusal: Option<String>,
     #[serde(default)]
     role: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default_vec")]
     annotations: Vec<OpenAIChatCompletionAnnotation>,
     #[serde(default)]
     audio: Option<OpenAIChatCompletionAudio>,
     #[serde(default)]
     function_call: Option<OpenAIChatCompletionFunctionCall>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default_vec")]
     tool_calls: Vec<OpenAIChatCompletionMessageToolCall>,
     #[serde(default)]
     reasoning_content: Option<String>,
+}
+
+fn deserialize_null_as_default_vec<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<Vec<T>>::deserialize(deserializer).map(|v| v.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

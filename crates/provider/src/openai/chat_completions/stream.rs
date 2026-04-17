@@ -598,8 +598,18 @@ struct ChatCompletionStreamDelta {
     reasoning_content: Option<String>,
     #[serde(default)]
     refusal: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default_vec")]
     tool_calls: Vec<ChatCompletionStreamToolCallDelta>,
+}
+
+fn deserialize_null_as_default_vec<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<Vec<T>>::deserialize(deserializer).map(|v| v.unwrap_or_default())
 }
 
 #[derive(Debug, Default, Deserialize)]

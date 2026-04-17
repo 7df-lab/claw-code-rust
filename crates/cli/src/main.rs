@@ -383,6 +383,7 @@ mod tests {
             command: None,
             no_alt_screen: false,
             log_level: None,
+            model: None,
         };
 
         assert_eq!(
@@ -397,6 +398,7 @@ mod tests {
             command: None,
             no_alt_screen: false,
             log_level: Some(LogLevel::Debug),
+            model: None,
         };
 
         assert_eq!(

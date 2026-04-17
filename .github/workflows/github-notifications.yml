@@ -39,7 +39,12 @@ jobs:
         run: |
           mkdir -p notifications
           
-          COMMITS=$(curl -s "https://api.github.com/repos/7df-lab/claw-code-rust/commits?since=${SINCE}&per_page=100" | 
+          echo "DEBUG: SINCE=${SINCE}"
+          RAW=$(curl -s "https://api.github.com/repos/7df-lab/claw-code-rust/commits?since=${SINCE}&per_page=100")
+          echo "DEBUG: RAW length=$(echo "$RAW" | wc -c)"
+          echo "$RAW" > /tmp/raw_commits.json
+          
+          COMMITS=$(echo "$RAW" | 
             jq '[.[] | select(.commit.committer.date > env.SINCE) | {
               timestamp: .commit.committer.date,
               type: "upstream_commit",
@@ -48,6 +53,8 @@ jobs:
               message: (.commit.message | split("\n")[0]),
               author: .commit.author.name
             }]')
+          
+          echo "DEBUG: COMMITS length=$(echo "$COMMITS" | wc -c)"
           
           if [ -n "$COMMITS" ] && [ "$COMMITS" != "[]" ] && [ "$COMMITS" != "null" ]; then
             echo "$COMMITS" | jq -c '.[]' >> "notifications/github-activity.jsonl.tmp"

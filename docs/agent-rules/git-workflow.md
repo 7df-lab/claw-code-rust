@@ -22,6 +22,11 @@
 - 类型：`feat:` `fix:` `refactor:` `test:` `docs:` `chore:`
 - 在提交正文中引用相关 issue
 
+## 提交频率
+- **`fork/main`（个人维护分支）**：可以频繁提交，每次改动随时 commit，便于回滚和追踪历史
+- **`fork/feat/xxx`（给上游提 PR 的分支）**：提 PR 前用 `git rebase -i` 整理成少量干净的 commit
+- 原则：宁可多提交，也不要丢失工作进度
+
 ## 提交 PR 前
 1. `cargo test` 通过
 2. `cargo fmt --all` 格式化

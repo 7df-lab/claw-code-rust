@@ -9,12 +9,12 @@ mod query;
 mod session;
 mod skills;
 
-#[allow(ambiguous_glob_reexports)]
-pub use devo_protocol::*;
-pub use devo_protocol::{ContentBlock, Message, Role};
 pub use config::*;
 pub use context::*;
 pub use conversation::*;
+#[allow(ambiguous_glob_reexports)]
+pub use devo_protocol::*;
+pub use devo_protocol::{ContentBlock, Message, Role};
 pub use error::*;
 pub use logging::*;
 pub use model_catalog::*;

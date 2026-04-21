@@ -11,12 +11,12 @@
 //! recent killed span.
 
 use crate::v2::key_hint::is_altgr;
-use devo_protocol::user_input::TextElement as UserTextElement;
-use devo_protocol::user_input::Utf8ByteSpan;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use devo_protocol::user_input::TextElement as UserTextElement;
+use devo_protocol::user_input::Utf8ByteSpan;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;

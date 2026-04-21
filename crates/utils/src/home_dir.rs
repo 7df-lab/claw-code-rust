@@ -132,8 +132,7 @@ mod tests {
 
     #[test]
     fn find_devo_home_without_env_uses_default_home_dir() {
-        let resolved =
-            find_devo_home_from_env(/*devo_home_env*/ None).expect("default DEVO_HOME");
+        let resolved = find_devo_home_from_env(/*devo_home_env*/ None).expect("default DEVO_HOME");
         let mut expected = home_dir().expect("home dir");
         expected.push(".devo");
         assert_eq!(resolved, expected);

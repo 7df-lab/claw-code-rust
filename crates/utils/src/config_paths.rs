@@ -113,10 +113,7 @@ mod tests {
             paths.user_config_file,
             PathBuf::from("/home/tester/config.toml")
         );
-        assert_eq!(
-            paths.project_config_dir,
-            Some(PathBuf::from("/repo/.devo"))
-        );
+        assert_eq!(paths.project_config_dir, Some(PathBuf::from("/repo/.devo")));
         assert_eq!(
             paths.project_config_file,
             Some(PathBuf::from("/repo/.devo/config.toml"))
@@ -126,8 +123,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn resolver_supports_user_only_paths_windows() {
-        let resolver =
-            FileSystemConfigPathResolver::new(PathBuf::from("C:\\Users\\tester\\.devo"));
+        let resolver = FileSystemConfigPathResolver::new(PathBuf::from("C:\\Users\\tester\\.devo"));
         let paths = resolver.resolve_paths(None).expect("paths");
 
         assert!(paths.project_config_dir.is_none());

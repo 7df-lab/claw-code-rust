@@ -102,10 +102,7 @@ pub(crate) fn set_theme_override(
 
 /// Check whether a theme name resolves to a bundled theme or a custom
 /// `.tmTheme` file.  Returns a user-facing warning when it does not.
-pub(crate) fn validate_theme_name(
-    name: Option<&str>,
-    devo_home: Option<&Path>,
-) -> Option<String> {
+pub(crate) fn validate_theme_name(name: Option<&str>, devo_home: Option<&Path>) -> Option<String> {
     let name = name?;
     let custom_theme_path_display = devo_home
         .map(|home| custom_theme_path(name, home).display().to_string())
@@ -230,9 +227,7 @@ fn resolve_theme_with_override(name: Option<&str>, devo_home: Option<&Path>) -> 
 /// Extracted from the old `theme()` init closure so it can be reused.
 fn build_default_theme() -> Theme {
     let name = THEME_OVERRIDE.get().and_then(|name| name.as_deref());
-    let devo_home = CLAWR_HOME
-        .get()
-        .and_then(|devo_home| devo_home.as_deref());
+    let devo_home = CLAWR_HOME.get().and_then(|devo_home| devo_home.as_deref());
     resolve_theme_with_override(name, devo_home)
 }
 

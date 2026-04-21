@@ -1,10 +1,10 @@
 use anyhow::Result;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
 use devo_core::ProviderWireApi;
 use devo_protocol::Model;
 use devo_protocol::ModelCatalog;
 use devo_protocol::ProviderFamily;
-use crossterm::event::KeyCode;
-use crossterm::event::KeyModifiers;
 use futures::StreamExt;
 use std::time::Duration;
 use std::time::Instant;

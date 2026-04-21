@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use std::path::PathBuf;
 
 /// Stores logging defaults for the runtime.
@@ -15,6 +16,11 @@ pub struct LoggingConfig {
 }
 
 /// Selects the rolling cadence used for persisted log files.
+///
+/// This intentionally mirrors the supported `tracing_appender::rolling::Rotation`
+/// constants instead of using that type directly: the appender type is a runtime
+/// implementation detail with private internals and no serde support, while this
+/// enum is part of Devo's persisted configuration schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LogRotation {
     /// Keep appending to one file until the process rotates it manually.

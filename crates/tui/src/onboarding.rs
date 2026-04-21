@@ -1,15 +1,14 @@
 use anyhow::Context;
 use anyhow::Result;
-use devo_core::ProviderWireApi;
 use devo_core::provider_id_for_endpoint;
 use devo_core::provider_name_for_endpoint;
-use devo_protocol::ProviderFamily;
+use devo_protocol::ProviderWireApi;
 use devo_utils::find_devo_home;
 use toml::Value;
 
 /// Persists the onboarding choice into the user's `config.toml`.
 pub(crate) fn save_onboarding_config(
-    provider: ProviderFamily,
+    provider: ProviderWireApi,
     model: &str,
     base_url: Option<&str>,
     api_key: Option<&str>,
@@ -43,7 +42,7 @@ pub(crate) fn save_onboarding_config(
 
 pub(crate) fn save_last_used_model(
     wire_api: Option<ProviderWireApi>,
-    provider: ProviderFamily,
+    provider: ProviderWireApi,
     model: &str,
 ) -> Result<()> {
     let path = find_devo_home()
@@ -118,7 +117,7 @@ fn merge_thinking_selection(mut root: Value, selection: Option<&str>) -> Result<
 
 fn merge_onboarding_config(
     mut root: Value,
-    provider: ProviderFamily,
+    provider: ProviderWireApi,
     model: &str,
     base_url: Option<&str>,
     api_key: Option<&str>,
@@ -156,10 +155,7 @@ fn merge_onboarding_config(
     );
     profile_table.insert(
         "wire_api".to_string(),
-        Value::String(match provider {
-            ProviderFamily::Anthropic { .. } => "anthropic_messages".to_string(),
-            ProviderFamily::Openai { .. } => "openai_chat_completions".to_string(),
-        }),
+        Value::String(provider.as_str().to_string()),
     );
 
     match normalized_optional(base_url) {
@@ -200,7 +196,7 @@ fn merge_onboarding_config(
 fn merge_last_used_model(
     mut root: Value,
     wire_api: Option<ProviderWireApi>,
-    provider: ProviderFamily,
+    provider: ProviderWireApi,
     model: &str,
 ) -> Result<Value> {
     let table = root
@@ -241,7 +237,7 @@ fn merge_last_used_model(
 
 fn current_provider_id(
     table: &toml::map::Map<String, Value>,
-    provider: &ProviderFamily,
+    provider: &ProviderWireApi,
     model: &str,
 ) -> String {
     table
@@ -286,10 +282,14 @@ fn current_provider_id(
                         let profile = value.as_table()?;
                         let wire_api = profile.get("wire_api")?.as_str()?;
                         let matches_provider = match provider {
-                            ProviderFamily::Anthropic { .. } => wire_api == "anthropic_messages",
-                            ProviderFamily::Openai { .. } => {
-                                wire_api == "openai_chat_completions"
-                                    || wire_api == "openai_responses"
+                            ProviderWireApi::AnthropicMessages => {
+                                wire_api == ProviderWireApi::AnthropicMessages.as_str()
+                            }
+                            ProviderWireApi::OpenAIResponses => {
+                                wire_api == ProviderWireApi::OpenAIResponses.as_str()
+                            }
+                            ProviderWireApi::OpenAIChatCompletions => {
+                                wire_api == ProviderWireApi::OpenAIChatCompletions.as_str()
                             }
                         };
                         matches_provider.then(|| provider_id.clone())
@@ -324,11 +324,7 @@ fn provider_wire_api_from_str(value: &str) -> Option<ProviderWireApi> {
 }
 
 fn wire_api_to_string(wire_api: ProviderWireApi) -> &'static str {
-    match wire_api {
-        ProviderWireApi::OpenAIChatCompletions => "openai_chat_completions",
-        ProviderWireApi::OpenAIResponses => "openai_responses",
-        ProviderWireApi::AnthropicMessages => "anthropic_messages",
-    }
+    wire_api.as_str()
 }
 
 fn upsert_model_entry(
@@ -380,7 +376,7 @@ mod tests {
         let root = Value::Table(Default::default());
         let merged = merge_onboarding_config(
             root,
-            ProviderFamily::openai(),
+            ProviderWireApi::OpenAIChatCompletions,
             "qwen3-coder-next",
             Some("https://example.com/v1"),
             Some("secret"),
@@ -463,7 +459,7 @@ mod tests {
 
         let merged = merge_onboarding_config(
             root,
-            ProviderFamily::openai(),
+            ProviderWireApi::OpenAIChatCompletions,
             "qwen3-coder-next",
             Some("https://new.example/v1"),
             Some("new-secret"),
@@ -511,8 +507,9 @@ model = "gpt-5.4"
         .parse()
         .expect("parse");
 
-        let merged = merge_last_used_model(root, None, ProviderFamily::anthropic(), "gpt-5.4")
-            .expect("merge");
+        let merged =
+            merge_last_used_model(root, None, ProviderWireApi::AnthropicMessages, "gpt-5.4")
+                .expect("merge");
 
         let table = merged.as_table().expect("table");
         assert_eq!(
@@ -543,8 +540,8 @@ model = "gpt-5.4"
         .parse()
         .expect("parse");
 
-        let merged =
-            merge_last_used_model(root, None, ProviderFamily::openai(), "gpt-5.4").expect("merge");
+        let merged = merge_last_used_model(root, None, ProviderWireApi::OpenAIResponses, "gpt-5.4")
+            .expect("merge");
 
         assert_eq!(
             merged

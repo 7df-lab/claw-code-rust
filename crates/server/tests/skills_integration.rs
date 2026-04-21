@@ -82,6 +82,17 @@ fn create_skill(root: &Path, name: &str, content: &str) -> PathBuf {
     skill_path
 }
 
+fn canonical_skill_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).expect("canonicalize skill path")
+}
+
+fn canonical_skill_base_dir(path: &Path) -> PathBuf {
+    canonical_skill_path(path)
+        .parent()
+        .expect("canonical skill base directory")
+        .to_path_buf()
+}
+
 fn build_runtime(
     data_root: &Path,
     user_skill_root: PathBuf,
@@ -382,6 +393,8 @@ async fn skills_list_returns_user_and_workspace_skills() -> Result<()> {
         .await
         .context("skills/list response")?;
     let result: SuccessResponse<SkillListResult> = serde_json::from_value(response)?;
+    let canonical_rust_skill_path = canonical_skill_path(&rust_skill_path);
+    let canonical_team_skill_path = canonical_skill_path(&team_skill_path);
 
     assert_eq!(
         result.result,
@@ -391,7 +404,7 @@ async fn skills_list_returns_user_and_workspace_skills() -> Result<()> {
                     id: "rust-docs".into(),
                     name: "rust-docs".into(),
                     description: format!("Skill discovered at {}", rust_skill_path.display()),
-                    path: rust_skill_path,
+                    path: canonical_rust_skill_path,
                     enabled: true,
                     source: SkillSource::User,
                 },
@@ -399,7 +412,7 @@ async fn skills_list_returns_user_and_workspace_skills() -> Result<()> {
                     id: "team-style".into(),
                     name: "team-style".into(),
                     description: format!("Skill discovered at {}", team_skill_path.display()),
-                    path: team_skill_path,
+                    path: canonical_team_skill_path,
                     enabled: true,
                     source: SkillSource::Workspace {
                         cwd: workspace_root,
@@ -442,6 +455,7 @@ async fn skills_changed_rediscovers_new_workspace_skill() -> Result<()> {
         .await
         .context("first skills/changed response")?;
     let first_result: SuccessResponse<SkillChangedResult> = serde_json::from_value(first_response)?;
+    let canonical_alpha_skill_path = canonical_skill_path(&alpha_skill_path);
     assert_eq!(
         first_result.result,
         SkillChangedResult {
@@ -449,7 +463,7 @@ async fn skills_changed_rediscovers_new_workspace_skill() -> Result<()> {
                 id: "alpha".into(),
                 name: "alpha".into(),
                 description: format!("Skill discovered at {}", alpha_skill_path.display()),
-                path: alpha_skill_path,
+                path: canonical_alpha_skill_path.clone(),
                 enabled: true,
                 source: SkillSource::Workspace {
                     cwd: workspace_root.clone(),
@@ -474,6 +488,7 @@ async fn skills_changed_rediscovers_new_workspace_skill() -> Result<()> {
         .context("second skills/changed response")?;
     let second_result: SuccessResponse<SkillChangedResult> =
         serde_json::from_value(second_response)?;
+    let canonical_bravo_skill_path = canonical_skill_path(&bravo_skill_path);
     assert_eq!(
         second_result.result,
         SkillChangedResult {
@@ -481,14 +496,8 @@ async fn skills_changed_rediscovers_new_workspace_skill() -> Result<()> {
                 SkillRecord {
                     id: "alpha".into(),
                     name: "alpha".into(),
-                    description: format!(
-                        "Skill discovered at {}",
-                        workspace_skill_root
-                            .join("alpha")
-                            .join("SKILL.md")
-                            .display()
-                    ),
-                    path: workspace_skill_root.join("alpha").join("SKILL.md"),
+                    description: format!("Skill discovered at {}", alpha_skill_path.display()),
+                    path: canonical_alpha_skill_path,
                     enabled: true,
                     source: SkillSource::Workspace {
                         cwd: workspace_root.clone(),
@@ -498,7 +507,7 @@ async fn skills_changed_rediscovers_new_workspace_skill() -> Result<()> {
                     id: "bravo".into(),
                     name: "bravo".into(),
                     description: format!("Skill discovered at {}", bravo_skill_path.display()),
-                    path: bravo_skill_path,
+                    path: canonical_bravo_skill_path,
                     enabled: true,
                     source: SkillSource::Workspace {
                         cwd: workspace_root,
@@ -566,7 +575,7 @@ async fn turn_start_resolves_skill_content_into_model_request() -> Result<()> {
         .cloned()
         .context("expected one streamed model request")?;
     let request_text = user_request_text(&captured_request)?;
-    let skill_base_dir = skill_path.parent().context("skill base directory")?;
+    let skill_base_dir = canonical_skill_base_dir(&skill_path);
 
     assert!(request_text.contains("Follow this skill."));
     assert!(request_text.contains("<skill id=\"rust-docs\" name=\"rust-docs\">"));
@@ -706,7 +715,7 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
 
     let first_user_texts = all_user_request_texts(&captured_requests[0]);
     let second_user_texts = all_user_request_texts(&captured_requests[1]);
-    let skill_base_dir = skill_path.parent().context("skill base directory")?;
+    let skill_base_dir = canonical_skill_base_dir(&skill_path);
 
     assert!(
         first_user_texts

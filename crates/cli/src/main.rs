@@ -1,23 +1,25 @@
 use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
-use clap::ValueEnum;
+use clap::builder::PossibleValuesParser;
+use clap::builder::TypedValueParser as _;
 use devo_core::AppConfig;
 use devo_core::AppConfigLoader;
 use devo_core::FileSystemAppConfigLoader;
 use devo_core::LoggingBootstrap;
 use devo_core::LoggingRuntime;
-use devo_core::ModelCatalog;
-use devo_core::PresetModelCatalog;
-use devo_core::load_config;
-use devo_core::resolve_provider_settings;
 use devo_server::ServerProcessArgs;
 use devo_server::run_server_process;
 use devo_utils::find_devo_home;
+use tracing_subscriber::filter::LevelFilter;
 
-mod agent;
+mod agent_command;
+mod doctor_command;
+mod prompt_command;
 
-use agent::run_agent;
+use agent_command::run_agent;
+use doctor_command::run_doctor;
+use prompt_command::run_prompt;
 
 /// Top-level `devo` command that dispatches to interactive agent mode or one
 /// of the supporting runtime subcommands.
@@ -32,41 +34,34 @@ struct Cli {
     model: Option<String>,
 
     /// Override the logging level for this process.
-    #[arg(long = "log-level", global = true, value_enum)]
-    log_level: Option<LogLevel>,
+    #[arg(
+        long = "log-level",
+        global = true,
+        value_parser = PossibleValuesParser::new(["trace", "debug", "info", "warn", "error"])
+            .try_map(|level| level.parse::<LevelFilter>())
+    )]
+    log_level: Option<LevelFilter>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Resolve logging config early, install the process-wide file subscriber,
+    // and keep its non-blocking writer guard alive for the command lifetime.
     let _logging = install_logging(&cli)?;
+    let log_level = cli.log_level.map(|level| level.to_string());
 
     match cli.command {
         Some(Command::Server(args)) => run_server_process(args).await,
         Some(Command::Onboard) => {
-            run_agent(
-                /*force_onboarding*/ true,
-                cli.log_level.map(LogLevel::as_str),
-                cli.model.as_deref(),
-            )
-            .await
+            run_agent(/*force_onboarding*/ true, log_level.as_deref()).await
         }
         Some(Command::Prompt { input }) => {
-            run_prompt(
-                &input,
-                cli.model.as_deref(),
-                cli.log_level.map(LogLevel::as_str),
-            )
-            .await
+            run_prompt(&input, cli.model.as_deref(), log_level.as_deref()).await
         }
         Some(Command::Doctor) => run_doctor().await,
         None => {
-            run_agent(
-                /*force_onboarding*/ false,
-                cli.log_level.map(LogLevel::as_str),
-                cli.model.as_deref(),
-            )
-            .await
+            run_agent(/*force_onboarding*/ false, log_level.as_deref()).await
         }
     }
 }
@@ -117,7 +112,7 @@ fn cli_logging_overrides(cli: &Cli) -> toml::Value {
         "logging".to_string(),
         toml::Value::Table(toml::map::Map::from_iter([(
             "level".to_string(),
-            toml::Value::String(log_level.as_str().to_string()),
+            toml::Value::String(log_level.to_string()),
         )])),
     )]))
 }
@@ -132,262 +127,59 @@ fn logging_process_name(command: &Option<Command>) -> &'static str {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl LogLevel {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warn => "warn",
-            Self::Info => "info",
-            Self::Debug => "debug",
-            Self::Trace => "trace",
-        }
-    }
-}
-
-async fn run_prompt(
-    input: &str,
-    model_override: Option<&str>,
-    log_level: Option<&str>,
-) -> Result<()> {
-    if let Some(level) = log_level {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new(level))
-            .try_init();
-    }
-    use devo_core::SessionConfig;
-    use devo_core::SessionState;
-    use devo_core::default_base_instructions;
-    use devo_tools::ToolOrchestrator;
-    use devo_tools::ToolRegistry;
-
-    let cwd = std::env::current_dir()?;
-    let _stored_config = load_config().unwrap_or_default();
-    let mut resolved = resolve_provider_settings()
-        .map_err(|e| anyhow::anyhow!("failed to resolve provider: {e}"))?;
-
-    if let Some(model) = model_override {
-        resolved.model = model.to_string();
-    }
-
-    let home_dir = find_devo_home()?;
-    let provider =
-        devo_server::load_server_provider(&home_dir.join("config.toml"), Some(&resolved.model))?;
-
-    let mut session_state = SessionState::new(SessionConfig::default(), cwd.clone());
-    session_state.push_message(devo_core::Message::user(input.to_string()));
-
-    let registry = {
-        let mut reg = ToolRegistry::new();
-        devo_tools::register_builtin_tools(&mut reg);
-        std::sync::Arc::new(reg)
-    };
-    let orchestrator = ToolOrchestrator::new(std::sync::Arc::clone(&registry));
-    let model_catalog = PresetModelCatalog::load()?;
-
-    let turn_config = devo_core::TurnConfig {
-        model: model_catalog
-            .get(&resolved.model)
-            .cloned()
-            .unwrap_or_else(|| devo_core::Model {
-                slug: resolved.model.clone(),
-                base_instructions: default_base_instructions().to_string(),
-                ..Default::default()
-            }),
-        thinking_selection: None,
-    };
-
-    eprintln!("devo [prompt] model={} sending...", resolved.model);
-
-    let result = devo_core::query(
-        &mut session_state,
-        &turn_config,
-        provider.provider.as_ref(),
-        registry,
-        &orchestrator,
-        None,
-    )
-    .await;
-
-    match result {
-        Ok(()) => {
-            let reply = session_state.messages.iter().rev().find_map(|m| {
-                if m.role != devo_core::Role::Assistant {
-                    return None;
-                }
-                m.content
-                    .iter()
-                    .filter_map(|block| match block {
-                        devo_core::ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .next()
-            });
-            match reply {
-                Some(text) => println!("{}", text),
-                None => eprintln!("devo [prompt] empty response"),
-            }
-        }
-        Err(e) => {
-            anyhow::bail!("prompt failed: {e}");
-        }
-    }
-
-    Ok(())
-}
-
-async fn run_doctor() -> Result<()> {
-    use colored::Colorize;
-    use std::process::Command;
-
-    println!("{}", "=== Devo Doctor ===".bold());
-    println!();
-
-    let mut all_ok = true;
-
-    println!("{} Rust toolchain:", "✓".green().bold());
-    let rustc = Command::new("rustc").arg("--version").output();
-    match rustc {
-        Ok(output) => {
-            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            println!("  {}", version);
-        }
-        Err(e) => {
-            println!("  {} rustc not found: {}", "✗".red(), e);
-            all_ok = false;
-        }
-    }
-    println!();
-
-    println!("{} Config home (DEVO_HOME):", "✓".green().bold());
-    match find_devo_home() {
-        Ok(home) => {
-            println!("  {}", home.display());
-        }
-        Err(e) => {
-            println!("  {} {}", "✗".red(), e);
-            all_ok = false;
-        }
-    }
-    println!();
-
-    println!("{} Config file:", "✓".green().bold());
-    if let Ok(home) = find_devo_home() {
-        let config_path = home.join("config.toml");
-        if config_path.exists() {
-            println!("  {} {}", "found".green(), config_path.display());
-            let content = std::fs::read_to_string(&config_path).unwrap_or_default();
-            if content.contains("api_key") && content.contains("base_url") {
-                println!("  {} api_key and base_url configured", "✓".green());
-            } else {
-                println!("  {} api_key or base_url missing", "!".yellow());
-                all_ok = false;
-            }
-            let model_line = content.lines().find(|l| l.starts_with("model"));
-            if let Some(line) = model_line {
-                println!("  default model: {}", line.trim());
-            } else {
-                println!("  {} no default model set", "!".yellow());
-            }
-        } else {
-            println!(
-                "  {} not found at {}",
-                "missing".yellow(),
-                config_path.display()
-            );
-            println!("  Run `devo onboard` to create it.");
-            all_ok = false;
-        }
-    }
-    println!();
-
-    println!("{} Provider resolution:", "✓".green().bold());
-    match resolve_provider_settings() {
-        Ok(resolved) => {
-            println!("  provider:   {}", resolved.provider_id);
-            println!("  model:      {}", resolved.model);
-            println!(
-                "  base_url:   {}",
-                resolved.base_url.unwrap_or("default".into())
-            );
-            println!("  wire_api:   {:?}", resolved.wire_api);
-            if resolved.api_key.is_some() {
-                println!("  api_key:    {} (set)", "✓".green());
-            } else {
-                println!("  api_key:    {} (not set)", "✗".red());
-                all_ok = false;
-            }
-        }
-        Err(e) => {
-            println!("  {} {}", "✗".red(), e);
-            all_ok = false;
-        }
-    }
-    println!();
-
-    println!("{} Model catalog:", "✓".green().bold());
-    match devo_core::PresetModelCatalog::load() {
-        Ok(catalog) => {
-            let count = catalog.into_inner().len();
-            println!("  {} builtin models loaded", count);
-        }
-        Err(e) => {
-            println!("  {} failed to load: {}", "✗".red(), e);
-            all_ok = false;
-        }
-    }
-    println!();
-
-    if all_ok {
-        println!("{}", "All checks passed. Ready to use!".green().bold());
-    } else {
-        println!(
-            "{}",
-            "Some checks failed. See above for details.".yellow().bold()
-        );
-        std::process::exit(1);
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
     use pretty_assertions::assert_eq;
+    use tracing_subscriber::filter::LevelFilter;
 
     use super::Cli;
     use super::Command;
-    use super::LogLevel;
     use super::ServerProcessArgs;
     use super::cli_logging_overrides;
     use super::logging_process_name;
 
     #[test]
-    fn logging_process_name_defaults_to_cli() {
+    fn logging_process_name_exhausted_subcommand() {
         assert_eq!(logging_process_name(&None), "cli");
-    }
-
-    #[test]
-    fn logging_process_name_uses_server_for_server_subcommand() {
+        assert_eq!(logging_process_name(&Some(Command::Onboard)), "onboard");
         assert_eq!(
             logging_process_name(&Some(Command::Server(ServerProcessArgs {
                 working_root: None,
             }))),
             "server"
         );
+        assert_eq!(
+            logging_process_name(&Some(Command::Prompt {
+                input: "".to_string()
+            })),
+            "prompt"
+        );
+        assert_eq!(logging_process_name(&Some(Command::Doctor)), "doctor");
     }
 
     #[test]
-    fn logging_process_name_uses_onboard_for_onboard_subcommand() {
-        assert_eq!(logging_process_name(&Some(Command::Onboard)), "onboard");
+    fn cli_parses_supported_log_levels() {
+        for (level, expected) in [
+            ("trace", LevelFilter::TRACE),
+            ("debug", LevelFilter::DEBUG),
+            ("info", LevelFilter::INFO),
+            ("warn", LevelFilter::WARN),
+            ("error", LevelFilter::ERROR),
+        ] {
+            let cli = Cli::try_parse_from(["devo", "--log-level", level]).expect("parse log level");
+
+            assert!(cli.command.is_none());
+            assert_eq!(cli.model, None);
+            assert_eq!(cli.log_level, Some(expected));
+        }
+    }
+
+    #[test]
+    fn cli_rejects_unsupported_log_levels() {
+        let err = Cli::try_parse_from(["devo", "--log-level", "off"]).expect_err("reject off");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
     }
 
     #[test]
@@ -406,21 +198,29 @@ mod tests {
 
     #[test]
     fn cli_logging_overrides_sets_logging_level() {
-        let cli = Cli {
-            command: None,
-            model: None,
-            log_level: Some(LogLevel::Debug),
-        };
+        for (level, expected) in [
+            (LevelFilter::TRACE, "trace"),
+            (LevelFilter::DEBUG, "debug"),
+            (LevelFilter::INFO, "info"),
+            (LevelFilter::WARN, "warn"),
+            (LevelFilter::ERROR, "error"),
+        ] {
+            let cli = Cli {
+                command: None,
+                model: None,
+                log_level: Some(level),
+            };
 
-        assert_eq!(
-            cli_logging_overrides(&cli),
-            toml::Value::Table(toml::map::Map::from_iter([(
-                "logging".to_string(),
+            assert_eq!(
+                cli_logging_overrides(&cli),
                 toml::Value::Table(toml::map::Map::from_iter([(
-                    "level".to_string(),
-                    toml::Value::String("debug".to_string()),
-                )])),
-            )]))
-        );
+                    "logging".to_string(),
+                    toml::Value::Table(toml::map::Map::from_iter([(
+                        "level".to_string(),
+                        toml::Value::String(expected.to_string()),
+                    )])),
+                )]))
+            );
+        }
     }
 }

@@ -1,42 +1,13 @@
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result};
-use devo_protocol::ProviderFamily;
-use serde::{Deserialize, Serialize};
+use anyhow::Context;
+use anyhow::Result;
+use devo_protocol::ProviderWireApi;
+use serde::Deserialize;
+use serde::Serialize;
 use toml::Value;
 
 use devo_utils::current_user_config_file;
-
-/// One supported provider wire protocol exposed by the runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum ProviderWireApi {
-    /// OpenAI-compatible `/v1/chat/completions`.
-    #[serde(rename = "openai_chat_completions")]
-    OpenAIChatCompletions,
-    /// OpenAI-compatible `/v1/responses`.
-    #[serde(rename = "openai_responses")]
-    OpenAIResponses,
-    /// Anthropic-compatible `/v1/messages`.
-    #[serde(rename = "anthropic_messages")]
-    AnthropicMessages,
-}
-
-impl ProviderWireApi {
-    /// Returns the provider family implied by this wire protocol.
-    pub fn provider_family(self) -> ProviderFamily {
-        match self {
-            Self::OpenAIChatCompletions | Self::OpenAIResponses => ProviderFamily::openai(),
-            Self::AnthropicMessages => ProviderFamily::anthropic(),
-        }
-    }
-
-    pub fn default_for_provider(provider: &ProviderFamily) -> Self {
-        match provider {
-            ProviderFamily::Anthropic { .. } => Self::AnthropicMessages,
-            ProviderFamily::Openai { .. } => Self::OpenAIChatCompletions,
-        }
-    }
-}
 
 pub fn provider_id_from_base_url(base_url: &str) -> Option<String> {
     let trimmed = base_url.trim();
@@ -58,35 +29,14 @@ pub fn provider_id_from_base_url(base_url: &str) -> Option<String> {
     }
 }
 
-pub fn provider_id_for_endpoint(provider: &ProviderFamily, base_url: Option<&str>) -> String {
+pub fn provider_id_for_endpoint(provider: &ProviderWireApi, base_url: Option<&str>) -> String {
     base_url
         .and_then(provider_id_from_base_url)
         .unwrap_or_else(|| provider.as_str().to_string())
 }
 
-pub fn provider_name_for_endpoint(provider: &ProviderFamily, base_url: Option<&str>) -> String {
+pub fn provider_name_for_endpoint(provider: &ProviderWireApi, base_url: Option<&str>) -> String {
     provider_id_for_endpoint(provider, base_url)
-}
-
-impl<'de> Deserialize<'de> for ProviderWireApi {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        match value.trim().to_ascii_lowercase().as_str() {
-            "chat_completion"
-            | "chat_completions"
-            | "openai"
-            | "openai_chat_completion"
-            | "openai_chat_completions" => Ok(Self::OpenAIChatCompletions),
-            "responses" | "openai_responses" => Ok(Self::OpenAIResponses),
-            "anthropic" | "messages" | "anthropic_messages" => Ok(Self::AnthropicMessages),
-            other => Err(serde::de::Error::custom(format!(
-                "unsupported wire_api `{other}`"
-            ))),
-        }
-    }
 }
 
 /// The preferred authentication method for the active provider.
@@ -189,8 +139,6 @@ pub struct ProviderConfigFile {
 pub struct ResolvedProviderSettings {
     /// Selected provider identifier from `[model_providers.<id>]`.
     pub provider_id: String,
-    /// Normalized provider family for runtime dispatch.
-    pub provider: ProviderFamily,
     /// Selected provider transport implementation.
     pub wire_api: ProviderWireApi,
     /// Final model identifier.
@@ -240,9 +188,16 @@ pub fn resolve_provider_settings() -> Result<ResolvedProviderSettings> {
     resolve_provider_settings_from_config(&load_config().unwrap_or_default())
 }
 
+/// Resolves the effective provider settings from persisted provider config.
+///
+/// `file` contains the full provider config loaded from disk. Selection prefers
+/// the explicitly active provider/model first, then falls back to matching model
+/// ownership, provider defaults, and finally the first configured provider/model.
 pub(crate) fn resolve_provider_settings_from_config(
     file: &ProviderConfigFile,
 ) -> Result<ResolvedProviderSettings> {
+    // Prefer an explicitly selected provider, but ignore stale selections that
+    // no longer have a matching provider profile in the config.
     let provider_id = file
         .model_provider
         .as_deref()
@@ -255,6 +210,9 @@ pub(crate) fn resolve_provider_settings_from_config(
         .model_providers
         .get(&provider_id)
         .with_context(|| format!("configured provider `{provider_id}` was not found"))?;
+    // Resolve the active model in user-intent order: explicit active model,
+    // provider's last/default model, first model in that profile, then any
+    // configured model as a final compatibility fallback.
     let model = file
         .model
         .clone()
@@ -278,7 +236,6 @@ pub(crate) fn resolve_provider_settings_from_config(
 
     Ok(ResolvedProviderSettings {
         provider_id,
-        provider: wire_api.provider_family(),
         wire_api,
         model,
         base_url: matched_model
@@ -332,11 +289,13 @@ fn provider_id_for_model(
 mod tests {
     use pretty_assertions::assert_eq;
 
-    use super::{
-        ModelProviderConfig, PreferredAuthMethod, ProviderConfigFile, ProviderWireApi,
-        ResolvedProviderSettings, parse_config_str, resolve_provider_settings_from_config,
-    };
-    use devo_protocol::ProviderFamily;
+    use super::ModelProviderConfig;
+    use super::PreferredAuthMethod;
+    use super::ProviderConfigFile;
+    use super::ProviderWireApi;
+    use super::ResolvedProviderSettings;
+    use super::parse_config_str;
+    use super::resolve_provider_settings_from_config;
 
     #[test]
     fn resolves_new_style_provider_and_model_settings() {
@@ -353,7 +312,7 @@ preferred_auth_method = "apikey"
 [model_providers.xxxxx]
 name = "xxxxx"
 base_url = "https://xxxxx/v1"
-wire_api = "responses"
+wire_api = "openai_responses"
 "#,
         )
         .expect("parse config");
@@ -365,7 +324,6 @@ wire_api = "responses"
             resolved,
             ResolvedProviderSettings {
                 provider_id: "xxxxx".to_string(),
-                provider: ProviderFamily::openai(),
                 wire_api: ProviderWireApi::OpenAIResponses,
                 model: "gpt-5.4".to_string(),
                 base_url: Some("https://xxxxx/v1".to_string()),
@@ -409,7 +367,6 @@ wire_api = "responses"
             resolve_provider_settings_from_config(&config).expect("resolve provider settings");
 
         assert_eq!(resolved.provider_id, "api.example.com");
-        assert_eq!(resolved.provider, ProviderFamily::openai());
         assert_eq!(resolved.model, "qwen3-coder-next");
         assert_eq!(
             resolved.base_url,

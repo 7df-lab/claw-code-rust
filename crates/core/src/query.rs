@@ -803,7 +803,6 @@ mod tests {
     use crate::ContentBlock;
     use crate::Message;
     use crate::Model;
-    use crate::ProviderFamily;
     use crate::ReasoningEffort;
     use crate::Role;
     use crate::SessionConfig;
@@ -1021,7 +1020,7 @@ mod tests {
         let model = Model {
             slug: "kimi-k2.5".into(),
             display_name: "Kimi K2.5".into(),
-            provider: ProviderFamily::openai(),
+            provider: devo_protocol::ProviderWireApi::OpenAIChatCompletions,
             description: None,
             thinking_capability: ThinkingCapability::Toggle,
             default_reasoning_effort: Some(ReasoningEffort::Medium),

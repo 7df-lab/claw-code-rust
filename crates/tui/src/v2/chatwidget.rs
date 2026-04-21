@@ -13,7 +13,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use devo_protocol::InputItem;
 use devo_protocol::Model;
-use devo_protocol::ProviderFamily;
+use devo_protocol::ProviderWireApi;
 use devo_protocol::ReasoningEffort;
 use devo_protocol::ReasoningEffortPreset;
 use devo_protocol::ThinkingCapability;
@@ -74,12 +74,12 @@ pub(crate) struct ChatWidgetInit {
 pub(crate) struct TuiSessionState {
     pub(crate) cwd: PathBuf,
     pub(crate) model: Option<Model>,
-    pub(crate) provider: Option<ProviderFamily>,
+    pub(crate) provider: Option<ProviderWireApi>,
 }
 
 impl TuiSessionState {
     pub(crate) fn new(cwd: PathBuf, model: Option<Model>) -> Self {
-        let provider = model.as_ref().map(Model::provider_family);
+        let provider = model.as_ref().map(Model::provider_wire_api);
         Self {
             cwd,
             model,
@@ -910,7 +910,7 @@ impl ChatWidget {
 
     pub(crate) fn set_model(&mut self, model: Model) {
         self.thinking_selection = model.default_thinking_selection();
-        self.session.provider = Some(model.provider_family());
+        self.session.provider = Some(model.provider_wire_api());
         self.session.model = Some(model);
         if self.onboarding_step.is_none() {
             self.set_default_placeholder();
@@ -926,7 +926,7 @@ impl ChatWidget {
             .find(|model| model.slug == slug)
             .cloned()
         {
-            self.session.provider = Some(model.provider_family());
+            self.session.provider = Some(model.provider_wire_api());
             self.session.model = Some(model);
             return;
         }
@@ -940,7 +940,10 @@ impl ChatWidget {
         self.session.model = Some(Model {
             slug: slug.clone(),
             display_name: slug,
-            provider: self.session.provider.unwrap_or_else(ProviderFamily::openai),
+            provider: self
+                .session
+                .provider
+                .unwrap_or(ProviderWireApi::OpenAIChatCompletions),
             ..Model::default()
         });
     }
@@ -1316,7 +1319,7 @@ impl ChatWidget {
             .cloned()
         {
             self.thinking_selection = selected_model.default_thinking_selection();
-            self.session.provider = Some(selected_model.provider_family());
+            self.session.provider = Some(selected_model.provider);
             self.session.model = Some(selected_model.clone());
             self.app_event_tx
                 .send(AppEvent::Command(AppCommand::override_turn_context(

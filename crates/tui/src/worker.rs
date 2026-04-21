@@ -16,10 +16,10 @@ use devo_core::SessionId;
 use devo_core::TurnId;
 use devo_core::TurnStatus;
 use devo_core::test_model_connection;
-use devo_protocol::ProviderFamily;
 use devo_provider::ModelProviderSDK;
 use devo_provider::anthropic::AnthropicProvider;
 use devo_provider::openai::OpenAIProvider;
+use devo_provider::openai::OpenAIResponsesProvider;
 use devo_server::InputItem;
 use devo_server::ItemEnvelope;
 use devo_server::ItemEventPayload;
@@ -56,8 +56,6 @@ pub(crate) struct QueryWorkerConfig {
     pub(crate) model: String,
     /// Working directory used for the server session.
     pub(crate) cwd: PathBuf,
-    /// Environment overrides applied to the spawned server child process.
-    pub(crate) server_env: Vec<(String, String)>,
     /// Optional log-level override forwarded to the server child process.
     pub(crate) server_log_level: Option<String>,
     /// Initial thinking mode used for new turns.
@@ -85,7 +83,7 @@ enum OperationCommand {
     },
     /// Validates provider settings with a temporary probe request.
     ValidateProvider {
-        provider: ProviderFamily,
+        provider: ProviderWireApi,
         model: String,
         base_url: Option<String>,
         api_key: Option<String>,
@@ -173,7 +171,7 @@ impl QueryWorkerHandle {
     /// Validates provider settings with a temporary probe request.
     pub(crate) fn validate_provider(
         &self,
-        provider: ProviderFamily,
+        provider: ProviderWireApi,
         model: String,
         base_url: Option<String>,
         api_key: Option<String>,
@@ -296,13 +294,7 @@ async fn run_worker_inner(
 ) -> Result<()> {
     // The worker owns the server client and translates UI commands into server
     // calls, then turns server notifications back into lightweight UI events.
-    let mut server_env = config.server_env;
-    let mut client = spawn_client(
-        &config.cwd,
-        server_env.clone(),
-        config.server_log_level.clone(),
-    )
-    .await?;
+    let mut client = spawn_client(&config.cwd, config.server_log_level.clone()).await?;
     let _ = client.initialize().await?;
     let mut session_id: Option<SessionId> = None;
     let mut session_cwd = config.cwd.clone();
@@ -386,37 +378,17 @@ async fn run_worker_inner(
                         }
                     }
                 Some(OperationCommand::ReconfigureProvider {
-                    wire_api,
+                    wire_api: _,
                     model: next_model,
-                    base_url,
-                    api_key,
+                    base_url: _,
+                    api_key: _,
                 }) => {
                         // Recreate the client so new provider credentials take effect
                         // without requiring the whole app to restart.
                         model = next_model;
-                        apply_env_override(
-                            &mut server_env,
-                            "DEVO_PROVIDER",
-                            wire_api.provider_family().as_str(),
-                        );
-                        apply_env_override(
-                            &mut server_env,
-                            "DEVO_WIRE_API",
-                            match wire_api {
-                                ProviderWireApi::OpenAIChatCompletions => {
-                                    "openai_chat_completions"
-                                }
-                                ProviderWireApi::OpenAIResponses => "openai_responses",
-                                ProviderWireApi::AnthropicMessages => "anthropic_messages",
-                            },
-                        );
-                        apply_env_override(&mut server_env, "DEVO_MODEL", &model);
-                        apply_optional_env_override(&mut server_env, "DEVO_BASE_URL", base_url);
-                        apply_optional_env_override(&mut server_env, "DEVO_API_KEY", api_key);
                         client.shutdown().await?;
                         client = spawn_client(
                             &config.cwd,
-                            server_env.clone(),
                             config.server_log_level.clone(),
                         )
                         .await?;
@@ -796,36 +768,16 @@ async fn ensure_session_started(
     })
 }
 
-async fn spawn_client(
-    cwd: &Path,
-    env: Vec<(String, String)>,
-    server_log_level: Option<String>,
-) -> Result<StdioServerClient> {
+async fn spawn_client(cwd: &Path, server_log_level: Option<String>) -> Result<StdioServerClient> {
     StdioServerClient::spawn(StdioServerClientConfig {
         program: std::env::current_exe().context("resolve current executable for server launch")?,
         workspace_root: Some(cwd.to_path_buf()),
-        env,
         args: server_log_level
             .into_iter()
             .flat_map(|level| ["--log-level".to_string(), level])
             .collect(),
     })
     .await
-}
-
-fn apply_env_override(env: &mut Vec<(String, String)>, key: &str, value: &str) {
-    if let Some((_, existing)) = env.iter_mut().find(|(existing_key, _)| existing_key == key) {
-        *existing = value.to_string();
-    } else {
-        env.push((key.to_string(), value.to_string()));
-    }
-}
-
-fn apply_optional_env_override(env: &mut Vec<(String, String)>, key: &str, value: Option<String>) {
-    match value {
-        Some(value) => apply_env_override(env, key, &value),
-        None => env.retain(|(existing_key, _)| existing_key != key),
-    }
 }
 
 fn render_skill_list_body(skills: &[devo_server::SkillRecord]) -> String {
@@ -1115,7 +1067,7 @@ fn truncate_tool_output(content: &str) -> String {
 }
 
 async fn validate_provider_connection(
-    provider: ProviderFamily,
+    provider: ProviderWireApi,
     model: &str,
     base_url: Option<String>,
     api_key: Option<String>,
@@ -1135,7 +1087,7 @@ async fn validate_provider_connection(
     .map_err(Into::into)
 }
 
-fn resolve_validation_model(provider: ProviderFamily, model: &str) -> Result<Model> {
+fn resolve_validation_model(provider: ProviderWireApi, model: &str) -> Result<Model> {
     let catalog = PresetModelCatalog::load()?;
     if let Some(entry) = catalog.get(model) {
         return Ok(entry.clone());
@@ -1148,19 +1100,19 @@ fn resolve_validation_model(provider: ProviderFamily, model: &str) -> Result<Mod
 }
 
 fn build_validation_provider(
-    provider: ProviderFamily,
+    provider: ProviderWireApi,
     base_url: Option<String>,
     api_key: Option<String>,
 ) -> Result<std::sync::Arc<dyn ModelProviderSDK>> {
     match provider {
-        ProviderFamily::Anthropic { .. } => {
+        ProviderWireApi::AnthropicMessages => {
             let api_key = api_key.context("anthropic provider requires an API key")?;
             let base_url = base_url.unwrap_or_else(|| "https://api.anthropic.com".to_string());
             Ok(std::sync::Arc::new(
                 AnthropicProvider::new(base_url).with_api_key(api_key),
             ))
         }
-        ProviderFamily::Openai { .. } => {
+        ProviderWireApi::OpenAIChatCompletions => {
             let base_url = normalize_openai_base_url(
                 &base_url.unwrap_or_else(|| "https://api.openai.com".to_string()),
             );
@@ -1168,6 +1120,17 @@ fn build_validation_provider(
                 OpenAIProvider::new(base_url).with_api_key(api_key)
             } else {
                 OpenAIProvider::new(base_url)
+            };
+            Ok(std::sync::Arc::new(provider))
+        }
+        ProviderWireApi::OpenAIResponses => {
+            let base_url = normalize_openai_base_url(
+                &base_url.unwrap_or_else(|| "https://api.openai.com".to_string()),
+            );
+            let provider = if let Some(api_key) = api_key {
+                OpenAIResponsesProvider::new(base_url).with_api_key(api_key)
+            } else {
+                OpenAIResponsesProvider::new(base_url)
             };
             Ok(std::sync::Arc::new(provider))
         }

@@ -15,11 +15,15 @@
 //! - turn execution should consume `Model`, not `ModelPreset`
 //! - loading policy and catalog access live in `model_catalog.rs`; this file only defines the raw shape
 //!
-use devo_protocol::{
-    InputModality, Model, ProviderFamily, ReasoningEffort, ThinkingCapability,
-    ThinkingImplementation, TruncationPolicyConfig,
-};
-use serde::{Deserialize, Serialize};
+use devo_protocol::InputModality;
+use devo_protocol::Model;
+use devo_protocol::ProviderWireApi;
+use devo_protocol::ReasoningEffort;
+use devo_protocol::ThinkingCapability;
+use devo_protocol::ThinkingImplementation;
+use devo_protocol::TruncationPolicyConfig;
+use serde::Deserialize;
+use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -30,12 +34,7 @@ pub struct ModelPreset {
     /// Human-readable display name shown in the UI. such as `claude-sonnet-4.6`
     pub display_name: String,
     /// Provider selection that serves this model.
-    #[serde(
-        default,
-        alias = "provider_family",
-        deserialize_with = "devo_protocol::deserialize_provider"
-    )]
-    pub provider: ProviderFamily,
+    pub provider: ProviderWireApi,
     /// Optional short description of the model.
     #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub description: Option<String>,
@@ -93,7 +92,7 @@ impl Default for ModelPreset {
         Self {
             slug: String::new(),
             display_name: String::new(),
-            provider: ProviderFamily::openai(),
+            provider: ProviderWireApi::OpenAIChatCompletions,
             description: None,
             thinking_capability: ThinkingCapability::Disabled,
             default_reasoning_effort: Some(ReasoningEffort::default()),

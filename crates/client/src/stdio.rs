@@ -1,36 +1,61 @@
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    process::Stdio,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
-use anyhow::{Context, Result};
-use devo_protocol::{
-    ClientNotification, ClientRequest, ClientTransportKind, ErrorResponse, InitializeParams,
-    InitializeResult, NotificationEnvelope, ProtocolErrorCode, ServerEvent, SessionForkParams,
-    SessionForkResult, SessionListParams, SessionListResult, SessionResumeParams,
-    SessionResumeResult, SessionStartParams, SessionStartResult, SessionTitleUpdateParams,
-    SessionTitleUpdateResult, SkillChangedParams, SkillChangedResult, SkillListParams,
-    SkillListResult, SuccessResponse, TurnInterruptParams, TurnInterruptResult, TurnStartParams,
-    TurnStartResult, TurnSteerParams, TurnSteerResult,
-};
+use anyhow::Context;
+use anyhow::Result;
+use devo_protocol::ClientNotification;
+use devo_protocol::ClientRequest;
+use devo_protocol::ClientTransportKind;
+use devo_protocol::ErrorResponse;
+use devo_protocol::InitializeParams;
+use devo_protocol::InitializeResult;
+use devo_protocol::NotificationEnvelope;
+use devo_protocol::ProtocolErrorCode;
+use devo_protocol::ServerEvent;
+use devo_protocol::SessionForkParams;
+use devo_protocol::SessionForkResult;
+use devo_protocol::SessionListParams;
+use devo_protocol::SessionListResult;
+use devo_protocol::SessionResumeParams;
+use devo_protocol::SessionResumeResult;
+use devo_protocol::SessionStartParams;
+use devo_protocol::SessionStartResult;
+use devo_protocol::SessionTitleUpdateParams;
+use devo_protocol::SessionTitleUpdateResult;
+use devo_protocol::SkillChangedParams;
+use devo_protocol::SkillChangedResult;
+use devo_protocol::SkillListParams;
+use devo_protocol::SkillListResult;
+use devo_protocol::SuccessResponse;
+use devo_protocol::TurnInterruptParams;
+use devo_protocol::TurnInterruptResult;
+use devo_protocol::TurnStartParams;
+use devo_protocol::TurnStartResult;
+use devo_protocol::TurnSteerParams;
+use devo_protocol::TurnSteerResult;
 use serde::de::DeserializeOwned;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
-    sync::{Mutex, mpsc, oneshot},
-    time::{Duration, timeout},
-};
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
+use tokio::process::Child;
+use tokio::process::ChildStderr;
+use tokio::process::ChildStdin;
+use tokio::process::ChildStdout;
+use tokio::process::Command;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::time::Duration;
+use tokio::time::timeout;
 
 #[derive(Debug, Clone)]
 pub struct StdioServerClientConfig {
     pub program: PathBuf,
     pub workspace_root: Option<PathBuf>,
-    pub env: Vec<(String, String)>,
     pub args: Vec<String>,
 }
 
@@ -53,7 +78,6 @@ impl StdioServerClient {
         tracing::info!(
             program = %config.program.display(),
             workspace_root = ?config.workspace_root,
-            env_override_count = config.env.len(),
             "spawning stdio server client"
         );
         let mut command = Command::new(&config.program);
@@ -63,9 +87,6 @@ impl StdioServerClient {
         }
         if let Some(workspace_root) = config.workspace_root {
             command.arg("--working-root").arg(workspace_root);
-        }
-        for (key, value) in config.env {
-            command.env(key, value);
         }
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());

@@ -7,7 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
-use devo_protocol::ProviderFamily;
+use devo_protocol::ProviderWireApi;
 use devo_protocol::RequestContent;
 use devo_protocol::RequestMessage;
 use devo_protocol::ResponseContent;
@@ -526,8 +526,8 @@ impl ModelProviderSDK for AnthropicProvider {
 
 #[async_trait]
 impl ProviderAdapter for AnthropicProvider {
-    fn family(&self) -> ProviderFamily {
-        ProviderFamily::anthropic()
+    fn family(&self) -> ProviderWireApi {
+        ProviderWireApi::AnthropicMessages
     }
 
     fn capabilities(&self, _model: &str) -> ProviderCapabilities {

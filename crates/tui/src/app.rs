@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::events::SavedModelEntry;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderFamily;
+use devo_core::ProviderWireApi;
 
 /// Summary returned when the interactive TUI exits.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub struct InitialTuiSession {
     /// Model identifier used for the first requests and initial UI projection.
     pub model: String,
     /// Provider family used for the initial runtime connection and picker fallback.
-    pub provider: ProviderFamily,
+    pub provider: ProviderWireApi,
     /// Working directory used for the initial session.
     pub cwd: PathBuf,
 }
@@ -30,8 +30,6 @@ pub struct InitialTuiSession {
 pub struct InteractiveTuiConfig {
     /// Initial session identity projected into the UI and passed to the worker.
     pub initial_session: InitialTuiSession,
-    /// Environment overrides applied to the spawned stdio server process.
-    pub server_env: Vec<(String, String)>,
     /// Optional CLI log-level override to forward to the spawned server process.
     pub server_log_level: Option<String>,
     /// Built-in model catalog used for onboarding and model selection.

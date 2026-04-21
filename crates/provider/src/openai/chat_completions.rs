@@ -1,23 +1,40 @@
 use std::pin::Pin;
 
-use anyhow::{Context, Result};
+use anyhow::Context;
+use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Client;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use reqwest::header::AUTHORIZATION;
+use reqwest::header::CONTENT_TYPE;
+use serde::Deserialize;
+use serde::Serialize;
+use serde_json::Value;
+use serde_json::json;
 use tracing::debug;
 mod stream;
-use devo_protocol::{
-    ModelRequest, ModelResponse, ProviderFamily, RequestContent, ResponseContent, ResponseExtra,
-    ResponseMetadata, StopReason, StreamEvent, Usage,
-};
+use devo_protocol::ModelRequest;
+use devo_protocol::ModelResponse;
+use devo_protocol::ProviderWireApi;
+use devo_protocol::RequestContent;
+use devo_protocol::ResponseContent;
+use devo_protocol::ResponseExtra;
+use devo_protocol::ResponseMetadata;
+use devo_protocol::StopReason;
+use devo_protocol::StreamEvent;
+use devo_protocol::Usage;
 
-use super::capabilities::{OpenAIReasoningMode, OpenAITransport, resolve_request_profile};
-use super::shared::{reasoning_value, request_role, tool_definitions};
+use super::capabilities::OpenAIReasoningMode;
+use super::capabilities::OpenAITransport;
+use super::capabilities::resolve_request_profile;
+use super::shared::reasoning_value;
+use super::shared::request_role;
+use super::shared::tool_definitions;
+use crate::ModelProviderSDK;
+use crate::ProviderAdapter;
+use crate::ProviderCapabilities;
+use crate::merge_extra_body;
 use crate::text_normalization::split_tagged_text;
-use crate::{ModelProviderSDK, ProviderAdapter, ProviderCapabilities, merge_extra_body};
 
 /// OpenAI chat-completion provider backed by the official HTTP API.
 /// <https://developers.openai.com/api/reference/chat-completions/overview>
@@ -1051,8 +1068,8 @@ impl ModelProviderSDK for OpenAIProvider {
 
 #[async_trait]
 impl ProviderAdapter for OpenAIProvider {
-    fn family(&self) -> ProviderFamily {
-        ProviderFamily::openai()
+    fn family(&self) -> ProviderWireApi {
+        ProviderWireApi::OpenAIChatCompletions
     }
 
     fn capabilities(&self, model: &str) -> ProviderCapabilities {
@@ -1071,16 +1088,22 @@ impl ProviderAdapter for OpenAIProvider {
 
 #[cfg(test)]
 mod tests {
-    use devo_protocol::{
-        ModelRequest, RequestContent, RequestMessage, SamplingControls, ToolDefinition,
-    };
+    use devo_protocol::ModelRequest;
+    use devo_protocol::RequestContent;
+    use devo_protocol::RequestMessage;
+    use devo_protocol::SamplingControls;
+    use devo_protocol::ToolDefinition;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
     use super::super::OpenAIReasoningEffort;
     use super::super::shared::reasoning_effort;
-    use super::{parse_finish_reason, parse_response, parse_usage};
-    use devo_protocol::{ResponseContent, ResponseExtra, StopReason};
+    use super::parse_finish_reason;
+    use super::parse_response;
+    use super::parse_usage;
+    use devo_protocol::ResponseContent;
+    use devo_protocol::ResponseExtra;
+    use devo_protocol::StopReason;
 
     use crate::openai::chat_completions::build_request;
 

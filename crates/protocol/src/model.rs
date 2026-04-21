@@ -141,58 +141,39 @@ impl Default for AnthropicApi {
     }
 }
 
-/// Provider identity plus its selected wire API.
+/// One supported provider wire protocol exposed by the runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "family", rename_all = "lowercase")]
-pub enum ProviderFamily {
-    Openai {
-        #[serde(default)]
-        api: OpenAiApi,
-    },
-    Anthropic {
-        #[serde(default)]
-        api: AnthropicApi,
-    },
+pub enum ProviderWireApi {
+    /// OpenAI-compatible `/v1/chat/completions`.
+    #[serde(rename = "openai_chat_completions")]
+    OpenAIChatCompletions,
+    /// OpenAI-compatible `/v1/responses`.
+    #[serde(rename = "openai_responses")]
+    OpenAIResponses,
+    /// Anthropic-compatible `/v1/messages`.
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages,
 }
 
-impl ProviderFamily {
-    /// Creates the default OpenAI provider selection.
-    pub fn openai() -> Self {
-        Self::Openai {
-            api: OpenAiApi::default(),
-        }
-    }
-
-    /// Creates the default Anthropic provider selection.
-    pub fn anthropic() -> Self {
-        Self::Anthropic {
-            api: AnthropicApi::default(),
-        }
-    }
-
-    /// Returns the stable wire label for this provider family.
-    pub fn as_str(&self) -> &'static str {
+impl ProviderWireApi {
+    /// Returns the canonical config and environment string for this wire API.
+    pub fn as_str(self) -> &'static str {
         match self {
-            Self::Openai { .. } => "openai",
-            Self::Anthropic { .. } => "anthropic",
+            Self::OpenAIChatCompletions => "openai_chat_completions",
+            Self::OpenAIResponses => "openai_responses",
+            Self::AnthropicMessages => "anthropic_messages",
         }
     }
 }
 
-impl Default for ProviderFamily {
-    fn default() -> Self {
-        Self::openai()
-    }
-}
-
-impl fmt::Display for ProviderFamily {
+impl fmt::Display for ProviderWireApi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl From<&ProviderFamily> for &'static str {
-    fn from(value: &ProviderFamily) -> Self {
+impl From<ProviderWireApi> for &'static str {
+    fn from(value: ProviderWireApi) -> Self {
         value.as_str()
     }
 }
@@ -206,12 +187,7 @@ pub struct Model {
     /// Human-readable display name shown in the UI. such as `claude-sonnet-4.6`
     pub display_name: String,
     /// Provider selection that serves this model.
-    #[serde(
-        default,
-        alias = "provider_family",
-        deserialize_with = "deserialize_provider"
-    )]
-    pub provider: ProviderFamily,
+    pub provider: ProviderWireApi,
     /// Optional short description of the model.
     pub description: Option<String>,
     /// Thinking control available for this model.
@@ -247,7 +223,7 @@ impl Default for Model {
         Self {
             slug: String::new(),
             display_name: String::new(),
-            provider: ProviderFamily::openai(),
+            provider: ProviderWireApi::OpenAIChatCompletions,
             description: None,
             thinking_capability: ThinkingCapability::Disabled,
             default_reasoning_effort: Some(ReasoningEffort::default()),
@@ -267,7 +243,7 @@ impl Default for Model {
 }
 
 impl Model {
-    pub fn provider_family(&self) -> ProviderFamily {
+    pub fn provider_wire_api(&self) -> ProviderWireApi {
         self.provider
     }
 
@@ -403,27 +379,21 @@ impl Model {
     }
 }
 
-pub fn deserialize_provider<'de, D>(deserializer: D) -> Result<ProviderFamily, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    match value {
-        serde_json::Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
-            "openai" => Ok(ProviderFamily::openai()),
-            "anthropic" => Ok(ProviderFamily::anthropic()),
-            other => Err(serde::de::Error::custom(format!(
-                "unsupported provider family `{other}`"
-            ))),
-        },
-        other => serde_json::from_value(other).map_err(serde::de::Error::custom),
-    }
-}
-
 /// Provides read-only access to resolved runtime model definitions.
 pub trait ModelCatalog: Send + Sync {
+    /// Lists all models that are available for user-facing selection.
     fn list_visible(&self) -> Vec<&Model>;
+
+    /// Returns the model whose slug exactly matches `slug`.
     fn get(&self, slug: &str) -> Option<&Model>;
+
+    /// Resolves the model that should be used for a turn.
+    ///
+    /// `requested` is an optional model slug supplied by the caller. When it is
+    /// present, implementations must return that exact model or
+    /// [`ModelError::ModelNotFound`]. When it is absent, implementations should
+    /// return their highest-priority visible model or [`ModelError::NoVisibleModels`]
+    /// if no selectable model exists.
     fn resolve_for_turn(&self, requested: Option<&str>) -> Result<&Model, ModelError>;
 }
 
@@ -480,7 +450,7 @@ mod tests {
     use super::InputModality;
     use super::Model;
     use super::ModelCatalog;
-    use super::ProviderFamily;
+    use super::ProviderWireApi;
     use super::ReasoningEffort;
     use super::ThinkingCapability;
     use super::ThinkingImplementation;
@@ -490,7 +460,7 @@ mod tests {
         Model {
             slug: slug.into(),
             display_name: slug.into(),
-            provider: ProviderFamily::anthropic(),
+            provider: ProviderWireApi::OpenAIChatCompletions,
             description: None,
             thinking_capability: ThinkingCapability::Disabled,
             default_reasoning_effort: Some(ReasoningEffort::Medium),
@@ -518,6 +488,51 @@ mod tests {
             .resolve_for_turn(Some("test"))
             .expect("resolve explicit");
         assert_eq!(resolved.slug, "test");
+    }
+
+    #[test]
+    fn provider_wire_api_as_str_returns_canonical_values() {
+        for (wire_api, expected) in [
+            (
+                ProviderWireApi::OpenAIChatCompletions,
+                "openai_chat_completions",
+            ),
+            (ProviderWireApi::OpenAIResponses, "openai_responses"),
+            (ProviderWireApi::AnthropicMessages, "anthropic_messages"),
+        ] {
+            assert_eq!(wire_api.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn provider_wire_api_as_str_matches_serialized_values() {
+        for wire_api in [
+            ProviderWireApi::OpenAIChatCompletions,
+            ProviderWireApi::OpenAIResponses,
+            ProviderWireApi::AnthropicMessages,
+        ] {
+            assert_eq!(
+                serde_json::to_value(wire_api).expect("serialize wire api"),
+                serde_json::Value::String(wire_api.as_str().to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn provider_wire_api_display_and_from_use_canonical_values() {
+        for (wire_api, expected) in [
+            (
+                ProviderWireApi::OpenAIChatCompletions,
+                "openai_chat_completions",
+            ),
+            (ProviderWireApi::OpenAIResponses, "openai_responses"),
+            (ProviderWireApi::AnthropicMessages, "anthropic_messages"),
+        ] {
+            let converted: &'static str = wire_api.into();
+
+            assert_eq!(wire_api.to_string(), expected);
+            assert_eq!(converted, expected);
+        }
     }
 
     #[test]

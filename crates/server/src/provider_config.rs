@@ -9,7 +9,6 @@ use devo_core::ModelProviderConfig;
 use devo_core::ProviderConfigFile;
 use devo_core::ProviderWireApi;
 use devo_core::parse_config_str;
-use devo_protocol::ProviderFamily;
 use devo_provider::ModelProviderSDK;
 use devo_provider::anthropic::AnthropicProvider;
 use devo_provider::openai::OpenAIProvider;
@@ -23,28 +22,15 @@ pub struct ResolvedServerProvider {
     pub default_model: String,
 }
 
-/// Loads the server-side provider from config and environment variables.
+/// Loads the server-side provider from config and an optional default model.
 pub fn load_server_provider(
     config_file: &Path,
     default_model: Option<&str>,
 ) -> Result<ResolvedServerProvider> {
     let file_config = read_provider_config(config_file).unwrap_or_default();
-    let env_provider = env_non_empty("DEVO_PROVIDER");
-    let env_wire_api = env_non_empty("DEVO_WIRE_API");
-    let env_model = env_non_empty("DEVO_MODEL");
-    let env_base_url = env_non_empty("DEVO_BASE_URL");
-    let env_api_key = env_non_empty("DEVO_API_KEY");
 
-    let requested_model = env_model.as_deref().or(file_config.model.as_deref());
-    let provider_id = env_provider
-        .clone()
-        .and_then(|provider| {
-            file_config
-                .model_providers
-                .contains_key(&provider)
-                .then_some(provider)
-        })
-        .or_else(|| provider_id_for_model(&file_config, requested_model))
+    let requested_model = file_config.model.as_deref();
+    let provider_id = provider_id_for_model(&file_config, requested_model)
         .or_else(|| {
             file_config
                 .model_provider
@@ -57,15 +43,12 @@ pub fn load_server_provider(
         .and_then(|provider_id| file_config.model_providers.get(provider_id));
     let selected_model =
         provider_config.and_then(|provider| select_configured_model(provider, requested_model));
-    let wire_api = env_wire_api
-        .as_deref()
-        .and_then(parse_wire_api)
-        .or_else(|| provider_config.and_then(|provider| provider.wire_api))
+    let wire_api = provider_config
+        .and_then(|provider| provider.wire_api)
         .unwrap_or(ProviderWireApi::OpenAIChatCompletions);
-    let provider_name = wire_api.provider_family();
 
-    let model = env_model
-        .or_else(|| selected_model.map(|model| model.model.clone()))
+    let model = selected_model
+        .map(|model| model.model.clone())
         .or(file_config.model.clone())
         .or_else(|| default_model.map(ToOwned::to_owned))
         .or_else(|| provider_config.and_then(|provider| provider.default_model.clone()))
@@ -73,19 +56,14 @@ pub fn load_server_provider(
             provider_config
                 .and_then(|provider| provider.models.first().map(|model| model.model.clone()))
         })
-        .unwrap_or_else(|| default_model_for_provider(provider_name));
+        .context("no model configured for server provider")?;
 
-    let base_url = env_base_url
-        .or_else(|| selected_model.and_then(|model| model.base_url.clone()))
-        .or_else(|| provider_config.and_then(|provider| provider.base_url.clone()))
-        .or_else(|| env_non_empty("ANTHROPIC_BASE_URL"))
-        .or_else(|| env_non_empty("OPENAI_BASE_URL"));
-    let api_key = env_api_key
-        .or_else(|| selected_model.and_then(|model| model.api_key.clone()))
-        .or_else(|| provider_config.and_then(|provider| provider.api_key.clone()))
-        .or_else(|| env_non_empty("ANTHROPIC_API_KEY"))
-        .or_else(|| env_non_empty("ANTHROPIC_AUTH_TOKEN"))
-        .or_else(|| env_non_empty("OPENAI_API_KEY"));
+    let base_url = selected_model
+        .and_then(|model| model.base_url.clone())
+        .or_else(|| provider_config.and_then(|provider| provider.base_url.clone()));
+    let api_key = selected_model
+        .and_then(|model| model.api_key.clone())
+        .or_else(|| provider_config.and_then(|provider| provider.api_key.clone()));
 
     let provider: std::sync::Arc<dyn ModelProviderSDK> = match wire_api {
         ProviderWireApi::AnthropicMessages => {
@@ -162,32 +140,6 @@ fn provider_id_for_model(
                     .any(|entry| entry.model == requested_model)
         })
         .map(|(provider_id, _)| provider_id.clone())
-}
-
-fn default_model_for_provider(provider: ProviderFamily) -> String {
-    match provider {
-        ProviderFamily::Anthropic { .. } => "claude-sonnet-4-20250514".to_string(),
-        ProviderFamily::Openai { .. } => "gpt-4o".to_string(),
-    }
-}
-
-fn parse_wire_api(value: &str) -> Option<ProviderWireApi> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "chat_completion"
-        | "chat_completions"
-        | "openai"
-        | "openai_chat_completion"
-        | "openai_chat_completions" => Some(ProviderWireApi::OpenAIChatCompletions),
-        "responses" | "openai_responses" => Some(ProviderWireApi::OpenAIResponses),
-        "anthropic" | "messages" | "anthropic_messages" => Some(ProviderWireApi::AnthropicMessages),
-        _ => None,
-    }
-}
-
-fn env_non_empty(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
 }
 
 fn normalize_openai_base_url(url: &str) -> String {

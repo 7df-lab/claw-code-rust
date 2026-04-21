@@ -1,10 +1,9 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
-use devo_core::ProviderWireApi;
 use devo_protocol::Model;
 use devo_protocol::ModelCatalog;
-use devo_protocol::ProviderFamily;
+use devo_protocol::ProviderWireApi;
 use futures::StreamExt;
 use std::time::Duration;
 use std::time::Instant;
@@ -27,7 +26,7 @@ use crate::worker::QueryWorkerHandle;
 
 #[derive(Debug, Clone)]
 struct PendingOnboarding {
-    provider: ProviderFamily,
+    provider: ProviderWireApi,
     model: String,
     base_url: Option<String>,
     api_key: Option<String>,
@@ -40,7 +39,6 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
     let mut worker = QueryWorkerHandle::spawn(QueryWorkerConfig {
         model: initial_session.model.clone(),
         cwd: initial_session.cwd.clone(),
-        server_env: config.server_env,
         server_log_level: config.server_log_level,
         thinking_selection: config.thinking_selection.clone(),
     });
@@ -215,7 +213,7 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
                                 pending.api_key.as_deref(),
                             )?;
                             worker.reconfigure_provider(
-                                ProviderWireApi::default_for_provider(&pending.provider),
+                                pending.provider,
                                 pending.model,
                                 pending.base_url,
                                 pending.api_key,
@@ -246,7 +244,7 @@ fn handle_app_command(
     worker: &QueryWorkerHandle,
     chat_widget: &mut ChatWidget,
     model_catalog: &impl ModelCatalog,
-    default_provider: ProviderFamily,
+    default_provider: ProviderWireApi,
     pending_onboarding: &mut Option<PendingOnboarding>,
 ) -> Result<()> {
     match command {
@@ -307,7 +305,7 @@ fn handle_app_command(
                 .map(ToOwned::to_owned);
             let provider = model_catalog
                 .get(&model)
-                .map(Model::provider_family)
+                .map(Model::provider_wire_api)
                 .unwrap_or(default_provider);
             *pending_onboarding = Some(PendingOnboarding {
                 provider,

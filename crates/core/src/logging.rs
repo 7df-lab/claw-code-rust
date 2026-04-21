@@ -1,18 +1,21 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Once;
 
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_appender::rolling::{
-    Builder as RollingFileAppenderBuilder, InitError as RollingInitError, Rotation,
-};
+use tracing_appender::rolling::Builder as RollingFileAppenderBuilder;
+use tracing_appender::rolling::InitError as RollingInitError;
+use tracing_appender::rolling::Rotation;
+use tracing_subscriber::Layer;
+use tracing_subscriber::Registry;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::{Layer, Registry};
 
-use crate::{LogRotation, LoggingConfig};
+use crate::LogRotation;
+use crate::LoggingConfig;
 
 /// Defines the runtime inputs used when installing process-wide tracing.
 #[derive(Debug, Clone)]
@@ -101,6 +104,7 @@ impl LoggingBootstrap {
     }
 }
 
+/// Builds and installs the global tracing subscriber for file-based logging output.
 fn install_subscriber<W>(
     file_level: LevelFilter,
     json: bool,
@@ -139,10 +143,12 @@ where
     }
 }
 
+/// Parses the configured log level and falls back to `INFO` when parsing fails.
 fn file_level(default_level: &str) -> LevelFilter {
     LevelFilter::from_str(default_level).unwrap_or(LevelFilter::INFO)
 }
 
+/// Resolves the effective log directory from the home directory and optional override.
 fn resolve_log_directory(home_dir: &Path, configured_directory: Option<&Path>) -> PathBuf {
     match configured_directory {
         Some(path) if path.is_absolute() => path.to_path_buf(),
@@ -151,6 +157,7 @@ fn resolve_log_directory(home_dir: &Path, configured_directory: Option<&Path>) -
     }
 }
 
+/// Installs a panic hook that records panic details through tracing before delegating.
 fn install_panic_hook() {
     static INSTALL_PANIC_HOOK: Once = Once::new();
 
@@ -179,6 +186,7 @@ fn install_panic_hook() {
 }
 
 impl From<LogRotation> for Rotation {
+    /// Converts the configuration-facing rotation enum into the appender rotation type.
     fn from(value: LogRotation) -> Self {
         match value {
             LogRotation::Never => Rotation::NEVER,
@@ -191,13 +199,61 @@ impl From<LogRotation> for Rotation {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    use std::path::PathBuf;
 
     use pretty_assertions::assert_eq;
+    use tracing_appender::rolling::Rotation;
+    use tracing_subscriber::filter::LevelFilter;
 
+    use crate::LogRotation;
+
+    use super::file_level;
     use super::resolve_log_directory;
 
     #[test]
+    /// Verifies that recognized log levels are parsed into tracing level filters.
+    fn file_level_parses_configured_level() {
+        assert_eq!(file_level("trace"), LevelFilter::TRACE);
+        assert_eq!(file_level("debug"), LevelFilter::DEBUG);
+        assert_eq!(file_level("info"), LevelFilter::INFO);
+        assert_eq!(file_level("warn"), LevelFilter::WARN);
+        assert_eq!(file_level("error"), LevelFilter::ERROR);
+    }
+
+    #[test]
+    /// Verifies that invalid log levels fall back to `INFO`.
+    fn file_level_defaults_to_info_for_invalid_level() {
+        let parsed = file_level("chatty");
+        assert_eq!(parsed, LevelFilter::INFO);
+    }
+
+    #[test]
+    /// Verifies that config-facing rotations map to the appender rotation constants.
+    fn log_rotation_maps_to_appender_rotation() {
+        let rotations: Vec<Rotation> = [
+            LogRotation::Never,
+            LogRotation::Minutely,
+            LogRotation::Hourly,
+            LogRotation::Daily,
+        ]
+        .into_iter()
+        .map(Rotation::from)
+        .collect();
+
+        assert_eq!(
+            rotations,
+            vec![
+                Rotation::NEVER,
+                Rotation::MINUTELY,
+                Rotation::HOURLY,
+                Rotation::DAILY,
+            ]
+        );
+    }
+
+    #[test]
+    /// Verifies that logs default to a `logs` directory under the configured home directory.
     fn resolve_log_directory_defaults_under_home() {
         let resolved = resolve_log_directory(Path::new("/tmp/.devo"), None);
         assert_eq!(resolved, PathBuf::from("/tmp/.devo/logs"));
@@ -205,6 +261,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    /// Verifies that a relative Windows override is resolved under the home directory.
     fn resolve_log_directory_supports_relative_override_windows() {
         let resolved = resolve_log_directory(
             Path::new("C:\\Users\\tester\\.devo"),
@@ -218,6 +275,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    /// Verifies that an absolute Windows override is preserved as-is.
     fn resolve_log_directory_preserves_absolute_override_windows() {
         let resolved = resolve_log_directory(
             Path::new("C:\\Users\\tester\\.devo"),
@@ -228,6 +286,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    /// Verifies that a relative Unix override is resolved under the home directory.
     fn resolve_log_directory_supports_relative_override_unix() {
         let resolved = resolve_log_directory(
             Path::new("/home/tester/.devo"),
@@ -238,6 +297,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    /// Verifies that an absolute Unix override is preserved as-is.
     fn resolve_log_directory_preserves_absolute_override_unix() {
         let resolved = resolve_log_directory(
             Path::new("/home/tester/.devo"),

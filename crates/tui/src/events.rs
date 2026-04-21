@@ -1,9 +1,8 @@
 use std::time::Instant;
 
 use crate::v2::app_command::InputHistoryDirection;
-use devo_core::ProviderWireApi;
 use devo_core::SessionId;
-use devo_protocol::ProviderFamily;
+use devo_protocol::ProviderWireApi;
 const TOOL_RESULT_FOLD_FINAL_STAGE: u8 = 3;
 
 /// One persisted session entry shown in the interactive session picker panel.
@@ -24,8 +23,6 @@ pub(crate) struct SessionListEntry {
 pub struct SavedModelEntry {
     /// Stable model slug or custom model name.
     pub model: String,
-    /// Provider family the model belongs to.
-    pub provider: ProviderFamily,
     /// Concrete wire protocol stored for this model's provider profile.
     pub wire_api: ProviderWireApi,
     /// Optional provider base URL override stored with the model.

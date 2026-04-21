@@ -53,6 +53,7 @@ impl ModelCatalog for PresetModelCatalog {
         self.models.iter().find(|model| model.slug == slug)
     }
 
+    /// Resolves an explicit requested slug, or falls back to the first visible preset model.
     fn resolve_for_turn(&self, requested: Option<&str>) -> Result<&Model, ModelError> {
         if let Some(slug) = requested {
             return self.get(slug).ok_or_else(|| ModelError::ModelNotFound {

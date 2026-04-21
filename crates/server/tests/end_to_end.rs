@@ -40,7 +40,7 @@ fn write_test_config(home_dir: &TempDir, listen: &[&str]) -> Result<()> {
         .collect::<Vec<_>>()
         .join(", ");
     let config = format!(
-        "[server]\nlisten = [{listen_entries}]\nmax_connections = 32\nevent_buffer_size = 128\nidle_session_timeout_secs = 300\npersist_ephemeral_sessions = false\n"
+        "[server]\nlisten = [{listen_entries}]\nmax_connections = 32\nevent_buffer_size = 128\nidle_session_timeout_secs = 300\npersist_ephemeral_sessions = false\n\nmodel_provider = \"openai\"\nmodel = \"test-model\"\n\n[model_providers.openai]\nwire_api = \"openai_chat_completions\"\ndefault_model = \"test-model\"\n\n[[model_providers.openai.models]]\nmodel = \"test-model\"\n"
     );
     std::fs::write(config_dir.join("config.toml"), config)?;
     Ok(())
@@ -90,9 +90,6 @@ async fn stdio_server_process_supports_handshake_and_session_start() -> Result<(
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_devo-server"))
         .env("DEVO_HOME", home_dir.path().join(".devo"))
-        .env("USERPROFILE", home_dir.path())
-        .env("HOME", home_dir.path())
-        .env("DEVO_PROVIDER", "openai")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

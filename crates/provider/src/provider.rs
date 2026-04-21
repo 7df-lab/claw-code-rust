@@ -1,7 +1,11 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use devo_protocol::{ModelRequest, ModelResponse, ProviderFamily, RequestRole, StreamEvent};
+use devo_protocol::ModelRequest;
+use devo_protocol::ModelResponse;
+use devo_protocol::ProviderWireApi;
+use devo_protocol::RequestRole;
+use devo_protocol::StreamEvent;
 use futures::Stream;
 
 /// Capability flags that describe what a provider family or model can emit.
@@ -77,7 +81,7 @@ impl Default for ProviderCapabilities {
 #[async_trait]
 pub trait ProviderAdapter: ModelProviderSDK {
     /// Returns the provider family handled by this adapter.
-    fn family(&self) -> ProviderFamily;
+    fn family(&self) -> ProviderWireApi;
 
     /// Returns the capabilities that should be used for this model.
     fn capabilities(&self, model: &str) -> ProviderCapabilities;

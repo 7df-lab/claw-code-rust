@@ -11,8 +11,8 @@
 //! recent killed span.
 
 use crate::v2::key_hint::is_altgr;
-use clawcr_protocol::user_input::TextElement as UserTextElement;
-use clawcr_protocol::user_input::Utf8ByteSpan;
+use devo_protocol::user_input::TextElement as UserTextElement;
+use devo_protocol::user_input::Utf8ByteSpan;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;

@@ -1,25 +1,25 @@
-//! ClawCR TUI chat surface.
+//! Devo TUI chat surface.
 //!
 //! `ChatWidget` owns the v2 conversation surface: committed history cells, the
 //! active bottom input pane, and the Claw-local app events produced by user
-//! interaction. Protocol thinking choices come from `clawcr_protocol::thinking`
+//! interaction. Protocol thinking choices come from `devo_protocol::thinking`
 //! through `Model` instead of a TUI-local reasoning enum.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-use clawcr_protocol::InputItem;
-use clawcr_protocol::Model;
-use clawcr_protocol::ProviderFamily;
-use clawcr_protocol::ReasoningEffort;
-use clawcr_protocol::ReasoningEffortPreset;
-use clawcr_protocol::ThinkingCapability;
-use clawcr_protocol::ThinkingImplementation;
-use clawcr_protocol::ThinkingPreset;
-use clawcr_protocol::user_input::TextElement;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use devo_protocol::InputItem;
+use devo_protocol::Model;
+use devo_protocol::ProviderFamily;
+use devo_protocol::ReasoningEffort;
+use devo_protocol::ReasoningEffortPreset;
+use devo_protocol::ThinkingCapability;
+use devo_protocol::ThinkingImplementation;
+use devo_protocol::ThinkingPreset;
+use devo_protocol::user_input::TextElement;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
@@ -283,7 +283,7 @@ impl ChatWidget {
 
     fn set_default_placeholder(&mut self) {
         self.bottom_pane
-            .set_placeholder_text("Ask ClawCR".to_string());
+            .set_placeholder_text("Ask Devo".to_string());
     }
 
     fn set_onboarding_placeholder(&mut self, prompt: &str) {
@@ -318,7 +318,7 @@ impl ChatWidget {
             frame_requester: frame_requester.clone(),
             has_input_focus: true,
             enhanced_keys_supported,
-            placeholder_text: "Ask ClawCR".to_string(),
+            placeholder_text: "Ask Devo".to_string(),
             disable_paste_burst: true,
             skills: None,
         });
@@ -1500,7 +1500,7 @@ impl Renderable for ChatWidget {
                 }
             }
             Paragraph::new(Text::from(lines))
-                .block(Block::default().title("ClawCR Sessions"))
+                .block(Block::default().title("Devo Sessions"))
                 .wrap(Wrap { trim: false })
                 .render(area, buf);
             return;

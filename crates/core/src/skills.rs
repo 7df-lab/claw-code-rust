@@ -412,7 +412,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("clawcr-skill-{name}-{nanos}"));
+        let root = std::env::temp_dir().join(format!("devo-skill-{name}-{nanos}"));
         std::fs::create_dir_all(&root).expect("create root");
         root
     }

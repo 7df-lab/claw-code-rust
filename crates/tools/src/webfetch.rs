@@ -206,7 +206,7 @@ fn convert_html_to_markdown(html: &str) -> String {
 mod tests {
     use super::*;
     use crate::ToolContext;
-    use clawcr_safety::legacy_permissions::{PermissionMode, RuleBasedPolicy};
+    use devo_safety::legacy_permissions::{PermissionMode, RuleBasedPolicy};
     use serde_json::json;
     use std::{path::PathBuf, sync::Arc};
 

@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use clawcr_safety::legacy_permissions::PermissionMode;
+use devo_safety::legacy_permissions::PermissionMode;
 
 use crate::{Message, Model, TokenBudget};
 
@@ -74,7 +74,7 @@ impl SessionState {
         self.messages.push(msg);
     }
 
-    pub fn to_request_messages(&self) -> Vec<clawcr_protocol::RequestMessage> {
+    pub fn to_request_messages(&self) -> Vec<devo_protocol::RequestMessage> {
         self.messages
             .iter()
             .map(|m| m.to_request_message())

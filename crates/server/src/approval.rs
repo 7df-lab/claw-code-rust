@@ -1,4 +1,4 @@
-pub use clawcr_protocol::{
+pub use devo_protocol::{
     ApprovalDecisionValue, ApprovalRespondParams, ApprovalScopeValue, EventsSubscribeParams,
     EventsSubscribeResult,
 };

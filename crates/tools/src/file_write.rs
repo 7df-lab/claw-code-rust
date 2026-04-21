@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::{Tool, ToolContext, ToolOutput};
 use async_trait::async_trait;
-use clawcr_safety::legacy_permissions::{PermissionDecision, PermissionRequest, ResourceKind};
+use devo_safety::legacy_permissions::{PermissionDecision, PermissionRequest, ResourceKind};
 use serde_json::json;
 use tracing::info;
 

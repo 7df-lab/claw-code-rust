@@ -1,12 +1,12 @@
 use std::collections::VecDeque;
 
 use chrono::Utc;
-use clawcr_core::{
+use devo_core::{
     ItemId, SessionId, SessionRecord, SessionTitleFinalSource, SessionTitleState, TurnId,
     TurnRecord, TurnStatus,
 };
-use clawcr_protocol::{SkillChangedParams, SkillListParams, SkillListResult};
-use clawcr_server::{
+use devo_protocol::{SkillChangedParams, SkillListParams, SkillListResult};
+use devo_server::{
     ActiveTurnSteeringState, ApprovalDecisionValue, ApprovalRequestPayload, ApprovalRespondParams,
     ApprovalScopeValue, ClientRequest, ClientTransportKind, DefaultProjection, EventContext,
     EventsSubscribeParams, InitializeParams, InputItem, ItemDeltaKind, ItemDeltaPayload,
@@ -52,21 +52,21 @@ fn skill_changed_params_roundtrip() {
 fn skill_list_result_serializes_expected_shape() {
     let result = SkillListResult {
         skills: vec![
-            clawcr_protocol::SkillRecord {
+            devo_protocol::SkillRecord {
                 id: "rust-docs".into(),
                 name: "Rust Documentation".into(),
                 description: "Official Rust docs skill".into(),
                 path: std::path::PathBuf::from("/skills/rust/SKILL.md"),
                 enabled: true,
-                source: clawcr_protocol::SkillSource::User,
+                source: devo_protocol::SkillSource::User,
             },
-            clawcr_protocol::SkillRecord {
+            devo_protocol::SkillRecord {
                 id: "python-guide".into(),
                 name: "Python Guide".into(),
                 description: "Python programming skill".into(),
                 path: std::path::PathBuf::from("/skills/python/SKILL.md"),
                 enabled: false,
-                source: clawcr_protocol::SkillSource::Workspace {
+                source: devo_protocol::SkillSource::Workspace {
                     cwd: std::path::PathBuf::from("/workspace"),
                 },
             },
@@ -291,7 +291,7 @@ fn session_title_update_params_roundtrip() {
 
 #[test]
 fn session_title_updated_event_serializes_expected_kind() {
-    let event = ServerEvent::SessionTitleUpdated(clawcr_server::SessionEventPayload {
+    let event = ServerEvent::SessionTitleUpdated(devo_server::SessionEventPayload {
         session: SessionSummary {
             session_id: SessionId::new(),
             cwd: ".".into(),

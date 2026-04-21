@@ -13,7 +13,7 @@
 //!
 //! Boundary:
 //! - this module must not own bundled JSON loading or compatibility parsing for catalog files
-//! - raw preset/config concerns live in `clawcr-core`
+//! - raw preset/config concerns live in `devo-core`
 //! - this module describes runtime state and runtime-facing interfaces only
 //!
 use serde::Deserialize;

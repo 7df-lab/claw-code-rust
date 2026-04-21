@@ -1,4 +1,4 @@
-//! Transcript/history cells for the ClawCR TUI.
+//! Transcript/history cells for the Devo TUI.
 //!
 //! A `HistoryCell` is the unit of display in the conversation UI, representing both committed
 //! transcript entries and, transiently, an in-flight active cell that can mutate in place while
@@ -31,11 +31,11 @@ use crate::v2::version::CLI_VERSION;
 use crate::v2::wrapping::RtOptions;
 use crate::v2::wrapping::adaptive_wrap_line;
 use crate::v2::wrapping::adaptive_wrap_lines;
-use clawcr_protocol::ReasoningEffort;
-use clawcr_protocol::ThinkingCapability;
-use clawcr_protocol::ThinkingImplementation;
-use clawcr_protocol::protocol::FileChange;
-use clawcr_protocol::user_input::TextElement;
+use devo_protocol::ReasoningEffort;
+use devo_protocol::ThinkingCapability;
+use devo_protocol::ThinkingImplementation;
+use devo_protocol::protocol::FileChange;
+use devo_protocol::user_input::TextElement;
 use image::DynamicImage;
 use ratatui::prelude::*;
 use ratatui::style::Color;
@@ -709,7 +709,7 @@ pub fn new_guardian_denied_patch_request(files: Vec<String>) -> Box<dyn HistoryC
     let mut summary = vec![
         "Request ".into(),
         "denied".bold(),
-        " for ClawCR to apply ".into(),
+        " for Devo to apply ".into(),
     ];
     if files.len() == 1 {
         summary.push("a patch touching ".into());
@@ -969,7 +969,7 @@ pub(crate) fn new_session_info(
                 "/onboard".into(),
                 " - configure model provider connection".dim(),
             ]),
-            Line::from(vec!["  ".into(), "/exit".into(), " - exit ClawCR".dim()]),
+            Line::from(vec!["  ".into(), "/exit".into(), " - exit Devo".dim()]),
         ];
 
         parts.push(Box::new(PlainHistoryCell { lines: help_lines }));
@@ -1124,10 +1124,10 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
 
-        // Title line rendered inside the box: ">_  ClawCR (vX)"
+        // Title line rendered inside the box: ">_  Devo (vX)"
         let title_spans: Vec<Span<'static>> = vec![
             Span::from(">_ ").dim(),
-            Span::from(" ClawCR").bold(),
+            Span::from(" Devo").bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{})", self.version)).dim(),
         ];

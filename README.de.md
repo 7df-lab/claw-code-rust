@@ -1,24 +1,23 @@
+![Titelbild](./docs/assets/readme_cover.png)
+
 <div align="center">
 
-# 🦀 Claw CR
+**Ein Open-Source-Coding-Agent, der unglaublich schnell, sicher und modellanbieterunabhängig ist.**
 
-**Der Open-Source-Coding-Agent, in Rust gebaut. Alternative zu ClaudeCode**
+🚧Frühes Projekt in aktiver Entwicklung — noch nicht produktionsreif.
+⭐ Sternen Sie uns, um zu folgen
 
 [![Status](https://img.shields.io/badge/status-designing-blue?style=flat-square)](https://github.com/)
-[![Language](https://img.shields.io/badge/language-Rust-E57324?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Origin](https://img.shields.io/badge/origin-Claude_Code_TS-8A2BE2?style=flat-square)](https://docs.anthropic.com/en/docs/claude-code)
-[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](./LICENSE)
+[![Sprache](https://img.shields.io/badge/language-Rust-E57324?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Herkunft](https://img.shields.io/badge/origin-Claude_Code_TS-8A2BE2?style=flat-square)](https://docs.anthropic.com/en/docs/claude-code)
+[![Lizenz](https://img.shields.io/badge/license-MIT-green?style=flat-square)](./LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/)
 
-[English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md) | [한국어](./README.ko.md) | [Español](./README.es.md) | [Français](./README.fr.md) | [Deutsch](./README.de.md)
+[English](./README.md) | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja.md) | [한국어](./README.ko.md) | [Español](./README.es.md) | [Français](./README.fr.md) | [Português do Brasil](./README.pt-BR.md) | [Deutsch](./README.de.md) | [Русский](./README.ru.md) | [Türkçe](./README.tr.md)
 
-🚧 Frühphasiges Projekt in aktiver Entwicklung - noch nicht produktionsreif.
-
-⭐ Starte uns, um auf dem Laufenden zu bleiben
-
-<img
-  src="./docs/assets/screenshot_20260408.png"
-  alt="Projektübersicht"
+<img 
+  src="./docs/assets/demo_20260421.gif" 
+  alt="Projektübersicht" 
   width="100%"
   style="border-radius: 8px; box-shadow: 0 15px 40px rgba(0,0,0,0.25);object-fit:cover;"
 />
@@ -30,59 +29,59 @@
 ## 📖 Inhaltsverzeichnis
 
 - [Schnellstart](#-schnellstart)
-- [FAQ](#-faq)
+- [Häufig gestellte Fragen](#-häufig-gestellte-fragen)
 - [Mitwirken](#-mitwirken)
 - [Lizenz](#-lizenz)
 
 ## 🚀 Schnellstart
 
-<!-- ### Install -->
+<!-- ### Installation -->
 
-Noch keine stabile Veröffentlichung - du kannst das Projekt mit den folgenden Anweisungen aus dem Quellcode bauen.
+Noch keine stabile Version verfügbar — Sie können das Projekt mit den folgenden Anweisungen aus dem Quellcode bauen.
 
 ### Bauen
 
 ```bash
-git clone https://github.com/claw-cli/claw-code-rust && cd claw-code-rust
+git clone https://github.com/7df-lab/devo && cd devo
 cargo build --release
 
 # linux / macos
-./target/release/clawcr onboard
+./target/release/devo onboard
 
 # windows
-.\target\release\clawcr onboard
+.\target\release\devo onboard
 ```
 
 > [!TIP]
-> Stelle sicher, dass Rust installiert ist. Empfohlen wird Version 1.75+ (über https://rustup.rs/).
+> Stellen Sie sicher, dass Rust installiert ist, Version 1.75+ wird empfohlen (über https://rustup.rs/).
 
-## FAQ
+## Häufig gestellte Fragen
 
-### Worin unterscheidet sich das von Claude Code?
+### Wie unterscheidet sich dies von Claude Code?
 
-Es ist Claude Code in Bezug auf die Fähigkeiten sehr ähnlich. Die wichtigsten Unterschiede:
+Es ist Claude Code in Bezug auf Fähigkeiten sehr ähnlich. Hier sind die wichtigsten Unterschiede:
 
-- 100% Open Source
-- Nicht an einen Anbieter gebunden. ClawCR kann mit Claude, OpenAI, z.ai, Qwen, Deepseek oder sogar lokalen Modellen verwendet werden. Mit der Weiterentwicklung der Modelle werden sich die Unterschiede verringern und die Preise sinken, daher ist Anbieterunabhängigkeit wichtig.
-- LSP-Unterstützung ab Werk
+- 100% open source
+- Nicht an einen bestimmten Anbieter gekoppelt. Devo kann mit Claude, OpenAI, z.ai, Qwen, Deepseek oder sogar lokalen Modellen verwendet werden. Da sich Modelle weiterentwickeln, werden die Lücken zwischen ihnen schrumpfen und die Preise sinken, daher ist Anbieterunabhängigkeit wichtig.
 - TUI-Unterstützung ist bereits implementiert.
-- Gebaut mit einer Client/Server-Architektur. Zum Beispiel kann der Core lokal auf deinem Rechner laufen, während er remote gesteuert wird, etwa über eine mobile App, wobei die TUI nur ein möglicher Client unter mehreren ist.
+- Auf Client/Server-Architektur aufgebaut. Beispielsweise kann der Kern lokal auf Ihrem Computer laufen, während er ferngesteuert wird (z.B. von einer mobilen App), wobei die TUI nur einer von vielen möglichen Clients ist.
+
 
 ## 🤝 Mitwirken
 
-Beiträge sind willkommen. Dieses Projekt befindet sich in einer frühen Designphase, und es gibt viele Möglichkeiten, zu helfen:
+Beiträge sind willkommen! Dieses Projekt befindet sich in einer frühen Designphase, und es gibt viele Möglichkeiten zu helfen:
 
-- **Architektur-Feedback** - Prüfe das Crate-Design und schlage Verbesserungen vor
-- **RFC-Diskussionen** - Schlage neue Ideen über Issues vor
-- **Dokumentation** - Hilf dabei, die Dokumentation zu verbessern oder zu übersetzen
-- **Implementierung** - Übernimm die Implementierung von Crates, sobald sich die Entwürfe stabilisieren
+- **Architektur-Feedback** — Überprüfen Sie das Crate-Design und schlagen Sie Verbesserungen vor
+- **RFC-Diskussionen** — Schlagen Sie neue Ideen über Issues vor
+- **Dokumentation** — Helfen Sie bei der Verbesserung oder Übersetzung der Dokumentation
+- **Implementierung** — Übernehmen Sie Crate-Implementierung, sobald die Designs stabilisiert sind
 
-Bitte eröffne gern ein Issue oder reiche einen Pull Request ein.
+Sie können gerne ein Issue öffnen oder einen Pull Request einreichen.
 
 ## 📄 Lizenz
 
-Dieses Projekt steht unter der [MIT-Lizenz](./LICENSE).
+Dieses Projekt ist unter der [MIT-Lizenz](./LICENSE) lizenziert.
 
 ---
 
-**Wenn dir dieses Projekt nützlich ist, gib ihm bitte ein ⭐**
+**Wenn Sie dieses Projekt nützlich finden, erwägen Sie bitte, einen ⭐ zu vergeben**

@@ -1,4 +1,4 @@
-use clawcr_protocol::SessionId;
+use devo_protocol::SessionId;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;

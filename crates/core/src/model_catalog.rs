@@ -6,12 +6,12 @@
 //! - provide the concrete builtin implementation of the shared `ModelCatalog` trait
 //!
 //! Design:
-//! - catalog loading stays in `clawcr-core` because the embedded assets live here
+//! - catalog loading stays in `devo-core` because the embedded assets live here
 //! - this module is the bridge between raw preset/config data and runtime model consumers
 //! - models are sorted and materialized here so downstream code can work only with resolved `Model`
 //!
 //! Boundary:
-//! - this module should not define the runtime model shape itself; that lives in `clawcr-protocol`
+//! - this module should not define the runtime model shape itself; that lives in `devo-protocol`
 //! - serde compatibility for the raw preset file belongs in `model_preset.rs`
 //! - execution logic should depend on `ModelCatalog` and `Model`, not on how this module reads JSON
 //!

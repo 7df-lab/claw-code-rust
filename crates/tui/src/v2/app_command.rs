@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use clawcr_protocol::InputItem;
-use clawcr_protocol::SessionId;
-use clawcr_protocol::TurnStartParams;
+use devo_protocol::InputItem;
+use devo_protocol::SessionId;
+use devo_protocol::TurnStartParams;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

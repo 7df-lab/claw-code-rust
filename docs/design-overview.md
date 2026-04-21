@@ -1,24 +1,24 @@
 # ClawCodeRust Design
-This document defines the specification for an SWE coding agent named clawcr, it is Claude Code / Codex Inspired. The documentation's goal is to guide implementation.
+This document defines the specification for an SWE coding agent named devo, it is Claude Code / Codex Inspired. The documentation's goal is to guide implementation.
 
 ## 1. Overview
 Detailed specification: [Architecture Overview](./spec-overview-architecture.md)
 
 The target crate split is:
 
-- `clawcr-core`: conversation, model integration, context management, coding workflow orchestration, long-running task execution, and shared runtime state
-- `clawcr-tools`: built-in tool contracts and tool execution adapters
-- `clawcr-safety`: sandboxing, redaction, approvals, and safety policy
-- `clawcr-mcp`: MCP server lifecycle, discovery, and capability bridging
-- `clawcr-server`: transport-neutral runtime API server
-- `clawcr-utils`: shared low-level utilities that are broadly reusable and not owned by a higher-level domain crate
+- `devo-core`: conversation, model integration, context management, coding workflow orchestration, long-running task execution, and shared runtime state
+- `devo-tools`: built-in tool contracts and tool execution adapters
+- `devo-safety`: sandboxing, redaction, approvals, and safety policy
+- `devo-mcp`: MCP server lifecycle, discovery, and capability bridging
+- `devo-server`: transport-neutral runtime API server
+- `devo-utils`: shared low-level utilities that are broadly reusable and not owned by a higher-level domain crate
 
 All crates must implement observability. At minimum, each crate must emit structured logs, useful tracing spans for long-running operations, and crate-appropriate metrics. Logging and observability are not optional add-ons; they are part of the baseline implementation contract.
 
 ### 1.1 Conversation
 The agent is organized into three hierarchical levels:
 
-- Session: A conversation between a user and the clawcr agent. Each session contains multiple turns. Each session is identified by a UUID v7, which provides time-ordered uniqueness and enables efficient sorting and lookup.
+- Session: A conversation between a user and the devo agent. Each session contains multiple turns. Each session is identified by a UUID v7, which provides time-ordered uniqueness and enables efficient sorting and lookup.
 - Turn: One turn of the conversation, typically starting with a user message and finishing with an agent message. Each turn contains multiple items.
 - Item: Represents user inputs and agent outputs as part of the turn, persisted and used as the context for future conversations. Example items include user message, agent reasoning, agent message, shell command, file edit, etc.
 
@@ -209,7 +209,7 @@ Tool execution must follow a stable lifecycle:
 Detailed specification: [Tools](./spec-tools.md)
 
 ## 1.6 MCP
-MCP support allows `clawcr` to connect to external capability providers that expose tools, resources, and resource templates through the Model Context Protocol.
+MCP support allows `devo` to connect to external capability providers that expose tools, resources, and resource templates through the Model Context Protocol.
 
 The MCP subsystem must support:
 

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clawcr_safety::legacy_permissions::PermissionPolicy;
+use devo_safety::legacy_permissions::PermissionPolicy;
 
 /// The execution context provided to every tool call.
 ///

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use clawcr_safety::legacy_permissions::PermissionPolicy;
+use devo_safety::legacy_permissions::PermissionPolicy;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 

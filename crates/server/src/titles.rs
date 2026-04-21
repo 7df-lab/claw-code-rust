@@ -1,4 +1,4 @@
-use clawcr_protocol::{
+use devo_protocol::{
     ModelRequest, RequestContent, RequestMessage, ResponseContent, SamplingControls,
 };
 /// Derives a cheap deterministic provisional session title from the first user prompt.
@@ -144,7 +144,7 @@ fn sentence_case(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use clawcr_protocol::ResponseContent;
+    use devo_protocol::ResponseContent;
     use pretty_assertions::assert_eq;
 
     use super::{derive_provisional_title, normalize_generated_title};

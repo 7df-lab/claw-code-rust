@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::events::SavedModelEntry;
-use clawcr_core::PresetModelCatalog;
-use clawcr_core::ProviderFamily;
+use devo_core::PresetModelCatalog;
+use devo_core::ProviderFamily;
 
 /// Summary returned when the interactive TUI exits.
 #[derive(Debug, Clone, PartialEq, Eq)]

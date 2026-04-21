@@ -1,10 +1,10 @@
 use anyhow::Context;
 use anyhow::Result;
-use clawcr_core::ProviderWireApi;
-use clawcr_core::provider_id_for_endpoint;
-use clawcr_core::provider_name_for_endpoint;
-use clawcr_protocol::ProviderFamily;
-use clawcr_utils::find_clawcr_home;
+use devo_core::ProviderWireApi;
+use devo_core::provider_id_for_endpoint;
+use devo_core::provider_name_for_endpoint;
+use devo_protocol::ProviderFamily;
+use devo_utils::find_devo_home;
 use toml::Value;
 
 /// Persists the onboarding choice into the user's `config.toml`.
@@ -14,7 +14,7 @@ pub(crate) fn save_onboarding_config(
     base_url: Option<&str>,
     api_key: Option<&str>,
 ) -> Result<()> {
-    let path = find_clawcr_home()
+    let path = find_devo_home()
         .context("could not determine user config path")?
         .join("config.toml");
 
@@ -46,7 +46,7 @@ pub(crate) fn save_last_used_model(
     provider: ProviderFamily,
     model: &str,
 ) -> Result<()> {
-    let path = find_clawcr_home()
+    let path = find_devo_home()
         .context("could not determine user config path")?
         .join("config.toml");
     let mut root = if path.exists() {
@@ -73,7 +73,7 @@ pub(crate) fn save_last_used_model(
 
 #[allow(dead_code)]
 pub(crate) fn save_thinking_selection(selection: Option<&str>) -> Result<()> {
-    let path = find_clawcr_home()
+    let path = find_devo_home()
         .context("could not determine user config path")?
         .join("config.toml");
     let mut root = if path.exists() {

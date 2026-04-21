@@ -3,7 +3,7 @@
 //! Main focus:
 //! - deserialize bundled model definitions from `models.json`
 //! - preserve JSON compatibility and catalog-only metadata such as priority and API-config flags
-//! - convert raw presets into runtime `clawcr_protocol::Model` values
+//! - convert raw presets into runtime `devo_protocol::Model` values
 //!
 //! Design:
 //! - `ModelPreset` is intentionally a core-only type because it exists to support catalog loading
@@ -15,7 +15,7 @@
 //! - turn execution should consume `Model`, not `ModelPreset`
 //! - loading policy and catalog access live in `model_catalog.rs`; this file only defines the raw shape
 //!
-use clawcr_protocol::{
+use devo_protocol::{
     InputModality, Model, ProviderFamily, ReasoningEffort, ThinkingCapability,
     ThinkingImplementation, TruncationPolicyConfig,
 };
@@ -33,7 +33,7 @@ pub struct ModelPreset {
     #[serde(
         default,
         alias = "provider_family",
-        deserialize_with = "clawcr_protocol::deserialize_provider"
+        deserialize_with = "devo_protocol::deserialize_provider"
     )]
     pub provider: ProviderFamily,
     /// Optional short description of the model.
@@ -65,7 +65,7 @@ pub struct ModelPreset {
     /// Policy used when truncating content for requests.
     #[serde(
         default,
-        deserialize_with = "clawcr_protocol::deserialize_truncation_policy_config"
+        deserialize_with = "devo_protocol::deserialize_truncation_policy_config"
     )]
     pub truncation_policy: TruncationPolicyConfig,
     /// Input types accepted by the model.

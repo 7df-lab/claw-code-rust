@@ -8,13 +8,13 @@ use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
-use clawcr_core::{FileSystemSkillCatalog, PresetModelCatalog, SkillsConfig};
-use clawcr_protocol::{
+use devo_core::{FileSystemSkillCatalog, PresetModelCatalog, SkillsConfig};
+use devo_protocol::{
     ModelRequest, ModelResponse, ResponseContent, ResponseMetadata, StopReason, StreamEvent, Usage,
 };
-use clawcr_provider::ModelProviderSDK;
-use clawcr_server::{ClientTransportKind, ServerRuntime, ServerRuntimeDependencies};
-use clawcr_tools::ToolRegistry;
+use devo_provider::ModelProviderSDK;
+use devo_server::{ClientTransportKind, ServerRuntime, ServerRuntimeDependencies};
+use devo_tools::ToolRegistry;
 
 struct SingleReplyProvider;
 
@@ -79,7 +79,7 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
         .await
         .context("session/start response")?;
     let session_id = serde_json::from_value::<
-        clawcr_server::SuccessResponse<clawcr_server::SessionStartResult>,
+        devo_server::SuccessResponse<devo_server::SessionStartResult>,
     >(start_response)?
     .result
     .session_id;
@@ -102,7 +102,7 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
         )
         .await
         .context("turn/start response")?;
-    let _: clawcr_server::SuccessResponse<clawcr_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
         serde_json::from_value(turn_start_response)?;
 
     wait_for_turn_completed(&mut notifications_rx).await?;
@@ -124,7 +124,7 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
         .await
         .context("session/list response")?;
     let list_result = serde_json::from_value::<
-        clawcr_server::SuccessResponse<clawcr_server::SessionListResult>,
+        devo_server::SuccessResponse<devo_server::SessionListResult>,
     >(list_response)?
     .result;
     assert_eq!(list_result.sessions.len(), 1);
@@ -148,7 +148,7 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
         .await
         .context("session/resume response")?;
     let resume_result = serde_json::from_value::<
-        clawcr_server::SuccessResponse<clawcr_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
     >(resume_response)?
     .result;
 
@@ -185,7 +185,7 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
         .await
         .context("session/start response")?;
     let session_id = serde_json::from_value::<
-        clawcr_server::SuccessResponse<clawcr_server::SessionStartResult>,
+        devo_server::SuccessResponse<devo_server::SessionStartResult>,
     >(start_response)?
     .result
     .session_id;
@@ -226,7 +226,7 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
         .await
         .context("session/resume response after completion")?;
     let completed_result = serde_json::from_value::<
-        clawcr_server::SuccessResponse<clawcr_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
     >(resume_after_completion)?
     .result;
     assert_eq!(
@@ -235,7 +235,7 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
     );
     assert_eq!(
         completed_result.session.title_state,
-        clawcr_core::SessionTitleState::Final(clawcr_core::SessionTitleFinalSource::ModelGenerated)
+        devo_core::SessionTitleState::Final(devo_core::SessionTitleFinalSource::ModelGenerated)
     );
 
     let rename_response = runtime
@@ -253,7 +253,7 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
         .await
         .context("session/title/update response")?;
     let rename_result = serde_json::from_value::<
-        clawcr_server::SuccessResponse<clawcr_server::SessionTitleUpdateResult>,
+        devo_server::SuccessResponse<devo_server::SessionTitleUpdateResult>,
     >(rename_response)?
     .result;
     assert_eq!(
@@ -262,7 +262,7 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
     );
     assert_eq!(
         rename_result.session.title_state,
-        clawcr_core::SessionTitleState::Final(clawcr_core::SessionTitleFinalSource::UserRename)
+        devo_core::SessionTitleState::Final(devo_core::SessionTitleFinalSource::UserRename)
     );
 
     let rebuilt_runtime = build_runtime(data_root.path())?;
@@ -283,7 +283,7 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
         .await
         .context("session/resume response after rebuild")?;
     let rebuilt_result = serde_json::from_value::<
-        clawcr_server::SuccessResponse<clawcr_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
     >(resume_after_rebuild)?
     .result;
     assert_eq!(
@@ -292,7 +292,7 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
     );
     assert_eq!(
         rebuilt_result.session.title_state,
-        clawcr_core::SessionTitleState::Final(clawcr_core::SessionTitleFinalSource::UserRename)
+        devo_core::SessionTitleState::Final(devo_core::SessionTitleFinalSource::UserRename)
     );
     Ok(())
 }
@@ -320,7 +320,7 @@ async fn runtime_assigns_provisional_title_after_first_prompt() -> Result<()> {
         .await
         .context("session/start response")?;
     let session_id = serde_json::from_value::<
-        clawcr_server::SuccessResponse<clawcr_server::SessionStartResult>,
+        devo_server::SuccessResponse<devo_server::SessionStartResult>,
     >(start_response)?
     .result
     .session_id;
@@ -362,7 +362,7 @@ async fn runtime_assigns_provisional_title_after_first_prompt() -> Result<()> {
         .await
         .context("session/list response")?;
     let list_result = serde_json::from_value::<
-        clawcr_server::SuccessResponse<clawcr_server::SessionListResult>,
+        devo_server::SuccessResponse<devo_server::SessionListResult>,
     >(list_response)?
     .result;
     assert_eq!(
@@ -371,7 +371,7 @@ async fn runtime_assigns_provisional_title_after_first_prompt() -> Result<()> {
     );
     assert_eq!(
         list_result.sessions[0].title_state,
-        clawcr_core::SessionTitleState::Provisional
+        devo_core::SessionTitleState::Provisional
     );
     Ok(())
 }
@@ -415,9 +415,9 @@ async fn initialize_connection(
         )
         .await
         .context("initialize response")?;
-    let response: clawcr_server::SuccessResponse<clawcr_server::InitializeResult> =
+    let response: devo_server::SuccessResponse<devo_server::InitializeResult> =
         serde_json::from_value(initialize_response)?;
-    assert_eq!(response.result.server_name, "clawcr-server");
+    assert_eq!(response.result.server_name, "devo-server");
     let _ = runtime
         .handle_incoming(
             connection_id,

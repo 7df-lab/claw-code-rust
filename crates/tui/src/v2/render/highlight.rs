@@ -9,7 +9,7 @@
 //! | `SYNTAX_SET` | `OnceLock<SyntaxSet>` | Grammar database, immutable after init |
 //! | `THEME` | `OnceLock<RwLock<Theme>>` | Active color theme, swappable at runtime |
 //! | `THEME_OVERRIDE` | `OnceLock<Option<String>>` | Persisted user preference (write-once) |
-//! | `CLAWCR_HOME` | `OnceLock<Option<PathBuf>>` | Root for custom `.tmTheme` discovery |
+//! | `DEVO_HOME` | `OnceLock<Option<PathBuf>>` | Root for custom `.tmTheme` discovery |
 //!
 //! **Lifecycle:** call [`set_theme_override`] once at startup (after the final
 //! config is resolved) to persist the user preference and seed the `THEME`
@@ -67,10 +67,10 @@ fn syntax_set() -> &'static SyntaxSet {
 // time — long before it reaches users.  A runtime warning would be
 // unactionable noise since users can't fix upstream themes.
 
-/// Set the user-configured syntax theme override and clawcr home path.
+/// Set the user-configured syntax theme override and devo home path.
 ///
 /// Call this with the **final resolved config** (after onboarding, resume, and
-/// fork reloads complete). The first call persists `name` and `clawcr_home` in
+/// fork reloads complete). The first call persists `name` and `devo_home` in
 /// `OnceLock`s used by startup/default theme resolution.
 ///
 /// Subsequent calls cannot change the persisted `OnceLock` values, but they
@@ -80,18 +80,18 @@ fn syntax_set() -> &'static SyntaxSet {
 /// unknown/invalid theme names or duplicate override persistence.
 pub(crate) fn set_theme_override(
     name: Option<String>,
-    clawcr_home: Option<PathBuf>,
+    devo_home: Option<PathBuf>,
 ) -> Option<String> {
-    let warning = validate_theme_name(name.as_deref(), clawcr_home.as_deref());
+    let warning = validate_theme_name(name.as_deref(), devo_home.as_deref());
     let override_set_ok = THEME_OVERRIDE.set(name.clone()).is_ok();
-    let clawcr_home_set_ok = CLAWR_HOME.set(clawcr_home.clone()).is_ok();
+    let devo_home_set_ok = CLAWR_HOME.set(devo_home.clone()).is_ok();
     if THEME.get().is_some() {
         set_syntax_theme(resolve_theme_with_override(
             name.as_deref(),
-            clawcr_home.as_deref(),
+            devo_home.as_deref(),
         ));
     }
-    if !override_set_ok || !clawcr_home_set_ok {
+    if !override_set_ok || !devo_home_set_ok {
         // This should never happen in practice — set_theme_override is only
         // called once at startup.  Keep as a debug breadcrumb in case a second
         // call site is added in the future.
@@ -104,10 +104,10 @@ pub(crate) fn set_theme_override(
 /// `.tmTheme` file.  Returns a user-facing warning when it does not.
 pub(crate) fn validate_theme_name(
     name: Option<&str>,
-    clawcr_home: Option<&Path>,
+    devo_home: Option<&Path>,
 ) -> Option<String> {
     let name = name?;
-    let custom_theme_path_display = clawcr_home
+    let custom_theme_path_display = devo_home
         .map(|home| custom_theme_path(name, home).display().to_string())
         .unwrap_or_else(|| format!("$CLAWR_HOME/themes/{name}.tmTheme"));
     // Bundled themes always resolve.
@@ -116,7 +116,7 @@ pub(crate) fn validate_theme_name(
     }
     // Custom themes must parse successfully; an unreadable/invalid file should
     // still surface a startup warning so users can diagnose configuration issues.
-    if let Some(home) = clawcr_home {
+    if let Some(home) = devo_home {
         let custom_path = custom_theme_path(name, home);
         if custom_path.is_file() {
             if load_custom_theme(name, home).is_some() {
@@ -175,13 +175,13 @@ fn parse_theme_name(name: &str) -> Option<EmbeddedThemeName> {
 }
 
 /// Build the expected path for a custom theme file.
-fn custom_theme_path(name: &str, clawcr_home: &Path) -> PathBuf {
-    clawcr_home.join("themes").join(format!("{name}.tmTheme"))
+fn custom_theme_path(name: &str, devo_home: &Path) -> PathBuf {
+    devo_home.join("themes").join(format!("{name}.tmTheme"))
 }
 
-/// Try to load a custom `.tmTheme` file from `{clawcr_home}/themes/{name}.tmTheme`.
-fn load_custom_theme(name: &str, clawcr_home: &Path) -> Option<Theme> {
-    ThemeSet::get_theme(custom_theme_path(name, clawcr_home)).ok()
+/// Try to load a custom `.tmTheme` file from `{devo_home}/themes/{name}.tmTheme`.
+fn load_custom_theme(name: &str, devo_home: &Path) -> Option<Theme> {
+    ThemeSet::get_theme(custom_theme_path(name, devo_home)).ok()
 }
 
 fn adaptive_default_theme_selection() -> (EmbeddedThemeName, &'static str) {
@@ -205,7 +205,7 @@ pub(crate) fn adaptive_default_theme_name() -> &'static str {
 
 /// Build the theme from current override/default-theme settings.
 /// Extracted from the old `theme()` init closure so it can be reused.
-fn resolve_theme_with_override(name: Option<&str>, clawcr_home: Option<&Path>) -> Theme {
+fn resolve_theme_with_override(name: Option<&str>, devo_home: Option<&Path>) -> Theme {
     let ts = two_face::theme::extra();
 
     // Honor user-configured theme if valid.
@@ -215,7 +215,7 @@ fn resolve_theme_with_override(name: Option<&str>, clawcr_home: Option<&Path>) -
             return ts.get(theme_name).clone();
         }
         // 2. Try loading {CLAWR_HOME}/themes/{name}.tmTheme from disk.
-        if let Some(home) = clawcr_home
+        if let Some(home) = devo_home
             && let Some(theme) = load_custom_theme(name, home)
         {
             return theme;
@@ -230,10 +230,10 @@ fn resolve_theme_with_override(name: Option<&str>, clawcr_home: Option<&Path>) -
 /// Extracted from the old `theme()` init closure so it can be reused.
 fn build_default_theme() -> Theme {
     let name = THEME_OVERRIDE.get().and_then(|name| name.as_deref());
-    let clawcr_home = CLAWR_HOME
+    let devo_home = CLAWR_HOME
         .get()
-        .and_then(|clawcr_home| clawcr_home.as_deref());
-    resolve_theme_with_override(name, clawcr_home)
+        .and_then(|devo_home| devo_home.as_deref());
+    resolve_theme_with_override(name, devo_home)
 }
 
 fn theme_lock() -> &'static RwLock<Theme> {
@@ -323,14 +323,14 @@ pub(crate) fn configured_theme_name() -> String {
 
 /// Resolve a theme name to a `Theme` (bundled or custom). Returns `None`
 /// when the name is unknown and no matching `.tmTheme` file exists.
-pub(crate) fn resolve_theme_by_name(name: &str, clawcr_home: Option<&Path>) -> Option<Theme> {
+pub(crate) fn resolve_theme_by_name(name: &str, devo_home: Option<&Path>) -> Option<Theme> {
     let ts = two_face::theme::extra();
     // Bundled theme?
     if let Some(embedded) = parse_theme_name(name) {
         return Some(ts.get(embedded).clone());
     }
     // Custom .tmTheme file?
-    if let Some(home) = clawcr_home
+    if let Some(home) = devo_home
         && let Some(theme) = load_custom_theme(name, home)
     {
         return Some(theme);
@@ -349,8 +349,8 @@ pub(crate) struct ThemeEntry {
 }
 
 /// List all available theme names: bundled themes + custom `.tmTheme` files
-/// found in `{clawcr_home}/themes/`.
-pub(crate) fn list_available_themes(clawcr_home: Option<&Path>) -> Vec<ThemeEntry> {
+/// found in `{devo_home}/themes/`.
+pub(crate) fn list_available_themes(devo_home: Option<&Path>) -> Vec<ThemeEntry> {
     let mut entries: Vec<ThemeEntry> = BUILTIN_THEME_NAMES
         .iter()
         .map(|name| ThemeEntry {
@@ -360,7 +360,7 @@ pub(crate) fn list_available_themes(clawcr_home: Option<&Path>) -> Vec<ThemeEntr
         .collect();
 
     // Discover custom themes on disk, deduplicating against builtins.
-    if let Some(home) = clawcr_home {
+    if let Some(home) = devo_home {
         let themes_dir = home.join("themes");
         if let Ok(read_dir) = std::fs::read_dir(&themes_dir) {
             for entry in read_dir.flatten() {
@@ -752,7 +752,7 @@ mod tests {
     }
 
     fn unique_foreground_colors_for_theme(theme_name: &str) -> Vec<String> {
-        let theme = resolve_theme_by_name(theme_name, /*clawcr_home*/ None)
+        let theme = resolve_theme_by_name(theme_name, /*devo_home*/ None)
             .unwrap_or_else(|| panic!("expected built-in theme {theme_name} to resolve"));
         let lines = highlight_to_line_spans_with_theme(
             "fn main() { let answer = 42; println!(\"hello\"); }\n",
@@ -1008,7 +1008,7 @@ mod tests {
     #[test]
     fn ansi_family_themes_use_terminal_palette_colors_not_rgb() {
         for theme_name in ["ansi", "base16", "base16-256"] {
-            let theme = resolve_theme_by_name(theme_name, /*clawcr_home*/ None)
+            let theme = resolve_theme_by_name(theme_name, /*devo_home*/ None)
                 .unwrap_or_else(|| panic!("expected built-in theme {theme_name} to resolve"));
             let lines = highlight_to_line_spans_with_theme(
                 "fn main() { let answer = 42; println!(\"hello\"); }\n",
@@ -1201,7 +1201,7 @@ mod tests {
 
     #[test]
     fn bundled_theme_can_provide_diff_scope_backgrounds() {
-        let theme = resolve_theme_by_name("github", /*clawcr_home*/ None)
+        let theme = resolve_theme_by_name("github", /*devo_home*/ None)
             .expect("expected built-in GitHub theme to load");
         let rgbs = diff_scope_background_rgbs_for_theme(&theme);
         assert!(
@@ -1320,13 +1320,13 @@ mod tests {
     #[test]
     fn validate_theme_name_none_for_bundled() {
         // Bundled themes should never produce a warning.
-        assert!(validate_theme_name(Some("dracula"), /*clawcr_home*/ None).is_none());
+        assert!(validate_theme_name(Some("dracula"), /*devo_home*/ None).is_none());
         assert!(validate_theme_name(Some("nord"), Some(Path::new("/nonexistent"))).is_none());
     }
 
     #[test]
     fn validate_theme_name_none_when_no_override() {
-        assert!(validate_theme_name(/*name*/ None, /*clawcr_home*/ None).is_none());
+        assert!(validate_theme_name(/*name*/ None, /*devo_home*/ None).is_none());
     }
 
     #[test]

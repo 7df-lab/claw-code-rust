@@ -1,1 +1,1 @@
-pub use clawcr_client::{ServerNotificationMessage, StdioServerClient, StdioServerClientConfig};
+pub use devo_client::{ServerNotificationMessage, StdioServerClient, StdioServerClientConfig};

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use clawcr_protocol::ToolDefinition;
+use devo_protocol::ToolDefinition;
 
 use crate::Tool;
 

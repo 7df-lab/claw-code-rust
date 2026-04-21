@@ -1,9 +1,9 @@
 use std::time::Instant;
 
 use crate::v2::app_command::InputHistoryDirection;
-use clawcr_core::ProviderWireApi;
-use clawcr_core::SessionId;
-use clawcr_protocol::ProviderFamily;
+use devo_core::ProviderWireApi;
+use devo_core::SessionId;
+use devo_protocol::ProviderFamily;
 const TOOL_RESULT_FOLD_FINAL_STAGE: u8 = 3;
 
 /// One persisted session entry shown in the interactive session picker panel.

@@ -2,13 +2,13 @@
 description = "Shared filesystem and path helpers for runtime bootstrap"
 edition.workspace = true
 license.workspace = true
-name = "clawcr-utils"
+name = "devo-utils"
 version.workspace = true
 
 [dependencies]
 ansi-to-tui = { workspace = true }
 base64 = { workspace = true }
-clawcr-protocol = { workspace = true }
+devo-protocol = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true, features = ["alloc"] }
 once_cell = { workspace = true }

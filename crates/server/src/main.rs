@@ -1,10 +1,10 @@
 use anyhow::Result;
 use clap::Parser;
-use clawcr_core::{
+use devo_core::{
     AppConfig, AppConfigLoader, FileSystemAppConfigLoader, LoggingBootstrap, LoggingRuntime,
 };
-use clawcr_server::{ServerProcessArgs, run_server_process};
-use clawcr_utils::find_clawcr_home;
+use devo_server::{ServerProcessArgs, run_server_process};
+use devo_utils::find_devo_home;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -14,7 +14,7 @@ async fn main() -> Result<()> {
 }
 
 fn install_logging(args: &ServerProcessArgs) -> Result<LoggingRuntime> {
-    let home_dir = find_clawcr_home()?;
+    let home_dir = find_devo_home()?;
     let loader = FileSystemAppConfigLoader::new(home_dir.clone());
     let app_config = loader
         .load(args.working_root.as_deref())

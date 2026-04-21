@@ -1,8 +1,11 @@
+![cover](./docs/assets/readme_cover.png)
+
 <div align="center">
 
-# 🦀 Claw CR
+**An open-source coding agent that is blazing fast, secure, and model-provider agnostic.**
 
-**The open source coding agent, built in Rust. alternative of ClaudeCode**
+🚧Early-stage project under active development — not production-ready yet.
+⭐ Star us to follow 
 
 [![Status](https://img.shields.io/badge/status-designing-blue?style=flat-square)](https://github.com/)
 [![Language](https://img.shields.io/badge/language-Rust-E57324?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
@@ -12,12 +15,8 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja.md) | [한국어](./README.ko.md) | [Español](./README.es.md) | [Français](./README.fr.md) | [Português do Brasil](./README.pt-BR.md) | [Deutsch](./README.de.md) | [Русский](./README.ru.md) | [Türkçe](./README.tr.md)
 
-🚧Early-stage project under active development — not production-ready yet.
-
-⭐ Star us to follow 
-
 <img 
-  src="./docs/assets/screenshot_20260408.png" 
+  src="./docs/assets/demo_20260421.gif" 
   alt="Project Overview" 
   width="100%"
   style="border-radius: 8px; box-shadow: 0 15px 40px rgba(0,0,0,0.25);object-fit:cover;"
@@ -30,7 +29,7 @@
 ## 📖 Table of Contents
 
 - [Quick Start](#-quick-start)
-- [Design Goals](#-design-goals)
+- [FAQ](#-faq)
 - [Contributing](#-contributing)
 - [References](#-references)
 - [License](#-license)
@@ -44,14 +43,14 @@ No stable release yet — you can build the project from source using the instru
 ### Build
 
 ```bash
-git clone https://github.com/claw-cli/claw-code-rust && cd claw-code-rust
+git clone https://github.com/7df-lab/devo && cd devo
 cargo build --release
 
 # linux / macos
-./target/release/clawcr onboard
+./target/release/devo onboard
 
 # windows
-.\target\release\clawcr onboard
+.\target\release\devo onboard
 ```
 
 > [!TIP]
@@ -64,8 +63,7 @@ cargo build --release
 It's very similar to Claude Code in terms of capability. Here are the key differences:
 
 - 100% open source
-- Not coupled to any provider. ClawCR can be used with Claude, OpenAI, z.ai, Qwen, Deepseek, or even local models. As models evolve, the gaps between them will close and pricing will drop, so being provider-agnostic is important.
-- Out-of-the-box LSP support
+- Not coupled to any provider. Devo can be used with Claude, OpenAI, z.ai, Qwen, Deepseek, or even local models. As models evolve, the gaps between them will close and pricing will drop, so being provider-agnostic is important.
 - TUI support is already implemented.
 - Built with a client/server architecture. For example, the core can run locally on your machine while being controlled remotely (e.g., from a mobile app), with the TUI acting as just one of many possible clients.
 

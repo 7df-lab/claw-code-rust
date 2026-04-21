@@ -1,7 +1,7 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use clawcr_protocol::{ModelRequest, ModelResponse, ProviderFamily, RequestRole, StreamEvent};
+use devo_protocol::{ModelRequest, ModelResponse, ProviderFamily, RequestRole, StreamEvent};
 use futures::Stream;
 
 /// Capability flags that describe what a provider family or model can emit.

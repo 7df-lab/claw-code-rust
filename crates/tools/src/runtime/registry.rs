@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use clawcr_protocol::ToolDefinition as ProtocolToolDefinition;
+use devo_protocol::ToolDefinition as ProtocolToolDefinition;
 
 use crate::runtime::{RuntimeTool, ToolDefinitionSpec, ToolName, ToolRuntimeConfigSnapshot};
 

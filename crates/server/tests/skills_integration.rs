@@ -14,18 +14,18 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
-use clawcr_core::{FileSystemSkillCatalog, PresetModelCatalog, SkillsConfig};
-use clawcr_protocol::{
+use devo_core::{FileSystemSkillCatalog, PresetModelCatalog, SkillsConfig};
+use devo_protocol::{
     ModelRequest, ModelResponse, RequestContent, ResponseContent, ResponseMetadata, StopReason,
     StreamEvent, Usage,
 };
-use clawcr_provider::ModelProviderSDK;
-use clawcr_server::{
+use devo_provider::ModelProviderSDK;
+use devo_server::{
     ClientTransportKind, ErrorResponse, ProtocolErrorCode, ServerRuntime,
     ServerRuntimeDependencies, SkillChangedResult, SkillListResult, SkillRecord, SkillSource,
     SuccessResponse,
 };
-use clawcr_tools::{Tool, ToolOutput, ToolRegistry};
+use devo_tools::{Tool, ToolOutput, ToolRegistry};
 
 #[derive(Default)]
 struct CapturingProvider {
@@ -106,7 +106,7 @@ fn build_runtime_with_registry(
 ) -> Arc<ServerRuntime> {
     let workspace_skill_roots = workspace_root
         .iter()
-        .map(|root| root.join(".clawcr").join("skills"))
+        .map(|root| root.join(".devo").join("skills"))
         .collect::<Vec<_>>();
     ServerRuntime::new(
         data_root.to_path_buf(),
@@ -151,9 +151,9 @@ async fn initialize_connection(
         )
         .await
         .context("initialize response")?;
-    let response: SuccessResponse<clawcr_server::InitializeResult> =
+    let response: SuccessResponse<devo_server::InitializeResult> =
         serde_json::from_value(initialize_response)?;
-    assert_eq!(response.result.server_name, "clawcr-server");
+    assert_eq!(response.result.server_name, "devo-server");
 
     let _ = runtime
         .handle_incoming(
@@ -170,7 +170,7 @@ async fn start_session(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
     cwd: &Path,
-) -> Result<clawcr_core::SessionId> {
+) -> Result<devo_core::SessionId> {
     let response = runtime
         .handle_incoming(
             connection_id,
@@ -187,7 +187,7 @@ async fn start_session(
         )
         .await
         .context("session/start response")?;
-    let result: SuccessResponse<clawcr_server::SessionStartResult> =
+    let result: SuccessResponse<devo_server::SessionStartResult> =
         serde_json::from_value(response)?;
     Ok(result.result.session_id)
 }
@@ -254,7 +254,7 @@ impl Tool for BlockingReadOnlyTool {
 
     async fn execute(
         &self,
-        _ctx: &clawcr_tools::ToolContext,
+        _ctx: &devo_tools::ToolContext,
         _input: serde_json::Value,
     ) -> Result<ToolOutput> {
         self.started.notify_one();
@@ -350,7 +350,7 @@ async fn skills_list_returns_user_and_workspace_skills() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let user_skill_root = temp_dir.path().join("user-skills");
     let workspace_root = temp_dir.path().join("workspace");
-    let workspace_skill_root = workspace_root.join(".clawcr").join("skills");
+    let workspace_skill_root = workspace_root.join(".devo").join("skills");
 
     let rust_skill_path =
         create_skill(&user_skill_root, "rust-docs", "# Rust Docs\n\nUse rustdoc.");
@@ -416,7 +416,7 @@ async fn skills_changed_rediscovers_new_workspace_skill() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let user_skill_root = temp_dir.path().join("user-skills");
     let workspace_root = temp_dir.path().join("workspace");
-    let workspace_skill_root = workspace_root.join(".clawcr").join("skills");
+    let workspace_skill_root = workspace_root.join(".devo").join("skills");
 
     let alpha_skill_path = create_skill(&workspace_skill_root, "alpha", "# Alpha\n\nFirst skill.");
 
@@ -552,9 +552,9 @@ async fn turn_start_resolves_skill_content_into_model_request() -> Result<()> {
         )
         .await
         .context("turn/start response")?;
-    let start_result: SuccessResponse<clawcr_server::TurnStartResult> =
+    let start_result: SuccessResponse<devo_server::TurnStartResult> =
         serde_json::from_value(response)?;
-    assert_eq!(start_result.result.status, clawcr_core::TurnStatus::Running);
+    assert_eq!(start_result.result.status, devo_core::TurnStatus::Running);
 
     wait_for_turn_completed(&mut notifications_rx).await?;
 
@@ -666,7 +666,7 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
         )
         .await
         .context("turn/start response for steering test")?;
-    let start_result: SuccessResponse<clawcr_server::TurnStartResult> =
+    let start_result: SuccessResponse<devo_server::TurnStartResult> =
         serde_json::from_value(response)?;
 
     timeout(Duration::from_secs(5), started.notified())
@@ -691,7 +691,7 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
         )
         .await
         .context("turn/steer response")?;
-    let steer_result: SuccessResponse<clawcr_server::TurnSteerResult> =
+    let steer_result: SuccessResponse<devo_server::TurnSteerResult> =
         serde_json::from_value(steer_response)?;
     assert_eq!(steer_result.result.turn_id, start_result.result.turn_id);
 

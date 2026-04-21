@@ -1,17 +1,17 @@
 use anyhow::Context;
 use anyhow::Result;
-use clawcr_core::ModelCatalog;
-use clawcr_core::PresetModelCatalog;
-use clawcr_core::ProviderConfigFile;
-use clawcr_core::ProviderWireApi;
-use clawcr_core::ResolvedProviderSettings;
-use clawcr_core::load_config;
-use clawcr_core::resolve_provider_settings;
-use clawcr_protocol::ProviderFamily;
-use clawcr_tui::InitialTuiSession;
-use clawcr_tui::InteractiveTuiConfig;
-use clawcr_tui::SavedModelEntry;
-use clawcr_tui::run_interactive_tui;
+use devo_core::ModelCatalog;
+use devo_core::PresetModelCatalog;
+use devo_core::ProviderConfigFile;
+use devo_core::ProviderWireApi;
+use devo_core::ResolvedProviderSettings;
+use devo_core::load_config;
+use devo_core::resolve_provider_settings;
+use devo_protocol::ProviderFamily;
+use devo_tui::InitialTuiSession;
+use devo_tui::InteractiveTuiConfig;
+use devo_tui::SavedModelEntry;
+use devo_tui::run_interactive_tui;
 
 /// Runs the interactive coding-agent entrypoint.
 pub async fn run_agent(
@@ -58,7 +58,7 @@ pub async fn run_agent(
         .collect();
 
     let server_env = server_env_overrides(&resolved);
-    let clawcr_core::ResolvedProviderSettings {
+    let devo_core::ResolvedProviderSettings {
         provider,
         model,
         base_url: _,
@@ -116,27 +116,27 @@ fn resolve_initial_provider_settings(
     Ok((onboarding_mode, resolved))
 }
 
-fn server_env_overrides(resolved: &clawcr_core::ResolvedProviderSettings) -> Vec<(String, String)> {
+fn server_env_overrides(resolved: &devo_core::ResolvedProviderSettings) -> Vec<(String, String)> {
     let mut env = vec![
         (
-            "CLAWCR_PROVIDER".to_string(),
+            "DEVO_PROVIDER".to_string(),
             resolved.provider.as_str().to_string(),
         ),
         (
-            "CLAWCR_WIRE_API".to_string(),
+            "DEVO_WIRE_API".to_string(),
             match resolved.wire_api {
                 ProviderWireApi::OpenAIChatCompletions => "openai_chat_completions".to_string(),
                 ProviderWireApi::OpenAIResponses => "openai_responses".to_string(),
                 ProviderWireApi::AnthropicMessages => "anthropic_messages".to_string(),
             },
         ),
-        ("CLAWCR_MODEL".to_string(), resolved.model.clone()),
+        ("DEVO_MODEL".to_string(), resolved.model.clone()),
     ];
     if let Some(base_url) = &resolved.base_url {
-        env.push(("CLAWCR_BASE_URL".to_string(), base_url.clone()));
+        env.push(("DEVO_BASE_URL".to_string(), base_url.clone()));
     }
     if let Some(api_key) = &resolved.api_key {
-        env.push(("CLAWCR_API_KEY".to_string(), api_key.clone()));
+        env.push(("DEVO_API_KEY".to_string(), api_key.clone()));
     }
     env
 }
@@ -146,10 +146,10 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::resolve_initial_provider_settings;
-    use clawcr_core::Model;
-    use clawcr_core::PresetModelCatalog;
-    use clawcr_core::ProviderConfigFile;
-    use clawcr_protocol::ProviderFamily;
+    use devo_core::Model;
+    use devo_core::PresetModelCatalog;
+    use devo_core::ProviderConfigFile;
+    use devo_protocol::ProviderFamily;
 
     fn test_catalog() -> PresetModelCatalog {
         PresetModelCatalog::new(vec![Model {

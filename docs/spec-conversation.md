@@ -42,7 +42,7 @@ The conversation model must preserve:
 
 ## Module Responsibilities and Boundaries
 
-`clawcr-core::conversation` owns:
+`devo-core::conversation` owns:
 
 - Identifiers.
 - Session and turn metadata.
@@ -52,13 +52,13 @@ The conversation model must preserve:
 - secondary index updates for listing and lookup.
 - session-title state transitions and title update persistence.
 
-`clawcr-core::runtime` owns:
+`devo-core::runtime` owns:
 
 - Transitioning a turn through states.
 - Emitting items during execution.
 - Translating provider and tool events into items.
 
-`clawcr-core::context` may read items but must not mutate raw persisted history.
+`devo-core::context` may read items but must not mutate raw persisted history.
 
 ## Data Structures
 
@@ -269,7 +269,7 @@ Required filesystem layout:
         rollout-2026-04-05T12-30-45-<session_id>.jsonl
 <data_root>/session_index.jsonl
 <data_root>/state/
-  clawcr.sqlite
+  devo.sqlite
 ```
 
 Rules:
@@ -282,8 +282,8 @@ Rules:
 - filename must embed both creation timestamp and session id
 - forked sessions create their own rollout file and record `parent_session_id`
 - `session_index.jsonl` is optional and may remain as an append-only supplemental index
-- `clawcr.sqlite` is the required structured metadata store for session listing, filtering, search acceleration, and metadata repair workflows
-- the rollout `.jsonl` file remains the canonical recoverable history source; `clawcr.sqlite` is derived metadata
+- `devo.sqlite` is the required structured metadata store for session listing, filtering, search acceleration, and metadata repair workflows
+- the rollout `.jsonl` file remains the canonical recoverable history source; `devo.sqlite` is derived metadata
 
 ### Primary Rollout File Rules
 
@@ -324,8 +324,8 @@ Rules:
 - `sessions` stores derived metadata only, never the full canonical turn or item history
 - `title_state_json` stores the normalized `SessionTitleState` projection used for listing and fast metadata reads
 - `rollout_path` points to the canonical rollout file
-- `clawcr.sqlite` schema migrations must be versioned independently from rollout schema versioning
-- if `clawcr.sqlite` is missing or corrupt, it must be rebuildable by rescanning rollout files
+- `devo.sqlite` schema migrations must be versioned independently from rollout schema versioning
+- if `devo.sqlite` is missing or corrupt, it must be rebuildable by rescanning rollout files
 - session resume must still trust rollout data over any conflicting state-database metadata
 
 ## Lifecycle and State Transitions
@@ -372,7 +372,7 @@ Transition rules:
 1. Generate `SessionId`.
 2. Create rollout path from timestamp plus session id.
 3. Append `SessionMetaLine`.
-4. Update `clawcr.sqlite` and any optional supplemental indexes.
+4. Update `devo.sqlite` and any optional supplemental indexes.
 5. Emit session-created event.
 6. Accept first `turn/start`.
 
@@ -384,7 +384,7 @@ This design combines Claude Code's placeholder-first behavior with Codex's expli
 2. Persist the first user item as normal and execute the first turn.
 3. When the first assistant reply reaches `Completed`, check whether the session already has an explicit title.
 4. If not, attempt deterministic provisional derivation from the first user message.
-5. If derivation succeeds, append `SessionTitleUpdatedLine`, update `clawcr.sqlite` and any optional supplemental indexes, and emit a title-updated event.
+5. If derivation succeeds, append `SessionTitleUpdatedLine`, update `devo.sqlite` and any optional supplemental indexes, and emit a title-updated event.
 6. If config enables asynchronous finalization, queue a background title-generation job using the first completed exchange as input context.
 7. When the background job returns a valid title, re-check the current title state.
 8. If the title is still `Unset` or `Provisional`, append a second `SessionTitleUpdatedLine` with `Final(ModelGenerated)`.
@@ -560,7 +560,7 @@ Acceptance criteria:
 Assumptions:
 
 - rollout JSONL is the only canonical recoverable history artifact
-- `clawcr.sqlite` is the required metadata index, but it remains derivable from rollout files
+- `devo.sqlite` is the required metadata index, but it remains derivable from rollout files
 - the first milestone requires at most one automatic model-generated title upgrade per session
 
 Open questions:

@@ -120,7 +120,7 @@ use crate::v2::key_hint::KeyBinding;
 use crate::v2::key_hint::has_ctrl_or_alt;
 use crate::v2::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::v2::ui_consts::FOOTER_INDENT_COLS;
-use clawcr_core::INPUT_TEXT_LIMIT;
+use devo_core::INPUT_TEXT_LIMIT;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -178,8 +178,8 @@ use crate::v2::render::RectExt;
 use crate::v2::render::renderable::Renderable;
 use crate::v2::slash_command::SlashCommand;
 use crate::v2::style::user_message_style;
-use clawcr_protocol::user_input::TextElement;
-use clawcr_protocol::user_input::Utf8ByteSpan as ByteRange;
+use devo_protocol::user_input::TextElement;
+use devo_protocol::user_input::Utf8ByteSpan as ByteRange;
 
 use crate::v2::app_event::AppEvent;
 use crate::v2::app_event::ConnectorsSnapshot;
@@ -194,7 +194,7 @@ use crate::v2::clipboard_paste::normalize_pasted_path;
 use crate::v2::clipboard_paste::pasted_image_format;
 use crate::v2::tui::frame_requester::FrameRequester;
 use crate::v2::ui_consts::LIVE_PREFIX_COLS;
-use clawcr_file_search::FileMatch;
+use devo_file_search::FileMatch;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -459,8 +459,8 @@ impl ChatComposer {
             audio_device_selection_enabled: false,
             windows_degraded_sandbox_active: false,
             is_zellij: matches!(
-                clawcr_utils::terminal_detection::terminal_info().multiplexer,
-                Some(clawcr_utils::terminal_detection::Multiplexer::Zellij {})
+                devo_utils::terminal_detection::terminal_info().multiplexer,
+                Some(devo_utils::terminal_detection::Multiplexer::Zellij {})
             ),
             status_line_value: None,
             status_line_enabled: false,

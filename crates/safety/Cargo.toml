@@ -1,17 +1,17 @@
 [package]
-name = "clawcr-safety"
 description = "Secret redaction, approval policy, and sandbox policy contracts"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+name = "devo-safety"
+version.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-regex = { workspace = true }
 smol_str = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

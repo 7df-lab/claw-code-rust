@@ -8,36 +8,36 @@ use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 
-use clawcr_core::Model;
-use clawcr_core::ModelCatalog;
-use clawcr_core::PresetModelCatalog;
-use clawcr_core::ProviderWireApi;
-use clawcr_core::SessionId;
-use clawcr_core::TurnId;
-use clawcr_core::TurnStatus;
-use clawcr_core::test_model_connection;
-use clawcr_protocol::ProviderFamily;
-use clawcr_provider::ModelProviderSDK;
-use clawcr_provider::anthropic::AnthropicProvider;
-use clawcr_provider::openai::OpenAIProvider;
-use clawcr_server::InputItem;
-use clawcr_server::ItemEnvelope;
-use clawcr_server::ItemEventPayload;
-use clawcr_server::ItemKind;
-use clawcr_server::ServerEvent;
-use clawcr_server::SessionHistoryItem;
-use clawcr_server::SessionHistoryItemKind;
-use clawcr_server::SessionListParams;
-use clawcr_server::SessionResumeParams;
-use clawcr_server::SessionStartParams;
-use clawcr_server::SessionTitleUpdateParams;
-use clawcr_server::SkillListParams;
-use clawcr_server::SkillSource;
-use clawcr_server::StdioServerClient;
-use clawcr_server::StdioServerClientConfig;
-use clawcr_server::TurnEventPayload;
-use clawcr_server::TurnInterruptParams;
-use clawcr_server::TurnStartParams;
+use devo_core::Model;
+use devo_core::ModelCatalog;
+use devo_core::PresetModelCatalog;
+use devo_core::ProviderWireApi;
+use devo_core::SessionId;
+use devo_core::TurnId;
+use devo_core::TurnStatus;
+use devo_core::test_model_connection;
+use devo_protocol::ProviderFamily;
+use devo_provider::ModelProviderSDK;
+use devo_provider::anthropic::AnthropicProvider;
+use devo_provider::openai::OpenAIProvider;
+use devo_server::InputItem;
+use devo_server::ItemEnvelope;
+use devo_server::ItemEventPayload;
+use devo_server::ItemKind;
+use devo_server::ServerEvent;
+use devo_server::SessionHistoryItem;
+use devo_server::SessionHistoryItemKind;
+use devo_server::SessionListParams;
+use devo_server::SessionResumeParams;
+use devo_server::SessionStartParams;
+use devo_server::SessionTitleUpdateParams;
+use devo_server::SkillListParams;
+use devo_server::SkillSource;
+use devo_server::StdioServerClient;
+use devo_server::StdioServerClientConfig;
+use devo_server::TurnEventPayload;
+use devo_server::TurnInterruptParams;
+use devo_server::TurnStartParams;
 
 use crate::events::SessionListEntry;
 use crate::events::TranscriptItem;
@@ -396,12 +396,12 @@ async fn run_worker_inner(
                         model = next_model;
                         apply_env_override(
                             &mut server_env,
-                            "CLAWCR_PROVIDER",
+                            "DEVO_PROVIDER",
                             wire_api.provider_family().as_str(),
                         );
                         apply_env_override(
                             &mut server_env,
-                            "CLAWCR_WIRE_API",
+                            "DEVO_WIRE_API",
                             match wire_api {
                                 ProviderWireApi::OpenAIChatCompletions => {
                                     "openai_chat_completions"
@@ -410,9 +410,9 @@ async fn run_worker_inner(
                                 ProviderWireApi::AnthropicMessages => "anthropic_messages",
                             },
                         );
-                        apply_env_override(&mut server_env, "CLAWCR_MODEL", &model);
-                        apply_optional_env_override(&mut server_env, "CLAWCR_BASE_URL", base_url);
-                        apply_optional_env_override(&mut server_env, "CLAWCR_API_KEY", api_key);
+                        apply_env_override(&mut server_env, "DEVO_MODEL", &model);
+                        apply_optional_env_override(&mut server_env, "DEVO_BASE_URL", base_url);
+                        apply_optional_env_override(&mut server_env, "DEVO_API_KEY", api_key);
                         client.shutdown().await?;
                         client = spawn_client(
                             &config.cwd,
@@ -828,7 +828,7 @@ fn apply_optional_env_override(env: &mut Vec<(String, String)>, key: &str, value
     }
 }
 
-fn render_skill_list_body(skills: &[clawcr_server::SkillRecord]) -> String {
+fn render_skill_list_body(skills: &[devo_server::SkillRecord]) -> String {
     if skills.is_empty() {
         return "No skills found".to_string();
     }
@@ -1210,10 +1210,10 @@ mod tests {
     use chrono::Utc;
     use pretty_assertions::assert_eq;
 
-    use clawcr_core::SessionId;
-    use clawcr_core::SessionTitleState;
-    use clawcr_server::SessionRuntimeStatus;
-    use clawcr_server::SessionSummary;
+    use devo_core::SessionId;
+    use devo_core::SessionTitleState;
+    use devo_server::SessionRuntimeStatus;
+    use devo_server::SessionSummary;
 
     use super::normalize_display_output;
     use super::project_history_items;
@@ -1221,8 +1221,8 @@ mod tests {
     use super::truncate_tool_output;
     use crate::events::SessionListEntry;
     use crate::events::TranscriptItem;
-    use clawcr_server::SessionHistoryItem;
-    use clawcr_server::SessionHistoryItemKind;
+    use devo_server::SessionHistoryItem;
+    use devo_server::SessionHistoryItemKind;
 
     #[test]
     fn bash_tool_summary_uses_command_text() {

@@ -1,8 +1,11 @@
+![carátula](./docs/assets/readme_cover.png)
+
 <div align="center">
 
-# 🦀 Claw CR
+**Un agente de programación de código abierto que es increíblemente rápido, seguro e independiente del proveedor de modelos.**
 
-**El agente de programación de código abierto, construido en Rust. Alternativa a Claude Code.**
+🚧Proyecto en etapa temprana bajo desarrollo activo — aún no está listo para producción.
+⭐ Dános una estrella para seguirnos
 
 [![Estado](https://img.shields.io/badge/status-designing-blue?style=flat-square)](https://github.com/)
 [![Idioma](https://img.shields.io/badge/language-Rust-E57324?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
@@ -10,15 +13,11 @@
 [![Licencia](https://img.shields.io/badge/license-MIT-green?style=flat-square)](./LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/)
 
-[English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md) | [한국어](./README.ko.md) | [Español](./README.es.md) | [Français](./README.fr.md)
+[English](./README.md) | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja.md) | [한국어](./README.ko.md) | [Español](./README.es.md) | [Français](./README.fr.md) | [Português do Brasil](./README.pt-BR.md) | [Deutsch](./README.de.md) | [Русский](./README.ru.md) | [Türkçe](./README.tr.md)
 
-🚧 Proyecto en etapa inicial y en desarrollo activo. Aún no está listo para producción.
-
-⭐ Danos una estrella para seguir el proyecto
-
-<img
-  src="./docs/assets/screenshot_20260408.png"
-  alt="Resumen del proyecto"
+<img 
+  src="./docs/assets/demo_20260421.gif" 
+  alt="Vista general del proyecto" 
   width="100%"
   style="border-radius: 8px; box-shadow: 0 15px 40px rgba(0,0,0,0.25);object-fit:cover;"
 />
@@ -29,59 +28,60 @@
 
 ## 📖 Tabla de Contenidos
 
-- [Inicio rápido](#-inicio-rápido)
-- [Objetivos de diseño](#-objetivos-de-diseño)
+- [Inicio Rápido](#-inicio-rápido)
+- [Preguntas Frecuentes](#-preguntas-frecuentes)
 - [Contribuir](#-contribuir)
-- [Referencias](#-referencias)
 - [Licencia](#-licencia)
 
-## 🚀 Inicio rápido
+## 🚀 Inicio Rápido
 
-No hay una versión estable todavía; puedes compilar el proyecto desde el código fuente con las instrucciones de abajo.
+<!-- ### Install -->
 
-### Compilar
+No hay una versión estable todavía — puedes construir el proyecto desde el código fuente usando las instrucciones a continuación.
+
+### Construir
 
 ```bash
-git clone https://github.com/claw-cli/claw-code-rust && cd claw-code-rust
+git clone https://github.com/7df-lab/devo && cd devo
 cargo build --release
 
 # linux / macos
-./target/release/clawcr onboard
+./target/release/devo onboard
 
 # windows
-.\target\release\clawcr onboard
+.\target\release\devo onboard
 ```
 
 > [!TIP]
-> Asegúrate de tener Rust instalado; se recomienda 1.75+ (vía https://rustup.rs/).
+> Asegúrate de tener Rust instalado, se recomienda 1.75+ (a través de https://rustup.rs/).
 
-## FAQ
+## Preguntas Frecuentes
 
-### ¿En qué se diferencia de Claude Code?
+### ¿En qué se diferencia esto de Claude Code?
 
-Es muy similar a Claude Code en cuanto a capacidades. Estas son las diferencias clave:
+Es muy similar a Claude Code en términos de capacidad. Aquí están las diferencias clave:
 
-- 100 % código abierto
-- No depende de un proveedor concreto. ClawCR puede usarse con Claude, OpenAI, z.ai, Qwen, Deepseek o incluso modelos locales. A medida que los modelos evolucionen, la diferencia tenderá a reducirse y los precios a bajar, así que ser agnóstico al proveedor importa.
-- Soporte LSP listo para usar
-- El soporte TUI ya está implementado
-- Está construido con una arquitectura cliente/servidor. Por ejemplo, el core puede ejecutarse localmente en tu máquina mientras se controla de forma remota, por ejemplo desde una app móvil, con la TUI como solo uno de varios clientes posibles.
+- 100% open source
+- No está acoplado a ningún proveedor. Devo puede ser usado con Claude, OpenAI, z.ai, Qwen, Deepseek, o incluso modelos locales. A medida que los modelos evolucionan, las brechas entre ellos se cerrarán y los precios bajarán, por lo que ser independiente del proveedor es importante.
+- El soporte TUI ya está implementado.
+- Construido con una arquitectura cliente/servidor. Por ejemplo, el núcleo puede ejecutarse localmente en tu máquina mientras es controlado remotamente (por ejemplo, desde una aplicación móvil), con el TUI actuando como solo uno de los muchos clientes posibles.
+
 
 ## 🤝 Contribuir
 
-¡Las contribuciones son bienvenidas! Este proyecto está en una fase temprana de diseño y hay muchas maneras de ayudar:
+¡Las contribuciones son bienvenidas! Este proyecto está en su fase de diseño inicial, y hay muchas formas de ayudar:
 
-- **Comentarios de arquitectura** — Revisa el diseño de los crates y propone mejoras
-- **Debates RFC** — Propón ideas nuevas mediante issues
+- **Comentarios sobre arquitectura** — Revisa el diseño de los crates y sugiere mejoras
+- **Discusiones RFC** — Propón nuevas ideas a través de issues
 - **Documentación** — Ayuda a mejorar o traducir la documentación
-- **Implementación** — Toma crates de implementación cuando los diseños se estabilicen
+- **Implementación** — Toma la implementación de crates una vez que los diseños se estabilicen
 
-Si quieres, abre un issue o envía un pull request.
+Siéntete libre de abrir un issue o enviar un pull request.
 
 ## 📄 Licencia
 
-Este proyecto está bajo la [licencia MIT](./LICENSE).
+Este proyecto está licenciado bajo la [Licencia MIT](./LICENSE).
 
 ---
 
-**Si este proyecto te resulta útil, considera darle una ⭐**
+**Si encuentras útil este proyecto, por favor considera darle un ⭐**

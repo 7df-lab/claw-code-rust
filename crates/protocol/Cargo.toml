@@ -1,8 +1,8 @@
 [package]
-description = "Shared client/server protocol types for ClawCR"
+description = "Shared client/server protocol types for Devo"
 edition.workspace = true
 license.workspace = true
-name = "clawcr-protocol"
+name = "devo-protocol"
 version.workspace = true
 
 [lib]

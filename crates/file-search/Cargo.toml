@@ -1,15 +1,15 @@
 [package]
 edition.workspace = true
 license.workspace = true
-name = "clawcr-file-search"
+name = "devo-file-search"
 version.workspace = true
 
 [[bin]]
-name = "clawcr-file-search"
+name = "devo-file-search"
 path = "src/main.rs"
 
 [lib]
-name = "clawcr_file_search"
+name = "devo_file_search"
 path = "src/lib.rs"
 
 [dependencies]

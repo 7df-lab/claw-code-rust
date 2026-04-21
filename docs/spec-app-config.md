@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`clawcr-core` owns the normalized runtime application configuration. This config
+`devo-core` owns the normalized runtime application configuration. This config
 is intentionally limited to settings required by the program at runtime.
 
 Model provider data is not part of this config surface. In particular, the app
@@ -21,8 +21,8 @@ Those values are handled by provider-specific configuration code elsewhere.
 The effective config is resolved from these layers, in increasing priority:
 
 1. built-in defaults compiled into the binary
-2. user-level config at `CLAWCR_HOME/config.toml`
-3. project-level config at `<workspace>/.clawcr/config.toml`
+2. user-level config at `DEVO_HOME/config.toml`
+3. project-level config at `<workspace>/.devo/config.toml`
 4. CLI overrides supplied to the loader
 
 Higher-priority layers replace lower-priority values when the same field is
@@ -135,7 +135,7 @@ pub trait AppConfigLoader {
 ```
 
 `FileSystemAppConfigLoader` resolves the user config directory from
-`CLAWCR_HOME` and reads the user and project TOML files. It can also carry CLI
+`DEVO_HOME` and reads the user and project TOML files. It can also carry CLI
 overrides through `with_cli_overrides(...)`.
 
 ## Validation Rules
@@ -152,8 +152,8 @@ The loader must reject normalized configs that violate these invariants:
 
 ## File Locations
 
-- user config: `CLAWCR_HOME/config.toml`
-- project config: `<workspace>/.clawcr/config.toml`
+- user config: `DEVO_HOME/config.toml`
+- project config: `<workspace>/.devo/config.toml`
 
 Both files are optional. Missing files are not errors.
 

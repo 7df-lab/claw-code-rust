@@ -2,7 +2,7 @@ use std::{collections::HashMap, pin::Pin};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use clawcr_protocol::{
+use devo_protocol::{
     ModelRequest, ModelResponse, RequestContent, ResponseContent, ResponseExtra, ResponseMetadata,
     StopReason, StreamEvent, Usage,
 };
@@ -612,14 +612,14 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
 
 #[cfg(test)]
 mod tests {
-    use clawcr_protocol::{
+    use devo_protocol::{
         ModelRequest, RequestContent, RequestMessage, SamplingControls, ToolDefinition,
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
     use super::parse_response;
-    use clawcr_protocol::{ResponseContent, ResponseExtra};
+    use devo_protocol::{ResponseContent, ResponseExtra};
 
     use crate::openai::responses::build_request;
 

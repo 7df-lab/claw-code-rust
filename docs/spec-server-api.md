@@ -30,17 +30,17 @@ Out of scope:
 
 ## Module Responsibilities and Boundaries
 
-`clawcr-core` owns session and turn orchestration behind the API surface.
+`devo-core` owns session and turn orchestration behind the API surface.
 
-`clawcr-server` owns transport listeners, connection lifecycle, request routing, server-initiated request routing, and event fanout.
+`devo-server` owns transport listeners, connection lifecycle, request routing, server-initiated request routing, and event fanout.
 
-`clawcr-safety` supplies approval payloads routed through `approval/respond`.
+`devo-safety` supplies approval payloads routed through `approval/respond`.
 
 The API layer must translate transport messages into typed runtime calls; it must not mutate session state directly.
 
 ## Client Topology
 
-`clawcr-server` is the canonical runtime protocol surface, but the design must not require every UI client to share one singleton always-running server process.
+`devo-server` is the canonical runtime protocol surface, but the design must not require every UI client to share one singleton always-running server process.
 
 Supported attachment modes:
 
@@ -614,7 +614,7 @@ Per session:
 
 ## Same-Turn Steering Design
 
-Codex's "guide immediately without interrupting" behavior is implemented as same-turn steering with queued pending input. `clawcr` should follow that design.
+Codex's "guide immediately without interrupting" behavior is implemented as same-turn steering with queued pending input. `devo` should follow that design.
 
 ### Goals
 
@@ -788,7 +788,7 @@ Acceptance criteria:
 
 Assumptions:
 
-- `clawcr-server` is the canonical implementation crate for this protocol surface, while keeping the protocol itself crate-agnostic.
+- `devo-server` is the canonical implementation crate for this protocol surface, while keeping the protocol itself crate-agnostic.
 - The server is single-tenant for the initial milestone.
 
 Open questions:

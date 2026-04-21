@@ -1,24 +1,24 @@
 [package]
-name = "clawcr-provider"
 description = "Unified model provider interface with streaming support"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+name = "devo-provider"
+version.workspace = true
 
 [dependencies]
-clawcr-protocol = { workspace = true }
-tokio = { workspace = true }
-tokio-stream = { workspace = true }
-futures = { workspace = true }
+anyhow = { workspace = true }
+async-stream = { workspace = true }
 async-trait = { workspace = true }
+devo-protocol = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+reqwest-eventsource = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tracing = { workspace = true }
-reqwest = { workspace = true }
-reqwest-eventsource = { workspace = true }
-async-stream = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

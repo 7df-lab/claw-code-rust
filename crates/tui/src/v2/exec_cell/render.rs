@@ -12,11 +12,11 @@ use crate::v2::shimmer::shimmer_spans;
 use crate::v2::wrapping::RtOptions;
 use crate::v2::wrapping::adaptive_wrap_line;
 use crate::v2::wrapping::adaptive_wrap_lines;
-use clawcr_protocol::parse_command::ParsedCommand;
-use clawcr_protocol::protocol::ExecCommandSource;
-use clawcr_utils::ansi_escape::ansi_escape_line;
-use clawcr_utils::elapsed::format_duration;
-use clawcr_utils::shell_command::bash::extract_bash_command;
+use devo_protocol::parse_command::ParsedCommand;
+use devo_protocol::protocol::ExecCommandSource;
+use devo_utils::ansi_escape::ansi_escape_line;
+use devo_utils::elapsed::format_duration;
+use devo_utils::shell_command::bash::extract_bash_command;
 use itertools::Itertools;
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
@@ -757,7 +757,7 @@ const EXEC_DISPLAY_LAYOUT: ExecDisplayLayout = ExecDisplayLayout::new(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clawcr_protocol::protocol::ExecCommandSource;
+    use devo_protocol::protocol::ExecCommandSource;
     use pretty_assertions::assert_eq;
 
     fn render_line_text(line: &Line<'static>) -> String {

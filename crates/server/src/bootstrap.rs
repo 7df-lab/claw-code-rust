@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use clawcr_core::{
+use devo_core::{
     AppConfigLoader, FileSystemAppConfigLoader, FileSystemSkillCatalog, ModelCatalog,
     PresetModelCatalog, SkillsConfig,
 };
-use clawcr_tools::ToolRegistry;
-use clawcr_utils::FileSystemConfigPathResolver;
+use devo_tools::ToolRegistry;
+use devo_utils::FileSystemConfigPathResolver;
 
 use crate::{
     ListenTarget, ServerRuntime, execution::ServerRuntimeDependencies, load_server_provider,
@@ -17,7 +17,7 @@ use crate::{
 
 /// Command-line arguments accepted by the standalone server process entrypoint.
 #[derive(Debug, Clone, Parser)]
-#[command(name = "clawcr-server", version, about)]
+#[command(name = "devo-server", version, about)]
 pub struct ServerProcessArgs {
     /// Optional workspace root used for project-level config resolution.
     #[arg(long)]
@@ -53,7 +53,7 @@ pub async fn run_server_process(args: ServerProcessArgs) -> Result<()> {
     );
 
     let mut registry = ToolRegistry::new();
-    clawcr_tools::register_builtin_tools(&mut registry);
+    devo_tools::register_builtin_tools(&mut registry);
     let provider = load_server_provider(&resolver.user_config_file(), None)?;
     let model_catalog: Arc<dyn ModelCatalog> = Arc::new(PresetModelCatalog::load()?);
     let skill_workspace_root = args.working_root.clone();

@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use crate::find_clawcr_home;
+use crate::find_devo_home;
 
 /// The fixed directory name used for user-level and project-level config folders.
-pub const APP_CONFIG_DIR_NAME: &str = ".clawcr";
+pub const APP_CONFIG_DIR_NAME: &str = ".devo";
 
 /// The fixed TOML filename used for application config.
 pub const APP_CONFIG_FILE_NAME: &str = "config.toml";
@@ -48,7 +48,7 @@ pub fn current_user_config_file() -> Result<PathBuf, ConfigPathError> {
 /// Filesystem-backed config-path resolver for the local host process.
 #[derive(Debug, Clone)]
 pub struct FileSystemConfigPathResolver {
-    /// The resolved user-level config directory (for example `~/.clawcr`).
+    /// The resolved user-level config directory (for example `~/.devo`).
     user_config_dir: PathBuf,
 }
 
@@ -60,7 +60,7 @@ impl FileSystemConfigPathResolver {
 
     pub fn from_env() -> Result<Self, ConfigPathError> {
         let user_config_dir =
-            find_clawcr_home().map_err(|_| ConfigPathError::HomeDirectoryUnavailable)?;
+            find_devo_home().map_err(|_| ConfigPathError::HomeDirectoryUnavailable)?;
         Ok(Self::new(user_config_dir))
     }
 
@@ -115,11 +115,11 @@ mod tests {
         );
         assert_eq!(
             paths.project_config_dir,
-            Some(PathBuf::from("/repo/.clawcr"))
+            Some(PathBuf::from("/repo/.devo"))
         );
         assert_eq!(
             paths.project_config_file,
-            Some(PathBuf::from("/repo/.clawcr/config.toml"))
+            Some(PathBuf::from("/repo/.devo/config.toml"))
         );
     }
 
@@ -127,28 +127,28 @@ mod tests {
     #[test]
     fn resolver_supports_user_only_paths_windows() {
         let resolver =
-            FileSystemConfigPathResolver::new(PathBuf::from("C:\\Users\\tester\\.clawcr"));
+            FileSystemConfigPathResolver::new(PathBuf::from("C:\\Users\\tester\\.devo"));
         let paths = resolver.resolve_paths(None).expect("paths");
 
         assert!(paths.project_config_dir.is_none());
         assert!(paths.project_config_file.is_none());
         assert_eq!(
             paths.user_config_file,
-            PathBuf::from("C:\\Users\\tester\\.clawcr\\config.toml")
+            PathBuf::from("C:\\Users\\tester\\.devo\\config.toml")
         );
     }
 
     #[cfg(unix)]
     #[test]
     fn resolver_supports_user_only_paths_unix() {
-        let resolver = FileSystemConfigPathResolver::new(PathBuf::from("/home/tester/.clawcr"));
+        let resolver = FileSystemConfigPathResolver::new(PathBuf::from("/home/tester/.devo"));
         let paths = resolver.resolve_paths(None).expect("paths");
 
         assert!(paths.project_config_dir.is_none());
         assert!(paths.project_config_file.is_none());
         assert_eq!(
             paths.user_config_file,
-            PathBuf::from("/home/tester/.clawcr/config.toml")
+            PathBuf::from("/home/tester/.devo/config.toml")
         );
     }
 }

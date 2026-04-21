@@ -42,7 +42,7 @@ The overview already defines deterministic redaction, sandboxing, and user appro
 
 ## Module Responsibilities and Boundaries
 
-`clawcr-safety` owns:
+`devo-safety` owns:
 
 - Rule parsing and matching.
 - Approval scope definitions.
@@ -53,17 +53,17 @@ The overview already defines deterministic redaction, sandboxing, and user appro
 - Declared-to-effective sandbox policy transforms.
 - Platform sandbox adapter selection.
 
-`clawcr-tools` owns:
+`devo-tools` owns:
 
 - Reporting intended resource access in a structured form.
 
-`clawcr-core` owns:
+`devo-core` owns:
 
 - Blocking execution on `Ask`.
 - Recording approval request and decision items.
 - Injecting resolved safety constraints into prompt construction.
 
-Sandbox manager integration belongs under `clawcr-safety`; it is not a standalone crate in the target design.
+Sandbox manager integration belongs under `devo-safety`; it is not a standalone crate in the target design.
 
 Show have a sanitizer to implement regex patter match to redact prompt sensitive data.
 

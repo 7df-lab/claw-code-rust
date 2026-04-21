@@ -18,7 +18,7 @@ In scope:
 - Config loading and validation.
 - Prompt assembly inputs.
 - Context window, compaction, verbosity, reasoning, and truncation controls.
-- Rust interfaces inside `clawcr-core` between model selection, prompt building, and provider adapters.
+- Rust interfaces inside `devo-core` between model selection, prompt building, and provider adapters.
 
 Out of scope:
 
@@ -36,14 +36,14 @@ The overview defines the model contract and budget knobs but does not prescribe 
 
 ## Module Responsibilities and Boundaries
 
-`clawcr-core::model` owns:
+`devo-core::model` owns:
 
 - Model catalog loading.
 - Capability lookup.
 - Provider-specific request normalization.
 - Fallback model resolution.
 
-`clawcr-core` owns:
+`devo-core` owns:
 
 - Selecting a model for a turn.
 - Passing prompt and tool definitions to the provider.
@@ -56,13 +56,13 @@ The overview requires a config JSON file containing an array of model configs.
 Required path:
 
 ```text
-~/.clawcr/models.json
+~/.devo/models.json
 ```
 
 Optional project override:
 
 ```text
-<workspace>/.clawcr/models.json
+<workspace>/.devo/models.json
 ```
 
 Merge order:

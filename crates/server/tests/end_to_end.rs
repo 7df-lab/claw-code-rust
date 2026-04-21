@@ -2,25 +2,36 @@ use std::net::TcpListener as StdTcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Context;
+use anyhow::Result;
 use async_trait::async_trait;
-use futures::{SinkExt, StreamExt};
+use futures::SinkExt;
+use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader as AsyncBufReader;
 use tokio::process::Command;
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
-use clawcr_core::{FileSystemSkillCatalog, PresetModelCatalog, SkillsConfig};
-use clawcr_protocol::{ModelRequest, ModelResponse, StreamEvent};
-use clawcr_provider::ModelProviderSDK;
-use clawcr_server::{ServerRuntime, ServerRuntimeDependencies};
-use clawcr_tools::ToolRegistry;
+use devo_core::FileSystemSkillCatalog;
+use devo_core::PresetModelCatalog;
+use devo_core::SkillsConfig;
+use devo_protocol::ModelRequest;
+use devo_protocol::ModelResponse;
+use devo_protocol::StreamEvent;
+use devo_provider::ModelProviderSDK;
+use devo_server::ServerRuntime;
+use devo_server::ServerRuntimeDependencies;
+use devo_tools::ToolRegistry;
 use futures::stream;
 
 fn write_test_config(home_dir: &TempDir, listen: &[&str]) -> Result<()> {
-    let config_dir = home_dir.path().join(".clawcr");
+    let config_dir = home_dir.path().join(".devo");
 
     std::fs::create_dir_all(&config_dir)?;
     let listen_entries = listen
@@ -77,16 +88,16 @@ async fn stdio_server_process_supports_handshake_and_session_start() -> Result<(
 
     let test_cwd = home_dir.path().to_string_lossy().into_owned();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_clawcr-server"))
-        .env("CLAWCR_HOME", home_dir.path().join(".clawcr"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_devo-server"))
+        .env("DEVO_HOME", home_dir.path().join(".devo"))
         .env("USERPROFILE", home_dir.path())
         .env("HOME", home_dir.path())
-        .env("CLAWCR_PROVIDER", "openai")
+        .env("DEVO_PROVIDER", "openai")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .context("spawn clawcr-server child process")?;
+        .context("spawn devo-server child process")?;
 
     let mut stdin = child.stdin.take().context("capture child stdin")?;
     let stdout = child.stdout.take().context("capture child stdout")?;
@@ -105,7 +116,7 @@ async fn stdio_server_process_supports_handshake_and_session_start() -> Result<(
     assert_eq!(initialize_response["id"], serde_json::json!(1));
     assert_eq!(
         initialize_response["result"]["server_name"],
-        serde_json::json!("clawcr-server")
+        serde_json::json!("devo-server")
     );
 
     stdin.write_all(b"{\"method\":\"initialized\"}\n").await?;
@@ -197,7 +208,7 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
     let listen = vec![format!("ws://{bind_address}")];
     let listener_task =
         tokio::spawn(
-            async move { clawcr_server::run_listeners(Arc::clone(&runtime), &listen).await },
+            async move { devo_server::run_listeners(Arc::clone(&runtime), &listen).await },
         );
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -213,7 +224,7 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
     assert_eq!(initialize_response["id"], serde_json::json!(1));
     assert_eq!(
         initialize_response["result"]["server_name"],
-        serde_json::json!("clawcr-server")
+        serde_json::json!("devo-server")
     );
 
     socket

@@ -2,13 +2,13 @@
 
 ## Background and Goals
 
-`clawcr` must support external MCP servers as a first-class capability source, not as an ad hoc transport add-on. MCP integration must allow the runtime to discover tools, resources, and resource templates from external servers while preserving the same safety, persistence, and event guarantees used for built-in tools.
+`devo` must support external MCP servers as a first-class capability source, not as an ad hoc transport add-on. MCP integration must allow the runtime to discover tools, resources, and resource templates from external servers while preserving the same safety, persistence, and event guarantees used for built-in tools.
 
 Primary goals:
 
 - define crate and module boundaries for MCP integration
 - support configured MCP server discovery, startup, refresh, and status tracking
-- normalize MCP tools and resources into `clawcr` runtime contracts
+- normalize MCP tools and resources into `devo` runtime contracts
 - preserve safety, approval, and observability across MCP calls
 
 ## Scope
@@ -28,7 +28,7 @@ Out of scope:
 
 ## Module Responsibilities and Boundaries
 
-`clawcr-mcp` owns:
+`devo-mcp` owns:
 
 - reading normalized MCP server config
 - starting and stopping configured MCP clients
@@ -38,15 +38,15 @@ Out of scope:
 - request dispatch to MCP servers
 - MCP-specific error normalization
 
-`clawcr-tools` owns:
+`devo-tools` owns:
 
 - wrapping discovered MCP tools into model-visible tool definitions when enabled
 
-`clawcr-server` owns:
+`devo-server` owns:
 
 - API methods and events for MCP status, reload, and elicitation routing
 
-`clawcr-safety` owns:
+`devo-safety` owns:
 
 - approval and policy enforcement around MCP tool execution when needed
 
@@ -95,7 +95,7 @@ pub struct McpServerStatus {
 2. start enabled servers according to startup policy
 3. fetch server capabilities and tool/resource catalogs
 4. expose eligible MCP tools to the runtime tool registry
-5. route tool and resource requests through `clawcr-mcp`
+5. route tool and resource requests through `devo-mcp`
 6. surface startup/auth changes through server events
 7. allow explicit reload without restarting the whole runtime
 

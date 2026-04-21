@@ -22,55 +22,70 @@ rust-version = "1.85"
 version = "0.1.0"
 
 [workspace.dependencies]
-clawcr-client = { path = "crates/client" }
-clawcr-core = { path = "crates/core" }
-clawcr-file-search = { path = "crates/file-search" }
-clawcr-mcp = { path = "crates/mcp" }
-clawcr-protocol = { path = "crates/protocol" }
-clawcr-provider = { path = "crates/provider" }
-clawcr-safety = { path = "crates/safety" }
-clawcr-server = { path = "crates/server" }
-clawcr-tasks = { path = "crates/tasks" }
-clawcr-tools = { path = "crates/tools" }
-clawcr-tui = { path = "crates/tui" }
-clawcr-utils = { path = "crates/utils" }
-libc = "0.2.182"
+ansi-to-tui = "7.0.0"
+anyhow = "1"
+arboard = { version = "3", features = ["wayland-data-control"] }
 assert_matches = "1.5.0"
 async-stream = "0.3"
 async-trait = "0.1"
+base64 = "0.22.1"
+bytes = "1"
+chrono = "0.4.43"
+clap = { version = "4", features = ["derive"] }
+colored = "2"
 crossbeam-channel = "0.5.15"
+crossterm = { version = "0.28", features = ["event-stream"] }
+derive_more = "2"
+devo-client = { path = "crates/client" }
+devo-core = { path = "crates/core" }
+devo-file-search = { path = "crates/file-search" }
+devo-mcp = { path = "crates/mcp" }
+devo-protocol = { path = "crates/protocol" }
+devo-provider = { path = "crates/provider" }
+devo-safety = { path = "crates/safety" }
+devo-server = { path = "crates/server" }
+devo-tasks = { path = "crates/tasks" }
+devo-tools = { path = "crates/tools" }
+devo-tui = { path = "crates/tui" }
+devo-utils = { path = "crates/utils" }
+diffy = "0.4.2"
+dirs = "6"
 futures = { version = "0.3", default-features = false }
+glob = "0.3"
+iana-time-zone = "0.1.65"
 ignore = "0.4.23"
+image = { version = "^0.25.9", default-features = false }
+insta = "1.46.3"
+itertools = "0.14.0"
 lazy_static = "1"
+libc = "0.2.182"
 nucleo = { git = "https://github.com/helix-editor/nucleo.git", rev = "4253de9faabb4e5c6d81d946a5e35a90f87347ee" }
 once_cell = "1.20.2"
+pathdiff = "0.2"
+pretty_assertions = "1.4.1"
+pulldown-cmark = "0.10"
+rand = "0.9"
+ratatui = "0.29.0"
+ratatui-macros = "0.6.0"
+regex = "1"
+regex-lite = "0.1.8"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest-eventsource = "0.6"
+schemars = "0.8.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shlex = "1.3.0"
+smol_str = { version = "0.3", features = ["serde"] }
+strum = "0.27.2"
+strum_macros = "0.28.0"
 supports-color = "3.0.2"
+tempfile = "3.23.0"
+textwrap = "0.16"
+thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tokio-util = "0.7.18"
-url = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 toml = "0.8"
-anyhow = "1"
-thiserror = "2"
-reqwest = { version = "0.12", features = ["json", "stream"] }
-reqwest-eventsource = "0.6"
-clap = { version = "4", features = ["derive"] }
-crossterm = { version = "0.28", features = ["event-stream"] }
-derive_more = "2"
-insta = "1.46.3"
-pulldown-cmark = "0.10"
-ratatui = "0.29.0"
-ratatui-macros = "0.6.0"
-tempfile = "3.23.0"
-textwrap = "0.16"
-tree-sitter = "0.25.10"
-tree-sitter-bash = "0.25"
-unicode-segmentation = "1.12.0"
-unicode-width = "0.2"
-urlencoding = "2.1"
-which = "8"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = [
@@ -78,31 +93,16 @@ tracing-subscriber = { version = "0.3", features = [
     "fmt",
     "json",
 ] }
-ansi-to-tui = "7.0.0"
-arboard = { version = "3", features = ["wayland-data-control"] }
-base64 = "0.22.1"
-bytes = "1"
-chrono = "0.4.43"
-colored = "2"
-diffy = "0.4.2"
-dirs = "6"
-glob = "0.3"
-iana-time-zone = "0.1.65"
-image = { version = "^0.25.9", default-features = false }
-itertools = "0.14.0"
-pathdiff = "0.2"
-pretty_assertions = "1.4.1"
-rand = "0.9"
-regex = "1"
-regex-lite = "0.1.8"
-schemars = "0.8.22"
-shlex = "1.3.0"
-smol_str = { version = "0.3", features = ["serde"] }
-strum = "0.27.2"
-strum_macros = "0.28.0"
+tree-sitter = "0.25.10"
+tree-sitter-bash = "0.25"
+unicode-segmentation = "1.12.0"
+unicode-width = "0.2"
+url = "2"
+urlencoding = "2.1"
 uuid = { version = "1", features = ["serde", "v4", "v7"] }
 vt100 = "0.16.2"
 walkdir = "2.5.0"
+which = "8"
 
 [patch.crates-io]
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }

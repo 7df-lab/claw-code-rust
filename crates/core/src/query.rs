@@ -2,16 +2,16 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clawcr_protocol::ModelRequest;
-use clawcr_protocol::RequestContent;
-use clawcr_protocol::RequestMessage;
-use clawcr_protocol::ResolvedThinkingRequest;
-use clawcr_protocol::ResponseContent;
-use clawcr_protocol::ResponseExtra;
-use clawcr_protocol::SamplingControls;
-use clawcr_protocol::StopReason;
-use clawcr_protocol::StreamEvent;
-use clawcr_protocol::UserInput;
+use devo_protocol::ModelRequest;
+use devo_protocol::RequestContent;
+use devo_protocol::RequestMessage;
+use devo_protocol::ResolvedThinkingRequest;
+use devo_protocol::ResponseContent;
+use devo_protocol::ResponseExtra;
+use devo_protocol::SamplingControls;
+use devo_protocol::StopReason;
+use devo_protocol::StreamEvent;
+use devo_protocol::UserInput;
 use futures::StreamExt;
 use tokio::time::sleep;
 use tracing::debug;
@@ -19,11 +19,11 @@ use tracing::info;
 use tracing::info_span;
 use tracing::warn;
 
-use clawcr_provider::ModelProviderSDK;
-use clawcr_tools::ToolCall;
-use clawcr_tools::ToolContext;
-use clawcr_tools::ToolOrchestrator;
-use clawcr_tools::ToolRegistry;
+use devo_provider::ModelProviderSDK;
+use devo_tools::ToolCall;
+use devo_tools::ToolContext;
+use devo_tools::ToolOrchestrator;
+use devo_tools::ToolRegistry;
 
 use crate::AgentError;
 use crate::ContentBlock;
@@ -669,7 +669,7 @@ pub async fn query(
         // Execute tool calls
         let tool_ctx = ToolContext {
             cwd: session.cwd.clone(),
-            permissions: Arc::new(clawcr_safety::legacy_permissions::RuleBasedPolicy::new(
+            permissions: Arc::new(devo_safety::legacy_permissions::RuleBasedPolicy::new(
                 session.config.permission_mode,
             )),
             session_id: session.id.clone(),
@@ -718,9 +718,9 @@ pub async fn test_model_connection(
     let request = ModelRequest {
         model: request_model,
         system: None,
-        messages: vec![clawcr_protocol::RequestMessage {
+        messages: vec![devo_protocol::RequestMessage {
             role: "user".to_string(),
-            content: vec![clawcr_protocol::RequestContent::Text {
+            content: vec![devo_protocol::RequestContent::Text {
                 text: prompt.to_string(),
             }],
         }],
@@ -780,19 +780,19 @@ mod tests {
 
     use anyhow::Result;
     use async_trait::async_trait;
-    use clawcr_protocol::ModelRequest;
-    use clawcr_protocol::ModelResponse;
-    use clawcr_protocol::ResponseContent;
-    use clawcr_protocol::ResponseExtra;
-    use clawcr_protocol::ResponseMetadata;
-    use clawcr_protocol::StopReason;
-    use clawcr_protocol::StreamEvent;
-    use clawcr_protocol::Usage;
-    use clawcr_safety::legacy_permissions::PermissionMode;
-    use clawcr_tools::Tool;
-    use clawcr_tools::ToolOrchestrator;
-    use clawcr_tools::ToolOutput;
-    use clawcr_tools::ToolRegistry;
+    use devo_protocol::ModelRequest;
+    use devo_protocol::ModelResponse;
+    use devo_protocol::ResponseContent;
+    use devo_protocol::ResponseExtra;
+    use devo_protocol::ResponseMetadata;
+    use devo_protocol::StopReason;
+    use devo_protocol::StreamEvent;
+    use devo_protocol::Usage;
+    use devo_safety::legacy_permissions::PermissionMode;
+    use devo_tools::Tool;
+    use devo_tools::ToolOrchestrator;
+    use devo_tools::ToolOutput;
+    use devo_tools::ToolRegistry;
     use futures::Stream;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -821,7 +821,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl clawcr_provider::ModelProviderSDK for SingleToolUseProvider {
+    impl devo_provider::ModelProviderSDK for SingleToolUseProvider {
         async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
             unreachable!("tests stream responses only")
         }
@@ -891,7 +891,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl clawcr_provider::ModelProviderSDK for CapturingProvider {
+    impl devo_provider::ModelProviderSDK for CapturingProvider {
         async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
             unreachable!("tests stream responses only")
         }
@@ -941,7 +941,7 @@ mod tests {
 
         async fn execute(
             &self,
-            _ctx: &clawcr_tools::ToolContext,
+            _ctx: &devo_tools::ToolContext,
             _input: serde_json::Value,
         ) -> Result<ToolOutput> {
             Ok(ToolOutput::success("ok"))
@@ -1111,7 +1111,7 @@ mod tests {
         struct ReasoningProvider;
 
         #[async_trait]
-        impl clawcr_provider::ModelProviderSDK for ReasoningProvider {
+        impl devo_provider::ModelProviderSDK for ReasoningProvider {
             async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
                 unreachable!("tests stream responses only")
             }

@@ -5,17 +5,17 @@ use std::pin::Pin;
 use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
-use clawcr_protocol::ModelRequest;
-use clawcr_protocol::ModelResponse;
-use clawcr_protocol::ProviderFamily;
-use clawcr_protocol::RequestContent;
-use clawcr_protocol::RequestMessage;
-use clawcr_protocol::ResponseContent;
-use clawcr_protocol::ResponseExtra;
-use clawcr_protocol::ResponseMetadata;
-use clawcr_protocol::StopReason;
-use clawcr_protocol::StreamEvent;
-use clawcr_protocol::Usage;
+use devo_protocol::ModelRequest;
+use devo_protocol::ModelResponse;
+use devo_protocol::ProviderFamily;
+use devo_protocol::RequestContent;
+use devo_protocol::RequestMessage;
+use devo_protocol::ResponseContent;
+use devo_protocol::ResponseExtra;
+use devo_protocol::ResponseMetadata;
+use devo_protocol::StopReason;
+use devo_protocol::StreamEvent;
+use devo_protocol::Usage;
 use futures::Stream;
 use futures::StreamExt;
 use reqwest::Client;
@@ -943,20 +943,20 @@ fn build_thinking(level: &str) -> Option<AnthropicThinkingConfig> {
 
 #[cfg(test)]
 mod tests {
-    use clawcr_protocol::ModelRequest;
-    use clawcr_protocol::RequestContent;
-    use clawcr_protocol::RequestMessage;
-    use clawcr_protocol::SamplingControls;
-    use clawcr_protocol::ToolDefinition;
+    use devo_protocol::ModelRequest;
+    use devo_protocol::RequestContent;
+    use devo_protocol::RequestMessage;
+    use devo_protocol::SamplingControls;
+    use devo_protocol::ToolDefinition;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
     use super::build_request;
     use super::parse_response;
     use super::parse_stop_reason;
-    use clawcr_protocol::ResponseContent;
-    use clawcr_protocol::ResponseExtra;
-    use clawcr_protocol::StopReason;
+    use devo_protocol::ResponseContent;
+    use devo_protocol::ResponseExtra;
+    use devo_protocol::StopReason;
 
     #[test]
     fn build_request_includes_sampling_tools_and_thinking() {

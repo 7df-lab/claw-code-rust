@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clawcr_protocol::{
+use devo_protocol::{
     ClientNotification, ClientRequest, ClientTransportKind, ErrorResponse, InitializeParams,
     InitializeResult, NotificationEnvelope, ProtocolErrorCode, ServerEvent, SessionForkParams,
     SessionForkResult, SessionListParams, SessionListResult, SessionResumeParams,
@@ -105,7 +105,7 @@ impl StdioServerClient {
             self.request(
                 "initialize",
                 InitializeParams {
-                    client_name: "clawcr".into(),
+                    client_name: "devo".into(),
                     client_version: env!("CARGO_PKG_VERSION").into(),
                     transport: ClientTransportKind::Stdio,
                     supports_streaming: true,

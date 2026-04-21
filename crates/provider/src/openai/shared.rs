@@ -1,4 +1,4 @@
-use clawcr_protocol::{RequestRole, ToolDefinition};
+use devo_protocol::{RequestRole, ToolDefinition};
 use serde_json::{Value, json};
 use tracing::warn;
 

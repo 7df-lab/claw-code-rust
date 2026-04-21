@@ -1,8 +1,8 @@
 use anyhow::Result;
-use clawcr_core::ProviderWireApi;
-use clawcr_protocol::Model;
-use clawcr_protocol::ModelCatalog;
-use clawcr_protocol::ProviderFamily;
+use devo_core::ProviderWireApi;
+use devo_protocol::Model;
+use devo_protocol::ModelCatalog;
+use devo_protocol::ProviderFamily;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 use futures::StreamExt;
@@ -263,10 +263,10 @@ fn handle_app_command(
             let prompt = input
                 .iter()
                 .filter_map(|item| match item {
-                    clawcr_protocol::InputItem::Text { text } => Some(text.as_str()),
-                    clawcr_protocol::InputItem::Skill { .. }
-                    | clawcr_protocol::InputItem::LocalImage { .. }
-                    | clawcr_protocol::InputItem::Mention { .. } => None,
+                    devo_protocol::InputItem::Text { text } => Some(text.as_str()),
+                    devo_protocol::InputItem::Skill { .. }
+                    | devo_protocol::InputItem::LocalImage { .. }
+                    | devo_protocol::InputItem::Mention { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n");

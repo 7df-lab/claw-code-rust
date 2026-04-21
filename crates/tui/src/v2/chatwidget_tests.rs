@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use clawcr_protocol::InputItem;
-use clawcr_protocol::Model;
-use clawcr_protocol::ReasoningEffort;
-use clawcr_protocol::ThinkingCapability;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use devo_protocol::InputItem;
+use devo_protocol::Model;
+use devo_protocol::ReasoningEffort;
+use devo_protocol::ThinkingCapability;
 use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
 
@@ -309,7 +309,7 @@ fn turn_finished_does_not_add_completion_status_line_to_history() {
 }
 
 #[test]
-fn active_response_renders_generating_status_without_clawcr_title() {
+fn active_response_renders_generating_status_without_devo_title() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
         slug: "test-model".to_string(),
@@ -325,7 +325,7 @@ fn active_response_renders_generating_status_without_clawcr_title() {
 
     let rendered = rendered_rows(&widget, 80, 12).join("\n");
     assert!(rendered.contains("Generating"));
-    assert!(!rendered.contains("ClawCR -"));
+    assert!(!rendered.contains("Devo -"));
 }
 
 // TODO: Still buggy here, need to be fixed.
@@ -376,7 +376,7 @@ fn slash_model_opens_model_picker_instead_of_printing_current_model() {
         command: "model".to_string(),
     });
 
-    assert_eq!(widget.placeholder_text(), "Ask ClawCR");
+    assert_eq!(widget.placeholder_text(), "Ask Devo");
     assert_eq!(
         widget.current_model().map(|m| m.slug.as_str()),
         Some("test-model")

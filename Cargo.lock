@@ -357,308 +357,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "clawcr-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "clawcr-core",
- "clawcr-protocol",
- "clawcr-provider",
- "clawcr-safety",
- "clawcr-server",
- "clawcr-tasks",
- "clawcr-tools",
- "clawcr-tui",
- "clawcr-utils",
- "colored",
- "futures",
- "pretty_assertions",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "clawcr-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clawcr-protocol",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "clawcr-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clawcr-protocol",
- "clawcr-provider",
- "clawcr-safety",
- "clawcr-tools",
- "clawcr-utils",
- "futures",
- "iana-time-zone",
- "pretty_assertions",
- "serde",
- "serde_json",
- "smol_str",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "toml",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "clawcr-file-search"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossbeam-channel",
- "ignore",
- "nucleo",
- "pretty_assertions",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "clawcr-mcp"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "serde",
- "serde_json",
- "smol_str",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "clawcr-protocol"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "pretty_assertions",
- "schemars",
- "serde",
- "serde_json",
- "smol_str",
- "strum 0.27.2",
- "strum_macros 0.28.0",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "clawcr-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "async-trait",
- "clawcr-protocol",
- "futures",
- "pretty_assertions",
- "reqwest",
- "reqwest-eventsource",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tracing",
-]
-
-[[package]]
-name = "clawcr-safety"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "regex",
- "serde",
- "serde_json",
- "smol_str",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "clawcr-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "clawcr-client",
- "clawcr-core",
- "clawcr-protocol",
- "clawcr-provider",
- "clawcr-safety",
- "clawcr-tools",
- "clawcr-utils",
- "futures",
- "pretty_assertions",
- "serde",
- "serde_json",
- "smol_str",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "clawcr-tasks"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "clawcr-tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "chrono",
- "clawcr-protocol",
- "clawcr-provider",
- "clawcr-safety",
- "futures",
- "glob",
- "portable-pty",
- "pretty_assertions",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "smol_str",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "clawcr-tui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "base64",
- "chrono",
- "clawcr-core",
- "clawcr-file-search",
- "clawcr-protocol",
- "clawcr-provider",
- "clawcr-server",
- "clawcr-utils",
- "crossterm",
- "derive_more",
- "diffy",
- "dirs",
- "futures",
- "image",
- "insta",
- "itertools 0.14.0",
- "lazy_static",
- "libc",
- "pathdiff",
- "pretty_assertions",
- "pulldown-cmark",
- "rand",
- "ratatui",
- "ratatui-macros",
- "regex",
- "regex-lite",
- "serde",
- "serde_json",
- "shlex",
- "strum 0.27.2",
- "strum_macros 0.28.0",
- "supports-color",
- "syntect",
- "tempfile",
- "textwrap",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "toml",
- "tracing",
- "two-face",
- "unicode-segmentation",
- "unicode-width 0.2.1",
- "url",
- "urlencoding",
- "vt100",
- "windows-sys 0.52.0",
- "winsplit",
-]
-
-[[package]]
-name = "clawcr-utils"
-version = "0.1.0"
-dependencies = [
- "ansi-to-tui",
- "anyhow",
- "assert_matches",
- "base64",
- "clawcr-protocol",
- "dirs",
- "futures",
- "once_cell",
- "pretty_assertions",
- "ratatui",
- "regex",
- "schemars",
- "serde",
- "serde_json",
- "shlex",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tree-sitter",
- "tree-sitter-bash",
- "url",
- "walkdir",
- "which",
-]
-
-[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -905,6 +603,308 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn",
+]
+
+[[package]]
+name = "devo-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "colored",
+ "devo-core",
+ "devo-protocol",
+ "devo-provider",
+ "devo-safety",
+ "devo-server",
+ "devo-tasks",
+ "devo-tools",
+ "devo-tui",
+ "devo-utils",
+ "futures",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "devo-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "devo-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "devo-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "devo-protocol",
+ "devo-provider",
+ "devo-safety",
+ "devo-tools",
+ "devo-utils",
+ "futures",
+ "iana-time-zone",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "devo-file-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossbeam-channel",
+ "ignore",
+ "nucleo",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "devo-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "devo-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "pretty_assertions",
+ "schemars",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "strum 0.27.2",
+ "strum_macros 0.28.0",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "devo-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "devo-protocol",
+ "futures",
+ "pretty_assertions",
+ "reqwest",
+ "reqwest-eventsource",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "devo-safety"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "regex",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "devo-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "devo-client",
+ "devo-core",
+ "devo-protocol",
+ "devo-provider",
+ "devo-safety",
+ "devo-tools",
+ "devo-utils",
+ "futures",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "devo-tasks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "devo-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "chrono",
+ "devo-protocol",
+ "devo-provider",
+ "devo-safety",
+ "futures",
+ "glob",
+ "portable-pty",
+ "pretty_assertions",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "devo-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "base64",
+ "chrono",
+ "crossterm",
+ "derive_more",
+ "devo-core",
+ "devo-file-search",
+ "devo-protocol",
+ "devo-provider",
+ "devo-server",
+ "devo-utils",
+ "diffy",
+ "dirs",
+ "futures",
+ "image",
+ "insta",
+ "itertools 0.14.0",
+ "lazy_static",
+ "libc",
+ "pathdiff",
+ "pretty_assertions",
+ "pulldown-cmark",
+ "rand",
+ "ratatui",
+ "ratatui-macros",
+ "regex",
+ "regex-lite",
+ "serde",
+ "serde_json",
+ "shlex",
+ "strum 0.27.2",
+ "strum_macros 0.28.0",
+ "supports-color",
+ "syntect",
+ "tempfile",
+ "textwrap",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "two-face",
+ "unicode-segmentation",
+ "unicode-width 0.2.1",
+ "url",
+ "urlencoding",
+ "vt100",
+ "windows-sys 0.52.0",
+ "winsplit",
+]
+
+[[package]]
+name = "devo-utils"
+version = "0.1.0"
+dependencies = [
+ "ansi-to-tui",
+ "anyhow",
+ "assert_matches",
+ "base64",
+ "devo-protocol",
+ "dirs",
+ "futures",
+ "once_cell",
+ "pretty_assertions",
+ "ratatui",
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "url",
+ "walkdir",
+ "which",
 ]
 
 [[package]]

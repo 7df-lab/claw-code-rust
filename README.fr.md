@@ -1,24 +1,23 @@
+![couverture](./docs/assets/readme_cover.png)
+
 <div align="center">
 
-# 🦀 Claw CR
+**Un agent de programmation open source, extrêmement rapide, sécurisé et indépendant des fournisseurs de modèles.**
 
-**L’agent de codage open source, écrit en Rust. Une alternative à Claude Code.**
+🚧Projet en phase initiale en développement actif — pas encore prêt pour la production.
+⭐ Suivez-nous en ajoutant une étoile
 
 [![Statut](https://img.shields.io/badge/status-designing-blue?style=flat-square)](https://github.com/)
-[![Langue](https://img.shields.io/badge/language-Rust-E57324?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Langage](https://img.shields.io/badge/language-Rust-E57324?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Origine](https://img.shields.io/badge/origin-Claude_Code_TS-8A2BE2?style=flat-square)](https://docs.anthropic.com/en/docs/claude-code)
 [![Licence](https://img.shields.io/badge/license-MIT-green?style=flat-square)](./LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/)
 
-[English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md) | [한국어](./README.ko.md) | [Español](./README.es.md) | [Français](./README.fr.md)
+[English](./README.md) | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja.md) | [한국어](./README.ko.md) | [Español](./README.es.md) | [Français](./README.fr.md) | [Português do Brasil](./README.pt-BR.md) | [Deutsch](./README.de.md) | [Русский](./README.ru.md) | [Türkçe](./README.tr.md)
 
-🚧 Projet en phase initiale et en développement actif. Pas encore prêt pour la production.
-
-⭐ Ajoutez une étoile pour suivre le projet
-
-<img
-  src="./docs/assets/screenshot_20260408.png"
-  alt="Resumen del proyecto"
+<img 
+  src="./docs/assets/demo_20260421.gif" 
+  alt="Aperçu du projet" 
   width="100%"
   style="border-radius: 8px; box-shadow: 0 15px 40px rgba(0,0,0,0.25);object-fit:cover;"
 />
@@ -30,58 +29,59 @@
 ## 📖 Table des matières
 
 - [Démarrage rapide](#-démarrage-rapide)
-- [Objectifs de conception](#-objectifs-de-conception)
+- [Questions fréquentes](#-questions-fréquentes)
 - [Contribuer](#-contribuer)
-- [Références](#-références)
 - [Licence](#-licence)
 
 ## 🚀 Démarrage rapide
 
-Il n’existe pas encore de version stable. Vous pouvez compiler le projet depuis les sources avec les instructions ci-dessous.
+<!-- ### Installation -->
 
-### Compilation
+Pas encore de version stable — vous pouvez construire le projet depuis les sources en suivant les instructions ci-dessous.
+
+### Construction
 
 ```bash
-git clone https://github.com/claw-cli/claw-code-rust && cd claw-code-rust
+git clone https://github.com/7df-lab/devo && cd devo
 cargo build --release
 
 # linux / macos
-./target/release/clawcr onboard
+./target/release/devo onboard
 
 # windows
-.\target\release\clawcr onboard
+.\target\release\devo onboard
 ```
 
 > [!TIP]
-> Assurez-vous d’avoir Rust installé ; la version 1.75+ est recommandée (via https://rustup.rs/).
+> Assurez-vous d'avoir Rust installé, version 1.75+ recommandée (via https://rustup.rs/).
 
-## FAQ
+## Questions fréquentes
 
 ### En quoi est-ce différent de Claude Code ?
 
-C’est très similaire à Claude Code en termes de capacités. Voici les principales différences :
+C'est très similaire à Claude Code en termes de capacités. Voici les principales différences :
 
-- 100 % open source
-- Pas lié à un fournisseur. ClawCR peut fonctionner avec Claude, OpenAI, z.ai, Qwen, Deepseek ou même des modèles locaux. À mesure que les modèles évoluent, l’écart se réduira et les prix baisseront, donc l’indépendance vis-à-vis du fournisseur est importante.
-- Prise en charge LSP prête à l’emploi
-- La prise en charge TUI est déjà implémentée
-- Construit avec une architecture client/serveur. Par exemple, le core peut s’exécuter localement sur votre machine tout en étant contrôlé à distance, par exemple depuis une application mobile, la TUI n’étant qu’un client parmi d’autres.
+- 100% open source
+- Non couplé à un fournisseur spécifique. Devo peut être utilisé avec Claude, OpenAI, z.ai, Qwen, Deepseek, ou même des modèles locaux. Au fur et à mesure que les modèles évoluent, les écarts entre eux se réduiront et les prix baisseront, donc être indépendant des fournisseurs est important.
+- La prise en charge TUI est déjà implémentée.
+- Construit avec une architecture client/serveur. Par exemple, le noyau peut s'exécuter localement sur votre machine tout en étant contrôlé à distance (par exemple, depuis une application mobile), le TUI n'étant qu'un des nombreux clients possibles.
+
 
 ## 🤝 Contribuer
 
-Les contributions sont les bienvenues ! Ce projet est encore dans une phase de conception précoce, et il existe de nombreuses façons d’aider :
+Les contributions sont les bienvenues ! Ce projet est en phase de conception initiale, et il y a de nombreuses façons d'aider :
 
-- **Retours d’architecture** — Relire la conception des crates et proposer des améliorations
-- **Discussions RFC** — Proposer de nouvelles idées via les issues
-- **Documentation** — Améliorer ou traduire la documentation
-- **Implémentation** — Prendre en charge les crates d’implémentation lorsque les conceptions se stabilisent
+- **Retour sur l'architecture** — Examinez la conception des crates et suggérez des améliorations
+- **Discussions RFC** — Proposez de nouvelles idées via les issues
+- **Documentation** — Aidez à améliorer ou traduire la documentation
+- **Implémentation** — Prenez en charge l'implémentation des crates une fois les conceptions stabilisées
 
-N’hésitez pas à ouvrir une issue ou à envoyer une pull request.
+N'hésitez pas à ouvrir une issue ou à soumettre une pull request.
 
 ## 📄 Licence
 
-Ce projet est sous [licence MIT](./LICENSE).
+Ce projet est sous licence [MIT License](./LICENSE).
 
 ---
 
-**Si ce projet vous est utile, pensez à lui donner une ⭐**
+**Si vous trouvez ce projet utile, pensez à lui donner un ⭐**

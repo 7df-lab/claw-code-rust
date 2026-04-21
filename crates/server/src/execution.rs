@@ -6,12 +6,12 @@ use std::{
 
 use tokio::{sync::Mutex, task::JoinHandle};
 
-use clawcr_core::{
+use devo_core::{
     Model, ModelCatalog, ResolvedSkill, SessionConfig, SessionId, SessionRecord, SessionState,
     SkillCatalog, SkillError, SkillId, TurnConfig, default_base_instructions,
 };
-use clawcr_provider::ModelProviderSDK;
-use clawcr_tools::ToolRegistry;
+use devo_provider::ModelProviderSDK;
+use devo_tools::ToolRegistry;
 
 use crate::{
     InputItem, SkillRecord,

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clawcr_file_search::FileMatch;
+use devo_file_search::FileMatch;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
@@ -156,7 +156,7 @@ impl WidgetRef for &FileSearchPopup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clawcr_file_search::MatchType;
+    use devo_file_search::MatchType;
     use pretty_assertions::assert_eq;
 
     fn file_match(index: usize) -> FileMatch {

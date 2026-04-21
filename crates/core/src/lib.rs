@@ -10,8 +10,8 @@ mod session;
 mod skills;
 
 #[allow(ambiguous_glob_reexports)]
-pub use clawcr_protocol::*;
-pub use clawcr_protocol::{ContentBlock, Message, Role};
+pub use devo_protocol::*;
+pub use devo_protocol::{ContentBlock, Message, Role};
 pub use config::*;
 pub use context::*;
 pub use conversation::*;

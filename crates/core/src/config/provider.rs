@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use clawcr_protocol::ProviderFamily;
+use devo_protocol::ProviderFamily;
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
-use clawcr_utils::current_user_config_file;
+use devo_utils::current_user_config_file;
 
 /// One supported provider wire protocol exposed by the runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -250,7 +250,7 @@ pub(crate) fn resolve_provider_settings_from_config(
         .map(ToOwned::to_owned)
         .or_else(|| provider_id_for_model(file, file.model.as_deref()))
         .or_else(|| first_configured_provider_id(file))
-        .context("No provider configured. Run `clawcr onboard` to complete setup.")?;
+        .context("No provider configured. Run `devo onboard` to complete setup.")?;
     let provider_config = file
         .model_providers
         .get(&provider_id)
@@ -267,7 +267,7 @@ pub(crate) fn resolve_provider_settings_from_config(
                 .map(|entry| entry.model.clone())
         })
         .or_else(|| first_configured_model(file))
-        .context("No model configured. Run `clawcr onboard` to complete setup.")?;
+        .context("No model configured. Run `devo onboard` to complete setup.")?;
     let matched_model = provider_config
         .models
         .iter()
@@ -336,7 +336,7 @@ mod tests {
         ModelProviderConfig, PreferredAuthMethod, ProviderConfigFile, ProviderWireApi,
         ResolvedProviderSettings, parse_config_str, resolve_provider_settings_from_config,
     };
-    use clawcr_protocol::ProviderFamily;
+    use devo_protocol::ProviderFamily;
 
     #[test]
     fn resolves_new_style_provider_and_model_settings() {

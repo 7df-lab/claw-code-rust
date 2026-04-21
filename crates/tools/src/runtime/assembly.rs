@@ -1,4 +1,4 @@
-use clawcr_protocol::ToolDefinition as ProtocolToolDefinition;
+use devo_protocol::ToolDefinition as ProtocolToolDefinition;
 
 use crate::runtime::{RuntimeToolRegistry, ToolDefinitionSpec, ToolRuntimeConfigSnapshot};
 

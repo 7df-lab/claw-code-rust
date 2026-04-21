@@ -6,7 +6,7 @@
 
 Primary goals:
 
-- The target binary should named `clawcr`.
+- The target binary should named `devo`.
 - Keep the architecture Rust-native, modular, and testable.
 - Provide stable crate and module boundaries that allow incremental delivery.
 
@@ -49,13 +49,13 @@ Out of scope:
 
 | Crate | Responsibility | Mandatory Additions |
 | --- | --- | --- |
-| `clawcr-core` | Session, turn, item model, main loop, model integration, context management, persistence / rollout, event emission, coding workflow orchestration, long-running execution, background task state, and completion routing | Add explicit session repository, turn state machine, model catalog, provider adapters, tokenizer estimation hooks, compaction machinery, turn-linked task registry, execution lifecycle management, and completion notification flow |
-| `clawcr-tools` | Tool traits, registry, orchestration, execution metadata, common tools like fuzzy search, shell command, read_file, write_file, patch_file, web_search etc | Add typed tool-call journal records and approval integration points |
-| `clawcr-safety` | Policy evaluation, rules, approval scopes, secret redaction contracts, and sandbox integration | Add resource-scoped approvals, rule persistence, policy snapshots, and platform safety adapters |
-| `clawcr-mcp` | MCP connection management and dynamic capability ingestion | Expand from placeholder into server registry and bridge adapters |
-| `clawcr-server` | Transport-neutral runtime server, JSON-RPC v2.0, lifecycle, subscriptions, and connection management. tokio+axum+jsonwebtoken | Add stdio and WebSocket listeners, session routing, approval response plumbing, and event fanout |
-| `clawcr-cli` | Local bootstrap, config loading, REPL, and human-oriented terminal UX, TUI+crossterm | Add client-side server bootstrap hooks and approval UX adapters | Claude Code / Codex Inspired. |
-| `clawcr-utils` | Cross-cutting low-level helpers with no stable domain owner | Add shared path normalization, absolute-path, approval-presets, cache, cargo-bin, cli, elapsed, fuzzy-match, home-dir, image, json-to-toml, oss, output-truncation, path-utils, plugins, pty, readiness, rustls-provider, sandbox-summary, sleep-inhibitor, stream-parser, string, template etc |
+| `devo-core` | Session, turn, item model, main loop, model integration, context management, persistence / rollout, event emission, coding workflow orchestration, long-running execution, background task state, and completion routing | Add explicit session repository, turn state machine, model catalog, provider adapters, tokenizer estimation hooks, compaction machinery, turn-linked task registry, execution lifecycle management, and completion notification flow |
+| `devo-tools` | Tool traits, registry, orchestration, execution metadata, common tools like fuzzy search, shell command, read_file, write_file, patch_file, web_search etc | Add typed tool-call journal records and approval integration points |
+| `devo-safety` | Policy evaluation, rules, approval scopes, secret redaction contracts, and sandbox integration | Add resource-scoped approvals, rule persistence, policy snapshots, and platform safety adapters |
+| `devo-mcp` | MCP connection management and dynamic capability ingestion | Expand from placeholder into server registry and bridge adapters |
+| `devo-server` | Transport-neutral runtime server, JSON-RPC v2.0, lifecycle, subscriptions, and connection management. tokio+axum+jsonwebtoken | Add stdio and WebSocket listeners, session routing, approval response plumbing, and event fanout |
+| `devo-cli` | Local bootstrap, config loading, REPL, and human-oriented terminal UX, TUI+crossterm | Add client-side server bootstrap hooks and approval UX adapters | Claude Code / Codex Inspired. |
+| `devo-utils` | Cross-cutting low-level helpers with no stable domain owner | Add shared path normalization, absolute-path, approval-presets, cache, cargo-bin, cli, elapsed, fuzzy-match, home-dir, image, json-to-toml, oss, output-truncation, path-utils, plugins, pty, readiness, rustls-provider, sandbox-summary, sleep-inhibitor, stream-parser, string, template etc |
 
 ## Shared Vocabulary
 
@@ -115,7 +115,7 @@ Supported topology modes:
 
 Rules:
 
-- all modes use the same `clawcr-server` protocol and the same persisted session format
+- all modes use the same `devo-server` protocol and the same persisted session format
 - persisted sessions are the cross-client continuity mechanism
 - in-memory loaded-session state is local to one running server process
 - a client may attach to a different server process later and resume the same persisted session
@@ -184,7 +184,7 @@ Minimum required test layers:
 - A session can be back to a point in the history.
 - Tool execution, approvals, and compaction all produce structured items and events.
 - The API layer can drive the runtime without accessing crate-internal mutable state directly.
-- common helper logic that is reused by multiple crates has a clear home in `clawcr-utils` instead of accumulating as duplicated local helpers
+- common helper logic that is reused by multiple crates has a clear home in `devo-utils` instead of accumulating as duplicated local helpers
 
 ## Dependencies With Other Specifications
 
@@ -202,5 +202,5 @@ Minimum required test layers:
 
 Assumptions:
 
-- JSONL persistence belongs in `clawcr-core`, not a new crate, unless persistence complexity grows enough to justify extraction.
-- `clawcr-server` is the canonical home for the runtime API surface.
+- JSONL persistence belongs in `devo-core`, not a new crate, unless persistence complexity grows enough to justify extraction.
+- `devo-server` is the canonical home for the runtime API surface.

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use clawcr_safety::legacy_permissions::{PermissionMode, RuleBasedPolicy};
+use devo_safety::legacy_permissions::{PermissionMode, RuleBasedPolicy};
 use pretty_assertions::assert_eq;
 use serde_json::json;
 

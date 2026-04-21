@@ -1,16 +1,16 @@
 [package]
-name = "clawcr-mcp"
 description = "MCP client, connection, discovery, and reconnect"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+name = "devo-mcp"
+version.workspace = true
 
 [dependencies]
-tokio = { workspace = true }
 async-trait = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
 smol_str = { workspace = true }
-chrono = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

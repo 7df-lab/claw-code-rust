@@ -2,7 +2,7 @@
 
 ## Background and Goals
 
-`clawcr` needs an interactive terminal experience that is:
+`devo` needs an interactive terminal experience that is:
 
 - compatible with the server/session runtime already used by the rest of the system
 - usable for day-to-day coding-agent workflows such as chat turns, model selection, onboarding, shell command review, and session navigation
@@ -42,13 +42,13 @@ The interactive TUI must:
 
 ## Module Responsibilities and Boundaries
 
-`clawcr-cli` owns:
+`devo-cli` owns:
 
 - resolving initial interactive settings such as provider, model, onboarding mode, and saved models
 - constructing the TUI launch configuration
 - selecting interactive mode as the default user entrypoint
 
-`clawcr-tui` owns:
+`devo-tui` owns:
 
 - terminal lifecycle management
 - frame scheduling and redraw orchestration
@@ -57,18 +57,18 @@ The interactive TUI must:
 - Claw-local UI command and event types
 - mapping runtime events into user-visible history cells and status indicators
 
-`clawcr-tui::worker` owns:
+`devo-tui::worker` owns:
 
 - bridging UI requests to the stdio server client and runtime
 - session creation, switching, rename, rollback, and interruption requests
 - provider validation and reconfiguration initiated from onboarding
 - surfacing runtime events back to the TUI
 
-`clawcr-protocol` owns:
+`devo-protocol` owns:
 
 - shared structured types needed across crates for shell-command summaries and other UI-visible normalized data
 
-`clawcr-utils` owns:
+`devo-utils` owns:
 
 - shell parsing and best-effort command summarization logic
 - command safety helpers shared by more than one crate
@@ -93,7 +93,7 @@ The interactive UI must support this lifecycle:
 
 Requirements:
 
-- the interactive mode must be launchable from the main `clawcr` CLI flow
+- the interactive mode must be launchable from the main `devo` CLI flow
 - the initial session state must include the active working directory and active model
 - onboarding must be available when provider configuration is incomplete
 - the UI must be able to exit cleanly after shutting down its worker
@@ -269,7 +269,7 @@ Rules:
 
 This specification is satisfied when:
 
-- `clawcr` launches into a Claw-owned interactive TUI flow backed by typed UI commands and events
+- `devo` launches into a Claw-owned interactive TUI flow backed by typed UI commands and events
 - the TUI can onboard, submit turns, stream results, interrupt work, and shut down cleanly
 - terminal behavior remains responsive and restores correctly on exit
 - the worker cleanly bridges the UI to the runtime without leaking transport details into widgets

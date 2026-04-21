@@ -13,27 +13,27 @@ use chrono::SecondsFormat;
 use chrono::Utc;
 use tokio::sync::Mutex;
 
-use clawcr_core::ContentBlock;
-use clawcr_core::ItemLine;
-use clawcr_core::ItemRecord;
-use clawcr_core::Message;
-use clawcr_core::Role;
-use clawcr_core::RolloutLine;
-use clawcr_core::SessionId;
-use clawcr_core::SessionMetaLine;
-use clawcr_core::SessionRecord;
-use clawcr_core::SessionTitleFinalSource;
-use clawcr_core::SessionTitleState;
-use clawcr_core::SessionTitleUpdatedLine;
-use clawcr_core::TextItem;
-use clawcr_core::ToolCallItem;
-use clawcr_core::ToolResultItem;
-use clawcr_core::TurnId;
-use clawcr_core::TurnItem;
-use clawcr_core::TurnLine;
-use clawcr_core::TurnRecord;
-use clawcr_core::TurnStatus;
-use clawcr_core::Worklog;
+use devo_core::ContentBlock;
+use devo_core::ItemLine;
+use devo_core::ItemRecord;
+use devo_core::Message;
+use devo_core::Role;
+use devo_core::RolloutLine;
+use devo_core::SessionId;
+use devo_core::SessionMetaLine;
+use devo_core::SessionRecord;
+use devo_core::SessionTitleFinalSource;
+use devo_core::SessionTitleState;
+use devo_core::SessionTitleUpdatedLine;
+use devo_core::TextItem;
+use devo_core::ToolCallItem;
+use devo_core::ToolResultItem;
+use devo_core::TurnId;
+use devo_core::TurnItem;
+use devo_core::TurnLine;
+use devo_core::TurnRecord;
+use devo_core::TurnStatus;
+use devo_core::Worklog;
 
 use crate::execution::RuntimeSession;
 use crate::execution::ServerRuntimeDependencies;
@@ -544,7 +544,7 @@ pub(crate) fn build_turn_record(turn: &TurnSummary) -> TurnRecord {
 pub(crate) fn build_item_record(
     session_id: SessionId,
     turn_id: TurnId,
-    item_id: clawcr_core::ItemId,
+    item_id: devo_core::ItemId,
     seq: u64,
     item: TurnItem,
     turn_status: Option<TurnStatus>,
@@ -574,15 +574,15 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::ReplayState;
-    use clawcr_core::ItemId;
-    use clawcr_core::ItemLine;
-    use clawcr_core::ItemRecord;
-    use clawcr_core::RolloutLine;
-    use clawcr_core::SessionId;
-    use clawcr_core::TextItem;
-    use clawcr_core::ToolCallItem;
-    use clawcr_core::TurnId;
-    use clawcr_core::TurnItem;
+    use devo_core::ItemId;
+    use devo_core::ItemLine;
+    use devo_core::ItemRecord;
+    use devo_core::RolloutLine;
+    use devo_core::SessionId;
+    use devo_core::TextItem;
+    use devo_core::ToolCallItem;
+    use devo_core::TurnId;
+    use devo_core::TurnItem;
 
     #[test]
     fn replay_orders_items_by_sequence_before_timestamp() {

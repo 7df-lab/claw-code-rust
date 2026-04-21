@@ -30,7 +30,7 @@ pub enum LogRotation {
 /// Stores persistence settings for rolling file logs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoggingFileConfig {
-    /// The directory used for persisted log files. Relative paths resolve under `CLAWCR_HOME`.
+    /// The directory used for persisted log files. Relative paths resolve under `DEVO_HOME`.
     pub directory: Option<PathBuf>,
     /// The stable filename prefix written before the process suffix and rotation timestamp.
     pub filename_prefix: String,

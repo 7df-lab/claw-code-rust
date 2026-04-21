@@ -2,7 +2,7 @@
 description = "Long-running task lifecycle and notification mechanism"
 edition.workspace = true
 license.workspace = true
-name = "clawcr-tasks"
+name = "devo-tasks"
 version.workspace = true
 
 [dependencies]

@@ -1,4 +1,4 @@
-# `clawcr-provider`
+# `devo-provider`
 
 Shared provider layer for model invocation.
 
@@ -14,7 +14,7 @@ This crate defines:
 The crate is organized around two main building blocks plus the provider-neutral
 protocol dependency:
 
-- `clawcr_protocol`
+- `devo_protocol`
   Owns the normalized provider-agnostic model I/O IR:
   - `ModelRequest`
   - `RequestMessage`
@@ -40,9 +40,9 @@ protocol dependency:
   - `ProviderFamily`
   - `ProviderCapabilities`
 
-In short, higher layers construct a `clawcr_protocol::ModelRequest`, send it
+In short, higher layers construct a `devo_protocol::ModelRequest`, send it
 through a `ModelProviderSDK`, and receive either a complete
-`clawcr_protocol::ModelResponse` or a stream of `clawcr_protocol::StreamEvent`
+`devo_protocol::ModelResponse` or a stream of `devo_protocol::StreamEvent`
 values.
 
 ## Provider families
@@ -150,14 +150,14 @@ Those concerns belong in higher-level crates such as `core`, `server`, and
 
 The crate root re-exports the provider traits and capability types:
 
-- `clawcr_provider::ModelProviderSDK`
-- `clawcr_provider::ProviderAdapter`
-- `clawcr_provider::ProviderCapabilities`
+- `devo_provider::ModelProviderSDK`
+- `devo_provider::ProviderAdapter`
+- `devo_provider::ProviderCapabilities`
 
 It also exposes the provider family modules:
 
-- `clawcr_provider::openai`
-- `clawcr_provider::anthropic`
+- `devo_provider::openai`
+- `devo_provider::anthropic`
 
 ## Current scope
 

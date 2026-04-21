@@ -1,36 +1,36 @@
 [package]
-name = "clawcr-cli"
 description = "CLI entry point that assembles all crates"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+name = "devo-cli"
+version.workspace = true
 
 [[bin]]
-name = "clawcr"
+name = "devo"
 path = "src/main.rs"
 
 [dependencies]
-clawcr-core = { workspace = true }
-clawcr-tools = { workspace = true }
-clawcr-provider = { workspace = true }
-clawcr-protocol = { workspace = true }
-clawcr-safety = { workspace = true }
-clawcr-tasks = { workspace = true }
-clawcr-utils = { workspace = true }
-clawcr-server = { workspace = true }
-clawcr-tui = { workspace = true }
+devo-core = { workspace = true }
+devo-protocol = { workspace = true }
+devo-provider = { workspace = true }
+devo-safety = { workspace = true }
+devo-server = { workspace = true }
+devo-tasks = { workspace = true }
+devo-tools = { workspace = true }
+devo-tui = { workspace = true }
+devo-utils = { workspace = true }
 
-tokio = { workspace = true }
-futures = { workspace = true }
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
+colored = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
 toml = { workspace = true }
-anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-serde = { workspace = true }
-colored = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = "1"

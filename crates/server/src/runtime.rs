@@ -9,23 +9,23 @@ use chrono::Utc;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
-use clawcr_core::ItemId;
-use clawcr_core::Message;
-use clawcr_core::QueryEvent;
-use clawcr_core::SessionId;
-use clawcr_core::SessionTitleFinalSource;
-use clawcr_core::SessionTitleState;
-use clawcr_core::TextItem;
-use clawcr_core::ToolCallItem;
-use clawcr_core::ToolResultItem;
-use clawcr_core::TurnConfig;
-use clawcr_core::TurnId;
-use clawcr_core::TurnItem;
-use clawcr_core::TurnStatus;
-use clawcr_core::TurnUsage;
-use clawcr_core::Worklog;
-use clawcr_core::query;
-use clawcr_tools::ToolOrchestrator;
+use devo_core::ItemId;
+use devo_core::Message;
+use devo_core::QueryEvent;
+use devo_core::SessionId;
+use devo_core::SessionTitleFinalSource;
+use devo_core::SessionTitleState;
+use devo_core::TextItem;
+use devo_core::ToolCallItem;
+use devo_core::ToolResultItem;
+use devo_core::TurnConfig;
+use devo_core::TurnId;
+use devo_core::TurnItem;
+use devo_core::TurnStatus;
+use devo_core::TurnUsage;
+use devo_core::Worklog;
+use devo_core::query;
+use devo_tools::ToolOrchestrator;
 
 use crate::ClientTransportKind;
 use crate::ConnectionState;
@@ -96,7 +96,7 @@ impl ServerRuntime {
         let rollout_store = RolloutStore::new(server_home.clone());
         Arc::new(Self {
             metadata: InitializeResult {
-                server_name: "clawcr-server".into(),
+                server_name: "devo-server".into(),
                 server_version: env!("CARGO_PKG_VERSION").into(),
                 platform_family: std::env::consts::FAMILY.into(),
                 platform_os: std::env::consts::OS.into(),
@@ -713,13 +713,13 @@ impl ServerRuntime {
             Ok(input_text) => input_text,
             Err(error) => {
                 let code = match error {
-                    clawcr_core::SkillError::SkillNotFound { .. }
-                    | clawcr_core::SkillError::SkillDisabled { .. } => {
+                    devo_core::SkillError::SkillNotFound { .. }
+                    | devo_core::SkillError::SkillDisabled { .. } => {
                         ProtocolErrorCode::InvalidParams
                     }
-                    clawcr_core::SkillError::SkillParseFailed { .. }
-                    | clawcr_core::SkillError::SkillRootUnavailable { .. }
-                    | clawcr_core::SkillError::DuplicateSkillId { .. } => {
+                    devo_core::SkillError::SkillParseFailed { .. }
+                    | devo_core::SkillError::SkillRootUnavailable { .. }
+                    | devo_core::SkillError::DuplicateSkillId { .. } => {
                         ProtocolErrorCode::InternalError
                     }
                 };
@@ -1029,13 +1029,13 @@ impl ServerRuntime {
             }
             Err(error) => {
                 let code = match error {
-                    clawcr_core::SkillError::SkillNotFound { .. }
-                    | clawcr_core::SkillError::SkillDisabled { .. } => {
+                    devo_core::SkillError::SkillNotFound { .. }
+                    | devo_core::SkillError::SkillDisabled { .. } => {
                         ProtocolErrorCode::InvalidParams
                     }
-                    clawcr_core::SkillError::SkillParseFailed { .. }
-                    | clawcr_core::SkillError::SkillRootUnavailable { .. }
-                    | clawcr_core::SkillError::DuplicateSkillId { .. } => {
+                    devo_core::SkillError::SkillParseFailed { .. }
+                    | devo_core::SkillError::SkillRootUnavailable { .. }
+                    | devo_core::SkillError::DuplicateSkillId { .. } => {
                         ProtocolErrorCode::InternalError
                     }
                 };
@@ -1431,14 +1431,14 @@ impl ServerRuntime {
             )
             .await;
             let first_assistant_reply = core_session.messages.iter().find_map(|message| {
-                if !matches!(message.role, clawcr_core::Role::Assistant) {
+                if !matches!(message.role, devo_core::Role::Assistant) {
                     return None;
                 }
                 let text = message
                     .content
                     .iter()
                     .filter_map(|block| match block {
-                        clawcr_core::ContentBlock::Text { text } => Some(text.as_str()),
+                        devo_core::ContentBlock::Text { text } => Some(text.as_str()),
                         _ => None,
                     })
                     .collect::<String>();

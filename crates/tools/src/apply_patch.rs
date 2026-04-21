@@ -742,8 +742,8 @@ mod tests {
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
 
-    use clawcr_safety::legacy_permissions::PermissionMode;
-    use clawcr_safety::legacy_permissions::RuleBasedPolicy;
+    use devo_safety::legacy_permissions::PermissionMode;
+    use devo_safety::legacy_permissions::RuleBasedPolicy;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -762,7 +762,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("clawcr-apply-patch-{name}-{nanos}"));
+        let path = std::env::temp_dir().join(format!("devo-apply-patch-{name}-{nanos}"));
         std::fs::create_dir_all(&path).expect("create temp dir");
         path
     }
@@ -1373,7 +1373,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        path.push(format!("clawcr-tools-read-{prefix}-{ticks}"));
+        path.push(format!("devo-tools-read-{prefix}-{ticks}"));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path

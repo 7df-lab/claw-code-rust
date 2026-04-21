@@ -2,7 +2,7 @@
 
 ## Background and Goals
 
-`clawcr` must support skills as reusable instruction bundles that can be discovered from disk, referenced by users, and injected into turns in a structured way.
+`devo` must support skills as reusable instruction bundles that can be discovered from disk, referenced by users, and injected into turns in a structured way.
 
 Primary goals:
 
@@ -27,18 +27,18 @@ Out of scope:
 
 ## Module Responsibilities and Boundaries
 
-`clawcr-core` owns:
+`devo-core` owns:
 
 - normalized skill input items in conversation and prompt assembly
 - resolving referenced skills into prompt-view content
 
-`clawcr-server` owns:
+`devo-server` owns:
 
 - `skills/list`
 - `skills/changed`
 - skill config write APIs if exposed
 
-`clawcr-utils` may own:
+`devo-utils` may own:
 
 - filesystem watching and path normalization helpers used by skill discovery
 

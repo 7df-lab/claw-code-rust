@@ -2,7 +2,7 @@ use crate::shell_command::bash::extract_bash_command;
 use crate::shell_command::bash::try_parse_shell;
 use crate::shell_command::bash::try_parse_word_only_commands_sequence;
 use crate::shell_command::powershell::extract_powershell_command;
-use clawcr_protocol::parse_command::ParsedCommand;
+use devo_protocol::parse_command::ParsedCommand;
 use shlex::split as shlex_split;
 use shlex::try_join as shlex_try_join;
 use std::path::PathBuf;

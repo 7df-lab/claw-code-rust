@@ -272,8 +272,8 @@ impl Tui {
         supports_color::on_cached(supports_color::Stream::Stdout);
         let _ = crate::v2::terminal_palette::default_colors();
         let is_zellij = matches!(
-            clawcr_utils::terminal_detection::terminal_info().multiplexer,
-            Some(clawcr_utils::terminal_detection::Multiplexer::Zellij {})
+            devo_utils::terminal_detection::terminal_info().multiplexer,
+            Some(devo_utils::terminal_detection::Multiplexer::Zellij {})
         );
 
         Self {

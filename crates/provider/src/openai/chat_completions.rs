@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::debug;
 mod stream;
-use clawcr_protocol::{
+use devo_protocol::{
     ModelRequest, ModelResponse, ProviderFamily, RequestContent, ResponseContent, ResponseExtra,
     ResponseMetadata, StopReason, StreamEvent, Usage,
 };
@@ -30,7 +30,7 @@ pub struct OpenAIProvider {
 
 impl OpenAIProvider {
     pub fn new(base_url: impl Into<String>) -> Self {
-        let timeout_secs = std::env::var("CLAWCR_REQUEST_TIMEOUT")
+        let timeout_secs = std::env::var("DEVO_REQUEST_TIMEOUT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(300);
@@ -1071,7 +1071,7 @@ impl ProviderAdapter for OpenAIProvider {
 
 #[cfg(test)]
 mod tests {
-    use clawcr_protocol::{
+    use devo_protocol::{
         ModelRequest, RequestContent, RequestMessage, SamplingControls, ToolDefinition,
     };
     use pretty_assertions::assert_eq;
@@ -1080,7 +1080,7 @@ mod tests {
     use super::super::OpenAIReasoningEffort;
     use super::super::shared::reasoning_effort;
     use super::{parse_finish_reason, parse_response, parse_usage};
-    use clawcr_protocol::{ResponseContent, ResponseExtra, StopReason};
+    use devo_protocol::{ResponseContent, ResponseExtra, StopReason};
 
     use crate::openai::chat_completions::build_request;
 

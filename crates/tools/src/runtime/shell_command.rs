@@ -144,7 +144,7 @@ mod tests {
     use super::ShellCommandRuntimeTool;
     use crate::runtime::{RuntimeTool, ToolExecuteError, ToolExecutionContext, ToolExecutionMode};
     use crate::runtime::{ToolName, ToolPolicySnapshot, ToolRuntimeConfigSnapshot};
-    use clawcr_safety::legacy_permissions::{PermissionMode, RuleBasedPolicy};
+    use devo_safety::legacy_permissions::{PermissionMode, RuleBasedPolicy};
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
     use std::sync::Arc;

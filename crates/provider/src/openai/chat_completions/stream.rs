@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, pin::Pin};
 
 use anyhow::{Context, Result};
-use clawcr_protocol::{
+use devo_protocol::{
     ModelRequest, ModelResponse, ResponseContent, ResponseExtra, ResponseMetadata, StopReason,
     StreamEvent, Usage,
 };

@@ -14,7 +14,7 @@ fn unique_temp_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system time")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("clawcr-{name}-{nanos}"));
+    let path = std::env::temp_dir().join(format!("devo-{name}-{nanos}"));
     std::fs::create_dir_all(&path).expect("create temp dir");
     path
 }
@@ -22,10 +22,10 @@ fn unique_temp_dir(name: &str) -> PathBuf {
 #[test]
 fn loader_merges_user_project_and_cli_layers() {
     let root = unique_temp_dir("config-merge");
-    let home = root.join("home").join(".clawcr");
+    let home = root.join("home").join(".devo");
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&home).expect("home config dir");
-    std::fs::create_dir_all(workspace.join(".clawcr")).expect("workspace config dir");
+    std::fs::create_dir_all(workspace.join(".devo")).expect("workspace config dir");
 
     std::fs::write(
         home.join("config.toml"),
@@ -33,7 +33,7 @@ fn loader_merges_user_project_and_cli_layers() {
     )
     .expect("write user config");
     std::fs::write(
-        workspace.join(".clawcr").join("config.toml"),
+        workspace.join(".devo").join("config.toml"),
         "enable_auxiliary_model = true\nproject_root_markers = ['.git', 'Cargo.toml']\n[context]\nauto_compact_percent = 80\n[logging]\njson = true\n[logging.file]\ndirectory = 'diagnostics'\nfilename_prefix = 'agent'\n[skills]\nenabled = true\nworkspace_roots = ['project-skills']\nwatch_for_changes = false\n",
     )
     .expect("write project config");
@@ -110,7 +110,7 @@ user_roots = ["custom-user-skills"]
 #[test]
 fn loader_rejects_invalid_context_thresholds() {
     let root = unique_temp_dir("config-validation");
-    let home = root.join("home").join(".clawcr");
+    let home = root.join("home").join(".devo");
     std::fs::create_dir_all(&home).expect("home config dir");
     std::fs::write(
         home.join("config.toml"),
@@ -132,7 +132,7 @@ fn loader_rejects_invalid_context_thresholds() {
 #[test]
 fn loader_rejects_duplicate_skill_roots() {
     let root = unique_temp_dir("config-skill-roots");
-    let home = root.join("home").join(".clawcr");
+    let home = root.join("home").join(".devo");
     std::fs::create_dir_all(&home).expect("home config dir");
     std::fs::write(
         home.join("config.toml"),

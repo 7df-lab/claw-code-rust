@@ -2,27 +2,27 @@ use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
-use clawcr_core::AppConfig;
-use clawcr_core::AppConfigLoader;
-use clawcr_core::FileSystemAppConfigLoader;
-use clawcr_core::LoggingBootstrap;
-use clawcr_core::LoggingRuntime;
-use clawcr_core::ModelCatalog;
-use clawcr_core::PresetModelCatalog;
-use clawcr_core::load_config;
-use clawcr_core::resolve_provider_settings;
-use clawcr_server::ServerProcessArgs;
-use clawcr_server::run_server_process;
-use clawcr_utils::find_clawcr_home;
+use devo_core::AppConfig;
+use devo_core::AppConfigLoader;
+use devo_core::FileSystemAppConfigLoader;
+use devo_core::LoggingBootstrap;
+use devo_core::LoggingRuntime;
+use devo_core::ModelCatalog;
+use devo_core::PresetModelCatalog;
+use devo_core::load_config;
+use devo_core::resolve_provider_settings;
+use devo_server::ServerProcessArgs;
+use devo_server::run_server_process;
+use devo_utils::find_devo_home;
 
 mod agent;
 
 use agent::run_agent;
 
-/// Top-level `clawcr` command that dispatches to interactive agent mode or one
+/// Top-level `devo` command that dispatches to interactive agent mode or one
 /// of the supporting runtime subcommands.
 #[derive(Debug, Parser)]
-#[command(name = "clawcr", version, about = "ClawCR CLI")]
+#[command(name = "devo", version, about = "Devo CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -87,7 +87,7 @@ enum Command {
 }
 
 fn install_logging(cli: &Cli) -> Result<LoggingRuntime> {
-    let home_dir = find_clawcr_home()?;
+    let home_dir = find_devo_home()?;
     let loader = FileSystemAppConfigLoader::new(home_dir.clone())
         .with_cli_overrides(cli_logging_overrides(cli));
     let current_dir = std::env::current_dir()?;
@@ -163,11 +163,11 @@ async fn run_prompt(
             .with_env_filter(tracing_subscriber::EnvFilter::new(level))
             .try_init();
     }
-    use clawcr_core::SessionConfig;
-    use clawcr_core::SessionState;
-    use clawcr_core::default_base_instructions;
-    use clawcr_tools::ToolOrchestrator;
-    use clawcr_tools::ToolRegistry;
+    use devo_core::SessionConfig;
+    use devo_core::SessionState;
+    use devo_core::default_base_instructions;
+    use devo_tools::ToolOrchestrator;
+    use devo_tools::ToolRegistry;
 
     let cwd = std::env::current_dir()?;
     let _stored_config = load_config().unwrap_or_default();
@@ -178,26 +178,26 @@ async fn run_prompt(
         resolved.model = model.to_string();
     }
 
-    let home_dir = find_clawcr_home()?;
+    let home_dir = find_devo_home()?;
     let provider =
-        clawcr_server::load_server_provider(&home_dir.join("config.toml"), Some(&resolved.model))?;
+        devo_server::load_server_provider(&home_dir.join("config.toml"), Some(&resolved.model))?;
 
     let mut session_state = SessionState::new(SessionConfig::default(), cwd.clone());
-    session_state.push_message(clawcr_core::Message::user(input.to_string()));
+    session_state.push_message(devo_core::Message::user(input.to_string()));
 
     let registry = {
         let mut reg = ToolRegistry::new();
-        clawcr_tools::register_builtin_tools(&mut reg);
+        devo_tools::register_builtin_tools(&mut reg);
         std::sync::Arc::new(reg)
     };
     let orchestrator = ToolOrchestrator::new(std::sync::Arc::clone(&registry));
     let model_catalog = PresetModelCatalog::load()?;
 
-    let turn_config = clawcr_core::TurnConfig {
+    let turn_config = devo_core::TurnConfig {
         model: model_catalog
             .get(&resolved.model)
             .cloned()
-            .unwrap_or_else(|| clawcr_core::Model {
+            .unwrap_or_else(|| devo_core::Model {
                 slug: resolved.model.clone(),
                 base_instructions: default_base_instructions().to_string(),
                 ..Default::default()
@@ -205,9 +205,9 @@ async fn run_prompt(
         thinking_selection: None,
     };
 
-    eprintln!("clawcr [prompt] model={} sending...", resolved.model);
+    eprintln!("devo [prompt] model={} sending...", resolved.model);
 
-    let result = clawcr_core::query(
+    let result = devo_core::query(
         &mut session_state,
         &turn_config,
         provider.provider.as_ref(),
@@ -220,20 +220,20 @@ async fn run_prompt(
     match result {
         Ok(()) => {
             let reply = session_state.messages.iter().rev().find_map(|m| {
-                if m.role != clawcr_core::Role::Assistant {
+                if m.role != devo_core::Role::Assistant {
                     return None;
                 }
                 m.content
                     .iter()
                     .filter_map(|block| match block {
-                        clawcr_core::ContentBlock::Text { text } => Some(text.as_str()),
+                        devo_core::ContentBlock::Text { text } => Some(text.as_str()),
                         _ => None,
                     })
                     .next()
             });
             match reply {
                 Some(text) => println!("{}", text),
-                None => eprintln!("clawcr [prompt] empty response"),
+                None => eprintln!("devo [prompt] empty response"),
             }
         }
         Err(e) => {
@@ -248,7 +248,7 @@ async fn run_doctor() -> Result<()> {
     use colored::Colorize;
     use std::process::Command;
 
-    println!("{}", "=== Claw CR Doctor ===".bold());
+    println!("{}", "=== Devo Doctor ===".bold());
     println!();
 
     let mut all_ok = true;
@@ -267,8 +267,8 @@ async fn run_doctor() -> Result<()> {
     }
     println!();
 
-    println!("{} Config home (CLAWCR_HOME):", "✓".green().bold());
-    match find_clawcr_home() {
+    println!("{} Config home (DEVO_HOME):", "✓".green().bold());
+    match find_devo_home() {
         Ok(home) => {
             println!("  {}", home.display());
         }
@@ -280,7 +280,7 @@ async fn run_doctor() -> Result<()> {
     println!();
 
     println!("{} Config file:", "✓".green().bold());
-    if let Ok(home) = find_clawcr_home() {
+    if let Ok(home) = find_devo_home() {
         let config_path = home.join("config.toml");
         if config_path.exists() {
             println!("  {} {}", "found".green(), config_path.display());
@@ -303,7 +303,7 @@ async fn run_doctor() -> Result<()> {
                 "missing".yellow(),
                 config_path.display()
             );
-            println!("  Run `clawcr onboard` to create it.");
+            println!("  Run `devo onboard` to create it.");
             all_ok = false;
         }
     }
@@ -334,7 +334,7 @@ async fn run_doctor() -> Result<()> {
     println!();
 
     println!("{} Model catalog:", "✓".green().bold());
-    match clawcr_core::PresetModelCatalog::load() {
+    match devo_core::PresetModelCatalog::load() {
         Ok(catalog) => {
             let count = catalog.into_inner().len();
             println!("  {} builtin models loaded", count);

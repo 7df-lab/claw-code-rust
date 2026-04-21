@@ -8,8 +8,8 @@
 use std::time::Duration;
 use std::time::Instant;
 
-use clawcr_protocol::parse_command::ParsedCommand;
-use clawcr_protocol::protocol::ExecCommandSource;
+use devo_protocol::parse_command::ParsedCommand;
+use devo_protocol::protocol::ExecCommandSource;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CommandOutput {

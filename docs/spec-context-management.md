@@ -35,7 +35,7 @@ The overview directly specifies threshold-based compaction and recoverable histo
 
 ## Module Responsibilities and Boundaries
 
-`clawcr-core::context` owns:
+`devo-core::context` owns:
 
 - token estimation
 - selection of items eligible for summarization
@@ -43,7 +43,7 @@ The overview directly specifies threshold-based compaction and recoverable histo
 - summary result schema
 - history snapshot metadata
 
-`clawcr-core::runtime` owns:
+`devo-core::runtime` owns:
 
 - invoking compaction during the turn lifecycle
 - storing compaction items and snapshot references
@@ -329,13 +329,13 @@ The runtime must use JSON-only snapshots when:
 
 ### Snapshot Backend Responsibilities
 
-`clawcr-core::context` owns:
+`devo-core::context` owns:
 
 - deciding whether a snapshot is required for a compaction event
 - creating canonical JSON snapshot metadata
 - recording which backend succeeded
 
-`clawcr-core::code` or a future `clawcr-git` integration layer owns:
+`devo-core::code` or a future `devo-git` integration layer owns:
 
 - trusted-repository detection
 - detached commit capture and restore plumbing
@@ -462,4 +462,4 @@ Assumptions:
 
 Open questions:
 
-- Whether git-backed snapshot capture should stay in `clawcr-core::code` or move into a dedicated git integration module if the feature grows.
+- Whether git-backed snapshot capture should stay in `devo-core::code` or move into a dedicated git integration module if the feature grows.

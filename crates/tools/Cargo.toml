@@ -1,31 +1,31 @@
 [package]
-name = "clawcr-tools"
 description = "Tool trait, registry, execution orchestration, and built-in tools"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+name = "devo-tools"
+version.workspace = true
 
 [dependencies]
-clawcr-safety = { workspace = true }
-clawcr-provider = { workspace = true }
-clawcr-protocol = { workspace = true }
+devo-protocol = { workspace = true }
+devo-provider = { workspace = true }
+devo-safety = { workspace = true }
 
-tokio = { workspace = true }
-futures = { workspace = true }
+anyhow = { workspace = true }
 async-trait = { workspace = true }
+base64 = "0.22"
+chrono = { workspace = true }
+futures = { workspace = true }
+glob = { workspace = true }
+portable-pty = "0.9"
+regex = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-anyhow = { workspace = true }
-tracing = { workspace = true }
-glob = { workspace = true }
-regex = { workspace = true }
-chrono = { workspace = true }
 smol_str = { workspace = true }
-reqwest = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 uuid = { workspace = true }
-base64 = "0.22"
-portable-pty = "0.9"
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

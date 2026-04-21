@@ -2,14 +2,14 @@
 
 ## Background and Goals
 
-`clawcr` is a tool-using coding agent, so tools are not an implementation detail. They are a first-class runtime subsystem that sits between model output, safety policy, execution backends, and conversation persistence.
+`devo` is a tool-using coding agent, so tools are not an implementation detail. They are a first-class runtime subsystem that sits between model output, safety policy, execution backends, and conversation persistence.
 
 Primary goals:
 
 - define a typed tool contract rather than free-form command dispatch
 - separate tool declaration, planning-time exposure, approval checks, and execution
 - make every tool invocation replayable and observable
-- support built-in and runtime-native tools owned by `clawcr-tools`
+- support built-in and runtime-native tools owned by `devo-tools`
 
 ## Scope
 
@@ -35,7 +35,7 @@ Related specifications:
 
 ## Module Responsibilities and Boundaries
 
-`clawcr-tools` owns:
+`devo-tools` owns:
 
 - built-in tool trait definitions
 - tool registry and lookup
@@ -44,27 +44,27 @@ Related specifications:
 - tool execution orchestration entry points
 - normalized tool result and tool error shaping
 
-`clawcr-safety` owns:
+`devo-safety` owns:
 
 - approval checks before execution
 - sandbox policy derivation
 - path/network permission enforcement
 - secret-aware redaction of tool-visible and model-visible payloads
 
-`clawcr-core::conversation` owns:
+`devo-core::conversation` owns:
 
 - persisted `ToolCall`, `ToolResult`, and `ToolProgress` items
 - correlation between tool invocation and session history
 
-`clawcr-core::runtime` owns:
+`devo-core::runtime` owns:
 
 - turn-level orchestration
 - tool-call scheduling
 - cancellation and interruption propagation
 
-`clawcr-mcp` owns:
+`devo-mcp` owns:
 
-- MCP server discovery and MCP tool/resource bridging before those capabilities are handed to `clawcr-tools`
+- MCP server discovery and MCP tool/resource bridging before those capabilities are handed to `devo-tools`
 
 ## Core Data Structures
 
@@ -224,9 +224,9 @@ The design below makes `shell_command` and `file_search` mandatory because they 
 
 Boundary rules:
 
-- built-in tools are owned and implemented directly in `clawcr-tools`
+- built-in tools are owned and implemented directly in `devo-tools`
 - MCP-contributed capabilities are specified in [spec-mcp.md](./spec-mcp.md) and only enter this layer after normalization
-- skills are not tools and must not be modeled as tool definitions in `clawcr-tools`
+- skills are not tools and must not be modeled as tool definitions in `devo-tools`
 
 ## Shell Command Tool
 
@@ -479,7 +479,7 @@ Acceptance criteria:
 
 Assumptions:
 
-- `clawcr-tools` remains the crate for tool contracts and built-in tool implementations
+- `devo-tools` remains the crate for tool contracts and built-in tool implementations
 - shell command and file search are required in the first milestone
 
 Open questions:

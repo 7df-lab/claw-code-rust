@@ -12,7 +12,7 @@
         "editor.defaultFormatter": "tamasfe.even-better-toml",
         "editor.formatOnSave": true,
     },
-    // Array order for options in ~/.clawcr/config.toml such as `notify` and the
+    // Array order for options in ~/.devo/config.toml such as `notify` and the
     // `args` for an MCP server is significant, so we disable reordering.
     "evenBetterToml.formatter.reorderArrays": false,
     "evenBetterToml.formatter.reorderKeys": true,

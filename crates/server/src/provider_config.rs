@@ -1,15 +1,19 @@
-use std::{fs, path::Path};
+use std::fs;
+use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Context;
+use anyhow::Result;
 
-use clawcr_core::{
-    ConfiguredModel, ModelProviderConfig, ProviderConfigFile, ProviderWireApi, parse_config_str,
-};
-use clawcr_protocol::ProviderFamily;
-use clawcr_provider::{
-    ModelProviderSDK, anthropic::AnthropicProvider, openai::OpenAIProvider,
-    openai::OpenAIResponsesProvider,
-};
+use devo_core::ConfiguredModel;
+use devo_core::ModelProviderConfig;
+use devo_core::ProviderConfigFile;
+use devo_core::ProviderWireApi;
+use devo_core::parse_config_str;
+use devo_protocol::ProviderFamily;
+use devo_provider::ModelProviderSDK;
+use devo_provider::anthropic::AnthropicProvider;
+use devo_provider::openai::OpenAIProvider;
+use devo_provider::openai::OpenAIResponsesProvider;
 
 /// Resolved provider bootstrap owned by the server runtime.
 pub struct ResolvedServerProvider {
@@ -25,11 +29,11 @@ pub fn load_server_provider(
     default_model: Option<&str>,
 ) -> Result<ResolvedServerProvider> {
     let file_config = read_provider_config(config_file).unwrap_or_default();
-    let env_provider = env_non_empty("CLAWCR_PROVIDER");
-    let env_wire_api = env_non_empty("CLAWCR_WIRE_API");
-    let env_model = env_non_empty("CLAWCR_MODEL");
-    let env_base_url = env_non_empty("CLAWCR_BASE_URL");
-    let env_api_key = env_non_empty("CLAWCR_API_KEY");
+    let env_provider = env_non_empty("DEVO_PROVIDER");
+    let env_wire_api = env_non_empty("DEVO_WIRE_API");
+    let env_model = env_non_empty("DEVO_MODEL");
+    let env_base_url = env_non_empty("DEVO_BASE_URL");
+    let env_api_key = env_non_empty("DEVO_API_KEY");
 
     let requested_model = env_model.as_deref().or(file_config.model.as_deref());
     let provider_id = env_provider

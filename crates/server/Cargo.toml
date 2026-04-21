@@ -1,38 +1,38 @@
 [package]
-name = "clawcr-server"
 description = "Transport-neutral runtime protocol types and server contracts"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+name = "devo-server"
+version.workspace = true
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
-name = "clawcr-server"
+name = "devo-server"
 path = "src/main.rs"
 
 [dependencies]
-clawcr-core = { workspace = true }
-clawcr-protocol = { workspace = true }
-clawcr-client = { workspace = true }
-clawcr-provider = { workspace = true }
-clawcr-safety = { workspace = true }
-clawcr-tools = { workspace = true }
-clawcr-utils = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+devo-client = { workspace = true }
+devo-core = { workspace = true }
+devo-protocol = { workspace = true }
+devo-provider = { workspace = true }
+devo-safety = { workspace = true }
+devo-tools = { workspace = true }
+devo-utils = { workspace = true }
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-chrono = { workspace = true }
 smol_str = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
-clap = { workspace = true }
-anyhow = { workspace = true }
+tokio-tungstenite = "0.28"
+toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-futures = { workspace = true }
-toml = { workspace = true }
-tokio-tungstenite = "0.28"
 
 [dev-dependencies]
 async-trait = { workspace = true }

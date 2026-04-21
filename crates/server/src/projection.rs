@@ -1,4 +1,4 @@
-use clawcr_core::{
+use devo_core::{
     ContentBlock, Message, SessionRecord, TextItem, ToolCallItem, ToolResultItem, TurnItem,
     TurnRecord,
 };
@@ -37,7 +37,7 @@ impl DefaultProjection {
             for block in &message.content {
                 match block {
                     ContentBlock::Text { text } if !text.is_empty() => {
-                        let kind = if message.role == clawcr_core::Role::User {
+                        let kind = if message.role == devo_core::Role::User {
                             SessionHistoryItemKind::User
                         } else {
                             SessionHistoryItemKind::Assistant

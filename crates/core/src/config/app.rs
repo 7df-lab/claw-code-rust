@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use clawcr_utils::FileSystemConfigPathResolver;
+use devo_utils::FileSystemConfigPathResolver;
 
 use crate::SkillsConfig;
 use crate::config::{
@@ -49,7 +49,7 @@ pub enum SummaryModelSelection {
 /// priority order:
 ///
 /// 1. command-line startup arguments
-/// 2. `<workspace>/.clawcr/config.toml` for the currently opened project
+/// 2. `<workspace>/.devo/config.toml` for the currently opened project
 /// 3. the user config file under the configured config directory
 ///
 /// When the same field appears in multiple sources, the higher-priority source
@@ -87,7 +87,7 @@ impl Default for AppConfig {
                 redact_secrets_in_logs: true,
                 file: LoggingFileConfig {
                     directory: None,
-                    filename_prefix: "clawcr".into(),
+                    filename_prefix: "devo".into(),
                     rotation: LogRotation::Daily,
                     max_files: 14,
                 },

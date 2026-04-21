@@ -92,10 +92,10 @@ use crate::v2::terminal_palette::default_bg;
 use crate::v2::terminal_palette::indexed_color;
 use crate::v2::terminal_palette::rgb_color;
 use crate::v2::terminal_palette::stdout_color_level;
-use clawcr_protocol::protocol::FileChange;
-use clawcr_utils::git_op::get_git_repo_root;
-use clawcr_utils::terminal_detection::TerminalName;
-use clawcr_utils::terminal_detection::terminal_info;
+use devo_protocol::protocol::FileChange;
+use devo_utils::git_op::get_git_repo_root;
+use devo_utils::terminal_detection::TerminalName;
+use devo_utils::terminal_detection::terminal_info;
 
 /// Classifies a diff line for gutter sign rendering and style selection.
 ///

@@ -21,7 +21,7 @@ impl SlashCommand {
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Clear => "clear the current transcript",
             SlashCommand::Onboard => "configure model provider connection",
-            SlashCommand::Exit => "exit ClawCR",
+            SlashCommand::Exit => "exit Devo",
         }
     }
 

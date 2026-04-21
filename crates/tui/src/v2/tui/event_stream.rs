@@ -15,7 +15,7 @@
 //! pause happens before the stream enters a pending state; otherwise the crossterm reader thread may keep reading
 //! from stdin, so the safer approach is to drop and recreate the event stream when we need to hand off the terminal.
 //!
-//! See https://ratatui.rs/recipes/apps/spawn-vim/ and https://www.reddit.com/r/rust/comments/1f3o33u/myterious_crossterm_input_after_running_vim for more details.
+//! See <https://ratatui.rs/recipes/apps/spawn-vim/> and <https://www.reddit.com/r/rust/comments/1f3o33u/myterious_crossterm_input_after_running_vim> for more details.
 
 use std::pin::Pin;
 use std::sync::Arc;

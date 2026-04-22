@@ -82,7 +82,8 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
         devo_server::SuccessResponse<devo_server::SessionStartResult>,
     >(start_response)?
     .result
-    .session.session_id;
+    .session
+    .session_id;
 
     let turn_start_response = runtime
         .handle_incoming(
@@ -188,7 +189,8 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
         devo_server::SuccessResponse<devo_server::SessionStartResult>,
     >(start_response)?
     .result
-    .session.session_id;
+    .session
+    .session_id;
 
     let _ = runtime
         .handle_incoming(
@@ -323,7 +325,8 @@ async fn runtime_assigns_provisional_title_after_first_prompt() -> Result<()> {
         devo_server::SuccessResponse<devo_server::SessionStartResult>,
     >(start_response)?
     .result
-    .session.session_id;
+    .session
+    .session_id;
 
     let _ = runtime
         .handle_incoming(

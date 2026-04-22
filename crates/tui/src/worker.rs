@@ -28,8 +28,6 @@ use devo_server::ServerEvent;
 use devo_server::SessionHistoryItem;
 use devo_server::SessionHistoryItemKind;
 use devo_server::SessionListParams;
-use devo_server::ToolCallPayload;
-use devo_server::ToolResultPayload;
 use devo_server::SessionResumeParams;
 use devo_server::SessionStartParams;
 use devo_server::SessionTitleUpdateParams;
@@ -37,6 +35,8 @@ use devo_server::SkillListParams;
 use devo_server::SkillSource;
 use devo_server::StdioServerClient;
 use devo_server::StdioServerClientConfig;
+use devo_server::ToolCallPayload;
+use devo_server::ToolResultPayload;
 use devo_server::TurnEventPayload;
 use devo_server::TurnInterruptParams;
 use devo_server::TurnStartParams;
@@ -908,8 +908,8 @@ fn handle_completed_item(payload: ItemEventPayload, event_tx: &mpsc::UnboundedSe
                 return;
             };
             let summary = summarize_tool_call(&payload);
-            let detail = Some(render_json_preview(&payload.parameters))
-                .filter(|detail| !detail.is_empty());
+            let detail =
+                Some(render_json_preview(&payload.parameters)).filter(|detail| !detail.is_empty());
             let _ = event_tx.send(WorkerEvent::ToolCall {
                 tool_use_id: payload.tool_call_id,
                 summary,
@@ -1228,8 +1228,8 @@ mod tests {
 
     use devo_core::SessionId;
     use devo_core::SessionTitleState;
-    use devo_server::SessionRuntimeStatus;
     use devo_server::SessionMetadata;
+    use devo_server::SessionRuntimeStatus;
 
     use super::normalize_display_output;
     use super::project_history_items;

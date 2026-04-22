@@ -51,8 +51,6 @@ use crate::SessionForkParams;
 use crate::SessionForkResult;
 use crate::SessionListParams;
 use crate::SessionListResult;
-use crate::ToolCallPayload;
-use crate::ToolResultPayload;
 use crate::SessionMetadataUpdateParams;
 use crate::SessionMetadataUpdateResult;
 use crate::SessionResumeParams;
@@ -64,14 +62,16 @@ use crate::SessionStatusChangedPayload;
 use crate::SessionTitleUpdateParams;
 use crate::SessionTitleUpdateResult;
 use crate::SuccessResponse;
+use crate::ToolCallPayload;
+use crate::ToolResultPayload;
 use crate::TurnEventPayload;
 use crate::TurnInterruptParams;
 use crate::TurnInterruptResult;
+use crate::TurnMetadata;
 use crate::TurnStartParams;
 use crate::TurnStartResult;
 use crate::TurnSteerParams;
 use crate::TurnSteerResult;
-use crate::TurnMetadata;
 use crate::TurnUsageUpdatedPayload;
 use crate::execution::RuntimeSession;
 use crate::execution::ServerRuntimeDependencies;
@@ -381,9 +381,7 @@ impl ServerRuntime {
 
         serde_json::to_value(SuccessResponse {
             id: request_id,
-            result: SessionStartResult {
-                session: summary,
-            },
+            result: SessionStartResult { session: summary },
         })
         .expect("serialize session/start response")
     }
@@ -809,10 +807,7 @@ impl ServerRuntime {
                 session.summary.cwd = cwd.clone();
                 session.core_session.lock().await.cwd = cwd;
             }
-            let requested_model = params
-                .model
-                .as_deref()
-                .or(session.summary.model.as_deref());
+            let requested_model = params.model.as_deref().or(session.summary.model.as_deref());
             let requested_thinking = params
                 .thinking
                 .clone()

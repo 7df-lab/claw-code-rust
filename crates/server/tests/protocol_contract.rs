@@ -11,7 +11,7 @@ use devo_server::{
     ApprovalScopeValue, ClientRequest, ClientTransportKind, DefaultProjection, EventContext,
     EventsSubscribeParams, InitializeParams, InputItem, ItemDeltaKind, ItemDeltaPayload,
     PendingServerRequestContext, ProtocolError, ProtocolErrorCode, ServerEvent, ServerRequestKind,
-    SessionProjector, SessionRuntimeStatus, SessionMetadata, SessionTitleUpdateParams,
+    SessionMetadata, SessionProjector, SessionRuntimeStatus, SessionTitleUpdateParams,
     SteerInputRecord, TurnKind, TurnProjector,
 };
 use pretty_assertions::assert_eq;

@@ -122,7 +122,9 @@ pub(crate) fn history_item_from_turn_item(item: &TurnItem) -> Option<SessionHist
         TurnItem::ToolResult(ToolResultItem {
             tool_call_id,
             tool_name,
-            output, is_error, ..
+            output,
+            is_error,
+            ..
         }) => Some(SessionHistoryItem {
             tool_call_id: Some(tool_call_id.clone()),
             kind: if *is_error {

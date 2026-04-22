@@ -5,8 +5,8 @@
 //! interaction. Protocol thinking choices come from `devo_protocol::thinking`
 //! through `Model` instead of a TUI-local reasoning enum.
 
-use std::collections::VecDeque;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;

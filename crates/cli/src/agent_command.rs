@@ -26,6 +26,8 @@ pub(crate) async fn run_agent(force_onboarding: bool, log_level: Option<&str>) -
         resolve_initial_provider_settings(force_onboarding, &stored_config, &model_catalog)?;
 
     // convert to TUI `SavedModelEntry` type.
+    // the `SaveModelEntry` seems utilized to display model at TUI.
+    // TODO: Investigate  whether we could simplify it, unify model structure.
     let saved_models = saved_model_entries(&stored_config);
 
     let ResolvedProviderSettings {
@@ -38,15 +40,17 @@ pub(crate) async fn run_agent(force_onboarding: bool, log_level: Option<&str>) -
     } = resolved;
 
     run_interactive_tui(InteractiveTuiConfig {
+        // initial_session corresponding fields at top of `config.toml`.
         initial_session: InitialTuiSession {
             model,
             provider: wire_api,
+            thinking_selection: model_thinking_selection,
+            // TODO: why do we need cwd here, maybe remove it ?
             cwd,
         },
         server_log_level: log_level.map(ToOwned::to_owned),
         model_catalog,
         saved_models,
-        thinking_selection: model_thinking_selection,
         show_model_onboarding: onboarding_mode,
     })
     .await

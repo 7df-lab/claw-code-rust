@@ -22,6 +22,8 @@ pub struct InitialTuiSession {
     pub model: String,
     /// Provider family used for the initial runtime connection and picker fallback.
     pub provider: ProviderWireApi,
+    /// Initial thinking selection restored from persisted config.
+    pub thinking_selection: Option<String>,
     /// Working directory used for the initial session.
     pub cwd: PathBuf,
 }
@@ -36,8 +38,6 @@ pub struct InteractiveTuiConfig {
     pub model_catalog: PresetModelCatalog,
     /// Persisted model entries available for switching in the composer popup.
     pub saved_models: Vec<SavedModelEntry>,
-    /// Initial thinking selection restored from persisted config.
-    pub thinking_selection: Option<String>,
     /// Whether to open the model picker on startup.
     pub show_model_onboarding: bool,
 }

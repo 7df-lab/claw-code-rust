@@ -14,6 +14,8 @@ mod clipboard_copy;
 mod clipboard_paste;
 mod color;
 mod custom_terminal;
+#[cfg(test)]
+mod custom_terminal_clear_tests;
 mod diff_render;
 mod events;
 mod exec_cell;

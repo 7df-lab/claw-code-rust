@@ -194,7 +194,7 @@ fn clear_before_exit(tui: &mut Tui) -> Result<()> {
     if tui.is_alt_screen_active() {
         tui.leave_alt_screen()?;
     }
-    tui.terminal.clear_scrollback_and_visible_screen_ansi()?;
+    tui.terminal.clear_managed_inline_area()?;
     Ok(())
 }
 
@@ -492,7 +492,7 @@ fn handle_app_command(
                 tui.leave_alt_screen()?;
             }
             tui.clear_pending_history_lines();
-            tui.terminal.clear_scrollback_and_visible_screen_ansi()?;
+            tui.terminal.clear_managed_inline_area()?;
             worker.switch_session(*session_id)?;
         }
     }

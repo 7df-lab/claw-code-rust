@@ -463,6 +463,32 @@ where
         Ok(())
     }
 
+    /// Clear only the rows currently managed by the inline devo session.
+    ///
+    /// This preserves shell scrollback above the original devo invocation while
+    /// erasing the visible transcript and viewport so the shell prompt can
+    /// resume at the line where devo started rendering.
+    pub fn clear_managed_inline_area(&mut self) -> io::Result<()> {
+        if self.viewport_area.is_empty() {
+            return Ok(());
+        }
+
+        let managed_top = self
+            .viewport_area
+            .top()
+            .saturating_sub(self.visible_history_rows);
+        let position = Position {
+            x: 0,
+            y: managed_top,
+        };
+        self.set_cursor_position(position)?;
+        self.backend.clear_region(ClearType::AfterCursor)?;
+        std::io::Write::flush(&mut self.backend)?;
+        self.visible_history_rows = 0;
+        self.previous_buffer_mut().reset();
+        Ok(())
+    }
+
     /// Hard-reset scrollback + visible screen using an explicit ANSI sequence.
     ///
     /// Some terminals behave more reliably when purge + clear are emitted as a

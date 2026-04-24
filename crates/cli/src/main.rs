@@ -3,13 +3,9 @@ use clap::Parser;
 use clap::Subcommand;
 use clap::builder::PossibleValuesParser;
 use clap::builder::TypedValueParser as _;
-use devo_core::AppConfig;
 use devo_core::AppConfigLoader;
-use devo_core::FileSystemAppConfigLoader;
 use devo_core::LoggingBootstrap;
 use devo_core::LoggingRuntime;
-use devo_server::ServerProcessArgs;
-use devo_server::run_server_process;
 use devo_utils::find_devo_home;
 use tracing_subscriber::filter::LevelFilter;
 
@@ -23,6 +19,9 @@ use prompt_command::run_prompt;
 
 /// Top-level `devo` command that dispatches to interactive agent mode or one
 /// of the supporting runtime subcommands.
+///
+/// The `devo-server` sub-binary is handled by `devo_arg0::run_as` via argv[0]
+/// dispatch and is not listed as a subcommand here.
 #[derive(Debug, Parser)]
 #[command(name = "devo", version, about = "Devo CLI")]
 struct Cli {
@@ -43,16 +42,19 @@ struct Cli {
     log_level: Option<LevelFilter>,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    devo_arg0::run_as(|_paths| async { run_cli().await })
+}
+
+async fn run_cli() -> Result<()> {
     let cli = Cli::parse();
+
     // Resolve logging config early, install the process-wide file subscriber,
     // and keep its non-blocking writer guard alive for the command lifetime.
     let _logging = install_logging(&cli)?;
     let log_level = cli.log_level.map(|level| level.to_string());
 
     match cli.command {
-        Some(Command::Server(args)) => run_server_process(args).await,
         Some(Command::Onboard) => {
             run_agent(/*force_onboarding*/ true, log_level.as_deref()).await
         }
@@ -70,8 +72,6 @@ async fn main() -> Result<()> {
 enum Command {
     /// Launch the interactive onboarding flow to configure a model provider.
     Onboard,
-    /// Start the transport-facing server runtime.
-    Server(ServerProcessArgs),
     /// Send a single prompt to the model and print the response (non-interactive).
     Prompt {
         /// The prompt text to send to the model.
@@ -83,19 +83,15 @@ enum Command {
 
 fn install_logging(cli: &Cli) -> Result<LoggingRuntime> {
     let home_dir = find_devo_home()?;
-    let loader = FileSystemAppConfigLoader::new(home_dir.clone())
-        .with_cli_overrides(cli_logging_overrides(cli));
-    let current_dir = std::env::current_dir()?;
-    let workspace_root = match &cli.command {
-        Some(Command::Server(args)) => args.working_root.as_deref(),
-        _ => Some(current_dir.as_path()),
-    };
-    let app_config = loader.load(workspace_root).unwrap_or_else(|err| {
-        eprintln!("warning: failed to load app config for logging: {err}");
-        AppConfig::default()
-    });
+    let app_config = devo_core::FileSystemAppConfigLoader::new(home_dir.clone())
+        .with_cli_overrides(cli_logging_overrides(cli))
+        .load(Some(std::env::current_dir()?.as_path()))
+        .unwrap_or_else(|err| {
+            eprintln!("warning: failed to load app config for logging: {err}");
+            devo_core::AppConfig::default()
+        });
     LoggingBootstrap {
-        process_name: logging_process_name(&cli.command),
+        process_name: "cli",
         config: app_config.logging,
         home_dir,
     }
@@ -117,16 +113,6 @@ fn cli_logging_overrides(cli: &Cli) -> toml::Value {
     )]))
 }
 
-fn logging_process_name(command: &Option<Command>) -> &'static str {
-    match command {
-        Some(Command::Onboard) => "onboard",
-        Some(Command::Server(_)) => "server",
-        Some(Command::Prompt { .. }) => "prompt",
-        Some(Command::Doctor) => "doctor",
-        None => "cli",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -134,29 +120,7 @@ mod tests {
     use tracing_subscriber::filter::LevelFilter;
 
     use super::Cli;
-    use super::Command;
-    use super::ServerProcessArgs;
     use super::cli_logging_overrides;
-    use super::logging_process_name;
-
-    #[test]
-    fn logging_process_name_exhausted_subcommand() {
-        assert_eq!(logging_process_name(&None), "cli");
-        assert_eq!(logging_process_name(&Some(Command::Onboard)), "onboard");
-        assert_eq!(
-            logging_process_name(&Some(Command::Server(ServerProcessArgs {
-                working_root: None,
-            }))),
-            "server"
-        );
-        assert_eq!(
-            logging_process_name(&Some(Command::Prompt {
-                input: "".to_string()
-            })),
-            "prompt"
-        );
-        assert_eq!(logging_process_name(&Some(Command::Doctor)), "doctor");
-    }
 
     #[test]
     fn cli_parses_supported_log_levels() {

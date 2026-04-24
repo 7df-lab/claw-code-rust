@@ -8,10 +8,6 @@ version.workspace = true
 [lib]
 path = "src/lib.rs"
 
-[[bin]]
-name = "devo-server"
-path = "src/main.rs"
-
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }

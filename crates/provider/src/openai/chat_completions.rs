@@ -576,18 +576,7 @@ fn build_request(request: &ModelRequest, stream: bool) -> Value {
                 } else {
                     Value::String(text_parts.join(""))
                 };
-                let thinking_enabled = request
-                    .thinking
-                    .as_deref()
-                    .is_some_and(|t| t != "disabled" && t != "none")
-                    || request.reasoning_effort.is_some();
-                if profile.supports_reasoning_content && thinking_enabled {
-                    entry["reasoning_content"] = if reasoning_parts.is_empty() {
-                        Value::Null
-                    } else {
-                        Value::String(reasoning_parts.join(""))
-                    };
-                } else if !reasoning_parts.is_empty() {
+                if !reasoning_parts.is_empty() {
                     entry["reasoning_content"] = Value::String(reasoning_parts.join(""));
                 }
                 if !tool_calls.is_empty() {

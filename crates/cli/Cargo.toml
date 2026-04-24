@@ -19,6 +19,7 @@ devo-tasks = { workspace = true }
 devo-tools = { workspace = true }
 devo-tui = { workspace = true }
 devo-utils = { workspace = true }
+devo-arg0 = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

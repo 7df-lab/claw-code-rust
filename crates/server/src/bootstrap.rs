@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
+use clap::ValueEnum;
 use devo_core::{
     AppConfigLoader, FileSystemAppConfigLoader, FileSystemSkillCatalog, ModelCatalog,
     PresetModelCatalog, SkillsConfig,
@@ -15,6 +16,12 @@ use crate::{
     resolve_listen_targets, run_listeners,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ServerTransportMode {
+    Config,
+    Stdio,
+}
+
 /// Command-line arguments accepted by the standalone server process entrypoint.
 #[derive(Debug, Clone, Parser)]
 #[command(name = "devo-server", version, about)]
@@ -22,6 +29,10 @@ pub struct ServerProcessArgs {
     /// Optional workspace root used for project-level config resolution.
     #[arg(long)]
     pub working_root: Option<PathBuf>,
+
+    /// Override the transport mode used by this server process.
+    #[arg(long, value_enum, hide = true, default_value_t = ServerTransportMode::Config)]
+    transport: ServerTransportMode,
 }
 
 /// Starts the transport-facing server runtime using the resolved application
@@ -30,7 +41,11 @@ pub async fn run_server_process(args: ServerProcessArgs) -> Result<()> {
     let resolver = FileSystemConfigPathResolver::from_env()?;
     let loader = FileSystemAppConfigLoader::new(resolver.user_config_dir());
     let config = loader.load(args.working_root.as_deref())?;
-    let listen_targets = resolve_listen_targets(&config.server.listen)?;
+    let effective_listen = match args.transport {
+        ServerTransportMode::Config => config.server.listen.clone(),
+        ServerTransportMode::Stdio => vec!["stdio://".to_string()],
+    };
+    let listen_targets = resolve_listen_targets(&effective_listen)?;
     let effective_listen = listen_targets
         .iter()
         .map(|target| match target {
@@ -108,7 +123,7 @@ pub async fn run_server_process(args: ServerProcessArgs) -> Result<()> {
     tracing::info!("persisted session restore completed");
     tracing::info!("server bootstrap completed; starting listeners");
     tokio::select! {
-        result = run_listeners(runtime, &config.server.listen) => {
+        result = run_listeners(runtime, &effective_listen) => {
             result?;
         }
         result = tokio::signal::ctrl_c() => {
@@ -117,4 +132,29 @@ pub async fn run_server_process(args: ServerProcessArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::ServerProcessArgs;
+    use super::ServerTransportMode;
+    use clap::Parser;
+
+    #[test]
+    fn server_process_args_default_to_config_transport() {
+        let args = ServerProcessArgs::parse_from(["devo-server"]);
+
+        assert_eq!(args.working_root, None);
+        assert_eq!(args.transport, ServerTransportMode::Config);
+    }
+
+    #[test]
+    fn server_process_args_accept_stdio_transport_override() {
+        let args = ServerProcessArgs::parse_from(["devo-server", "--transport", "stdio"]);
+
+        assert_eq!(args.working_root, None);
+        assert_eq!(args.transport, ServerTransportMode::Stdio);
+    }
 }

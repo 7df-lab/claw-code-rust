@@ -606,6 +606,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "devo-arg0"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "devo-core",
+ "devo-server",
+ "devo-utils",
+ "dotenvy",
+ "fs2",
+ "pretty_assertions",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "devo-cli"
 version = "0.1.0"
 dependencies = [
@@ -613,6 +631,7 @@ dependencies = [
  "async-trait",
  "clap",
  "colored",
+ "devo-arg0",
  "devo-core",
  "devo-protocol",
  "devo-provider",
@@ -975,6 +994,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1142,6 +1167,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

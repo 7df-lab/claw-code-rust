@@ -1,0 +1,25 @@
+[package]
+description = "Single-binary dispatch via argv[0]: alias symlinks/bat scripts so devo and devo-server share one exe"
+edition.workspace = true
+license.workspace = true
+name = "devo-arg0"
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+devo-core = { workspace = true }
+devo-server = { workspace = true }
+devo-utils = { workspace = true }
+dotenvy = "0.15"
+fs2 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

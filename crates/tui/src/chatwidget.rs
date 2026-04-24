@@ -327,30 +327,30 @@ impl ChatWidget {
             .as_ref()
             .map(|model| model.slug.as_str())
             .unwrap_or("unknown");
-        let thinking = self
-            .display_thinking_selection()
-            .unwrap_or_else(|| "unsupported".to_string());
-        let tokens = format!(
-            "{} in / {} out",
-            Self::format_token_count(self.total_input_tokens),
-            Self::format_token_count(self.total_output_tokens)
-        );
+        let thinking = self.thinking_selection.as_deref().unwrap_or("default");
         let context = self.context_budget().map_or_else(
             || "context n/a".to_string(),
-            |(used, usable, _total)| {
+            |(used, usable, total)| {
                 format!(
-                    "context {} / {}",
+                    "context {} / {} usable ({} total)",
                     Self::format_token_count(used),
-                    Self::format_token_count(usable)
+                    Self::format_token_count(usable),
+                    Self::format_token_count(total)
                 )
             },
         );
-        format!("{model}  |  thinking {thinking}  |  {tokens}  |  {context}")
+
+        format!(
+            "model {model} | thinking {thinking} | tokens {} in / {} out | {context}",
+            self.total_input_tokens,
+            self.total_output_tokens
+        )
     }
 
     fn sync_bottom_pane_summary(&mut self) {
         self.bottom_pane
-            .set_session_summary(self.session_summary_text());
+            .set_status_line(Some(Line::from(self.session_summary_text()).dim()));
+        self.bottom_pane.set_status_line_enabled(true);
     }
 
     fn push_session_header(
@@ -427,6 +427,7 @@ impl ChatWidget {
             placeholder_text: "Ask Devo".to_string(),
             disable_paste_burst: false,
             skills: None,
+            animations_enabled: true,
         });
 
         let history: Vec<Box<dyn HistoryCell>> = vec![Self::build_header_box(
@@ -583,7 +584,7 @@ impl ChatWidget {
                 self.active_assistant_text.clear();
                 self.active_reasoning_text.clear();
                 self.stream_controller = None;
-                self.set_status_message("Thinking");
+                self.bottom_pane.set_task_running(true);
             }
             WorkerEvent::TextDelta(text) => {
                 self.push_assistant_stream_delta(&text);
@@ -691,7 +692,6 @@ impl ChatWidget {
             } => {
                 self.total_input_tokens = total_input_tokens;
                 self.total_output_tokens = total_output_tokens;
-                self.sync_bottom_pane_summary();
                 self.frame_requester.schedule_frame();
             }
             WorkerEvent::TurnFinished {
@@ -707,6 +707,7 @@ impl ChatWidget {
                 self.turn_count = turn_count;
                 self.total_input_tokens = total_input_tokens;
                 self.total_output_tokens = total_output_tokens;
+                self.bottom_pane.set_task_running(false);
                 self.set_status_message("Ready");
             }
             WorkerEvent::TurnFailed {
@@ -723,6 +724,7 @@ impl ChatWidget {
                 self.total_input_tokens = total_input_tokens;
                 self.total_output_tokens = total_output_tokens;
                 self.add_to_history(history_cell::new_error_event(message));
+                self.bottom_pane.set_task_running(false);
                 self.set_status_message("Query failed; see error above");
             }
             WorkerEvent::ProviderValidationSucceeded { reply_preview } => {
@@ -840,7 +842,6 @@ impl ChatWidget {
                 self.bottom_pane.restore_input_from_history(text);
             }
         }
-        self.sync_bottom_pane_summary();
     }
 
     pub(crate) fn submit_text(&mut self, text: String) {
@@ -1097,7 +1098,6 @@ impl ChatWidget {
         if self.onboarding_step.is_none() {
             self.set_default_placeholder();
         }
-        self.sync_bottom_pane_summary();
         self.frame_requester.schedule_frame();
     }
 
@@ -1299,7 +1299,6 @@ impl ChatWidget {
 
     pub(crate) fn set_thinking_selection(&mut self, selection: Option<String>) {
         self.thinking_selection = selection;
-        self.sync_bottom_pane_summary();
         self.frame_requester.schedule_frame();
     }
 
@@ -1478,8 +1477,6 @@ impl ChatWidget {
     pub(crate) fn set_status_message(&mut self, message: impl Into<String>) {
         self.status_message = message.into();
         self.sync_bottom_pane_summary();
-        self.bottom_pane
-            .set_status_message(self.status_message.clone());
         self.frame_requester.schedule_frame();
     }
 

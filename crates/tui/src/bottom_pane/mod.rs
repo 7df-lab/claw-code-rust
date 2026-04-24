@@ -45,10 +45,10 @@ use crate::bottom_pane::pending_thread_approvals::PendingThreadApprovals;
 use crate::bottom_pane::unified_exec_footer::UnifiedExecFooter;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
+use crate::status_indicator_widget::StatusIndicatorWidget;
 use crate::tui::frame_requester::FrameRequester;
 
 pub(crate) const QUIT_SHORTCUT_TIMEOUT: Duration = Duration::from_secs(2);
-const FOOTER_STATUS_ANIMATION_PREFIX: &str = "[[devo-status-animated]] ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CancellationEvent {
@@ -127,6 +127,7 @@ pub(crate) struct BottomPaneParams {
     pub(crate) placeholder_text: String,
     pub(crate) disable_paste_burst: bool,
     pub(crate) skills: Option<Vec<SkillMetadata>>,
+    pub(crate) animations_enabled: bool,
 }
 
 pub(crate) struct BottomPane {
@@ -138,8 +139,11 @@ pub(crate) struct BottomPane {
     pending_input_preview: PendingInputPreview,
     pending_thread_approvals: PendingThreadApprovals,
     placeholder_text: String,
-    session_summary: Option<String>,
-    status_message: Option<String>,
+    /// Status indicator shown above the composer while a task is running.
+    status: Option<StatusIndicatorWidget>,
+    is_task_running: bool,
+    animations_enabled: bool,
+    has_input_focus: bool,
     allow_empty_submit: bool,
     external_history_active: bool,
     external_history_draft: Option<String>,
@@ -155,6 +159,7 @@ impl BottomPane {
             placeholder_text,
             disable_paste_burst,
             skills,
+            animations_enabled,
         } = params;
         let mut composer = ChatComposer::new_with_config(
             has_input_focus,
@@ -178,8 +183,10 @@ impl BottomPane {
             pending_input_preview: PendingInputPreview::new(),
             pending_thread_approvals: PendingThreadApprovals::new(),
             placeholder_text,
-            session_summary: None,
-            status_message: None,
+            status: None,
+            is_task_running: false,
+            animations_enabled,
+            has_input_focus,
             allow_empty_submit: false,
             external_history_active: false,
             external_history_draft: None,
@@ -189,6 +196,16 @@ impl BottomPane {
     pub(crate) fn handle_key_event(&mut self, key: KeyEvent) -> InputResult {
         if !self.view_stack.is_empty() {
             return self.handle_view_key_event(key);
+        }
+
+        if key.code == KeyCode::Esc
+            && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            && self.is_task_running
+            && !self.composer.popup_active()
+        {
+            self.app_event_tx.send(AppEvent::Interrupt);
+            self.request_redraw();
+            return InputResult::None;
         }
 
         if self.should_route_external_history(key) {
@@ -262,23 +279,6 @@ impl BottomPane {
         } else if self.composer.is_in_paste_burst() {
             self.request_redraw_in(ChatComposer::recommended_paste_flush_delay());
         }
-        if self
-            .status_message
-            .as_deref()
-            .is_some_and(status_message_is_active)
-        {
-            self.request_redraw_in(Duration::from_millis(32));
-        }
-    }
-
-    pub(crate) fn set_status_message(&mut self, message: impl Into<String>) {
-        self.status_message = Some(message.into());
-        self.sync_status_line();
-    }
-
-    pub(crate) fn set_session_summary(&mut self, summary: impl Into<String>) {
-        self.session_summary = Some(summary.into());
-        self.sync_status_line();
     }
 
     pub(crate) fn set_placeholder_text(&mut self, placeholder: impl Into<String>) {
@@ -342,6 +342,58 @@ impl BottomPane {
         if self.composer.set_status_line_enabled(enabled) {
             self.request_redraw();
         }
+    }
+
+    pub(crate) fn set_task_running(&mut self, running: bool) {
+        let was_running = self.is_task_running;
+        self.is_task_running = running;
+        if running {
+            if !was_running {
+                if self.status.is_none() {
+                    self.status = Some(StatusIndicatorWidget::new(
+                        self.app_event_tx.clone(),
+                        self.frame_requester.clone(),
+                        self.animations_enabled,
+                    ));
+                }
+                if let Some(status) = self.status.as_mut() {
+                    status.set_interrupt_hint_visible(true);
+                }
+                self.request_redraw();
+            }
+        } else {
+            self.hide_status_indicator();
+        }
+    }
+
+    pub(crate) fn hide_status_indicator(&mut self) {
+        if self.status.take().is_some() {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn ensure_status_indicator(&mut self) {
+        if self.status.is_none() {
+            self.status = Some(StatusIndicatorWidget::new(
+                self.app_event_tx.clone(),
+                self.frame_requester.clone(),
+                self.animations_enabled,
+            ));
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn status_widget(&self) -> Option<&StatusIndicatorWidget> {
+        self.status.as_ref()
+    }
+
+    pub(crate) fn status_widget_mut(&mut self) -> Option<&mut StatusIndicatorWidget> {
+        self.status.as_mut()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_indicator_visible(&self) -> bool {
+        self.status.is_some()
     }
 
     fn active_view(&self) -> Option<&dyn BottomPaneView> {
@@ -461,33 +513,6 @@ impl BottomPane {
         self.external_history_draft = None;
     }
 
-    fn sync_status_line(&mut self) {
-        let animated_prefix = if self
-            .status_message
-            .as_deref()
-            .is_some_and(status_message_is_active)
-        {
-            FOOTER_STATUS_ANIMATION_PREFIX
-        } else {
-            Default::default()
-        };
-        let status_line = match (&self.session_summary, &self.status_message) {
-            (Some(summary), Some(status)) => {
-                Some(Line::from(format!("{animated_prefix}{status}  |  {summary}")).dim())
-            }
-            (Some(summary), None) => Some(Line::from(summary.clone()).dim()),
-            (None, Some(status)) => Some(Line::from(format!("{animated_prefix}{status}")).dim()),
-            (None, None) => None,
-        };
-        let changed = self.composer.set_status_line(status_line);
-        let enabled_changed = self.composer.set_status_line_enabled(
-            self.session_summary.is_some() || self.status_message.is_some(),
-        );
-        if changed || enabled_changed {
-            self.request_redraw();
-        }
-    }
-
     fn render_children(&self, area: Rect, buf: &mut Buffer, children: &[&dyn Renderable]) {
         let mut y = area.y;
         for child in children {
@@ -537,19 +562,6 @@ impl BottomPane {
     }
 }
 
-fn status_message_is_active(message: &str) -> bool {
-    let normalized = message.trim().to_ascii_lowercase();
-    normalized == "thinking"
-        || normalized == "generating"
-        || normalized.starts_with("tool ")
-        || normalized.starts_with("loading")
-        || normalized.contains("validating")
-}
-
-pub(crate) fn footer_status_animation_prefix() -> &'static str {
-    FOOTER_STATUS_ANIMATION_PREFIX
-}
-
 impl Renderable for BottomPane {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.is_empty() {
@@ -559,12 +571,20 @@ impl Renderable for BottomPane {
             view.render(area, buf);
             return;
         }
-        let children: [&dyn Renderable; 4] = [
-            &self.unified_exec_footer,
+        let mut children: Vec<&dyn Renderable> = Vec::with_capacity(5);
+        // Status indicator above the composer while a task is running.
+        if let Some(status) = &self.status {
+            children.push(status);
+        }
+        // Avoid double-surfacing the unified-exec summary when the status row is active.
+        if self.status.is_none() && !self.unified_exec_footer.is_empty() {
+            children.push(&self.unified_exec_footer);
+        }
+        children.extend_from_slice(&[
             &self.pending_thread_approvals,
             &self.pending_input_preview,
             &self.composer,
-        ];
+        ]);
         self.render_children(area, buf, &children);
     }
 
@@ -572,12 +592,18 @@ impl Renderable for BottomPane {
         if let Some(view) = self.active_view() {
             return view.desired_height(width);
         }
-        let children: [&dyn Renderable; 4] = [
-            &self.unified_exec_footer,
+        let mut children: Vec<&dyn Renderable> = Vec::with_capacity(5);
+        if let Some(status) = &self.status {
+            children.push(status);
+        }
+        if self.status.is_none() && !self.unified_exec_footer.is_empty() {
+            children.push(&self.unified_exec_footer);
+        }
+        children.extend_from_slice(&[
             &self.pending_thread_approvals,
             &self.pending_input_preview,
             &self.composer,
-        ];
+        ]);
         self.desired_children_height(width, &children)
     }
 
@@ -585,12 +611,18 @@ impl Renderable for BottomPane {
         if let Some(view) = self.active_view() {
             return view.cursor_pos(area);
         }
-        let children: [&dyn Renderable; 4] = [
-            &self.unified_exec_footer,
+        let mut children: Vec<&dyn Renderable> = Vec::with_capacity(5);
+        if let Some(status) = &self.status {
+            children.push(status);
+        }
+        if self.status.is_none() && !self.unified_exec_footer.is_empty() {
+            children.push(&self.unified_exec_footer);
+        }
+        children.extend_from_slice(&[
             &self.pending_thread_approvals,
             &self.pending_input_preview,
             &self.composer,
-        ];
+        ]);
         self.child_cursor_pos(area, &children)
     }
 }

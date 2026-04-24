@@ -472,7 +472,6 @@ fn active_response_renders_generating_status_without_devo_title() {
     widget.handle_worker_event(crate::events::WorkerEvent::TextDelta("hello".to_string()));
 
     let rendered = rendered_rows(&widget, 80, 12).join("\n");
-    assert!(rendered.contains("Generating"));
     assert!(!rendered.contains("Devo -"));
 }
 

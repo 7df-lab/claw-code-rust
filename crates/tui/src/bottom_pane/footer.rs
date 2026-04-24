@@ -1,4 +1,4 @@
-//! The bottom-pane footer renders transient hints and context indicators.
+﻿//! The bottom-pane footer renders transient hints and context indicators.
 //!
 //! The footer is pure rendering: it formats `FooterProps` into `Line`s without mutating any state.
 //! It intentionally does not decide *which* footer content should be shown; that is owned by the
@@ -41,13 +41,7 @@
 //! In short: `single_line_footer_layout` chooses *what* best fits, and the two
 //! render helpers choose whether to draw the chosen line or the default
 //! `FooterProps` mapping.
-use std::time::Duration;
-use std::time::Instant;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
-use crate::bottom_pane::footer_status_animation_prefix;
-use crate::exec_cell::spinner;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::render::line_utils::prefix_lines;
@@ -88,7 +82,7 @@ pub(crate) struct FooterProps {
     /// instructional hint.
     ///
     /// When both this label and the configured status line are available, they are rendered on the
-    /// same row separated by ` · `.
+    /// same row separated by ` 路 `.
     pub(crate) active_agent_label: Option<String>,
 }
 
@@ -298,7 +292,7 @@ fn left_side_line(
 
     if let Some(collaboration_mode_indicator) = collaboration_mode_indicator {
         if !matches!(state.hint, SummaryHintKind::None) {
-            line.push_span(" · ".dim());
+            line.push_span(" 路 ".dim());
         }
         line.push_span(collaboration_mode_indicator.styled_span(state.show_cycle_hint));
     }
@@ -651,14 +645,14 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
         props
             .status_line_value
             .clone()
-            .map(extract_animated_status_line)
+            .map(|line| line)
     } else {
         None
     };
 
     if let Some(active_agent_label) = props.active_agent_label.as_ref() {
         if let Some(existing) = line.as_mut() {
-            existing.spans.push(" · ".into());
+            existing.spans.push(" 路 ".into());
             existing.spans.push(active_agent_label.clone().into());
         } else {
             line = Some(Line::from(active_agent_label.clone()));
@@ -666,36 +660,6 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
     }
 
     line
-}
-
-fn extract_animated_status_line(mut line: Line<'static>) -> Line<'static> {
-    let prefix = footer_status_animation_prefix();
-    let Some(first_span) = line.spans.first_mut() else {
-        return line;
-    };
-    let Some(stripped) = first_span.content.strip_prefix(prefix) else {
-        return line;
-    };
-
-    first_span.content = stripped.to_string().into();
-    if first_span.content.is_empty() {
-        line.spans.remove(0);
-    }
-    line.spans.insert(0, " ".into());
-    line.spans.insert(0, animated_status_spinner());
-    line
-}
-
-fn animated_status_spinner() -> Span<'static> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        % 1_200;
-    let start_time = Instant::now()
-        .checked_sub(Duration::from_millis(elapsed as u64))
-        .unwrap_or_else(Instant::now);
-    spinner(Some(start_time), /*animations_enabled*/ true)
 }
 
 /// Whether the current footer mode allows contextual information to replace instructional hints.
@@ -772,37 +736,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn extract_animated_status_line_prefixes_spinner_and_strips_marker() {
-        let line = Line::from(format!(
-            "{}Thinking  |  model",
-            footer_status_animation_prefix()
-        ))
-        .dim();
-
-        let rendered = extract_animated_status_line(line);
-        let text = line_text(&rendered);
-
-        let valid_spinners = ["•", "◦", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let spinner_char = text.chars().next().unwrap().to_string();
-        assert!(
-            valid_spinners.contains(&spinner_char.as_str()),
-            "unexpected animated footer text: {text}"
-        );
-        assert!(
-            text.strip_prefix(&spinner_char).unwrap() == " Thinking  |  model",
-            "unexpected text after spinner: {text}"
-        );
-    }
-
-    #[test]
-    fn extract_animated_status_line_leaves_plain_lines_unchanged() {
-        let line = Line::from("Ready  |  model").dim();
-
-        let rendered = extract_animated_status_line(line.clone());
-
-        assert_eq!(line_text(&rendered), line_text(&line));
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1151,3 +1084,4 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
         label: " to change mode",
     },
 ];
+

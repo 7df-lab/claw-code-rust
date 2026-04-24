@@ -29,6 +29,7 @@ fn clear_managed_inline_area_preserves_rows_above_devo() {
     let rows_after: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
     assert_eq!(rows_before[0], rows_after[0]);
     assert_eq!(rows_before[1], rows_after[1]);
+    assert_eq!(2, term.viewport_area.y);
     assert_eq!("", rows_after[2].trim_end());
     assert!(
         rows_after.iter().all(|row| !row.contains("devo line")),
@@ -61,6 +62,19 @@ fn clear_screen_area_only_clears_target_rows() {
     let rows_after: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
     assert!(rows_after[1].contains("keep row"));
     assert_eq!("", rows_after[3].trim_end());
+}
+
+#[test]
+fn clear_visible_screen_resets_viewport_to_top() {
+    let width: u16 = 24;
+    let height: u16 = 8;
+    let backend = VT100Backend::new(width, height);
+    let mut term = Terminal::with_options(backend).expect("terminal");
+    term.set_viewport_area(Rect::new(0, 5, width, 2));
+
+    term.clear_visible_screen().expect("clear visible screen");
+
+    assert_eq!(0, term.viewport_area.y);
 }
 
 #[test]

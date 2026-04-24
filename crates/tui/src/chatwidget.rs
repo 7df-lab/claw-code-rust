@@ -365,6 +365,49 @@ impl ChatWidget {
         ));
     }
 
+    fn rebuild_restored_session_history(
+        &mut self,
+        history_items: Vec<TranscriptItem>,
+        loaded_item_count: u64,
+        session_id: &str,
+        title: Option<&str>,
+    ) {
+        self.history.clear();
+        self.next_history_flush_index = 0;
+        self.push_session_header(
+            /*is_first_run*/ false,
+            /*startup_tooltip_override*/ None,
+        );
+
+        tracing::trace!(
+            session_id,
+            loaded_item_count,
+            restored_items = history_items.len(),
+            restored_preview = ?history_items
+                .iter()
+                .take(10)
+                .map(|item| (format!("{:?}", item.kind), item.title.clone()))
+                .collect::<Vec<_>>(),
+            synthetic_header_inserted = true,
+            "rebuilding restored session transcript"
+        );
+
+        let loaded_any_history = !history_items.is_empty();
+        for item in history_items {
+            self.add_transcript_item_without_redraw(item);
+        }
+        if !loaded_any_history {
+            self.add_history_entry_without_redraw(Box::new(history_cell::new_info_event(
+                format!(
+                    "switched to {session_id}; title: {}; loaded items: {loaded_item_count}",
+                    title.unwrap_or("(untitled)")
+                ),
+                None,
+            )));
+        }
+        self.frame_requester.schedule_frame();
+    }
+
     fn clear_for_session_switch(&mut self) {
         self.history.clear();
         self.next_history_flush_index = 0;
@@ -803,22 +846,12 @@ impl ChatWidget {
                 self.stream_controller = None;
                 self.total_input_tokens = total_input_tokens;
                 self.total_output_tokens = total_output_tokens;
-                self.push_session_header(
-                    /*is_first_run*/ false, /*startup_tooltip_override*/ None,
+                self.rebuild_restored_session_history(
+                    history_items,
+                    loaded_item_count,
+                    &session_id,
+                    title.as_deref(),
                 );
-                let loaded_any_history = !history_items.is_empty();
-                for item in history_items {
-                    self.add_transcript_item(item);
-                }
-                if !loaded_any_history {
-                    self.add_to_history(history_cell::new_info_event(
-                        format!(
-                            "switched to {session_id}; title: {}; loaded items: {loaded_item_count}",
-                            title.unwrap_or_else(|| "(untitled)".to_string())
-                        ),
-                        None,
-                    ));
-                }
                 self.set_status_message("Session switched");
             }
             WorkerEvent::SessionRenamed { session_id, title } => {
@@ -1131,6 +1164,20 @@ impl ChatWidget {
     }
 
     fn add_markdown_history_with_status(&mut self, title: &str, body: &str, status: DotStatus) {
+        self.add_markdown_history_with_status_without_redraw(title, body, status);
+        self.frame_requester.schedule_frame();
+    }
+
+    fn add_markdown_history_without_redraw(&mut self, title: &str, body: &str) {
+        self.add_markdown_history_with_status_without_redraw(title, body, DotStatus::Completed);
+    }
+
+    fn add_markdown_history_with_status_without_redraw(
+        &mut self,
+        title: &str,
+        body: &str,
+        status: DotStatus,
+    ) {
         let mut lines = if title == "Assistant" || title == "Reasoning" {
             Vec::new()
         } else {
@@ -1143,14 +1190,16 @@ impl ChatWidget {
             &mut lines,
         );
         if title == "Assistant" || title == "Reasoning" {
-            self.add_to_history(history_cell::AgentMessageCell::new_with_prefix(
-                lines,
-                Self::dot_prefix(status),
-                "  ",
-                false,
+            self.add_history_entry_without_redraw(Box::new(
+                history_cell::AgentMessageCell::new_with_prefix(
+                    lines,
+                    Self::dot_prefix(status),
+                    "  ",
+                    false,
+                ),
             ));
         } else {
-            self.add_to_history(PlainHistoryCell::new(lines));
+            self.add_history_entry_without_redraw(Box::new(PlainHistoryCell::new(lines)));
         }
     }
 
@@ -1180,42 +1229,56 @@ impl ChatWidget {
     }
 
     fn add_transcript_item(&mut self, item: TranscriptItem) {
+        self.add_transcript_item_without_redraw(item);
+        self.frame_requester.schedule_frame();
+    }
+
+    fn add_transcript_item_without_redraw(&mut self, item: TranscriptItem) {
         match item.kind {
             TranscriptItemKind::User => {
-                self.add_to_history(history_cell::new_user_prompt(
+                self.add_history_entry_without_redraw(Box::new(history_cell::new_user_prompt(
                     item.body,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
-                ));
+                )));
             }
-            TranscriptItemKind::Assistant => self.add_markdown_history("Assistant", &item.body),
+            TranscriptItemKind::Assistant => {
+                self.add_markdown_history_without_redraw("Assistant", &item.body)
+            }
             TranscriptItemKind::Reasoning => {
-                self.add_markdown_history("Reasoning", &item.body);
+                self.add_markdown_history_without_redraw("Reasoning", &item.body);
             }
             TranscriptItemKind::ToolCall => {
-                self.add_to_history(history_cell::AgentMessageCell::new_with_prefix(
-                    vec![Line::from(item.title).patch_style(Self::tool_text_style())],
-                    Self::tool_dot_prefix(),
-                    "  ",
-                    false,
+                self.add_history_entry_without_redraw(Box::new(
+                    history_cell::AgentMessageCell::new_with_prefix(
+                        vec![Line::from(item.title).patch_style(Self::tool_text_style())],
+                        Self::tool_dot_prefix(),
+                        "  ",
+                        false,
+                    ),
                 ));
             }
             TranscriptItemKind::ToolResult => {
                 let mut lines = vec![Line::from(item.title).patch_style(Self::tool_text_style())];
                 lines.extend(self.tool_preview_lines(&item.body));
-                self.add_to_history(history_cell::AgentMessageCell::new_with_prefix(
-                    lines,
-                    Self::tool_dot_prefix(),
-                    "  ",
-                    false,
+                self.add_history_entry_without_redraw(Box::new(
+                    history_cell::AgentMessageCell::new_with_prefix(
+                        lines,
+                        Self::tool_dot_prefix(),
+                        "  ",
+                        false,
+                    ),
                 ));
             }
-            TranscriptItemKind::Error => self.add_to_history(
+            TranscriptItemKind::Error => self.add_history_entry_without_redraw(Box::new(
                 history_cell::new_error_event_with_hint(item.body, Some(item.title)),
-            ),
+            )),
             TranscriptItemKind::System => {
-                self.add_to_history(history_cell::new_info_event(item.title, Some(item.body)));
+                self.add_history_entry_without_redraw(Box::new(history_cell::new_info_event(
+                    item.title,
+                    Some(item.body),
+                )));
             }
         }
     }
@@ -1435,8 +1498,12 @@ impl ChatWidget {
     }
 
     pub(crate) fn add_to_history(&mut self, cell: impl HistoryCell + 'static) {
-        self.history.push(Box::new(cell));
+        self.add_history_entry_without_redraw(Box::new(cell));
         self.frame_requester.schedule_frame();
+    }
+
+    fn add_history_entry_without_redraw(&mut self, cell: Box<dyn HistoryCell>) {
+        self.history.push(cell);
     }
 
     pub(crate) fn active_cell_transcript_key(&self) -> Option<ActiveCellTranscriptKey> {
@@ -1534,13 +1601,8 @@ impl ChatWidget {
     pub(crate) fn drain_scrollback_lines(&mut self, width: u16) -> Vec<Line<'static>> {
         let width = width.max(1);
         let mut lines = Vec::new();
-        let mut emitted_any = false;
         for cell in self.history.iter().skip(self.next_history_flush_index) {
-            if emitted_any && !cell.is_stream_continuation() {
-                lines.push(Line::from(""));
-            }
             lines.extend(cell.display_lines(width));
-            emitted_any = true;
         }
         self.next_history_flush_index = self.history.len();
         lines

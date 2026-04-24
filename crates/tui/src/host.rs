@@ -52,6 +52,9 @@ struct InteractiveLoopState {
     // indicate whther LLM worker is working, is started by TurnStarted,
     // it ended by TurnFailed/TurnFinished
     busy: bool,
+    // True after clearing the inline UI for a session switch and before the
+    // replacement session has been restored into widget state.
+    session_switch_pending: bool,
     last_ctrl_c_at: Option<Instant>,
 }
 
@@ -213,6 +216,10 @@ fn handle_tui_event(
 
     match tui_event {
         TuiEvent::Draw => {
+            if loop_state.session_switch_pending {
+                return Ok(LoopAction::Continue);
+            }
+
             // Update time-sensitive widget state before measuring or rendering.
             chat_widget.pre_draw_tick();
 
@@ -352,6 +359,7 @@ fn handle_worker_event(
             loop_state.turn_count = *next_turn_count;
             loop_state.total_input_tokens = *next_total_input_tokens;
             loop_state.total_output_tokens = *next_total_output_tokens;
+            loop_state.session_switch_pending = false;
         }
         WorkerEvent::TurnStarted { .. } => {
             loop_state.busy = true;
@@ -383,6 +391,9 @@ fn handle_worker_event(
         WorkerEvent::ProviderValidationFailed { .. } => {
             loop_state.pending_onboarding = None;
         }
+        WorkerEvent::SessionSwitched { .. } => {
+            loop_state.session_switch_pending = false;
+        }
         WorkerEvent::TextDelta(_)
         | WorkerEvent::ReasoningDelta(_)
         | WorkerEvent::AssistantMessageCompleted(_)
@@ -392,7 +403,6 @@ fn handle_worker_event(
         | WorkerEvent::SessionsListed { .. }
         | WorkerEvent::SkillsListed { .. }
         | WorkerEvent::NewSessionPrepared { .. }
-        | WorkerEvent::SessionSwitched { .. }
         | WorkerEvent::SessionRenamed { .. }
         | WorkerEvent::SessionTitleUpdated { .. }
         | WorkerEvent::InputHistoryLoaded { .. } => {}
@@ -506,8 +516,9 @@ fn handle_app_command(
             if tui.is_alt_screen_active() {
                 tui.leave_alt_screen()?;
             }
-            tui.clear_pending_history_lines();
-            tui.terminal.clear_managed_inline_area()?;
+            tracing::trace!(session_id = ?session_id, "switch session requested");
+            loop_state.session_switch_pending = true;
+            tui.replace_inline_session_ui()?;
             worker.switch_session(*session_id)?;
         }
     }

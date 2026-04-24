@@ -474,6 +474,37 @@ impl Tui {
         self.pending_history_lines.clear();
     }
 
+    pub fn replace_inline_session_ui(&mut self) -> Result<()> {
+        tracing::trace!(
+            session_origin_top = self.terminal.session_origin_top(),
+            viewport = ?self.terminal.viewport_area,
+            visible_history_rows = self.terminal.visible_history_rows(),
+            pending_history_lines = self.pending_history_lines.len(),
+            "resetting inline session UI before switch"
+        );
+        Self::reset_inline_session_ui(&mut self.terminal, &mut self.pending_history_lines)?;
+        tracing::trace!(
+            session_origin_top = self.terminal.session_origin_top(),
+            viewport = ?self.terminal.viewport_area,
+            visible_history_rows = self.terminal.visible_history_rows(),
+            pending_history_lines = self.pending_history_lines.len(),
+            "inline session UI reset complete"
+        );
+        Ok(())
+    }
+
+    fn reset_inline_session_ui<B>(
+        terminal: &mut CustomTerminal<B>,
+        pending_history_lines: &mut Vec<Line<'static>>,
+    ) -> Result<()>
+    where
+        B: Backend + std::io::Write,
+    {
+        pending_history_lines.clear();
+        terminal.clear_visible_screen()?;
+        Ok(())
+    }
+
     pub fn flush_pending_history_lines_for_exit(&mut self) -> Result<()> {
         let _ = Self::flush_pending_history_lines(
             &mut self.terminal,
@@ -652,5 +683,41 @@ impl Drop for Tui {
     fn drop(&mut self) {
         let _ = self.leave_alt_screen();
         let _ = restore();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use ratatui::layout::Rect;
+
+    use super::Tui;
+    use crate::custom_terminal::Terminal as CustomTerminal;
+    use crate::insert_history::insert_history_lines;
+    use crate::test_backend::VT100Backend;
+
+    #[test]
+    fn reset_inline_session_ui_clears_pending_history_and_visible_transcript() {
+        let width: u16 = 24;
+        let height: u16 = 8;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal = CustomTerminal::with_options(backend).expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 2, width, 2));
+
+        insert_history_lines(&mut terminal, vec!["session 1".into()]).expect("insert history");
+        let mut pending_history_lines = vec!["queued line".into()];
+
+        Tui::reset_inline_session_ui(&mut terminal, &mut pending_history_lines)
+            .expect("reset inline session ui");
+
+        let rows_after: Vec<String> = terminal.backend().vt100().screen().rows(0, width).collect();
+        assert!(pending_history_lines.is_empty());
+        assert_eq!(0, terminal.viewport_area.y);
+        assert_eq!(0, terminal.visible_history_rows());
+        assert_eq!(0, terminal.session_origin_top());
+        assert!(
+            rows_after.iter().all(|row| !row.contains("session 1")),
+            "expected old session transcript to be cleared, rows: {rows_after:?}"
+        );
     }
 }

@@ -430,6 +430,103 @@ fn streamed_history_does_not_insert_blank_lines_between_commits() {
 }
 
 #[test]
+fn batched_history_does_not_insert_blank_lines_between_cells() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
+
+    let _ = widget.drain_scrollback_lines(80);
+    widget.add_to_history(crate::history_cell::new_info_event(
+        "first".to_string(),
+        None,
+    ));
+    widget.add_to_history(crate::history_cell::new_info_event(
+        "second".to_string(),
+        None,
+    ));
+
+    let committed_lines = widget.drain_scrollback_lines(80);
+    let blank_lines = committed_lines
+        .iter()
+        .filter(|line| {
+            line.spans
+                .iter()
+                .all(|span| span.content.trim().is_empty())
+        })
+        .count();
+
+    assert_eq!(0, blank_lines, "unexpected blank lines: {committed_lines:?}");
+}
+
+#[test]
+fn session_switch_restores_one_header_and_compact_history() {
+    let initial_cwd = std::env::current_dir().expect("current directory is available");
+    let resumed_cwd = initial_cwd.join("resumed");
+    let model = Model {
+        slug: "initial-model".to_string(),
+        display_name: "Initial Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, initial_cwd);
+
+    let _ = widget.drain_scrollback_lines(80);
+    widget.add_to_history(crate::history_cell::new_info_event(
+        "session 1 lingering line".to_string(),
+        None,
+    ));
+    let _ = widget.drain_scrollback_lines(80);
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-1".to_string(),
+        cwd: resumed_cwd.clone(),
+        title: Some("Resumed".to_string()),
+        model: Some("resumed-model".to_string()),
+        thinking: None,
+        total_input_tokens: 3,
+        total_output_tokens: 5,
+        history_items: vec![
+            crate::events::TranscriptItem::new(
+                crate::events::TranscriptItemKind::User,
+                String::new(),
+                "hello".to_string(),
+            ),
+            crate::events::TranscriptItem::new(
+                crate::events::TranscriptItemKind::Assistant,
+                String::new(),
+                "world".to_string(),
+            ),
+        ],
+        loaded_item_count: 2,
+    });
+
+    let committed_lines = widget.drain_scrollback_lines(80);
+    let committed_text = committed_lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    let has_consecutive_blank_lines = committed_lines.windows(2).any(|window| {
+        window.iter().all(|line| {
+            line.spans
+                .iter()
+                .all(|span| span.content.trim().is_empty())
+        })
+    });
+
+    assert_eq!(1, committed_text.matches("directory:").count());
+    assert!(committed_text.contains("hello"));
+    assert!(committed_text.contains("world"));
+    assert!(!committed_text.contains("session 1 lingering line"));
+    assert!(
+        !has_consecutive_blank_lines,
+        "unexpected consecutive blank lines: {committed_lines:?}"
+    );
+}
+
+#[test]
 fn turn_finished_does_not_add_completion_status_line_to_history() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {

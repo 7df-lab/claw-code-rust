@@ -155,6 +155,8 @@ where
     /// Last known position of the cursor. Used to find the new area when the viewport is inlined
     /// and the terminal resized.
     pub last_known_cursor_pos: Position,
+    /// Stable top row where this inline TUI session began rendering.
+    session_origin_top: u16,
     /// Count of visible history rows rendered above the viewport in inline mode.
     visible_history_rows: u16,
 }
@@ -197,6 +199,7 @@ where
             viewport_area: Rect::new(0, cursor_pos.y, 0, 0),
             last_known_screen_size: screen_size,
             last_known_cursor_pos: cursor_pos,
+            session_origin_top: cursor_pos.y,
             visible_history_rows: 0,
         })
     }
@@ -228,6 +231,12 @@ where
     /// Gets the previous buffer as a mutable reference.
     fn previous_buffer_mut(&mut self) -> &mut Buffer {
         &mut self.buffers[1 - self.current]
+    }
+
+    /// Reset both diff buffers so the next draw starts from a blank terminal model.
+    fn reset_draw_buffers(&mut self) {
+        self.current_buffer_mut().reset();
+        self.previous_buffer_mut().reset();
     }
 
     /// Gets the backend
@@ -262,6 +271,9 @@ where
 
     /// Sets the viewport area.
     pub fn set_viewport_area(&mut self, area: Rect) {
+        if self.viewport_area.is_empty() {
+            self.session_origin_top = area.y;
+        }
         self.current_buffer_mut().resize(area);
         self.previous_buffer_mut().resize(area);
         self.viewport_area = area;
@@ -419,8 +431,7 @@ where
         self.backend
             .set_cursor_position(self.viewport_area.as_position())?;
         self.backend.clear_region(ClearType::AfterCursor)?;
-        // Reset the back buffer to make sure the next update will redraw everything.
-        self.previous_buffer_mut().reset();
+        self.reset_draw_buffers();
         Ok(())
     }
 
@@ -447,7 +458,7 @@ where
     /// ratatui's knowledge (e.g., Zellij-mode scrolling via raw newlines), since
     /// the diff buffer's assumptions about what is currently displayed are invalid.
     pub fn invalidate_viewport(&mut self) {
-        self.previous_buffer_mut().reset();
+        self.reset_draw_buffers();
     }
 
     /// Clear terminal scrollback (if supported) and force a full redraw.
@@ -462,7 +473,7 @@ where
         queue!(self.backend, Clear(crossterm::terminal::ClearType::Purge))?;
         self.set_cursor_position(home)?;
         std::io::Write::flush(&mut self.backend)?;
-        self.previous_buffer_mut().reset();
+        self.reset_draw_buffers();
         Ok(())
     }
 
@@ -477,7 +488,12 @@ where
         self.set_cursor_position(home)?;
         std::io::Write::flush(&mut self.backend)?;
         self.visible_history_rows = 0;
-        self.previous_buffer_mut().reset();
+        self.session_origin_top = 0;
+        let mut area = self.viewport_area;
+        area.y = 0;
+        self.set_viewport_area(area);
+        self.last_known_cursor_pos = home;
+        self.reset_draw_buffers();
         Ok(())
     }
 
@@ -491,19 +507,26 @@ where
             return Ok(());
         }
 
-        let managed_top = self
-            .viewport_area
-            .top()
-            .saturating_sub(self.visible_history_rows);
+        let managed_top = self.session_origin_top;
+        let screen_height = self.size()?.height;
         let position = Position {
             x: 0,
             y: managed_top,
         };
         self.set_cursor_position(position)?;
-        self.backend.clear_region(ClearType::AfterCursor)?;
+        self.clear_screen_area(Rect::new(
+            0,
+            managed_top,
+            self.last_known_screen_size.width,
+            screen_height.saturating_sub(managed_top),
+        ))?;
         std::io::Write::flush(&mut self.backend)?;
         self.visible_history_rows = 0;
-        self.previous_buffer_mut().reset();
+        let mut area = self.viewport_area;
+        area.y = managed_top;
+        self.set_viewport_area(area);
+        self.last_known_cursor_pos = position;
+        self.reset_draw_buffers();
         Ok(())
     }
 
@@ -521,7 +544,7 @@ where
         self.set_cursor_position(self.viewport_area.as_position())?;
         self.backend.clear_region(ClearType::AfterCursor)?;
         std::io::Write::flush(&mut self.backend)?;
-        self.previous_buffer_mut().reset();
+        self.reset_draw_buffers();
         Ok(())
     }
 
@@ -540,12 +563,16 @@ where
         std::io::Write::flush(&mut self.backend)?;
         self.last_known_cursor_pos = Position { x: 0, y: 0 };
         self.visible_history_rows = 0;
-        self.previous_buffer_mut().reset();
+        self.reset_draw_buffers();
         Ok(())
     }
 
     pub fn visible_history_rows(&self) -> u16 {
         self.visible_history_rows
+    }
+
+    pub fn session_origin_top(&self) -> u16 {
+        self.session_origin_top
     }
 
     pub(crate) fn note_history_rows_inserted(&mut self, inserted_rows: u16) {

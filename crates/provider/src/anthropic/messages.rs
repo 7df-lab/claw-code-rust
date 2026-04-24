@@ -1005,6 +1005,7 @@ mod tests {
                 top_k: Some(32),
             },
             thinking: Some("medium".to_string()),
+            reasoning_effort: None,
             extra_body: None,
         };
 

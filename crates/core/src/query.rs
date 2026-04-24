@@ -506,6 +506,7 @@ pub async fn query(
         let ResolvedThinkingRequest {
             request_model,
             request_thinking,
+            request_reasoning_effort,
             extra_body,
             effective_reasoning_effort: _,
         } = turn_config
@@ -536,6 +537,7 @@ pub async fn query(
                 top_k: turn_config.model.top_k.map(|value| value as u32),
             },
             thinking: request_thinking,
+            reasoning_effort: request_reasoning_effort,
             extra_body,
         };
         debug!(
@@ -834,6 +836,7 @@ pub async fn test_model_connection(
     let ResolvedThinkingRequest {
         request_model,
         request_thinking,
+        request_reasoning_effort,
         extra_body,
         effective_reasoning_effort: _,
     } = model.resolve_thinking_selection(None);
@@ -854,6 +857,7 @@ pub async fn test_model_connection(
             top_k: model.top_k.map(|value| value as u32),
         },
         thinking: request_thinking,
+        reasoning_effort: request_reasoning_effort,
         extra_body,
     };
     let mut stream = provider.completion_stream(request).await?;

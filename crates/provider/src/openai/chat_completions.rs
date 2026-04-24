@@ -27,6 +27,7 @@ use devo_protocol::Usage;
 use super::capabilities::OpenAIReasoningMode;
 use super::capabilities::OpenAITransport;
 use super::capabilities::resolve_request_profile;
+use super::shared::invalid_status_error;
 use super::shared::reasoning_value;
 use super::shared::request_role;
 use super::shared::tool_definitions;
@@ -637,7 +638,11 @@ fn build_request(request: &ModelRequest, stream: bool) -> Value {
         root["top_k"] = json!(top_k);
     }
 
-    if let Some(payload) = reasoning_value(profile, request.thinking.as_deref()) {
+    if let Some(payload) = reasoning_value(
+        profile,
+        request.thinking.as_deref(),
+        request.reasoning_effort,
+    ) {
         match payload {
             super::shared::OpenAIReasoningValue::Effort(effort) => {
                 root["reasoning_effort"] = json!(effort);
@@ -646,6 +651,14 @@ fn build_request(request: &ModelRequest, stream: bool) -> Value {
                 root["thinking"] = json!({
                     "type": if enabled { "enabled" } else { "disabled" },
                 });
+            }
+            super::shared::OpenAIReasoningValue::ThinkingWithEffort { enabled, effort } => {
+                root["thinking"] = json!({
+                    "type": if enabled { "enabled" } else { "disabled" },
+                });
+                if let Some(effort) = effort {
+                    root["reasoning_effort"] = json!(effort);
+                }
             }
         }
     }
@@ -1042,9 +1055,22 @@ impl ModelProviderSDK for OpenAIProvider {
             .request_builder(&body)
             .send()
             .await
-            .context("failed to send openai request")?
-            .error_for_status()
-            .context("openai request failed")?;
+            .context("failed to send openai request")?;
+        let response = match response.error_for_status_ref() {
+            Ok(_) => response,
+            Err(_) => {
+                let status = response.status();
+                return Err(invalid_status_error(
+                    "openai",
+                    &request.model,
+                    "request",
+                    status,
+                    response,
+                    &body,
+                )
+                .await);
+            }
+        };
 
         let value: Value = response
             .json()
@@ -1083,15 +1109,10 @@ impl ProviderAdapter for OpenAIProvider {
         let mut capabilities = ProviderCapabilities::openai();
         capabilities.supports_temperature = profile.supports_temperature;
         capabilities.supports_top_p = profile.supports_top_p;
-<<<<<<< Updated upstream
-        capabilities.supports_reasoning_effort =
-            matches!(profile.reasoning_mode, OpenAIReasoningMode::Effort);
-=======
         capabilities.supports_reasoning_effort = matches!(
             profile.reasoning_mode,
             OpenAIReasoningMode::Effort | OpenAIReasoningMode::ThinkingWithEffort
         );
->>>>>>> Stashed changes
         capabilities.supports_top_k = profile.supports_top_k;
         capabilities.supports_reasoning_content = profile.supports_reasoning_content;
         capabilities.supported_roles = profile.supported_roles.to_vec();
@@ -1109,8 +1130,6 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
-    use super::super::OpenAIReasoningEffort;
-    use super::super::shared::reasoning_effort;
     use super::parse_finish_reason;
     use super::parse_response;
     use super::parse_usage;
@@ -1166,6 +1185,7 @@ mod tests {
                 ..SamplingControls::default()
             },
             thinking: Some("medium".to_string()),
+            reasoning_effort: Some(devo_protocol::ReasoningEffort::Medium),
             extra_body: None,
         };
 
@@ -1206,6 +1226,7 @@ mod tests {
             tools: None,
             sampling: SamplingControls::default(),
             thinking: Some("disabled".to_string()),
+            reasoning_effort: None,
             extra_body: None,
         };
 
@@ -1234,6 +1255,7 @@ mod tests {
                 top_k: Some(40),
             },
             thinking: Some("enabled".to_string()),
+            reasoning_effort: None,
             extra_body: None,
         };
 
@@ -1264,6 +1286,7 @@ mod tests {
                 top_k: None,
             },
             thinking: Some("enabled".to_string()),
+            reasoning_effort: None,
             extra_body: None,
         };
 
@@ -1472,31 +1495,27 @@ mod tests {
     }
 
     #[test]
-    fn map_reasoning_effort_maps_supported_values() {
-        assert_eq!(
-            reasoning_effort(Some("disabled")),
-            Some(OpenAIReasoningEffort::None)
-        );
-        assert_eq!(
-            reasoning_effort(Some("enabled")),
-            Some(OpenAIReasoningEffort::Medium)
-        );
-        assert_eq!(
-            reasoning_effort(Some("low")),
-            Some(OpenAIReasoningEffort::Low)
-        );
-        assert_eq!(
-            reasoning_effort(Some("medium")),
-            Some(OpenAIReasoningEffort::Medium)
-        );
-        assert_eq!(
-            reasoning_effort(Some("high")),
-            Some(OpenAIReasoningEffort::High)
-        );
-        assert_eq!(
-            reasoning_effort(Some("xhigh")),
-            Some(OpenAIReasoningEffort::XHigh)
-        );
-        assert_eq!(reasoning_effort(Some("unknown")), None);
+    fn debug_request_body_uses_explicit_reasoning_effort_field() {
+        let request = ModelRequest {
+            model: "deepseek-v4".to_string(),
+            system: None,
+            messages: vec![RequestMessage {
+                role: "user".to_string(),
+                content: vec![RequestContent::Text {
+                    text: "hi".to_string(),
+                }],
+            }],
+            max_tokens: 64,
+            tools: None,
+            sampling: SamplingControls::default(),
+            thinking: Some("enabled".to_string()),
+            reasoning_effort: Some(devo_protocol::ReasoningEffort::Max),
+            extra_body: None,
+        };
+
+        let body = build_request(&request, false);
+
+        assert_eq!(body["thinking"]["type"], json!("enabled"));
+        assert_eq!(body["reasoning_effort"], json!("max"));
     }
 }

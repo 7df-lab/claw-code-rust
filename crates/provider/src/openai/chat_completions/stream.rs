@@ -10,6 +10,7 @@ use reqwest_eventsource::{Event, EventSource};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::super::shared::invalid_status_error;
 use super::{
     OpenAIChatCompletionChoice, OpenAIChatCompletionCustomToolCall,
     OpenAIChatCompletionFunctionCall, OpenAIChatCompletionMessage,
@@ -81,9 +82,24 @@ pub(super) async fn completion_stream(
 
         futures::pin_mut!(event_source);
         while let Some(event) = event_source.next().await {
-            let event = event.map_err(|error| {
-                anyhow::anyhow!("openai stream error for model {}: {error}", request.model)
-            })?;
+            let event = match event {
+                Ok(event) => event,
+                Err(reqwest_eventsource::Error::InvalidStatusCode(status, response)) => {
+                    Err(invalid_status_error(
+                        "openai",
+                        &request.model,
+                        "stream",
+                        status,
+                        response,
+                        &body,
+                    )
+                    .await)?
+                }
+                Err(error) => Err(anyhow::anyhow!(
+                    "openai stream error for model {}: {error}",
+                    request.model
+                ))?,
+            };
 
             match event {
                 Event::Open => {}

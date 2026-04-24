@@ -56,6 +56,7 @@ pub(crate) fn build_title_generation_request(
             ..SamplingControls::default()
         },
         thinking: None,
+        reasoning_effort: None,
         extra_body: None,
     }
 }

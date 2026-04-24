@@ -1317,6 +1317,9 @@ impl ChatWidget {
         match capability {
             ThinkingCapability::Unsupported => None,
             ThinkingCapability::Toggle => Some("thinking"),
+            ThinkingCapability::ToggleWithLevels(levels) => default_reasoning_effort
+                .or_else(|| levels.first().copied())
+                .map(|effort| Self::status_line_reasoning_effort_label(Some(effort))),
             ThinkingCapability::Levels(levels) => default_reasoning_effort
                 .or_else(|| levels.first().copied())
                 .map(|effort| Self::status_line_reasoning_effort_label(Some(effort))),

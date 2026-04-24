@@ -14,6 +14,8 @@ pub(crate) enum OpenAIReasoningMode {
     Effort,
     /// OpenAI-compatible `thinking` object with `enabled` / `disabled`.
     Thinking,
+    /// Models that require both a thinking toggle and an effort field.
+    ThinkingWithEffort,
 }
 
 /// Capability profile for an OpenAI-family model on a specific transport.
@@ -126,7 +128,7 @@ const OPENAI_PROFILE_RULES: &[ProfileRule] = &[
         matcher: ModelMatcher::Prefix("deepseek-"),
         transport: OpenAITransport::ChatCompletions,
         profile: OpenAIRequestProfile::new(
-            OpenAIReasoningMode::Effort,
+            OpenAIReasoningMode::ThinkingWithEffort,
             DEFAULT_ROLES,
             true,
             true,

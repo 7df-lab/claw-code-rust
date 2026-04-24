@@ -19,7 +19,7 @@ use crate::{ModelProviderSDK, merge_extra_body};
 use super::capabilities::{OpenAITransport, resolve_request_profile};
 use super::{
     OpenAIRole,
-    shared::{reasoning_effort, request_role, tool_definitions},
+    shared::{invalid_status_error, request_role, tool_definitions},
 };
 
 /// OpenAI Responses API provider.
@@ -96,7 +96,7 @@ fn build_request(request: &ModelRequest, stream: bool) -> Value {
         root["top_k"] = json!(top_k);
     }
 
-    if let Some(reasoning) = reasoning_effort(request.thinking.as_deref()) {
+    if let Some(reasoning) = request.reasoning_effort {
         root["reasoning"] = json!({ "effort": reasoning });
     }
 
@@ -339,9 +339,22 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
             .request_builder(&body)
             .send()
             .await
-            .context("failed to send openai responses request")?
-            .error_for_status()
-            .context("openai responses request failed")?;
+            .context("failed to send openai responses request")?;
+        let response = match response.error_for_status_ref() {
+            Ok(_) => response,
+            Err(_) => {
+                let status = response.status();
+                return Err(invalid_status_error(
+                    "openai-responses",
+                    &request.model,
+                    "request",
+                    status,
+                    response,
+                    &body,
+                )
+                .await);
+            }
+        };
 
         let value: Value = response
             .json()
@@ -379,9 +392,24 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
 
             futures::pin_mut!(event_source);
             while let Some(event) = event_source.next().await {
-                let event = event.map_err(|error| {
-                    anyhow::anyhow!("openai responses stream error for model {}: {error}", request.model)
-                })?;
+                let event = match event {
+                    Ok(event) => event,
+                    Err(reqwest_eventsource::Error::InvalidStatusCode(status, response)) => {
+                        Err(invalid_status_error(
+                            "openai-responses",
+                            &request.model,
+                            "stream",
+                            status,
+                            response,
+                            &body,
+                        )
+                        .await)?
+                    }
+                    Err(error) => Err(anyhow::anyhow!(
+                        "openai responses stream error for model {}: {error}",
+                        request.model
+                    ))?,
+                };
 
                 match event {
                     Event::Open => {}
@@ -650,6 +678,7 @@ mod tests {
                 top_k: Some(12),
             },
             thinking: Some("medium".to_string()),
+            reasoning_effort: Some(devo_protocol::ReasoningEffort::Medium),
             extra_body: None,
         };
 

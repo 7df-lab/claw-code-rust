@@ -1100,6 +1100,18 @@ impl HeaderHistoryCell {
 
         match &self.thinking_capability {
             ThinkingCapability::Toggle => Some("thinking"),
+            ThinkingCapability::ToggleWithLevels(levels) => self
+                .default_reasoning_effort
+                .or_else(|| levels.first().copied())
+                .map(|effort| match effort {
+                    ReasoningEffort::None => "none",
+                    ReasoningEffort::Minimal => "minimal",
+                    ReasoningEffort::Low => "low",
+                    ReasoningEffort::Medium => "medium",
+                    ReasoningEffort::High => "high",
+                    ReasoningEffort::XHigh => "xhigh",
+                    ReasoningEffort::Max => "max",
+                }),
             ThinkingCapability::Levels(levels) => self
                 .default_reasoning_effort
                 .or_else(|| levels.first().copied())

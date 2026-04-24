@@ -94,6 +94,8 @@ pub struct ResolvedThinkingRequest {
     pub request_model: String,
     /// Final `thinking` request parameter, when the provider expects one.
     pub request_thinking: Option<String>,
+    /// Final reasoning effort request parameter, when the provider expects one.
+    pub request_reasoning_effort: Option<ReasoningEffort>,
     /// Effective reasoning effort chosen after normalizing the selection.
     pub effective_reasoning_effort: Option<ReasoningEffort>,
     /// Provider-specific extra request JSON to merge into the outbound payload.
@@ -225,6 +227,8 @@ pub enum ThinkingCapability {
     Toggle,
     /// Multiple effort levels can be selected for thinking.
     Levels(Vec<ReasoningEffort>),
+    /// Thinking can be turned off, or enabled with one of several effort levels.
+    ToggleWithLevels(Vec<ReasoningEffort>),
 }
 
 impl ThinkingCapability {
@@ -252,6 +256,19 @@ impl ThinkingCapability {
                     value: effort.label().to_lowercase(),
                 })
                 .collect(),
+            ThinkingCapability::ToggleWithLevels(levels) => {
+                let mut presets = vec![ThinkingPreset {
+                    label: "Off".to_string(),
+                    description: "Disable thinking for this turn".to_string(),
+                    value: "disabled".to_string(),
+                }];
+                presets.extend(levels.iter().copied().map(|effort| ThinkingPreset {
+                    label: effort.label().to_string(),
+                    description: effort.description().to_string(),
+                    value: effort.label().to_lowercase(),
+                }));
+                presets
+            }
         }
     }
 }

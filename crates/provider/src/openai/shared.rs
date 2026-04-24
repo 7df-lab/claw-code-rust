@@ -1,13 +1,15 @@
 use devo_protocol::RequestRole;
 use devo_protocol::ToolDefinition;
+use reqwest::Response;
+use reqwest::StatusCode;
 use serde_json::Value;
 use serde_json::json;
 use tracing::warn;
 
-use super::OpenAIReasoningEffort;
 use super::OpenAIRole;
 use super::capabilities::OpenAIReasoningMode;
 use super::capabilities::OpenAIRequestProfile;
+use devo_protocol::ReasoningEffort;
 
 pub(crate) fn request_role(role: &str) -> OpenAIRole {
     match role.parse::<RequestRole>() {
@@ -28,42 +30,22 @@ pub(crate) fn request_role(role: &str) -> OpenAIRole {
     }
 }
 
-pub(crate) fn reasoning_effort(thinking: Option<&str>) -> Option<OpenAIReasoningEffort> {
-    let thinking = thinking?.trim().to_ascii_lowercase();
-    match thinking.as_str() {
-        "none" | "disabled" => Some(OpenAIReasoningEffort::None),
-        "minimal" => Some(OpenAIReasoningEffort::Minimal),
-        "low" => Some(OpenAIReasoningEffort::Low),
-        "medium" | "enabled" | "" => Some(OpenAIReasoningEffort::Medium),
-        "high" => Some(OpenAIReasoningEffort::High),
-        "xhigh" => Some(OpenAIReasoningEffort::XHigh),
-        "max" => Some(OpenAIReasoningEffort::Max),
-        _ => None,
-    }
-}
-
 pub(crate) enum OpenAIReasoningValue {
-<<<<<<< Updated upstream
-    Effort(OpenAIReasoningEffort),
-    Thinking { enabled: bool },
-=======
     Effort(ReasoningEffort),
-    Thinking {
-        enabled: bool,
-    },
+    Thinking { enabled: bool },
     ThinkingWithEffort {
         enabled: bool,
         effort: Option<ReasoningEffort>,
     },
->>>>>>> Stashed changes
 }
 
 pub(crate) fn reasoning_value(
     profile: OpenAIRequestProfile,
     thinking: Option<&str>,
+    reasoning_effort: Option<ReasoningEffort>,
 ) -> Option<OpenAIReasoningValue> {
     match profile.reasoning_mode {
-        OpenAIReasoningMode::Effort => reasoning_effort(thinking).map(OpenAIReasoningValue::Effort),
+        OpenAIReasoningMode::Effort => reasoning_effort.map(OpenAIReasoningValue::Effort),
         OpenAIReasoningMode::Thinking => {
             let enabled = !matches!(
                 thinking
@@ -74,6 +56,20 @@ pub(crate) fn reasoning_value(
                 "disabled" | "none"
             );
             Some(OpenAIReasoningValue::Thinking { enabled })
+        }
+        OpenAIReasoningMode::ThinkingWithEffort => {
+            let enabled = !matches!(
+                thinking
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "disabled" | "none"
+            );
+            Some(OpenAIReasoningValue::ThinkingWithEffort {
+                enabled,
+                effort: if enabled { reasoning_effort } else { None },
+            })
         }
     }
 }
@@ -93,5 +89,31 @@ pub(crate) fn tool_definitions(tools: &[ToolDefinition]) -> Value {
                 })
             })
             .collect(),
+    )
+}
+
+pub(crate) async fn invalid_status_error(
+    provider: &'static str,
+    model: &str,
+    operation: &str,
+    status: StatusCode,
+    response: Response,
+    request_body: &Value,
+) -> anyhow::Error {
+    let response_body = response
+        .text()
+        .await
+        .unwrap_or_else(|error| format!("<failed to read response body: {error}>"));
+    warn!(
+        provider,
+        model,
+        operation,
+        status = %status,
+        http_body = %request_body,
+        response_body = %response_body,
+        "provider request failed"
+    );
+    anyhow::anyhow!(
+        "{provider} {operation} error for model {model}: Invalid status code: {status}; response body: {response_body}"
     )
 }

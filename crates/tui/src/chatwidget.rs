@@ -1276,7 +1276,9 @@ impl ChatWidget {
     }
 
     fn last_known_width(&self) -> u16 {
-        80
+        crossterm::terminal::size()
+            .map(|(width, _height)| width)
+            .unwrap_or(80)
     }
 
     fn tool_preview_lines(&self, preview: &str) -> Vec<Line<'static>> {

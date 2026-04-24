@@ -71,8 +71,6 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::disable_raw_mode;
 use ratatui::crossterm::terminal::enable_raw_mode;
-use ratatui::layout::Offset;
-use ratatui::layout::Rect;
 use ratatui::layout::Size;
 use ratatui::text::Line;
 use tokio::sync::broadcast;
@@ -295,6 +293,9 @@ pub struct Tui {
     alt_screen_active: Arc<AtomicBool>,
     // True when terminal/tab is focused; updated internally from crossterm events
     terminal_focused: Arc<AtomicBool>,
+    // True when the next draw should repaint the full viewport instead of diffing
+    // against the previously rendered frame contents.
+    needs_full_repaint: Arc<AtomicBool>,
     enhanced_keys_supported: bool,
     is_zellij: bool,
     // When false, enter_alt_screen() becomes a no-op (for Zellij scrollback support)
@@ -328,6 +329,7 @@ impl Tui {
             suspend_context: SuspendContext::new(),
             alt_screen_active: Arc::new(AtomicBool::new(false)),
             terminal_focused: Arc::new(AtomicBool::new(true)),
+            needs_full_repaint: Arc::new(AtomicBool::new(false)),
             enhanced_keys_supported,
             is_zellij,
             alt_screen_enabled: true,
@@ -349,6 +351,10 @@ impl Tui {
 
     pub fn is_alt_screen_active(&self) -> bool {
         self.alt_screen_active.load(Ordering::Relaxed)
+    }
+
+    pub fn is_terminal_focused(&self) -> bool {
+        self.terminal_focused.load(Ordering::Relaxed)
     }
 
     // Drop crossterm EventStream to avoid stdin conflicts with other processes.
@@ -407,6 +413,7 @@ impl Tui {
             self.event_broker.clone(),
             self.draw_tx.subscribe(),
             self.terminal_focused.clone(),
+            self.needs_full_repaint.clone(),
             self.suspend_context.clone(),
             self.alt_screen_active.clone(),
         );
@@ -415,6 +422,7 @@ impl Tui {
             self.event_broker.clone(),
             self.draw_tx.subscribe(),
             self.terminal_focused.clone(),
+            self.needs_full_repaint.clone(),
         );
         Box::pin(stream)
     }
@@ -464,6 +472,15 @@ impl Tui {
 
     pub fn clear_pending_history_lines(&mut self) {
         self.pending_history_lines.clear();
+    }
+
+    pub fn flush_pending_history_lines_for_exit(&mut self) -> Result<()> {
+        let _ = Self::flush_pending_history_lines(
+            &mut self.terminal,
+            &mut self.pending_history_lines,
+            self.is_zellij,
+        )?;
+        Ok(())
     }
 
     /// Resize the inline viewport to `height` rows, scrolling content above it if
@@ -574,7 +591,7 @@ impl Tui {
 
         // Precompute any viewport updates that need a cursor-position query before entering
         // the synchronized update, to avoid racing with the event reader.
-        let mut pending_viewport_area = self.pending_viewport_area()?;
+        let mut pending_viewport_area = None;
 
         stdout().sync_update(|_| {
             #[cfg(unix)]
@@ -584,8 +601,16 @@ impl Tui {
 
             let terminal = &mut self.terminal;
             if let Some(new_area) = pending_viewport_area.take() {
+                let previous_area = terminal.viewport_area;
+                if previous_area != new_area {
+                    terminal.clear_screen_area(previous_area)?;
+                }
                 terminal.set_viewport_area(new_area);
                 terminal.clear()?;
+                terminal.invalidate_viewport();
+            }
+
+            if self.needs_full_repaint.swap(false, Ordering::Relaxed) {
                 terminal.invalidate_viewport();
             }
 
@@ -621,74 +646,11 @@ impl Tui {
         })?
     }
 
-    fn pending_viewport_area(&mut self) -> Result<Option<Rect>> {
-        let terminal = &mut self.terminal;
-        let _screen_size = terminal.size()?;
-        if let Ok(cursor_pos) = terminal.get_cursor_position() {
-            return Ok(inline_viewport_area_for_cursor(
-                terminal.viewport_area,
-                terminal.last_known_cursor_pos,
-                cursor_pos,
-            ));
-        }
-        Ok(None)
-    }
-}
-
-fn inline_viewport_area_for_cursor(
-    viewport_area: Rect,
-    last_known_cursor_pos: ratatui::layout::Position,
-    cursor_pos: ratatui::layout::Position,
-) -> Option<Rect> {
-    // If the cursor row drifted since the last completed draw, the terminal likely moved the live
-    // viewport out from under us (for example after a native scrollback action or a resize that
-    // changed the cursor anchor). Realign the inline viewport to keep future absolute coordinates
-    // coherent with the terminal's live buffer.
-    if cursor_pos.y == last_known_cursor_pos.y {
-        return None;
-    }
-
-    let offset = Offset {
-        x: 0,
-        y: cursor_pos.y as i32 - last_known_cursor_pos.y as i32,
-    };
-    Some(viewport_area.offset(offset))
 }
 
 impl Drop for Tui {
     fn drop(&mut self) {
         let _ = self.leave_alt_screen();
         let _ = restore();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use pretty_assertions::assert_eq;
-    use ratatui::layout::Position;
-
-    use super::inline_viewport_area_for_cursor;
-    use super::*;
-
-    #[test]
-    fn inline_viewport_area_for_cursor_returns_none_without_drift() {
-        let viewport_area = Rect::new(0, 10, 80, 6);
-        let cursor = Position { x: 0, y: 15 };
-
-        let result = inline_viewport_area_for_cursor(viewport_area, cursor, cursor);
-
-        assert_eq!(None, result);
-    }
-
-    #[test]
-    fn inline_viewport_area_for_cursor_offsets_viewport_when_cursor_row_changes() {
-        let viewport_area = Rect::new(0, 10, 80, 6);
-        let last_known_cursor_pos = Position { x: 0, y: 15 };
-        let cursor_pos = Position { x: 0, y: 12 };
-
-        let result =
-            inline_viewport_area_for_cursor(viewport_area, last_known_cursor_pos, cursor_pos);
-
-        assert_eq!(Some(Rect::new(0, 7, 80, 6)), result);
     }
 }

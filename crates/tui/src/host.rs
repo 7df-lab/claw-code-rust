@@ -194,8 +194,9 @@ fn resolve_initial_model(
 fn clear_before_exit(tui: &mut Tui) -> Result<()> {
     if tui.is_alt_screen_active() {
         tui.leave_alt_screen()?;
-        tui.terminal.clear_managed_inline_area()?;
     }
+    tui.flush_pending_history_lines_for_exit()?;
+    tui.terminal.clear_inline_viewport()?;
     Ok(())
 }
 

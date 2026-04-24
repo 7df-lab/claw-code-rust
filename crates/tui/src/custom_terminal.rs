@@ -424,6 +424,24 @@ where
         Ok(())
     }
 
+    /// Clear an arbitrary screen area without changing the active viewport.
+    ///
+    /// This is used when the inline viewport has drifted and needs to move: we
+    /// clear the old viewport rows first so stale UI fragments do not remain on
+    /// screen after the next full redraw at the new location.
+    pub fn clear_screen_area(&mut self, area: Rect) -> io::Result<()> {
+        if area.is_empty() {
+            return Ok(());
+        }
+
+        for y in area.top()..area.bottom() {
+            self.backend.set_cursor_position(Position { x: area.x, y })?;
+            self.backend.clear_region(ClearType::UntilNewLine)?;
+        }
+
+        Ok(())
+    }
+
     /// Force the next draw pass to repaint the entire viewport by resetting the
     /// diff buffer. Call this after operations that move screen content outside of
     /// ratatui's knowledge (e.g., Zellij-mode scrolling via raw newlines), since
@@ -485,6 +503,24 @@ where
         self.backend.clear_region(ClearType::AfterCursor)?;
         std::io::Write::flush(&mut self.backend)?;
         self.visible_history_rows = 0;
+        self.previous_buffer_mut().reset();
+        Ok(())
+    }
+
+    /// Clear only the live inline viewport while preserving transcript rows already inserted
+    /// above it.
+    ///
+    /// This is useful when Devo exits in inline mode: we want the shell prompt to resume at the
+    /// top of the live viewport without erasing prior conversation output that has already been
+    /// committed into normal terminal scrollback.
+    pub fn clear_inline_viewport(&mut self) -> io::Result<()> {
+        if self.viewport_area.is_empty() {
+            return Ok(());
+        }
+
+        self.set_cursor_position(self.viewport_area.as_position())?;
+        self.backend.clear_region(ClearType::AfterCursor)?;
+        std::io::Write::flush(&mut self.backend)?;
         self.previous_buffer_mut().reset();
         Ok(())
     }

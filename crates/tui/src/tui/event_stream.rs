@@ -141,6 +141,7 @@ pub struct TuiEventStream<S: EventSource + Default + Unpin = CrosstermEventSourc
     draw_stream: BroadcastStream<()>,
     resume_stream: WatchStream<()>,
     terminal_focused: Arc<AtomicBool>,
+    needs_full_repaint: Arc<AtomicBool>,
     poll_draw_first: bool,
     #[cfg(unix)]
     suspend_context: crate::tui::job_control::SuspendContext,
@@ -153,6 +154,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
         broker: Arc<EventBroker<S>>,
         draw_rx: broadcast::Receiver<()>,
         terminal_focused: Arc<AtomicBool>,
+        needs_full_repaint: Arc<AtomicBool>,
         #[cfg(unix)] suspend_context: crate::tui::job_control::SuspendContext,
         #[cfg(unix)] alt_screen_active: Arc<AtomicBool>,
     ) -> Self {
@@ -162,6 +164,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             draw_stream: BroadcastStream::new(draw_rx),
             resume_stream,
             terminal_focused,
+            needs_full_repaint,
             poll_draw_first: false,
             #[cfg(unix)]
             suspend_context,
@@ -248,6 +251,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             Event::Paste(pasted) => Some(TuiEvent::Paste(pasted)),
             Event::FocusGained => {
                 self.terminal_focused.store(true, Ordering::Relaxed);
+                self.needs_full_repaint.store(true, Ordering::Relaxed);
                 crate::terminal_palette::requery_default_colors();
                 Some(TuiEvent::Draw)
             }
@@ -357,11 +361,13 @@ mod tests {
         broker: Arc<EventBroker<FakeEventSource>>,
         draw_rx: broadcast::Receiver<()>,
         terminal_focused: Arc<AtomicBool>,
+        needs_full_repaint: Arc<AtomicBool>,
     ) -> TuiEventStream<FakeEventSource> {
         TuiEventStream::new(
             broker,
             draw_rx,
             terminal_focused,
+            needs_full_repaint,
             #[cfg(unix)]
             crate::tui::job_control::SuspendContext::new(),
             #[cfg(unix)]
@@ -375,6 +381,7 @@ mod tests {
         broadcast::Sender<()>,
         broadcast::Receiver<()>,
         Arc<AtomicBool>,
+        Arc<AtomicBool>,
     );
 
     fn setup() -> SetupState {
@@ -385,13 +392,21 @@ mod tests {
 
         let (draw_tx, draw_rx) = broadcast::channel(1);
         let terminal_focused = Arc::new(AtomicBool::new(true));
-        (broker, handle, draw_tx, draw_rx, terminal_focused)
+        let needs_full_repaint = Arc::new(AtomicBool::new(false));
+        (
+            broker,
+            handle,
+            draw_tx,
+            draw_rx,
+            terminal_focused,
+            needs_full_repaint,
+        )
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn key_event_skips_unmapped() {
-        let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
-        let mut stream = make_stream(broker, draw_rx, terminal_focused);
+        let (broker, handle, _draw_tx, draw_rx, terminal_focused, needs_full_repaint) = setup();
+        let mut stream = make_stream(broker, draw_rx, terminal_focused, needs_full_repaint);
 
         handle.send(Ok(Event::FocusLost));
         handle.send(Ok(Event::Key(KeyEvent::new(
@@ -410,8 +425,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn draw_and_key_events_yield_both() {
-        let (broker, handle, draw_tx, draw_rx, terminal_focused) = setup();
-        let mut stream = make_stream(broker, draw_rx, terminal_focused);
+        let (broker, handle, draw_tx, draw_rx, terminal_focused, needs_full_repaint) = setup();
+        let mut stream = make_stream(broker, draw_rx, terminal_focused, needs_full_repaint);
 
         let expected_key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         let _ = draw_tx.send(());
@@ -440,8 +455,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn lagged_draw_maps_to_draw() {
-        let (broker, _handle, draw_tx, draw_rx, terminal_focused) = setup();
-        let mut stream = make_stream(broker, draw_rx.resubscribe(), terminal_focused);
+        let (broker, _handle, draw_tx, draw_rx, terminal_focused, needs_full_repaint) = setup();
+        let mut stream =
+            make_stream(broker, draw_rx.resubscribe(), terminal_focused, needs_full_repaint);
 
         // Fill channel to force Lagged on the receiver.
         let _ = draw_tx.send(());
@@ -453,8 +469,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn error_or_eof_ends_stream() {
-        let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
-        let mut stream = make_stream(broker, draw_rx, terminal_focused);
+        let (broker, handle, _draw_tx, draw_rx, terminal_focused, needs_full_repaint) = setup();
+        let mut stream = make_stream(broker, draw_rx, terminal_focused, needs_full_repaint);
 
         handle.send(Err(std::io::Error::other("boom")));
 
@@ -464,8 +480,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn resume_wakes_paused_stream() {
-        let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
-        let mut stream = make_stream(broker.clone(), draw_rx, terminal_focused);
+        let (broker, handle, _draw_tx, draw_rx, terminal_focused, needs_full_repaint) = setup();
+        let mut stream =
+            make_stream(broker.clone(), draw_rx, terminal_focused, needs_full_repaint);
 
         broker.pause_events();
 
@@ -488,8 +505,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn resume_wakes_pending_stream() {
-        let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
-        let mut stream = make_stream(broker.clone(), draw_rx, terminal_focused);
+        let (broker, handle, _draw_tx, draw_rx, terminal_focused, needs_full_repaint) = setup();
+        let mut stream =
+            make_stream(broker.clone(), draw_rx, terminal_focused, needs_full_repaint);
 
         let task = tokio::spawn(async move { stream.next().await });
         tokio::task::yield_now().await;
@@ -507,5 +525,24 @@ mod tests {
             Some(TuiEvent::Key(key)) => assert_eq!(key, expected_key),
             other => panic!("expected key event, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn focus_gained_requests_full_repaint() {
+        let (broker, handle, _draw_tx, draw_rx, terminal_focused, needs_full_repaint) = setup();
+        let mut stream = make_stream(
+            broker,
+            draw_rx,
+            terminal_focused.clone(),
+            needs_full_repaint.clone(),
+        );
+
+        terminal_focused.store(false, Ordering::Relaxed);
+        handle.send(Ok(Event::FocusGained));
+
+        let next = stream.next().await;
+        assert!(matches!(next, Some(TuiEvent::Draw)));
+        assert!(terminal_focused.load(Ordering::Relaxed));
+        assert!(needs_full_repaint.load(Ordering::Relaxed));
     }
 }

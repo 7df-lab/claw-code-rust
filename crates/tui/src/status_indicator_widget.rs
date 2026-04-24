@@ -31,6 +31,7 @@ use crate::wrapping::word_wrap_lines;
 
 pub(crate) const STATUS_DETAILS_DEFAULT_MAX_LINES: usize = 3;
 const DETAILS_PREFIX: &str = "  └ ";
+const STATUS_ANIMATION_INTERVAL: Duration = Duration::from_millis(80);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatusDetailsCapitalization {
@@ -236,7 +237,7 @@ impl Renderable for StatusIndicatorWidget {
         if self.animations_enabled {
             // Schedule next animation frame.
             self.frame_requester
-                .schedule_frame_in(Duration::from_millis(32));
+                .schedule_frame_in(STATUS_ANIMATION_INTERVAL);
         }
         let now = Instant::now();
         let elapsed_duration = self.elapsed_duration_at(now);

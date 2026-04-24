@@ -42,7 +42,7 @@ impl ComposerInput {
             sender,
             /*enhanced_keys_supported*/ true,
             "Compose new task".to_string(),
-            /*disable_paste_burst*/ false,
+            /*disable_paste_burst*/ !cfg!(windows),
         );
         Self { inner, _tx: tx, rx }
     }

@@ -1,9 +1,13 @@
-use devo_protocol::{RequestRole, ToolDefinition};
-use serde_json::{Value, json};
+use devo_protocol::RequestRole;
+use devo_protocol::ToolDefinition;
+use serde_json::Value;
+use serde_json::json;
 use tracing::warn;
 
-use super::capabilities::{OpenAIReasoningMode, OpenAIRequestProfile};
-use super::{OpenAIReasoningEffort, OpenAIRole};
+use super::OpenAIReasoningEffort;
+use super::OpenAIRole;
+use super::capabilities::OpenAIReasoningMode;
+use super::capabilities::OpenAIRequestProfile;
 
 pub(crate) fn request_role(role: &str) -> OpenAIRole {
     match role.parse::<RequestRole>() {
@@ -33,6 +37,7 @@ pub(crate) fn reasoning_effort(thinking: Option<&str>) -> Option<OpenAIReasoning
         "medium" | "enabled" | "" => Some(OpenAIReasoningEffort::Medium),
         "high" => Some(OpenAIReasoningEffort::High),
         "xhigh" => Some(OpenAIReasoningEffort::XHigh),
+        "max" => Some(OpenAIReasoningEffort::Max),
         _ => None,
     }
 }

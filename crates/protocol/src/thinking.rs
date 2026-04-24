@@ -48,9 +48,11 @@
 use std::str::FromStr;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
-use strum_macros::{Display, EnumIter};
+use strum_macros::Display;
+use strum_macros::EnumIter;
 
 /// Describes how a logical thinking selection should be applied to a request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +119,7 @@ pub struct ResolvedThinkingRequest {
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
 pub enum ReasoningEffort {
+    // GPT thinking reason effor: [none, minimal, low, medium, high, xhigh]
     None,
     Minimal,
     Low,
@@ -124,6 +127,8 @@ pub enum ReasoningEffort {
     Medium,
     High,
     XHigh,
+    // DeepSeek V4 thinking reason effort: [high, max]
+    Max,
 }
 
 impl FromStr for ReasoningEffort {
@@ -144,6 +149,7 @@ impl ReasoningEffort {
             Self::Medium => "Medium",
             Self::High => "High",
             Self::XHigh => "XHigh",
+            Self::Max => "Max",
         }
     }
 
@@ -155,6 +161,7 @@ impl ReasoningEffort {
             Self::Medium => "Balanced speed and deliberation",
             Self::High => "More deliberate for harder tasks",
             Self::XHigh => "Most deliberate, highest effort",
+            Self::Max => "Most deliberate, highest effort",
         }
     }
 }
@@ -168,6 +175,7 @@ fn effort_rank(effort: ReasoningEffort) -> i32 {
         ReasoningEffort::Medium => 3,
         ReasoningEffort::High => 4,
         ReasoningEffort::XHigh => 5,
+        ReasoningEffort::Max => 5,
     }
 }
 
@@ -212,7 +220,7 @@ pub struct ThinkingPreset {
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingCapability {
     /// Model thinking cannot be controlled.
-    Disabled,
+    Unsupported,
     /// Model thinking can be toggled on and off.
     Toggle,
     /// Multiple effort levels can be selected for thinking.
@@ -222,7 +230,7 @@ pub enum ThinkingCapability {
 impl ThinkingCapability {
     pub fn options(&self) -> Vec<ThinkingPreset> {
         match self {
-            ThinkingCapability::Disabled => Vec::new(),
+            ThinkingCapability::Unsupported => Vec::new(),
             ThinkingCapability::Toggle => vec![
                 ThinkingPreset {
                     label: "Off".to_string(),

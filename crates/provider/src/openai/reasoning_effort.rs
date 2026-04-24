@@ -1,7 +1,8 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// OpenAI reasoning-effort levels supported by reasoning models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,6 +14,7 @@ pub enum OpenAIReasoningEffort {
     Medium,
     High,
     XHigh,
+    Max,
 }
 
 impl fmt::Display for OpenAIReasoningEffort {
@@ -24,6 +26,7 @@ impl fmt::Display for OpenAIReasoningEffort {
             OpenAIReasoningEffort::Medium => "medium",
             OpenAIReasoningEffort::High => "high",
             OpenAIReasoningEffort::XHigh => "xhigh",
+            OpenAIReasoningEffort::Max => "max",
         })
     }
 }
@@ -39,6 +42,7 @@ impl FromStr for OpenAIReasoningEffort {
             "medium" => Ok(OpenAIReasoningEffort::Medium),
             "high" => Ok(OpenAIReasoningEffort::High),
             "xhigh" => Ok(OpenAIReasoningEffort::XHigh),
+            "max" => Ok(OpenAIReasoningEffort::Max),
             other => Err(format!("invalid OpenAI reasoning effort: {other}")),
         }
     }

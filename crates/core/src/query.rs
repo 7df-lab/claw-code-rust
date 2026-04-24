@@ -41,6 +41,7 @@ pub enum QueryEvent {
     /// Incremental reasoning text from the assistant.
     ReasoningDelta(String),
     /// Incremental token usage update from the provider stream.
+    /// TODO: Review the mechanism from the OpenAI API / Anthropic API documentation.
     UsageDelta {
         input_tokens: usize,
         output_tokens: usize,
@@ -92,6 +93,12 @@ enum ErrorClass {
     FileTooLarge,
     ServerError,
     Unretryable,
+}
+
+enum ProviderRetryDecision {
+    RetryAfter(Duration),
+    CompactAndRetry,
+    Fail,
 }
 
 fn classify_error(e: &anyhow::Error) -> ErrorClass {
@@ -153,8 +160,41 @@ fn classify_error(e: &anyhow::Error) -> ErrorClass {
     }
 }
 
+fn provider_retry_decision(
+    error: &anyhow::Error,
+    retry_count: &mut usize,
+    context_compacted: &mut bool,
+) -> ProviderRetryDecision {
+    match classify_error(error) {
+        ErrorClass::ContextTooLong => {
+            if *context_compacted {
+                ProviderRetryDecision::Fail
+            } else {
+                *context_compacted = true;
+                ProviderRetryDecision::CompactAndRetry
+            }
+        }
+        ErrorClass::RateLimit | ErrorClass::ServerError => {
+            if *retry_count >= MAX_RETRIES {
+                ProviderRetryDecision::Fail
+            } else {
+                *retry_count += 1;
+                ProviderRetryDecision::RetryAfter(retry_backoff_duration(*retry_count))
+            }
+        }
+        ErrorClass::ParameterError
+        | ErrorClass::FileContentAnomaly
+        | ErrorClass::AuthenticationFailure
+        | ErrorClass::FeatureUnavailable
+        | ErrorClass::TaskNotFound
+        | ErrorClass::NoApiPermission
+        | ErrorClass::FileTooLarge
+        | ErrorClass::Unretryable => ProviderRetryDecision::Fail,
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Session compaction (capabilities 1.3 / 1.7)
+// Session compaction
 // ---------------------------------------------------------------------------
 
 /// TODO: The context compact is weired, should compact with a seperate LLM invoke.
@@ -259,22 +299,9 @@ fn build_system_prompt(base_instructions: &str) -> String {
     sections.join("\n\n")
 }
 
-/// TODO: Here the shell has issue, on windows, it always return cmd.exe, however,
-/// the windows usually powershell
 fn build_environment_context(cwd: &Path) -> String {
-    let shell = std::env::var("SHELL")
-        .ok()
-        .or_else(|| std::env::var("COMSPEC").ok())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let shell = shell
-        .rsplit(std::path::MAIN_SEPARATOR)
-        .next()
-        .unwrap_or(&shell)
-        .to_lowercase();
-
+    let shell = shell_basename();
     let current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
-
     let timezone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
 
     format!(
@@ -284,6 +311,85 @@ fn build_environment_context(cwd: &Path) -> String {
         current_date,
         timezone,
     )
+}
+
+pub fn default_shell_name() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        return default_shell_windows();
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        return default_shell_android();
+    }
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    {
+        return default_shell_unix();
+    }
+
+    #[allow(unreachable_code)]
+    "sh".to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn default_shell_windows() -> String {
+    use std::env;
+
+    if let Some(shell) = env::var_os("COMSPEC")
+        && !shell.is_empty()
+    {
+        return shell.to_string_lossy().into_owned();
+    }
+
+    "cmd.exe".to_string()
+}
+
+#[cfg(target_os = "android")]
+fn default_shell_android() -> String {
+    if let Some(shell) = env::var_os("SHELL") {
+        if !shell.is_empty() {
+            return shell.to_string_lossy().into_owned();
+        }
+    }
+
+    "/system/bin/sh".to_string()
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+fn default_shell_unix() -> String {
+    if let Some(shell) = env::var_os("SHELL") {
+        if !shell.is_empty() {
+            return shell.to_string_lossy().into_owned();
+        }
+    }
+
+    "/bin/sh".to_string()
+}
+
+pub fn shell_basename() -> String {
+    let shell = default_shell_name();
+
+    Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or(shell.to_ascii_lowercase())
 }
 
 fn build_prefetched_user_inputs(cwd: &Path) -> Vec<UserInput> {
@@ -365,7 +471,7 @@ pub async fn query(
     let mut retry_count: usize = 0;
     let mut context_compacted = false;
 
-    loop {
+    'query_loop: loop {
         for prompt in session.drain_pending_user_prompts() {
             session.push_message(Message::user(prompt));
         }
@@ -444,11 +550,7 @@ pub async fn query(
         let stream_result = provider.completion_stream(request).await;
 
         let mut stream = match stream_result {
-            Ok(s) => {
-                retry_count = 0;
-                context_compacted = false;
-                s
-            }
+            Ok(s) => s,
             Err(e) => {
                 warn!(
                     provider = provider.name(),
@@ -457,41 +559,24 @@ pub async fn query(
                     error = ?e,
                     "failed to create provider stream"
                 );
-                match classify_error(&e) {
-                    ErrorClass::ContextTooLong => {
-                        // Compact history and retry once
-                        if context_compacted {
-                            return Err(AgentError::ContextTooLong);
-                        }
-                        warn!("context_too_long — compacting and retrying");
+                match provider_retry_decision(&e, &mut retry_count, &mut context_compacted) {
+                    ProviderRetryDecision::CompactAndRetry => {
+                        warn!("context_too_long - compacting and retrying");
                         compact_session(session);
-                        context_compacted = true;
                         session.turn_count -= 1;
                         continue;
                     }
-                    ErrorClass::RateLimit | ErrorClass::ServerError => {
-                        if retry_count < MAX_RETRIES {
-                            retry_count += 1;
-                            let backoff = retry_backoff_duration(retry_count);
-                            warn!(
-                                attempt = retry_count,
-                                backoff_ms = backoff.as_millis(),
-                                "transient error — retrying with exponential backoff"
-                            );
-                            sleep(backoff).await;
-                            session.turn_count -= 1;
-                            continue;
-                        }
-                        return Err(AgentError::Provider(e));
+                    ProviderRetryDecision::RetryAfter(backoff) => {
+                        warn!(
+                            attempt = retry_count,
+                            backoff_ms = backoff.as_millis(),
+                            "transient provider error - retrying with exponential backoff"
+                        );
+                        sleep(backoff).await;
+                        session.turn_count -= 1;
+                        continue;
                     }
-                    ErrorClass::ParameterError
-                    | ErrorClass::FileContentAnomaly
-                    | ErrorClass::AuthenticationFailure
-                    | ErrorClass::FeatureUnavailable
-                    | ErrorClass::TaskNotFound
-                    | ErrorClass::NoApiPermission
-                    | ErrorClass::FileTooLarge
-                    | ErrorClass::Unretryable => {
+                    ProviderRetryDecision::Fail => {
                         return Err(AgentError::Provider(e));
                     }
                 }
@@ -565,10 +650,41 @@ pub async fn query(
                         error = ?e,
                         "stream error"
                     );
-                    return Err(AgentError::Provider(e));
+                    if !assistant_text.is_empty()
+                        || !reasoning_text.is_empty()
+                        || !tool_uses.is_empty()
+                        || final_response.is_some()
+                    {
+                        return Err(AgentError::Provider(e));
+                    }
+
+                    match provider_retry_decision(&e, &mut retry_count, &mut context_compacted) {
+                        ProviderRetryDecision::CompactAndRetry => {
+                            warn!("context_too_long - compacting and retrying");
+                            compact_session(session);
+                            session.turn_count -= 1;
+                            continue 'query_loop;
+                        }
+                        ProviderRetryDecision::RetryAfter(backoff) => {
+                            warn!(
+                                attempt = retry_count,
+                                backoff_ms = backoff.as_millis(),
+                                "transient provider stream error - retrying with exponential backoff"
+                            );
+                            sleep(backoff).await;
+                            session.turn_count -= 1;
+                            continue 'query_loop;
+                        }
+                        ProviderRetryDecision::Fail => {
+                            return Err(AgentError::Provider(e));
+                        }
+                    }
                 }
             }
         }
+
+        retry_count = 0;
+        context_compacted = false;
 
         if let Some(response) = &final_response {
             if assistant_text.is_empty() {
@@ -889,6 +1005,14 @@ mod tests {
         requests: Arc<Mutex<Vec<ModelRequest>>>,
     }
 
+    struct TransientStreamCreateProvider {
+        attempts: AtomicUsize,
+    }
+
+    struct TransientStreamEventProvider {
+        attempts: AtomicUsize,
+    }
+
     #[async_trait]
     impl devo_provider::ModelProviderSDK for CapturingProvider {
         async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
@@ -919,6 +1043,74 @@ mod tests {
     }
 
     #[async_trait]
+    impl devo_provider::ModelProviderSDK for TransientStreamCreateProvider {
+        async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            unreachable!("tests stream responses only")
+        }
+
+        async fn completion_stream(
+            &self,
+            _request: ModelRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                return Err(anyhow::anyhow!("503 service unavailable"));
+            }
+
+            Ok(Box::pin(futures::stream::iter(vec![Ok(
+                StreamEvent::MessageDone {
+                    response: ModelResponse {
+                        id: "resp".into(),
+                        content: vec![ResponseContent::Text("done".into())],
+                        stop_reason: Some(StopReason::EndTurn),
+                        usage: Usage::default(),
+                        metadata: Default::default(),
+                    },
+                },
+            )])))
+        }
+
+        fn name(&self) -> &str {
+            "transient-stream-create-provider"
+        }
+    }
+
+    #[async_trait]
+    impl devo_provider::ModelProviderSDK for TransientStreamEventProvider {
+        async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            unreachable!("tests stream responses only")
+        }
+
+        async fn completion_stream(
+            &self,
+            _request: ModelRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                return Ok(Box::pin(futures::stream::iter(vec![Err(anyhow::anyhow!(
+                    "500 internal server error"
+                ))])));
+            }
+
+            Ok(Box::pin(futures::stream::iter(vec![Ok(
+                StreamEvent::MessageDone {
+                    response: ModelResponse {
+                        id: "resp".into(),
+                        content: vec![ResponseContent::Text("done".into())],
+                        stop_reason: Some(StopReason::EndTurn),
+                        usage: Usage::default(),
+                        metadata: Default::default(),
+                    },
+                },
+            )])))
+        }
+
+        fn name(&self) -> &str {
+            "transient-stream-event-provider"
+        }
+    }
+
+    #[async_trait]
     impl Tool for MutatingTool {
         fn name(&self) -> &str {
             "mutating_tool"
@@ -945,6 +1137,68 @@ mod tests {
         ) -> Result<ToolOutput> {
             Ok(ToolOutput::success("ok"))
         }
+    }
+
+    #[tokio::test]
+    async fn query_retries_transient_stream_creation_errors() {
+        let provider = TransientStreamCreateProvider {
+            attempts: AtomicUsize::new(0),
+        };
+        let registry = Arc::new(ToolRegistry::new());
+        let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
+        let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+        session.push_message(Message::user("hello"));
+
+        query(
+            &mut session,
+            &TurnConfig {
+                model: Model::default(),
+                thinking_selection: None,
+            },
+            &provider,
+            registry,
+            &orchestrator,
+            None,
+        )
+        .await
+        .expect("query should retry and succeed");
+
+        assert_eq!(provider.attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            session.messages.last(),
+            Some(&Message::assistant_text("done"))
+        );
+    }
+
+    #[tokio::test]
+    async fn query_retries_transient_stream_event_errors_before_content() {
+        let provider = TransientStreamEventProvider {
+            attempts: AtomicUsize::new(0),
+        };
+        let registry = Arc::new(ToolRegistry::new());
+        let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
+        let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+        session.push_message(Message::user("hello"));
+
+        query(
+            &mut session,
+            &TurnConfig {
+                model: Model::default(),
+                thinking_selection: None,
+            },
+            &provider,
+            registry,
+            &orchestrator,
+            None,
+        )
+        .await
+        .expect("query should retry and succeed");
+
+        assert_eq!(provider.attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            session.messages.last(),
+            Some(&Message::assistant_text("done"))
+        );
     }
 
     #[tokio::test]

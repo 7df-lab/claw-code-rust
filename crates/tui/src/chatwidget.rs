@@ -322,7 +322,7 @@ impl ChatWidget {
             .as_ref()
             .map(|model| model.slug.as_str())
             .unwrap_or("unknown");
-        let thinking = self.thinking_selection.as_deref().unwrap_or("default");
+        let thinking = self.thinking_selection.as_deref().unwrap_or("unsupported");
         let tokens = format!(
             "{} in / {} out",
             Self::format_token_count(self.total_input_tokens),
@@ -784,7 +784,7 @@ impl ChatWidget {
                         None,
                     ));
                 }
-                self.set_status_message(format!("Active session: {session_id}"));
+                self.set_status_message("Session switched");
             }
             WorkerEvent::SessionRenamed { session_id, title } => {
                 self.add_to_history(history_cell::new_info_event(
@@ -797,7 +797,7 @@ impl ChatWidget {
                 session_id: _,
                 title,
             } => {
-                self.set_status_message(format!("Session titled: {title}"));
+                self.set_status_message(format!("Session: {title}"));
             }
             WorkerEvent::InputHistoryLoaded { direction: _, text } => {
                 self.bottom_pane.restore_input_from_history(text);
@@ -1259,6 +1259,7 @@ impl ChatWidget {
             Some(ReasoningEffort::Medium) => "medium",
             Some(ReasoningEffort::High) => "high",
             Some(ReasoningEffort::XHigh) => "xhigh",
+            Some(ReasoningEffort::Max) => "max",
         }
     }
 
@@ -1270,6 +1271,7 @@ impl ChatWidget {
             ReasoningEffort::Medium => "Medium",
             ReasoningEffort::High => "High",
             ReasoningEffort::XHigh => "Extra high",
+            ReasoningEffort::Max => "max",
         }
     }
 
@@ -1278,14 +1280,14 @@ impl ChatWidget {
         implementation: Option<&ThinkingImplementation>,
         default_reasoning_effort: Option<ReasoningEffort>,
     ) -> Option<&'static str> {
-        if matches!(capability, ThinkingCapability::Disabled)
+        if matches!(capability, ThinkingCapability::Unsupported)
             || matches!(implementation, Some(ThinkingImplementation::Disabled))
         {
             return None;
         }
 
         match capability {
-            ThinkingCapability::Disabled => None,
+            ThinkingCapability::Unsupported => None,
             ThinkingCapability::Toggle => Some("thinking"),
             ThinkingCapability::Levels(levels) => default_reasoning_effort
                 .or_else(|| levels.first().copied())
@@ -1445,7 +1447,7 @@ impl ChatWidget {
         self.picker_mode = Some(PickerMode::Thinking);
         let entries = self.thinking_entries();
         if entries.is_empty() {
-            self.set_status_message("No thinking options available");
+            self.set_status_message("Thinking Unsupported");
             return;
         }
         let model_entries = entries

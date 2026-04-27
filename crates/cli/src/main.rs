@@ -6,9 +6,9 @@ use clap::builder::TypedValueParser as _;
 use devo_core::AppConfigLoader;
 use devo_core::LoggingBootstrap;
 use devo_core::LoggingRuntime;
-use devo_server::run_server_process;
 use devo_server::ServerProcessArgs;
 use devo_server::ServerTransportMode;
+use devo_server::run_server_process;
 use devo_utils::find_devo_home;
 use tracing_subscriber::filter::LevelFilter;
 

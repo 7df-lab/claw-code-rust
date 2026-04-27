@@ -29,13 +29,29 @@
 ## 📖 目次
 
 - [クイックスタート](#-クイックスタート)
+- [インストール](#-インストール)
 - [よくある質問](#-よくある質問)
 - [コントリビュート](#-コントリビュート)
+- [参考](#-参考)
 - [ライセンス](#-ライセンス)
+
+## 📦 インストール
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh
+```
+
+### Windows
+
+```powershell
+curl.exe -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+```
 
 ## 🚀 クイックスタート
 
-まだ安定版はありません。以下の手順でソースコードからビルドできます。
+ソースからビルドしたい場合は、以下の手順を使用してください。
 
 ### ビルド
 
@@ -47,7 +63,7 @@ cargo build --release
 ./target/release/devo onboard
 
 # windows
-curl.exe -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+.\target\release\devo onboard
 ```
 
 > [!TIP]

@@ -29,13 +29,29 @@
 ## 📖 Содержание
 
 - [Быстрый старт](#-быстрый-старт)
+- [Установка](#-установка)
 - [Часто задаваемые вопросы](#-часто-задаваемые-вопросы)
 - [Участие в разработке](#-участие-в-разработке)
+- [Ссылки](#-ссылки)
 - [Лицензия](#-лицензия)
+
+## 📦 Установка
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh
+```
+
+### Windows
+
+```powershell
+curl.exe -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+```
 
 ## 🚀 Быстрый старт
 
-Стабильного релиза пока нет — вы можете собрать проект из исходников по инструкции ниже.
+Если вы предпочитаете собрать из исходников, используйте инструкции ниже.
 
 ### Сборка
 
@@ -47,7 +63,7 @@ cargo build --release
 ./target/release/devo onboard
 
 # windows
-curl.exe -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+.\target\release\devo onboard
 ```
 
 > [!TIP]

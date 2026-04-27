@@ -29,15 +29,29 @@
 ## 📖 Table des matières
 
 - [Démarrage rapide](#-démarrage-rapide)
+- [Installation](#-installation)
 - [Questions fréquentes](#-questions-fréquentes)
 - [Contribuer](#-contribuer)
+- [Références](#-références)
 - [Licence](#-licence)
+
+## 📦 Installation
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh
+```
+
+### Windows
+
+```powershell
+curl.exe -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+```
 
 ## 🚀 Démarrage rapide
 
-<!-- ### Installation -->
-
-Pas encore de version stable — vous pouvez construire le projet depuis les sources en suivant les instructions ci-dessous.
+Si vous préférez compiler à partir des sources, suivez les instructions ci-dessous.
 
 ### Construction
 

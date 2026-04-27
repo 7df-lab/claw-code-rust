@@ -29,15 +29,29 @@
 ## 📖 İçindekiler
 
 - [Hızlı Başlangıç](#-hızlı-başlangıç)
+- [Kurulum](#-kurulum)
 - [Sıkça Sorulan Sorular](#-sıkça-sorulan-sorular)
 - [Katkıda Bulunma](#-katkıda-bulunma)
+- [Referanslar](#-referanslar)
 - [Lisans](#-lisans)
+
+## 📦 Kurulum
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh
+```
+
+### Windows
+
+```powershell
+curl.exe -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+```
 
 ## 🚀 Hızlı Başlangıç
 
-<!-- ### Kurulum -->
-
-Henüz kararlı bir sürüm yok — aşağıdaki adımları izleyerek projeyi kaynak koddan derleyebilirsiniz.
+Kaynaktan derlemek isterseniz aşağıdaki talimatları kullanın.
 
 ### Derleme
 
@@ -48,7 +62,7 @@ cargo build --release
 ./target/release/devo onboard
 
 # windows
-curl.exe -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+.\target\release\devo onboard
 ```
 
 > [!TIP]

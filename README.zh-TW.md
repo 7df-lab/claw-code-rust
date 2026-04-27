@@ -29,13 +29,29 @@
 ## 📖 目錄
 
 - [快速開始](#-快速開始)
+- [安裝](#-安裝)
 - [常見問題](#-常見問題)
 - [參與貢獻](#-參與貢獻)
+- [參考](#-參考)
 - [授權](#-授權)
+
+## 📦 安裝
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh
+```
+
+### Windows
+
+```powershell
+curl.exe -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+```
 
 ## 🚀 快速開始
 
-還沒有穩定版本 — 你可以按照以下說明從原始碼建置專案。
+如果你更想從原始碼建置，可以使用下面的說明。
 
 ### 建置
 
@@ -47,7 +63,7 @@ cargo build --release
 ./target/release/devo onboard
 
 # windows
-curl.exe -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+.\target\release\devo onboard
 ```
 
 > [!TIP]

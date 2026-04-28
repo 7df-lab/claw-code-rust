@@ -89,7 +89,8 @@ async fn stdio_server_process_supports_handshake_and_session_start() -> Result<(
 
     let test_cwd = home_dir.path().to_string_lossy().into_owned();
 
-    let mut child = Command::new(devo_binary_path()?)
+    let mut command = devo_command()?;
+    let mut child = command
         .arg("server")
         .arg("--transport")
         .arg("stdio")
@@ -384,6 +385,34 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
     listener_task.abort();
     let _ = listener_task.await;
     Ok(())
+}
+
+fn devo_command() -> Result<Command> {
+    if let Some(binary_path) = std::env::var_os("CARGO_BIN_EXE_devo").map(PathBuf::from)
+        && binary_path.is_file()
+    {
+        return Ok(Command::new(binary_path));
+    }
+
+    let binary_path = devo_binary_path()?;
+    if binary_path.is_file() {
+        return Ok(Command::new(binary_path));
+    }
+
+    let cargo_path = std::env::var_os("CARGO")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("cargo"));
+    let mut command = Command::new(cargo_path);
+    command
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .arg("run")
+        .arg("--quiet")
+        .arg("-p")
+        .arg("devo-cli")
+        .arg("--bin")
+        .arg("devo")
+        .arg("--");
+    Ok(command)
 }
 
 fn devo_binary_path() -> Result<PathBuf> {

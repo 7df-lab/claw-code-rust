@@ -5,6 +5,8 @@ use std::io::BufReader;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -43,16 +45,38 @@ use crate::session::SessionRuntimeStatus;
 use crate::turn::TurnMetadata;
 
 /// Owns canonical append-only rollout persistence rooted at the server data directory.
-#[derive(Debug, Clone)]
 pub(crate) struct RolloutStore {
     /// Root data directory that contains the `sessions/` hierarchy.
     data_root: PathBuf,
+    /// Per-file locks that serialise concurrent writes to the same rollout file,
+    /// preventing interleaved JSON lines.
+    file_locks: Arc<StdMutex<HashMap<PathBuf, Arc<StdMutex<()>>>>>,
+}
+
+impl std::fmt::Debug for RolloutStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RolloutStore")
+            .field("data_root", &self.data_root)
+            .finish()
+    }
+}
+
+impl Clone for RolloutStore {
+    fn clone(&self) -> Self {
+        Self {
+            data_root: self.data_root.clone(),
+            file_locks: Arc::clone(&self.file_locks),
+        }
+    }
 }
 
 impl RolloutStore {
     /// Creates a rollout store rooted at the supplied server home directory.
     pub(crate) fn new(data_root: PathBuf) -> Self {
-        Self { data_root }
+        Self {
+            data_root,
+            file_locks: Arc::new(StdMutex::new(HashMap::new())),
+        }
     }
 
     /// Constructs a canonical durable session record for a newly created session.
@@ -164,10 +188,21 @@ impl RolloutStore {
     ) -> Result<HashMap<SessionId, std::sync::Arc<Mutex<RuntimeSession>>>> {
         let mut sessions = HashMap::new();
         for rollout_path in self.rollout_paths()? {
-            let recovered = self
+            match self
                 .load_session_from_rollout(&rollout_path, deps)
-                .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
-            sessions.insert(recovered.summary.session_id, recovered.shared());
+                .with_context(|| format!("replay rollout {}", rollout_path.display()))
+            {
+                Ok(recovered) => {
+                    sessions.insert(recovered.summary.session_id, recovered.shared());
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        rollout_path = %rollout_path.display(),
+                        error = %error,
+                        "failed to replay rollout; skipping persisted session"
+                    );
+                }
+            }
         }
         Ok(sessions)
     }
@@ -181,9 +216,9 @@ impl RolloutStore {
             .with_context(|| format!("open rollout file {}", rollout_path.display()))?;
         let reader = BufReader::new(file);
         let mut replay = ReplayState::default();
-        let mut lines = reader.lines().peekable();
+        let mut lines = reader.lines().enumerate().peekable();
 
-        while let Some(line) = lines.next() {
+        while let Some((line_index, line)) = lines.next() {
             let line =
                 line.with_context(|| format!("read line from {}", rollout_path.display()))?;
             if line.trim().is_empty() {
@@ -195,9 +230,12 @@ impl RolloutStore {
                     if lines.peek().is_none() {
                         break;
                     }
-                    return Err(error).with_context(|| {
-                        format!("parse rollout line in {}", rollout_path.display())
-                    });
+                    tracing::warn!(
+                        rollout_path = %rollout_path.display(),
+                        line_number = line_index + 1,
+                        error = %error,
+                        "skipping corrupt rollout line"
+                    );
                 }
             }
         }
@@ -234,6 +272,19 @@ impl RolloutStore {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create rollout directory {}", parent.display()))?;
         }
+        // Acquire a per-file lock so concurrent writes to the same rollout file
+        // do not interleave their JSON payloads.
+        let file_lock = {
+            let mut locks = self
+                .file_locks
+                .lock()
+                .expect("rollout file-locks table poisoned");
+            locks
+                .entry(rollout_path.to_path_buf())
+                .or_insert_with(|| Arc::new(StdMutex::new(())))
+                .clone()
+        };
+        let _guard = file_lock.lock().expect("rollout per-file lock poisoned");
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

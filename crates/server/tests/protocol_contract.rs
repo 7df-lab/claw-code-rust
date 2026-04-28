@@ -318,3 +318,49 @@ fn session_title_updated_event_serializes_expected_kind() {
     let json = serde_json::to_string(&event).expect("serialize");
     assert!(json.contains("session_title_updated"));
 }
+
+#[test]
+fn session_compaction_events_serialize_expected_kinds() {
+    let metadata = SessionMetadata {
+        session_id: SessionId::new(),
+        cwd: ".".into(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        title: Some("Compacting session".into()),
+        title_state: SessionTitleState::Unset,
+        ephemeral: false,
+        model: Some("claude-sonnet".into()),
+        thinking: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        status: SessionRuntimeStatus::Idle,
+    };
+
+    let started = ServerEvent::SessionCompactionStarted(devo_server::SessionEventPayload {
+        session: metadata.clone(),
+    });
+    let completed = ServerEvent::SessionCompactionCompleted(devo_server::SessionEventPayload {
+        session: metadata,
+    });
+    let failed =
+        ServerEvent::SessionCompactionFailed(devo_server::SessionCompactionFailedPayload {
+            session_id: SessionId::new(),
+            message: "boom".into(),
+        });
+
+    assert!(
+        serde_json::to_string(&started)
+            .expect("serialize")
+            .contains("session_compaction_started")
+    );
+    assert!(
+        serde_json::to_string(&completed)
+            .expect("serialize")
+            .contains("session_compaction_completed")
+    );
+    assert!(
+        serde_json::to_string(&failed)
+            .expect("serialize")
+            .contains("session_compaction_failed")
+    );
+}

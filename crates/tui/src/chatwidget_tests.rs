@@ -98,6 +98,28 @@ fn find_row_index(rows: &[String], needle: &str) -> Option<usize> {
 }
 
 #[test]
+fn resume_command_opens_loading_browser_immediately() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_app_event(AppEvent::Command(AppCommand::RunUserShellCommand {
+        command: "session list".to_string(),
+    }));
+
+    assert!(widget.is_resume_browser_open());
+
+    let rows = rendered_rows(&widget, 80, 12);
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("Loading saved sessions"))
+    );
+}
+
+#[test]
 fn thinking_entries_are_generated_from_model_capability_options() {
     let model = Model {
         slug: "test-model".to_string(),

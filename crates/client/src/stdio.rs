@@ -16,6 +16,8 @@ use devo_protocol::InitializeResult;
 use devo_protocol::NotificationEnvelope;
 use devo_protocol::ProtocolErrorCode;
 use devo_protocol::ServerEvent;
+use devo_protocol::SessionCompactParams;
+use devo_protocol::SessionCompactResult;
 use devo_protocol::SessionForkParams;
 use devo_protocol::SessionForkResult;
 use devo_protocol::SessionListParams;
@@ -174,6 +176,13 @@ impl StdioServerClient {
         params: SessionMetadataUpdateParams,
     ) -> Result<SessionMetadataUpdateResult> {
         self.request("session/metadata/update", params).await
+    }
+
+    pub async fn session_compact(
+        &mut self,
+        params: SessionCompactParams,
+    ) -> Result<SessionCompactResult> {
+        self.request("session/compact", params).await
     }
 
     pub async fn session_fork(&mut self, params: SessionForkParams) -> Result<SessionForkResult> {

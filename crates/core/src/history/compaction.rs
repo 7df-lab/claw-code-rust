@@ -197,6 +197,7 @@ pub async fn compact_history(
         for item in &to_compact {
             messages.push(RequestMessage::from(item));
         }
+        merge_consecutive_same_role(&mut messages);
 
         let summary = match summarizer.summarize(messages).await {
             Ok(s) => s,
@@ -289,6 +290,25 @@ fn split_by_user_message_budget(
     }
 }
 
+/// Merges consecutive `RequestMessage`s that share the same role into a single
+/// message by concatenating their content arrays.
+///
+/// This mirrors the same logic in `history/mod.rs` and is needed because
+/// `ResponseItem` → `RequestMessage` conversion can split a single assistant
+/// turn (text + tool calls) into multiple consecutive assistant messages,
+/// which provider APIs reject.
+fn merge_consecutive_same_role(messages: &mut Vec<RequestMessage>) {
+    let mut i = 1;
+    while i < messages.len() {
+        if messages[i].role == messages[i - 1].role {
+            let mut msg = messages.remove(i);
+            messages[i - 1].content.append(&mut msg.content);
+        } else {
+            i += 1;
+        }
+    }
+}
+
 /// Estimates the byte-length-based token count for a single item.
 fn estimate_item_tokens(item: &ResponseItem) -> usize {
     let text = match item {
@@ -315,11 +335,81 @@ fn estimate_item_tokens(item: &ResponseItem) -> usize {
 #[cfg(test)]
 mod tests {
     use devo_protocol::Message;
+    use devo_protocol::RequestContent;
     use pretty_assertions::assert_eq;
 
     use super::*;
     use crate::context::TokenBudget;
     use crate::response_item::ResponseItem;
+
+    #[test]
+    fn compact_builds_merged_messages() {
+        let items = vec![
+            ResponseItem::Message(Message::user("hello")),
+            // Split assistant turn — text + two tool calls
+            ResponseItem::Message(Message::assistant_text("ok")),
+            ResponseItem::ToolCall {
+                id: "call-1".into(),
+                name: "read".into(),
+                input: serde_json::json!({"filePath": "/tmp/a.txt"}),
+            },
+            ResponseItem::ToolCall {
+                id: "call-2".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"cmd": "date"}),
+            },
+            ResponseItem::ToolCallOutput {
+                tool_use_id: "call-1".into(),
+                content: "content".into(),
+                is_error: false,
+            },
+            ResponseItem::ToolCallOutput {
+                tool_use_id: "call-2".into(),
+                content: "output".into(),
+                is_error: false,
+            },
+        ];
+
+        let mut messages = vec![RequestMessage {
+            role: "system".to_string(),
+            content: vec![RequestContent::Text {
+                text: "dummy prompt".into(),
+            }],
+        }];
+        for item in &items {
+            messages.push(RequestMessage::from(item));
+        }
+        merge_consecutive_same_role(&mut messages);
+
+        // system, user, assistant(merged), user(merged)
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, "system");
+
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[1].content.len(), 1);
+
+        assert_eq!(messages[2].role, "assistant");
+        assert_eq!(messages[2].content.len(), 3);
+        assert!(matches!(
+            &messages[2].content[0],
+            RequestContent::Text { .. }
+        ));
+        assert!(
+            matches!(&messages[2].content[1], RequestContent::ToolUse { id, .. } if id == "call-1")
+        );
+        assert!(
+            matches!(&messages[2].content[2], RequestContent::ToolUse { id, .. } if id == "call-2")
+        );
+
+        assert_eq!(messages[3].role, "user");
+        assert_eq!(messages[3].content.len(), 2);
+        assert!(
+            matches!(&messages[3].content[0], RequestContent::ToolResult { tool_use_id, .. } if tool_use_id == "call-1")
+        );
+        assert!(
+            matches!(&messages[3].content[1], RequestContent::ToolResult { tool_use_id, .. } if tool_use_id == "call-2")
+        );
+    }
 
     #[test]
     fn should_compact_false_when_no_tokens() {

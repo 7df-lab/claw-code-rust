@@ -45,6 +45,7 @@ use crate::history::compaction::compact_history;
 use crate::history::insert_context_diff_message;
 use crate::history::summarizer::DefaultHistorySummarizer;
 use crate::response_item::ResponseItem;
+use crate::response_item::message_to_response_items;
 
 /// Events emitted during a query for the caller (CLI/UI) to observe.
 #[derive(Debug, Clone)]
@@ -439,7 +440,7 @@ pub async fn query(
                 .messages
                 .iter()
                 .cloned()
-                .map(ResponseItem::Message)
+                .flat_map(message_to_response_items)
                 .collect(),
             token_info: TokenInfo::default(),
             context: ContextView::new(
@@ -1466,6 +1467,58 @@ mod tests {
         };
         assert!(text.contains("<context_changes>"));
         assert!(text.contains("model: model-a -> model-b"));
+    }
+
+    #[tokio::test]
+    async fn query_drops_orphaned_tool_calls_from_prompt_history() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn ModelProviderSDK> = Arc::new(CapturingProvider {
+            requests: Arc::clone(&requests),
+        });
+        let registry = Arc::new(ToolRegistry::new());
+        let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
+        let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+
+        session.push_message(Message::user("first"));
+        session.push_message(Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "Calling tool".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "bash".into(),
+                    input: json!({ "cmd": "pwd" }),
+                },
+            ],
+        });
+        session.push_message(Message::user("follow up"));
+
+        query(
+            &mut session,
+            &TurnConfig {
+                model: Model::default(),
+                thinking_selection: None,
+            },
+            provider,
+            registry,
+            &orchestrator,
+            None,
+        )
+        .await
+        .expect("query should succeed");
+
+        let captured = requests.lock().expect("lock requests");
+        assert_eq!(captured.len(), 1);
+        assert!(
+            captured[0]
+                .messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .all(|content| !matches!(content, devo_protocol::RequestContent::ToolUse { .. })),
+            "expected orphaned tool calls to be removed from prompt history"
+        );
     }
 
     #[tokio::test]

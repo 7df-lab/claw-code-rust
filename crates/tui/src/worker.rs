@@ -25,6 +25,7 @@ use devo_server::ItemEnvelope;
 use devo_server::ItemEventPayload;
 use devo_server::ItemKind;
 use devo_server::ServerEvent;
+use devo_server::SessionCompactParams;
 use devo_server::SessionHistoryItem;
 use devo_server::SessionHistoryItemKind;
 use devo_server::SessionListParams;
@@ -100,6 +101,8 @@ enum OperationCommand {
     ListSessions,
     /// Request a skills list from the server.
     ListSkills,
+    /// Request proactive compaction for the active session.
+    CompactSession,
     /// Clear the active session so the next prompt starts a fresh one lazily.
     StartNewSession,
     /// Switch the active session to a persisted session identifier.
@@ -205,6 +208,13 @@ impl QueryWorkerHandle {
     pub(crate) fn list_skills(&self) -> Result<()> {
         self.command_tx
             .send(OperationCommand::ListSkills)
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Requests proactive compaction for the current active session.
+    pub(crate) fn compact_session(&self) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::CompactSession)
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -501,6 +511,49 @@ async fn run_worker_inner(
                             }
                         }
                     }
+                    Some(OperationCommand::CompactSession) => {
+                        let Some(active_session_id) = session_id else {
+                            let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                turn_count,
+                                total_input_tokens,
+                                total_output_tokens,
+                            });
+                            continue;
+                        };
+                        if active_turn_id.is_some() {
+                            let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                message: "cannot compact while a turn is in progress".to_string(),
+                                turn_count,
+                                total_input_tokens,
+                                total_output_tokens,
+                            });
+                            continue;
+                        }
+                        match client
+                            .session_compact(SessionCompactParams {
+                                session_id: active_session_id,
+                            })
+                            .await
+                        {
+                            Ok(result) => {
+                                model = result
+                                    .session
+                                    .model
+                                    .clone()
+                                    .unwrap_or(model);
+                                thinking_selection = result.session.thinking.clone();
+                            }
+                            Err(error) => {
+                                let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                    message: error.to_string(),
+                                    turn_count,
+                                    total_input_tokens,
+                                    total_output_tokens,
+                                });
+                            }
+                        }
+                    }
                     Some(OperationCommand::StartNewSession) => {
                         active_turn_id = None;
                         session_id = None;
@@ -780,6 +833,23 @@ async fn run_worker_inner(
                                             title,
                                         });
                                     }
+                            }
+                            "session/compaction/started" => {
+                                if let ServerEvent::SessionCompactionStarted(_) = event {
+                                    let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
+                                }
+                            }
+                            "session/compaction/completed" => {
+                                if let ServerEvent::SessionCompactionCompleted(_) = event {
+                                    let _ = event_tx.send(WorkerEvent::SessionCompacted);
+                                }
+                            }
+                            "session/compaction/failed" => {
+                                if let ServerEvent::SessionCompactionFailed(payload) = event {
+                                    let _ = event_tx.send(WorkerEvent::SessionCompactionFailed {
+                                        message: payload.message,
+                                    });
+                                }
                             }
                             _ => {}
                         }

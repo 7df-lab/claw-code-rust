@@ -21,6 +21,7 @@ pub(crate) enum AppCommand {
     RunUserShellCommand {
         command: String,
     },
+    Compact,
     UserTurn {
         input: Vec<InputItem>,
         cwd: Option<PathBuf>,
@@ -53,6 +54,7 @@ pub(crate) enum AppCommandView<'a> {
     RunUserShellCommand {
         command: &'a str,
     },
+    Compact,
     UserTurn {
         input: &'a [InputItem],
         cwd: &'a Option<PathBuf>,
@@ -76,7 +78,6 @@ pub(crate) enum AppCommandView<'a> {
         cwds: &'a [PathBuf],
         force_reload: bool,
     },
-    Compact,
     SetThreadName {
         name: &'a str,
     },
@@ -151,6 +152,10 @@ impl AppCommand {
         Self::BrowseInputHistory { direction }
     }
 
+    pub(crate) fn compact() -> Self {
+        Self::Compact
+    }
+
     pub(crate) fn switch_session(session_id: SessionId) -> Self {
         Self::SwitchSession { session_id }
     }
@@ -159,6 +164,7 @@ impl AppCommand {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::RunUserShellCommand { .. } => "run_user_shell_command",
+            Self::Compact => "compact",
             Self::UserTurn { .. } => "user_turn",
             Self::OverrideTurnContext { .. } => "override_turn_context",
             Self::BrowseInputHistory { .. } => "browse_input_history",
@@ -172,6 +178,7 @@ impl AppCommand {
             Self::RunUserShellCommand { command } => {
                 AppCommandView::RunUserShellCommand { command }
             }
+            Self::Compact => AppCommandView::Compact,
             Self::UserTurn {
                 input,
                 cwd,

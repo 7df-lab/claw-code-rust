@@ -226,7 +226,10 @@ impl StatusIndicatorWidget {
 
 impl Renderable for StatusIndicatorWidget {
     fn desired_height(&self, width: u16) -> u16 {
-        1 + u16::try_from(self.wrapped_details_lines(width).len()).unwrap_or(0)
+        let base = 1 + u16::try_from(self.wrapped_details_lines(width).len()).unwrap_or(0);
+        // Ensure a minimum height so the status row has visual breathing room
+        // above the composer even when there are no details shown.
+        base.max(2)
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {

@@ -29,6 +29,7 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::text::Text;
 use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
@@ -216,6 +217,7 @@ pub(crate) struct ChatWidget {
     available_models: Vec<Model>,
     onboarding_step: Option<OnboardingStep>,
     resume_browser: Option<ResumeBrowserState>,
+    resume_browser_loading: bool,
     picker_mode: Option<PickerMode>,
     turn_count: usize,
     total_input_tokens: usize,
@@ -513,6 +515,7 @@ impl ChatWidget {
             available_models,
             onboarding_step: None,
             resume_browser: None,
+            resume_browser_loading: false,
             picker_mode: None,
             turn_count: 0,
             total_input_tokens: 0,
@@ -595,6 +598,19 @@ impl ChatWidget {
             }
             AppEvent::Interrupt => self.set_status_message("Interrupted"),
             AppEvent::Command(command) => {
+                if matches!(
+                    &command,
+                    AppCommand::RunUserShellCommand { command } if command == "session list"
+                ) {
+                    self.resume_browser = None;
+                    self.resume_browser_loading = true;
+                }
+                if command == AppCommand::Compact {
+                    self.busy = true;
+                    self.bottom_pane.set_task_running(true);
+                    self.set_status_message("Requesting session compaction");
+                    return;
+                }
                 self.set_status_message(format!("Command queued: {}", command.kind()));
             }
             AppEvent::Exit(_)
@@ -772,6 +788,7 @@ impl ChatWidget {
                 total_input_tokens,
                 total_output_tokens,
             } => {
+                self.resume_browser_loading = false;
                 self.commit_active_streams(DotStatus::Failed);
                 self.active_tool_calls.clear();
                 self.pending_tool_calls.clear();
@@ -812,6 +829,7 @@ impl ChatWidget {
                 self.set_status_message("Provider validation failed");
             }
             WorkerEvent::SessionsListed { sessions } => {
+                self.resume_browser_loading = false;
                 self.open_resume_browser(sessions);
             }
             WorkerEvent::SkillsListed { body } => {
@@ -823,6 +841,7 @@ impl ChatWidget {
                 model,
                 thinking,
             } => {
+                self.resume_browser_loading = false;
                 self.session.cwd = cwd;
                 self.update_session_request_model(model);
                 self.thinking_selection = thinking;
@@ -853,6 +872,7 @@ impl ChatWidget {
                 history_items,
                 loaded_item_count,
             } => {
+                self.resume_browser_loading = false;
                 self.session.cwd = cwd;
                 if let Some(model) = model {
                     self.update_session_request_model(model);
@@ -881,6 +901,25 @@ impl ChatWidget {
                     None,
                 ));
                 self.set_status_message("Session renamed");
+            }
+            WorkerEvent::SessionCompactionStarted => {
+                self.busy = true;
+                self.bottom_pane.set_task_running(true);
+                self.set_status_message("Session compaction in progress");
+            }
+            WorkerEvent::SessionCompacted => {
+                self.busy = false;
+                self.bottom_pane.set_task_running(false);
+                self.set_status_message("Session compacted");
+            }
+            WorkerEvent::SessionCompactionFailed { message } => {
+                self.busy = false;
+                self.bottom_pane.set_task_running(false);
+                self.add_to_history(history_cell::new_error_event_with_hint(
+                    message,
+                    Some("session compaction failed".to_string()),
+                ));
+                self.set_status_message("Session compaction failed");
             }
             WorkerEvent::SessionTitleUpdated {
                 session_id: _,
@@ -991,6 +1030,10 @@ impl ChatWidget {
                     self.apply_model_selection(argument);
                 }
             }
+            SlashCommand::Compact => {
+                self.app_event_tx
+                    .send(AppEvent::Command(AppCommand::compact()));
+            }
             SlashCommand::Thinking => {
                 self.open_thinking_picker();
             }
@@ -1002,6 +1045,8 @@ impl ChatWidget {
                 self.set_status_message("New session requested");
             }
             SlashCommand::Resume => {
+                self.resume_browser = None;
+                self.resume_browser_loading = true;
                 self.app_event_tx
                     .send(AppEvent::Command(AppCommand::RunUserShellCommand {
                         command: "session list".to_string(),
@@ -1212,9 +1257,22 @@ impl ChatWidget {
         } else {
             vec![Line::from(title.to_string()).bold()]
         };
-        append_markdown(body, markdown_width, Some(&self.session.cwd), &mut lines);
         if title == "Reasoning" {
-            Self::patch_lines_style(&mut lines, Self::reasoning_text_style());
+            lines.push(Line::from(Span::styled(
+                "Thinking:",
+                Self::reasoning_heading_style(),
+            )));
+            let mut body_lines = Vec::new();
+            append_markdown(
+                body,
+                markdown_width,
+                Some(&self.session.cwd),
+                &mut body_lines,
+            );
+            Self::patch_lines_style(&mut body_lines, Self::reasoning_text_style());
+            lines.extend(body_lines);
+        } else {
+            append_markdown(body, markdown_width, Some(&self.session.cwd), &mut lines);
         }
         if title == "Assistant" || title == "Reasoning" {
             self.add_history_entry_without_redraw(Box::new(
@@ -1363,11 +1421,26 @@ impl ChatWidget {
 
     fn sync_active_reasoning_cell(&mut self) {
         if !self.active_reasoning_text.trim().is_empty() {
-            self.active_reasoning_cell = Some(self.bulleted_markdown_cell_with_style(
+            let mut lines = vec![Line::from(Span::styled(
+                "Thinking:",
+                Self::reasoning_heading_style(),
+            ))];
+            let mut body_lines = Vec::new();
+            append_markdown(
                 &self.active_reasoning_text,
-                Self::pending_dot_prefix(),
-                Self::reasoning_text_style(),
-            ));
+                None,
+                Some(&self.session.cwd),
+                &mut body_lines,
+            );
+            Self::patch_lines_style(&mut body_lines, Self::reasoning_text_style());
+            lines.extend(body_lines);
+            self.active_reasoning_cell =
+                Some(history_cell::AgentMessageCell::new_ai_response_with_prefix(
+                    lines,
+                    Self::pending_dot_prefix(),
+                    "  ",
+                    false,
+                ));
         } else {
             self.active_reasoning_cell = None;
         }
@@ -1426,6 +1499,10 @@ impl ChatWidget {
 
     fn reasoning_text_style() -> Style {
         Style::default().dim()
+    }
+
+    fn reasoning_heading_style() -> Style {
+        Style::default().italic().fg(Color::Rgb(210, 150, 60))
     }
 
     fn patch_lines_style(lines: &mut [Line<'static>], style: Style) {
@@ -1763,6 +1840,7 @@ impl ChatWidget {
     }
 
     fn open_resume_browser(&mut self, sessions: Vec<SessionListEntry>) {
+        self.resume_browser_loading = false;
         let selection = sessions
             .iter()
             .position(|session| session.is_active)
@@ -1784,6 +1862,7 @@ impl ChatWidget {
         match key.code {
             KeyCode::Esc => {
                 self.resume_browser = None;
+                self.resume_browser_loading = false;
                 self.set_status_message("Ready");
             }
             KeyCode::Up => {
@@ -1818,12 +1897,26 @@ impl ChatWidget {
     }
 
     pub(crate) fn is_resume_browser_open(&self) -> bool {
-        self.resume_browser.is_some()
+        self.resume_browser_loading || self.resume_browser.is_some()
     }
 }
 
 impl Renderable for ChatWidget {
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        if self.resume_browser_loading {
+            let lines = vec![
+                Line::from("Resume Session".bold()),
+                Line::from("Loading saved sessions...".dim()),
+                Line::from(""),
+                Line::from("Please wait.".dim()),
+            ];
+            Paragraph::new(Text::from(lines))
+                .block(Block::default().title("Devo Sessions"))
+                .wrap(Wrap { trim: false })
+                .render(area, buf);
+            return;
+        }
+
         if let Some(browser) = &self.resume_browser {
             Block::default().style(Style::default()).render(area, buf);
             let title_width = browser

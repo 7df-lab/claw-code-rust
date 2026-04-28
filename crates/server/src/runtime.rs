@@ -55,6 +55,7 @@ use crate::ServerEvent;
 use crate::ServerRequestResolvedPayload;
 use crate::SessionCompactParams;
 use crate::SessionCompactResult;
+use crate::SessionCompactionFailedPayload;
 use crate::SessionEventPayload;
 use crate::SessionForkParams;
 use crate::SessionForkResult;
@@ -732,7 +733,7 @@ impl ServerRuntime {
     }
 
     async fn handle_session_compact(
-        &self,
+        self: &Arc<Self>,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
@@ -757,6 +758,39 @@ impl ServerRuntime {
                 );
             }
         };
+
+        let summary = {
+            let runtime_session = session_arc.lock().await;
+            runtime_session.summary.clone()
+        };
+
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            runtime
+                .run_session_compaction(params.session_id, session_arc)
+                .await;
+        });
+
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: SessionCompactResult { session: summary },
+        })
+        .expect("serialize session/compact response")
+    }
+
+    async fn run_session_compaction(
+        self: Arc<Self>,
+        session_id: SessionId,
+        session_arc: Arc<tokio::sync::Mutex<crate::execution::RuntimeSession>>,
+    ) {
+        let started_summary = {
+            let runtime_session = session_arc.lock().await;
+            runtime_session.summary.clone()
+        };
+        self.broadcast_event(ServerEvent::SessionCompactionStarted(SessionEventPayload {
+            session: started_summary,
+        }))
+        .await;
 
         let result = {
             let runtime_session = session_arc.lock().await;
@@ -803,21 +837,19 @@ impl ServerRuntime {
         match result {
             Ok(CompactAction::Replaced(compacted_items)) => {
                 let mut runtime_session = session_arc.lock().await;
-
-                // Build the new message list from compacted items
-                let mut new_messages: Vec<Message> = Vec::new();
-                for item in &compacted_items {
-                    if let ResponseItem::Message(msg) = item {
-                        new_messages.push(msg.clone());
-                    }
-                }
+                let new_messages: Vec<Message> = compacted_items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ResponseItem::Message(msg) => Some(msg.clone()),
+                        _ => None,
+                    })
+                    .collect();
 
                 {
                     let mut core_session = runtime_session.core_session.lock().await;
                     core_session.messages = new_messages;
                 }
 
-                // Emit ContextCompaction event
                 if let Some(turn_id) = runtime_session
                     .latest_turn
                     .as_ref()
@@ -831,7 +863,7 @@ impl ServerRuntime {
                     let payload = serde_json::json!({ "title": "Context Compaction" });
                     self.broadcast_event(ServerEvent::ItemStarted(ItemEventPayload {
                         context: EventContext {
-                            session_id: params.session_id,
+                            session_id,
                             turn_id: Some(turn_id),
                             item_id: Some(item_id),
                             seq: item_seq,
@@ -846,7 +878,7 @@ impl ServerRuntime {
 
                     self.broadcast_event(ServerEvent::ItemCompleted(ItemEventPayload {
                         context: EventContext {
-                            session_id: params.session_id,
+                            session_id,
                             turn_id: Some(turn_id),
                             item_id: Some(item_id),
                             seq: item_seq,
@@ -861,26 +893,28 @@ impl ServerRuntime {
                 }
 
                 let summary = runtime_session.summary.clone();
-                serde_json::to_value(SuccessResponse {
-                    id: request_id,
-                    result: SessionCompactResult { session: summary },
-                })
-                .expect("serialize session/compact response")
+                self.broadcast_event(ServerEvent::SessionCompactionCompleted(
+                    SessionEventPayload { session: summary },
+                ))
+                .await;
             }
             Ok(CompactAction::Skipped) => {
                 let runtime_session = session_arc.lock().await;
                 let summary = runtime_session.summary.clone();
-                serde_json::to_value(SuccessResponse {
-                    id: request_id,
-                    result: SessionCompactResult { session: summary },
-                })
-                .expect("serialize session/compact response (skipped)")
+                self.broadcast_event(ServerEvent::SessionCompactionCompleted(
+                    SessionEventPayload { session: summary },
+                ))
+                .await;
             }
-            Err(e) => self.error_response(
-                request_id,
-                ProtocolErrorCode::InternalError,
-                format!("compaction failed: {e}"),
-            ),
+            Err(error) => {
+                self.broadcast_event(ServerEvent::SessionCompactionFailed(
+                    SessionCompactionFailedPayload {
+                        session_id,
+                        message: format!("compaction failed: {error}"),
+                    },
+                ))
+                .await;
+            }
         }
     }
 

@@ -157,6 +157,15 @@ pub(crate) enum WorkerEvent {
         /// The new session title.
         title: String,
     },
+    /// The active session started a proactive compaction request.
+    SessionCompactionStarted,
+    /// The active session completed a proactive compaction request.
+    SessionCompacted,
+    /// The active session compaction request failed.
+    SessionCompactionFailed {
+        /// Human-readable failure reason.
+        message: String,
+    },
     /// The current session title changed due to automatic or explicit server-side updates.
     SessionTitleUpdated {
         /// The updated session identifier.

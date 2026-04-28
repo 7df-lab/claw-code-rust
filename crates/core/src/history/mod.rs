@@ -274,16 +274,14 @@ impl History {
     /// 1. Normalizing tool-call / tool-call-output pairing
     /// 2. Filtering items according to the model's supported modalities
     /// 3. Converting to `Vec<RequestMessage>`
+    /// 4. Merging consecutive messages with the same role (prevents orphan
+    ///    tool-call messages that violate provider protocol requirements)
     pub fn for_prompt(&self, modalities: &[InputModality]) -> Vec<RequestMessage> {
         let mut items = normalize::filter_by_modality(&self.items, modalities);
         normalize::pair_tool_call_items(&mut items);
-        items
-            .iter()
-            .map(|item| {
-                let msg: RequestMessage = item.into();
-                msg
-            })
-            .collect()
+        let mut messages: Vec<RequestMessage> = items.iter().map(|item| item.into()).collect();
+        merge_consecutive_same_role(&mut messages);
+        messages
     }
 
     /// Updates the context view and produces a diff prompt if anything changed.
@@ -318,6 +316,29 @@ pub fn insert_context_diff_message(messages: &mut Vec<Message>, diff: Message) {
 
 /// Converts locked prefix `UserInput`s into request messages and prepends them
 /// ahead of the existing prompt-visible history.
+/// Merges consecutive `RequestMessage`s that share the same role into a single
+/// message by concatenating their content arrays.
+///
+/// This is necessary because `message_to_response_items` can split a single
+/// assistant `Message` (containing both text and `ToolUse` blocks) into
+/// separate `ResponseItem`s (one `Message` item for the text, plus one
+/// `ToolCall` per tool use). When these are converted to `RequestMessage`s,
+/// the result would be multiple consecutive assistant messages, which violates
+/// provider protocol requirements (e.g. OpenAI requires that an assistant
+/// message with `tool_calls` be immediately followed by tool-result messages,
+/// not by another assistant message).
+fn merge_consecutive_same_role(messages: &mut Vec<RequestMessage>) {
+    let mut i = 1;
+    while i < messages.len() {
+        if messages[i].role == messages[i - 1].role {
+            let mut msg = messages.remove(i);
+            messages[i - 1].content.append(&mut msg.content);
+        } else {
+            i += 1;
+        }
+    }
+}
+
 pub fn prepend_user_inputs(messages: &mut Vec<RequestMessage>, user_inputs: &[UserInput]) {
     messages.splice(
         0..0,
@@ -548,5 +569,66 @@ mod tests {
                 _ => panic!("expected user message"),
             }
         }
+    }
+
+    #[test]
+    fn for_prompt_merges_consecutive_same_role_messages() {
+        let mut h = History::new(test_context());
+
+        // User message
+        h.push(ResponseItem::Message(Message::user("hello")));
+
+        // Assistant response: text + two tool calls — simulating the
+        // split that message_to_response_items produces from a single
+        // assistant Message with [Text, ToolUse, ToolUse].
+        h.push(ResponseItem::Message(Message::assistant_text("ok")));
+        h.push(ResponseItem::ToolCall {
+            id: "call-1".into(),
+            name: "read".into(),
+            input: serde_json::json!({"filePath": "/tmp/test.txt"}),
+        });
+        h.push(ResponseItem::ToolCall {
+            id: "call-2".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"cmd": "date"}),
+        });
+
+        // Tool results (stored as ToolCallOutput)
+        h.push(ResponseItem::ToolCallOutput {
+            tool_use_id: "call-1".into(),
+            content: "file content".into(),
+            is_error: false,
+        });
+        h.push(ResponseItem::ToolCallOutput {
+            tool_use_id: "call-2".into(),
+            content: "Mon Apr 28".into(),
+            is_error: false,
+        });
+
+        let msgs = h.for_prompt(&[InputModality::Text]);
+
+        // Should produce: user, assistant(merged), user(merged)
+        assert_eq!(msgs.len(), 3);
+
+        // Second message: assistant with text + both tool calls merged
+        assert_eq!(msgs[1].role, "assistant");
+        assert_eq!(msgs[1].content.len(), 3);
+        assert!(matches!(&msgs[1].content[0], RequestContent::Text { .. }));
+        assert!(
+            matches!(&msgs[1].content[1], RequestContent::ToolUse { id, .. } if id == "call-1")
+        );
+        assert!(
+            matches!(&msgs[1].content[2], RequestContent::ToolUse { id, .. } if id == "call-2")
+        );
+
+        // Third message: user with both tool results merged
+        assert_eq!(msgs[2].role, "user");
+        assert_eq!(msgs[2].content.len(), 2);
+        assert!(
+            matches!(&msgs[2].content[0], RequestContent::ToolResult { tool_use_id, .. } if tool_use_id == "call-1")
+        );
+        assert!(
+            matches!(&msgs[2].content[1], RequestContent::ToolResult { tool_use_id, .. } if tool_use_id == "call-2")
+        );
     }
 }

@@ -24,7 +24,14 @@ use devo_core::TurnItem;
 use devo_core::TurnStatus;
 use devo_core::TurnUsage;
 use devo_core::Worklog;
+use devo_core::history::compaction::compact_history;
+use devo_core::history::compaction::CompactAction;
+use devo_core::history::compaction::CompactionConfig;
+use devo_core::history::compaction::CompactionKind;
+use devo_core::history::summarizer::DefaultHistorySummarizer;
+use devo_core::message_to_response_items;
 use devo_core::query;
+use devo_core::{ResponseItem, TokenInfo};
 use devo_tools::ToolOrchestrator;
 
 use crate::ClientTransportKind;
@@ -46,6 +53,8 @@ use crate::ProtocolErrorCode;
 use crate::ServerCapabilities;
 use crate::ServerEvent;
 use crate::ServerRequestResolvedPayload;
+use crate::SessionCompactParams;
+use crate::SessionCompactResult;
 use crate::SessionEventPayload;
 use crate::SessionForkParams;
 use crate::SessionForkResult;
@@ -220,6 +229,7 @@ impl ServerRuntime {
             "session/title/update" => Some(self.handle_session_title_update(id?, params).await),
             "session/resume" => Some(self.handle_session_resume(connection_id, id?, params).await),
             "session/fork" => Some(self.handle_session_fork(connection_id, id?, params).await),
+            "session/compact" => Some(self.handle_session_compact(id?, params).await),
             "skills/list" => Some(self.handle_skills_list(id?, params).await),
             "skills/changed" => Some(self.handle_skills_changed(id?, params).await),
             "turn/start" => Some(self.handle_turn_start(id?, params).await),
@@ -717,6 +727,154 @@ impl ServerRuntime {
             },
         })
         .expect("serialize session/fork response")
+    }
+
+    async fn handle_session_compact(
+        &self,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: SessionCompactParams = match serde_json::from_value(params) {
+            Ok(params) => params,
+            Err(error) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    format!("invalid session/compact params: {error}"),
+                );
+            }
+        };
+
+        let session_arc = match self
+            .sessions
+            .lock()
+            .await
+            .get(&params.session_id)
+            .cloned()
+        {
+            Some(session) => session,
+            None => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::SessionNotFound,
+                    "session does not exist",
+                );
+            }
+        };
+
+        let result = {
+            let runtime_session = session_arc.lock().await;
+            let core_session = runtime_session.core_session.lock().await;
+
+            let items: Vec<ResponseItem> = core_session
+                .messages
+                .iter()
+                .flat_map(|msg| message_to_response_items(msg.clone()))
+                .collect();
+
+            let token_info = TokenInfo {
+                input_tokens: core_session.total_input_tokens,
+                cached_input_tokens: core_session.total_cache_read_tokens,
+                output_tokens: core_session.total_output_tokens,
+            };
+
+            let model_slug = runtime_session
+                .summary
+                .model
+                .as_deref()
+                .unwrap_or(&self.deps.default_model);
+            let max_tokens = self
+                .deps
+                .model_catalog
+                .get(model_slug)
+                .and_then(|m| m.max_tokens.map(|t| t as usize))
+                .unwrap_or(4096);
+
+            let summarizer =
+                DefaultHistorySummarizer::with_slug(self.deps.provider.clone(), model_slug, max_tokens);
+
+            let config = CompactionConfig {
+                budget: core_session.config.token_budget.clone(),
+                kind: CompactionKind::Proactive,
+            };
+
+            compact_history(&items, &token_info, &summarizer, &config).await
+        };
+
+        match result {
+            Ok(CompactAction::Replaced(compacted_items)) => {
+                let mut runtime_session = session_arc.lock().await;
+
+                // Build the new message list from compacted items
+                let mut new_messages: Vec<Message> = Vec::new();
+                for item in &compacted_items {
+                    if let ResponseItem::Message(msg) = item {
+                        new_messages.push(msg.clone());
+                    }
+                }
+
+                {
+                    let mut core_session = runtime_session.core_session.lock().await;
+                    core_session.messages = new_messages;
+                }
+
+                // Emit ContextCompaction event
+                if let Some(turn_id) = runtime_session
+                    .latest_turn
+                    .as_ref()
+                    .map(|t| t.turn_id)
+                    .or_else(|| runtime_session.active_turn.as_ref().map(|t| t.turn_id))
+                {
+                    let item_id = devo_core::ItemId::new();
+                    let item_seq = runtime_session.next_item_seq;
+                    runtime_session.next_item_seq += 1;
+
+                    let payload = serde_json::json!({ "title": "Context Compaction" });
+                    self.broadcast_event(ServerEvent::ItemStarted(ItemEventPayload {
+                        context: EventContext {
+                            session_id: params.session_id,
+                            turn_id: Some(turn_id),
+                            item_id: Some(item_id),
+                            seq: item_seq,
+                        },
+                        item: ItemEnvelope { item_id, item_kind: ItemKind::ContextCompaction, payload: payload.clone() },
+                    }))
+                    .await;
+
+                    self.broadcast_event(ServerEvent::ItemCompleted(ItemEventPayload {
+                        context: EventContext {
+                            session_id: params.session_id,
+                            turn_id: Some(turn_id),
+                            item_id: Some(item_id),
+                            seq: item_seq,
+                        },
+                        item: ItemEnvelope { item_id, item_kind: ItemKind::ContextCompaction, payload },
+                    }))
+                    .await;
+                }
+
+                let summary = runtime_session.summary.clone();
+                serde_json::to_value(SuccessResponse {
+                    id: request_id,
+                    result: SessionCompactResult { session: summary },
+                })
+                .expect("serialize session/compact response")
+            }
+            Ok(CompactAction::Skipped) => {
+                let runtime_session = session_arc.lock().await;
+                let summary = runtime_session.summary.clone();
+                serde_json::to_value(SuccessResponse {
+                    id: request_id,
+                    result: SessionCompactResult { session: summary },
+                })
+                .expect("serialize session/compact response (skipped)")
+            }
+            Err(e) => self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                format!("compaction failed: {e}"),
+            ),
+        }
     }
 
     async fn handle_turn_start(

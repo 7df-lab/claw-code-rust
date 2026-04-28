@@ -26,21 +26,18 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::sleep;
 
-use devo_protocol::Message;
-use devo_protocol::RequestContent;
-use devo_protocol::RequestMessage;
-use devo_protocol::Role;
-
+use crate::context::ContextualUserFragment;
 use crate::context::TokenBudget;
+use crate::context::compaction_summary::CompactionSummary;
 use crate::response_item::ResponseItem;
 
-use super::normalize;
-use super::ContextView;
-use super::History;
+use devo_protocol::RequestContent;
+use devo_protocol::RequestMessage;
+
 use super::TokenInfo;
+use super::normalize;
 
 const SUMMARIZATION_PROMPT: &str = include_str!("../../prompts/compact/prompt.md");
-const SUMMARY_PREFIX: &str = include_str!("../../prompts/compact/summary_prefix.md");
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 
 // ---------------------------------------------------------------------------
@@ -82,10 +79,7 @@ pub enum CompactionError {
 pub trait HistorySummarizer: Send + Sync {
     /// Send `messages` (system prompt followed by the to‑compact history)
     /// to the model and return the generated summary text.
-    async fn summarize(
-        &self,
-        messages: Vec<RequestMessage>,
-    ) -> Result<String, CompactionError>;
+    async fn summarize(&self, messages: Vec<RequestMessage>) -> Result<String, CompactionError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,8 +126,8 @@ pub enum CompactionKind {
 /// Describes the outcome of a single compaction attempt.
 #[derive(Debug)]
 pub enum CompactAction {
-    /// Compaction succeeded, yielding a new history.
-    Replaced(Box<History>),
+    /// Compaction succeeded, yielding items to replace the history.
+    Replaced(Vec<ResponseItem>),
     /// Compaction was not needed (history is within budget).
     Skipped,
 }
@@ -158,7 +152,6 @@ pub fn should_compact(token_info: &TokenInfo, budget: &TokenBudget) -> bool {
 pub async fn compact_history(
     items: &[ResponseItem],
     token_info: &TokenInfo,
-    context: &ContextView,
     summarizer: &dyn HistorySummarizer,
     config: &CompactionConfig,
 ) -> Result<CompactAction, CompactionError> {
@@ -234,31 +227,12 @@ pub async fn compact_history(
             return Err(CompactionError::EmptyResponse);
         }
 
-        // Wrap with the summary prefix.
-        let prefixed_summary = if SUMMARY_PREFIX.is_empty() {
-            summary.trim().to_string()
-        } else {
-            format!("{}\n{}", SUMMARY_PREFIX.trim(), summary.trim())
-        };
+        // Build the compacted items using CompactionSummary.
+        let summary_fragment = CompactionSummary::new(summary);
+        let mut compacted = vec![summary_fragment.to_response_item()];
+        compacted.extend(preserved);
 
-        // Build the compacted history: [summary_msg, …preserved_items].
-        let mut compacted_items = Vec::new();
-        compacted_items.push(ResponseItem::Message(Message {
-            role: Role::Assistant,
-            content: vec![devo_protocol::ContentBlock::Text {
-                text: prefixed_summary,
-            }],
-        }));
-        compacted_items.extend(preserved);
-
-        let mut history = History::new(context.clone());
-        for item in compacted_items {
-            history.push(item);
-        }
-        // Preserve the original token info as an estimate.
-        history.token_info = token_info.clone();
-
-        return Ok(CompactAction::Replaced(Box::new(history)));
+        return Ok(CompactAction::Replaced(compacted));
     }
 }
 
@@ -340,6 +314,7 @@ fn estimate_item_tokens(item: &ResponseItem) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use devo_protocol::Message;
     use pretty_assertions::assert_eq;
 
     use super::*;

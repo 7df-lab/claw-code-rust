@@ -1,13 +1,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use devo_protocol::{ModelRequest, RequestMessage, ResponseContent, SamplingControls};
+use devo_protocol::{Model, ModelRequest, RequestMessage, ResponseContent, SamplingControls};
 use devo_provider::ModelProviderSDK;
 
 use super::compaction::{CompactionError, HistorySummarizer};
-
-/// Default output token budget for the summarization LLM call.
-const DEFAULT_SUMMARIZATION_MAX_TOKENS: usize = 4096;
 
 /// Concrete implementation of `HistorySummarizer` that delegates to a
 /// `ModelProviderSDK`.
@@ -22,17 +19,27 @@ pub struct DefaultHistorySummarizer {
 }
 
 impl DefaultHistorySummarizer {
-    pub fn new(provider: Arc<dyn ModelProviderSDK>, model: impl Into<String>) -> Self {
+    pub fn new(provider: Arc<dyn ModelProviderSDK>, model: &Model) -> Self {
+        let max_tokens = model.max_tokens.unwrap_or(4096) as usize;
         Self {
             provider,
-            model: model.into(),
-            max_tokens: DEFAULT_SUMMARIZATION_MAX_TOKENS,
+            model: model.slug.clone(),
+            max_tokens,
         }
     }
 
-    pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
-        self.max_tokens = max_tokens;
-        self
+    /// Convenience constructor when only a model slug and max tokens are
+    /// available (e.g. when the `Model` struct cannot be resolved).
+    pub fn with_slug(
+        provider: Arc<dyn ModelProviderSDK>,
+        model_slug: impl Into<String>,
+        max_tokens: usize,
+    ) -> Self {
+        Self {
+            provider,
+            model: model_slug.into(),
+            max_tokens,
+        }
     }
 }
 

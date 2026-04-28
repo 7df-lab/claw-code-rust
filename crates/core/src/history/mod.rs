@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use devo_protocol::{InputModality, RequestMessage};
 
+use crate::context::ContextualUserFragment;
 use crate::response_item::ResponseItem;
 
 // ---------------------------------------------------------------------------
@@ -213,6 +214,14 @@ impl History {
         self.items.remove(index)
     }
 
+    /// Replaces all items in-place with the given sequence.
+    ///
+    /// Used by compaction to atomically swap the full item list without
+    /// constructing a new `History` wrapper.
+    pub fn replace_items(&mut self, items: Vec<ResponseItem>) {
+        self.items = items;
+    }
+
     /// Returns the number of items in the history.
     pub fn len(&self) -> usize {
         self.items.len()
@@ -233,6 +242,8 @@ impl History {
     /// belongs to the last user-initiated turn: the user message itself,
     /// any preceding reasoning and tool-call items from the assistant turn
     /// that responded to it, and the tool-call outputs that followed.
+    /// If the preceding item is a `CompactionSummary` fragment, it is removed
+    /// together with the user message.
     pub fn remove_tail_user_message(&mut self) -> bool {
         // Find the last user Message from the end.
         let last_user_pos = self.items.iter().rposition(|item| match item {
@@ -244,10 +255,18 @@ impl History {
             return false;
         };
 
-        // Remove from `start` to the end. The user message and everything
-        // after it (assistant response, tool calls, tool outputs) all belong
-        // to that turn.
-        self.items.truncate(start);
+        // If the preceding item is a compaction-summary fragment, remove it too.
+        let truncate_at = if start > 0
+            && matches!(&self.items[start - 1], ResponseItem::Message(msg) if msg.content.iter().any(|block| {
+                matches!(block, devo_protocol::ContentBlock::Text { text } if crate::context::compaction_summary::CompactionSummary::matches_text(text))
+            }))
+        {
+            start - 1
+        } else {
+            start
+        };
+
+        self.items.truncate(truncate_at);
         true
     }
 

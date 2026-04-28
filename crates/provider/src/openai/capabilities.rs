@@ -82,6 +82,14 @@ const DEFAULT_ROLES: &[RequestRole] = &[
     RequestRole::Function,
 ];
 
+const ROLES_WITHOUT_DEVELOPER: &[RequestRole] = &[
+    RequestRole::System,
+    RequestRole::User,
+    RequestRole::Assistant,
+    RequestRole::Tool,
+    RequestRole::Function,
+];
+
 const RESPONSES_ROLES: &[RequestRole] = &[
     RequestRole::System,
     RequestRole::Developer,
@@ -109,27 +117,25 @@ const DEFAULT_RESPONSES: OpenAIRequestProfile = OpenAIRequestProfile::new(
     false,
 );
 
-const ZAI_CHAT_COMPLETIONS: OpenAIRequestProfile = OpenAIRequestProfile::new(
-    OpenAIReasoningMode::Thinking,
-    DEFAULT_ROLES,
-    true,
-    true,
-    true,
-    true,
-);
-
 const OPENAI_PROFILE_RULES: &[ProfileRule] = &[
     ProfileRule {
         matcher: ModelMatcher::Prefix("glm-"),
         transport: OpenAITransport::ChatCompletions,
-        profile: ZAI_CHAT_COMPLETIONS,
+        profile: OpenAIRequestProfile::new(
+            OpenAIReasoningMode::Thinking,
+            ROLES_WITHOUT_DEVELOPER,
+            true,
+            true,
+            true,
+            true,
+        ),
     },
     ProfileRule {
         matcher: ModelMatcher::Prefix("deepseek-"),
         transport: OpenAITransport::ChatCompletions,
         profile: OpenAIRequestProfile::new(
             OpenAIReasoningMode::ThinkingWithEffort,
-            DEFAULT_ROLES,
+            ROLES_WITHOUT_DEVELOPER,
             true,
             true,
             true,
@@ -141,7 +147,7 @@ const OPENAI_PROFILE_RULES: &[ProfileRule] = &[
         transport: OpenAITransport::ChatCompletions,
         profile: OpenAIRequestProfile::new(
             OpenAIReasoningMode::Effort,
-            DEFAULT_ROLES,
+            ROLES_WITHOUT_DEVELOPER,
             true,
             true,
             true,
@@ -153,7 +159,7 @@ const OPENAI_PROFILE_RULES: &[ProfileRule] = &[
         transport: OpenAITransport::ChatCompletions,
         profile: OpenAIRequestProfile::new(
             OpenAIReasoningMode::Effort,
-            DEFAULT_ROLES,
+            ROLES_WITHOUT_DEVELOPER,
             true,
             true,
             true,

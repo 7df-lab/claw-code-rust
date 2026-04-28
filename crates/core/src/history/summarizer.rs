@@ -3,8 +3,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use devo_protocol::{Model, ModelRequest, RequestMessage, ResponseContent, SamplingControls};
 use devo_provider::ModelProviderSDK;
+use tracing::debug;
 
 use super::compaction::{CompactionError, HistorySummarizer};
+
+const COMPACTION_LOG_PREVIEW_BYTES: usize = 16_000;
 
 /// Concrete implementation of `HistorySummarizer` that delegates to a
 /// `ModelProviderSDK`.
@@ -43,6 +46,22 @@ impl DefaultHistorySummarizer {
     }
 }
 
+fn truncate_preview(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+
+    let truncate_at = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= max_bytes)
+        .last()
+        .unwrap_or(0);
+    let mut truncated = text[..truncate_at].to_string();
+    truncated.push_str("\n...[truncated]");
+    truncated
+}
+
 #[async_trait]
 impl HistorySummarizer for DefaultHistorySummarizer {
     async fn summarize(&self, messages: Vec<RequestMessage>) -> Result<String, CompactionError> {
@@ -57,6 +76,18 @@ impl HistorySummarizer for DefaultHistorySummarizer {
             reasoning_effort: None,
             extra_body: None,
         };
+        let request_preview = serde_json::to_string_pretty(&request)
+            .map(|json| truncate_preview(&json, COMPACTION_LOG_PREVIEW_BYTES))
+            .unwrap_or_else(|error| {
+                format!("<failed to serialize compaction request for logging: {error}>")
+            });
+        debug!(
+            model = %self.model,
+            message_count = request.messages.len(),
+            max_tokens = request.max_tokens,
+            compaction_request = %request_preview,
+            "sending LLM compaction request"
+        );
 
         let response = match self.provider.completion(request).await {
             Ok(r) => r,
@@ -84,6 +115,14 @@ impl HistorySummarizer for DefaultHistorySummarizer {
         if text.is_empty() {
             return Err(CompactionError::EmptyResponse);
         }
+
+        let response_preview = truncate_preview(&text, COMPACTION_LOG_PREVIEW_BYTES);
+        debug!(
+            model = %self.model,
+            response_chars = text.len(),
+            compaction_response = %response_preview,
+            "received LLM compaction response"
+        );
 
         Ok(text)
     }

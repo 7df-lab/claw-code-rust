@@ -215,7 +215,9 @@ fn session_projection_maps_core_record() {
         git_branch: None,
         git_origin_url: None,
         parent_session_id: None,
-        schema_version: 1,
+        session_context: None,
+        latest_turn_context: None,
+        schema_version: 2,
     };
 
     let projected = projection.project_session(&session, false, SessionRuntimeStatus::Idle);
@@ -239,7 +241,9 @@ fn turn_projection_preserves_turn_status_vocabulary() {
         request_thinking: None,
         input_token_estimate: None,
         usage: None,
-        schema_version: 1,
+        session_context: None,
+        turn_context: None,
+        schema_version: 2,
     };
 
     let projected = projection.project_turn(&turn);

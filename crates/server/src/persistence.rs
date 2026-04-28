@@ -98,7 +98,9 @@ impl RolloutStore {
             git_branch: None,
             git_origin_url: None,
             parent_session_id,
-            schema_version: 1,
+            session_context: None,
+            latest_turn_context: None,
+            schema_version: 2,
         }
     }
 
@@ -260,6 +262,8 @@ struct ReplayState {
     total_cache_creation_tokens: usize,
     total_cache_read_tokens: usize,
     last_input_tokens: usize,
+    session_context: Option<devo_core::SessionContext>,
+    latest_turn_context: Option<devo_core::TurnContext>,
     messages: Vec<Message>,
     history_items: Vec<crate::SessionHistoryItem>,
     pending_items: Vec<ReplayHistoryItem>,
@@ -295,6 +299,12 @@ impl ReplayState {
                     completed_at: line.turn.completed_at,
                     usage: line.turn.usage.clone(),
                 });
+                if let Some(session_context) = line.turn.session_context.clone() {
+                    self.session_context = Some(session_context);
+                }
+                if let Some(turn_context) = line.turn.turn_context.clone() {
+                    self.latest_turn_context = Some(turn_context);
+                }
                 self.latest_turn = Some(line.turn);
             }
             RolloutLine::Item(line) => {
@@ -343,6 +353,12 @@ impl ReplayState {
         }
 
         core_session.messages = replayed_messages;
+        core_session.session_context = self
+            .session_context
+            .or_else(|| record.session_context.clone());
+        core_session.latest_turn_context = self
+            .latest_turn_context
+            .or_else(|| record.latest_turn_context.clone());
         core_session.turn_count = self.turns_seen as usize;
         core_session.total_input_tokens = self.total_input_tokens;
         core_session.total_output_tokens = self.total_output_tokens;
@@ -576,7 +592,11 @@ fn collect_rollout_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
 }
 
 /// Creates one canonical persisted turn record from the transport-facing runtime state.
-pub(crate) fn build_turn_record(turn: &TurnMetadata) -> TurnRecord {
+pub(crate) fn build_turn_record(
+    turn: &TurnMetadata,
+    session_context: Option<devo_core::SessionContext>,
+    turn_context: Option<devo_core::TurnContext>,
+) -> TurnRecord {
     TurnRecord {
         id: turn.turn_id,
         session_id: turn.session_id,
@@ -590,7 +610,9 @@ pub(crate) fn build_turn_record(turn: &TurnMetadata) -> TurnRecord {
         request_thinking: turn.request_thinking.clone(),
         input_token_estimate: None,
         usage: turn.usage.clone(),
-        schema_version: 1,
+        session_context,
+        turn_context,
+        schema_version: 2,
     }
 }
 
@@ -624,6 +646,7 @@ pub(crate) fn build_item_record(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::PathBuf;
 
     use chrono::TimeZone;
     use chrono::Utc;
@@ -631,16 +654,27 @@ mod tests {
 
     use super::ReplayState;
     use crate::persistence::apply_turn_item;
+    use devo_core::EnvironmentContext;
     use devo_core::ItemId;
     use devo_core::ItemLine;
     use devo_core::ItemRecord;
+    use devo_core::Model;
+    use devo_core::Persona;
     use devo_core::RolloutLine;
+    use devo_core::SessionContext;
     use devo_core::SessionId;
+    use devo_core::SessionMetaLine;
+    use devo_core::SessionRecord;
     use devo_core::TextItem;
     use devo_core::ToolCallItem;
     use devo_core::ToolResultItem;
     use devo_core::TurnId;
     use devo_core::TurnItem;
+    use devo_core::TurnLine;
+    use devo_core::TurnRecord;
+    use devo_core::TurnStatus;
+    use devo_core::SessionTitleState;
+    use devo_core::TurnContext;
 
     #[test]
     fn replay_orders_items_by_sequence_before_timestamp() {
@@ -750,5 +784,105 @@ mod tests {
         assert_eq!(history_items.len(), 2);
         assert_eq!(history_items[0].title, "Ran read");
         assert_eq!(history_items[1].title, "read output");
+    }
+
+    #[test]
+    fn replay_restores_context_snapshots_from_turn_records() {
+        let session_id = SessionId::new();
+        let turn_id = TurnId::new();
+        let now = Utc.with_ymd_and_hms(2026, 4, 27, 8, 0, 0).unwrap();
+        let session_context = SessionContext {
+            base_instructions: "base".into(),
+            workspace_instructions: Some("workspace".into()),
+            environment: EnvironmentContext {
+                cwd: PathBuf::from("/tmp/root"),
+                shell: "bash".into(),
+                current_date: "2026-04-27".into(),
+                timezone: "UTC".into(),
+            },
+            persona: Persona::Default,
+            model: Model {
+                slug: "model-a".into(),
+                ..Model::default()
+            },
+            thinking_selection: None,
+            reasoning_effort: None,
+        };
+        let turn_context = TurnContext {
+            environment: EnvironmentContext {
+                cwd: PathBuf::from("/tmp/next"),
+                shell: "bash".into(),
+                current_date: "2026-04-28".into(),
+                timezone: "UTC".into(),
+            },
+            persona: Persona::Default,
+            model: Model {
+                slug: "model-b".into(),
+                ..Model::default()
+            },
+            thinking_selection: Some("enabled".into()),
+            reasoning_effort: None,
+        };
+        let mut replay = ReplayState::default();
+
+        replay
+            .apply_line(RolloutLine::SessionMeta(Box::new(SessionMetaLine {
+                timestamp: now,
+                session: SessionRecord {
+                    id: session_id,
+                    rollout_path: PathBuf::from("rollout.jsonl"),
+                    created_at: now,
+                    updated_at: now,
+                    source: "cli".into(),
+                    agent_nickname: None,
+                    agent_role: None,
+                    agent_path: None,
+                    model_provider: "test".into(),
+                    model: Some("model-a".into()),
+                    thinking: None,
+                    cwd: PathBuf::from("/tmp/root"),
+                    cli_version: "0.1.0".into(),
+                    title: None,
+                    title_state: SessionTitleState::Unset,
+                    sandbox_policy: "workspace-write".into(),
+                    approval_mode: "on-request".into(),
+                    tokens_used: 0,
+                    first_user_message: None,
+                    archived_at: None,
+                    git_sha: None,
+                    git_branch: None,
+                    git_origin_url: None,
+                    parent_session_id: None,
+                    session_context: None,
+                    latest_turn_context: None,
+                    schema_version: 2,
+                },
+            })))
+            .expect("apply session meta");
+        replay
+            .apply_line(RolloutLine::Turn(TurnLine {
+                timestamp: now,
+                turn: TurnRecord {
+                    id: turn_id,
+                    session_id,
+                    sequence: 1,
+                    started_at: now,
+                    completed_at: Some(now),
+                    status: TurnStatus::Completed,
+                    model: "model-b".into(),
+                    thinking: Some("enabled".into()),
+                    request_model: "model-b".into(),
+                    request_thinking: Some("enabled".into()),
+                    input_token_estimate: None,
+                    usage: None,
+                    session_context: Some(session_context.clone()),
+                    turn_context: Some(turn_context.clone()),
+                    schema_version: 2,
+                },
+            }))
+            .expect("apply turn line");
+
+        assert_eq!(replay.session_context, Some(session_context));
+        assert_eq!(replay.latest_turn_context, Some(turn_context));
     }
 }

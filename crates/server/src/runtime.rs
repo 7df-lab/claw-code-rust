@@ -649,6 +649,8 @@ impl ServerRuntime {
         };
         let mut core_session = self.deps.new_session_state(forked_id, fork_cwd);
         core_session.messages = source_core_session.messages.clone();
+        core_session.session_context = source_core_session.session_context.clone();
+        core_session.latest_turn_context = source_core_session.latest_turn_context.clone();
         core_session.turn_count = source_core_session.turn_count;
         core_session.total_input_tokens = source_core_session.total_input_tokens;
         core_session.total_output_tokens = source_core_session.total_output_tokens;
@@ -1026,10 +1028,20 @@ impl ServerRuntime {
         };
         self.maybe_assign_provisional_title(params.session_id, &display_input)
             .await;
-        if let Some(record) = session_arc.lock().await.record.clone()
-            && let Err(error) = self
-                .rollout_store
-                .append_turn(&record, build_turn_record(&turn))
+        let (record, session_context, turn_context) = {
+            let session = session_arc.lock().await;
+            let core_session = session.core_session.lock().await;
+            (
+                session.record.clone(),
+                core_session.session_context.clone(),
+                core_session.latest_turn_context.clone(),
+            )
+        };
+        if let Some(record) = record
+            && let Err(error) = self.rollout_store.append_turn(
+                &record,
+                build_turn_record(&turn, session_context, turn_context),
+            )
         {
             return self.error_response(
                 request_id,
@@ -1129,10 +1141,20 @@ impl ServerRuntime {
             }
             turn
         };
-        if let Some(record) = session_arc.lock().await.record.clone()
-            && let Err(error) = self
-                .rollout_store
-                .append_turn(&record, build_turn_record(&interrupted_turn))
+        let (record, session_context, turn_context) = {
+            let session = session_arc.lock().await;
+            let core_session = session.core_session.lock().await;
+            (
+                session.record.clone(),
+                core_session.session_context.clone(),
+                core_session.latest_turn_context.clone(),
+            )
+        };
+        if let Some(record) = record
+            && let Err(error) = self.rollout_store.append_turn(
+                &record,
+                build_turn_record(&interrupted_turn, session_context, turn_context),
+            )
         {
             return self.error_response(
                 request_id,
@@ -1675,7 +1697,7 @@ impl ServerRuntime {
             let result = query(
                 &mut core_session,
                 &turn_config,
-                self.deps.provider.as_ref(),
+                self.deps.provider.clone(),
                 registry,
                 &orchestrator,
                 Some(callback),
@@ -1725,10 +1747,20 @@ impl ServerRuntime {
             session.summary.total_output_tokens = session_total_output_tokens;
             final_turn
         };
-        if let Some(record) = session_arc.lock().await.record.clone()
-            && let Err(error) = self
-                .rollout_store
-                .append_turn(&record, build_turn_record(&final_turn))
+        let (record, session_context, turn_context) = {
+            let session = session_arc.lock().await;
+            let core_session = session.core_session.lock().await;
+            (
+                session.record.clone(),
+                core_session.session_context.clone(),
+                core_session.latest_turn_context.clone(),
+            )
+        };
+        if let Some(record) = record
+            && let Err(error) = self.rollout_store.append_turn(
+                &record,
+                build_turn_record(&final_turn, session_context, turn_context),
+            )
         {
             tracing::warn!(session_id = %session_id, error = %error, "failed to persist terminal turn line");
         }

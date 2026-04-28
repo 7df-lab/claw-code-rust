@@ -62,7 +62,7 @@ pub(crate) async fn run_prompt(
     let result = devo_core::query(
         &mut session_state,
         &turn_config,
-        provider.provider.as_ref(),
+        provider.provider.clone(),
         registry,
         &orchestrator,
         None,

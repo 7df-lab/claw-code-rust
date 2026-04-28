@@ -359,8 +359,11 @@ pub trait ContextCompactor: Send + Sync {
 }
 
 pub(crate) mod compaction_summary;
+mod execution_context;
 pub(crate) mod turn_aborted;
 pub(crate) mod user_instructions;
+
+pub use execution_context::*;
 
 #[cfg(test)]
 mod tests {

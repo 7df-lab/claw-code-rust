@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use crate::errors::ToolExecutionError;
+use crate::events::ToolProgressSender;
 use crate::handler_kind::ToolHandlerKind;
 use crate::invocation::{FunctionToolOutput, ToolInvocation, ToolOutput};
 use crate::read::{is_binary_file, missing_file_message, read_directory, read_file};
@@ -19,6 +20,7 @@ impl ToolHandler for ReadHandler {
     async fn handle(
         &self,
         invocation: ToolInvocation,
+        _progress: Option<ToolProgressSender>,
     ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
         let mut filepath = invocation.input["filePath"]
             .as_str()

@@ -84,11 +84,18 @@ pub enum QueryEvent {
         /// Fully decoded tool input payload, when available.
         input: serde_json::Value,
     },
+    /// Incremental output delta from a running tool.
+    ToolProgress {
+        tool_use_id: String,
+        content: String,
+    },
     /// A tool call completed.
     ToolResult {
         tool_use_id: String,
         content: String,
         is_error: bool,
+        /// Human-readable summary for client-side rendering (e.g. "bash: npm run dev").
+        summary: String,
     },
     /// A turn is complete (model stopped generating).
     TurnComplete { stop_reason: StopReason },
@@ -763,6 +770,12 @@ pub async fn query(
         // Execute tool calls
         let results = runtime.execute_batch(&tool_calls).await;
 
+        // Build tool call name -> input map for computing summaries
+        let tool_call_map: std::collections::HashMap<&str, (&str, &serde_json::Value)> = tool_calls
+            .iter()
+            .map(|c| (c.id.as_str(), (c.name.as_str(), &c.input)))
+            .collect();
+
         // Build tool result message (user role, per Anthropic API convention)
         // Apply micro-compact to large tool results
         let result_content: Vec<ContentBlock> = results
@@ -770,10 +783,15 @@ pub async fn query(
             .map(|r| {
                 let content_str = r.content.into_string();
                 let compacted_content = micro_compact(content_str);
+                let summary = tool_call_map
+                    .get(r.tool_use_id.as_str())
+                    .map(|(name, input)| devo_tools::tool_summary::tool_summary(name, input))
+                    .unwrap_or_default();
                 emit(QueryEvent::ToolResult {
                     tool_use_id: r.tool_use_id.clone(),
                     content: compacted_content.clone(),
                     is_error: r.is_error,
+                    summary: summary.clone(),
                 });
                 ContentBlock::ToolResult {
                     tool_use_id: r.tool_use_id,
@@ -886,8 +904,8 @@ mod tests {
     use devo_tools::invocation::{FunctionToolOutput, ToolInvocation, ToolOutput};
     use devo_tools::json_schema::JsonSchema;
     use devo_tools::registry::ToolRegistryBuilder;
-    use devo_tools::tool_handler::ToolHandler;
     use devo_tools::router::PermissionChecker;
+    use devo_tools::tool_handler::ToolHandler;
     use devo_tools::tool_spec::{ToolExecutionMode, ToolOutputMode, ToolSpec};
     use futures::Stream;
     use pretty_assertions::assert_eq;
@@ -1133,6 +1151,7 @@ mod tests {
         async fn handle(
             &self,
             _invocation: ToolInvocation,
+            _progress: Option<devo_tools::events::ToolProgressSender>,
         ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
             Ok(Box::new(FunctionToolOutput::success("ok")))
         }

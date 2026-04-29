@@ -1763,6 +1763,7 @@ impl ServerRuntime {
                         tool_use_id,
                         content,
                         is_error,
+                        summary,
                     } => {
                         let tool_name = tool_names_by_id.get(&tool_use_id).cloned();
                         // First complete the pending ToolCall item so its item/completed
@@ -1808,9 +1809,31 @@ impl ServerRuntime {
                                     tool_name,
                                     content: serde_json::Value::String(content),
                                     is_error,
+                                    summary,
                                 })
                                 .expect("serialize tool result payload"),
                             )
+                            .await;
+                    }
+                    QueryEvent::ToolProgress {
+                        tool_use_id: _,
+                        content,
+                    } => {
+                        let _ = runtime
+                            .broadcast_event(ServerEvent::ItemDelta {
+                                delta_kind: ItemDeltaKind::CommandExecutionOutputDelta,
+                                payload: ItemDeltaPayload {
+                                    context: EventContext {
+                                        session_id,
+                                        turn_id: Some(turn_for_events.turn_id),
+                                        item_id: None,
+                                        seq: 0,
+                                    },
+                                    delta: content,
+                                    stream_index: None,
+                                    channel: None,
+                                },
+                            })
                             .await;
                     }
                     QueryEvent::UsageDelta {

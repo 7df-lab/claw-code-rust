@@ -1037,9 +1037,14 @@ fn handle_completed_item(payload: ItemEventPayload, event_tx: &mpsc::UnboundedSe
             let Ok(payload) = serde_json::from_value::<ToolResultPayload>(payload) else {
                 return;
             };
+            let title = if payload.summary.is_empty() {
+                summarize_tool_result_title(payload.tool_name.as_deref(), payload.is_error)
+            } else {
+                payload.summary
+            };
             let _ = event_tx.send(WorkerEvent::ToolResult {
                 tool_use_id: payload.tool_call_id,
-                title: summarize_tool_result_title(payload.tool_name.as_deref(), payload.is_error),
+                title,
                 preview: render_json_value_text(&payload.content),
                 is_error: payload.is_error,
                 truncated: false,

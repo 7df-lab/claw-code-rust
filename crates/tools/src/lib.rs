@@ -10,6 +10,7 @@ pub mod registry_plan;
 pub mod router;
 pub mod tool_handler;
 pub mod tool_spec;
+pub mod tool_summary;
 pub mod unified_exec;
 
 // Existing modules (tools)

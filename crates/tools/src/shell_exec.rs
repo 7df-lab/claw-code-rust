@@ -9,6 +9,7 @@ use tokio::time::{Duration, timeout};
 use tracing::info;
 
 use crate::ToolOutput;
+use crate::events::ToolProgressSender;
 
 const MAX_METADATA_LENGTH: usize = 30_000;
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -69,7 +70,10 @@ Examples of valid command strings:
     }
 }
 
-pub(crate) async fn execute_shell_command(request: ShellExecRequest) -> anyhow::Result<ToolOutput> {
+pub(crate) async fn execute_shell_command(
+    request: ShellExecRequest,
+    progress: Option<ToolProgressSender>,
+) -> anyhow::Result<ToolOutput> {
     let ShellExecRequest {
         command,
         workdir,
@@ -114,6 +118,7 @@ pub(crate) async fn execute_shell_command(request: ShellExecRequest) -> anyhow::
             timeout_ms,
             yield_time_ms,
             max_output_tokens,
+            progress,
         )
         .await;
     }
@@ -288,6 +293,7 @@ async fn run_with_pty(
     timeout_ms: u64,
     yield_time_ms: u64,
     max_output_tokens: usize,
+    progress: Option<ToolProgressSender>,
 ) -> anyhow::Result<ToolOutput> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -345,6 +351,10 @@ async fn run_with_pty(
     loop {
         while let Ok(chunk) = rx.try_recv() {
             output.extend_from_slice(&chunk);
+            if let Some(ref sender) = progress {
+                let text = String::from_utf8_lossy(&chunk).into_owned();
+                let _ = sender.send(text);
+            }
         }
 
         if let Some(status) = child

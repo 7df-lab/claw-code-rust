@@ -33,6 +33,8 @@ pub struct ToolResultPayload {
     pub tool_name: Option<String>,
     pub content: serde_json::Value,
     pub is_error: bool,
+    #[serde(default)]
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

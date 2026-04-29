@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use crate::errors::ToolExecutionError;
+use crate::events::ToolProgressSender;
 use crate::handler_kind::ToolHandlerKind;
 use crate::invocation::{FunctionToolOutput, ToolInvocation, ToolOutput};
 use crate::tool_handler::ToolHandler;
@@ -16,6 +17,7 @@ impl ToolHandler for InvalidHandler {
     async fn handle(
         &self,
         invocation: ToolInvocation,
+        _progress: Option<ToolProgressSender>,
     ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
         let error = invocation.input["error"]
             .as_str()

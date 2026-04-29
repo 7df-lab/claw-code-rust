@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use crate::errors::ToolExecutionError;
+use crate::events::ToolProgressSender;
 use crate::handler_kind::ToolHandlerKind;
 use crate::invocation::{FunctionToolOutput, ToolInvocation, ToolOutput};
 use crate::shell_exec::{
@@ -22,6 +23,7 @@ impl ToolHandler for ShellCommandHandler {
     async fn handle(
         &self,
         invocation: ToolInvocation,
+        progress: Option<ToolProgressSender>,
     ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
         let command = invocation
             .input
@@ -45,17 +47,20 @@ impl ToolHandler for ShellCommandHandler {
 
         let login = invocation.input["login"].as_bool().unwrap_or(true);
 
-        let output = execute_shell_command(ShellExecRequest {
-            command: command.to_string(),
-            workdir,
-            description: "shell command".into(),
-            shell_override: None,
-            tty: false,
-            login,
-            timeout_ms,
-            yield_time_ms: default_yield_time_ms(),
-            max_output_tokens: default_max_output_tokens(),
-        })
+        let output = execute_shell_command(
+            ShellExecRequest {
+                command: command.to_string(),
+                workdir,
+                description: "shell command".into(),
+                shell_override: None,
+                tty: false,
+                login,
+                timeout_ms,
+                yield_time_ms: default_yield_time_ms(),
+                max_output_tokens: default_max_output_tokens(),
+            },
+            progress,
+        )
         .await
         .map_err(|e| ToolExecutionError::ExecutionFailed {
             message: e.to_string(),

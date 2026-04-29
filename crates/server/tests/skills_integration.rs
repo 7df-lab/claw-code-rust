@@ -276,6 +276,7 @@ impl ToolHandler for BlockingReadOnlyTool {
     async fn handle(
         &self,
         _invocation: ToolInvocation,
+        _progress: Option<devo_tools::events::ToolProgressSender>,
     ) -> Result<Box<dyn ToolOutput>, devo_tools::ToolExecutionError> {
         self.started.notify_one();
         self.release.notified().await;

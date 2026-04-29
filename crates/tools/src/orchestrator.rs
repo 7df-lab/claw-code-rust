@@ -124,7 +124,7 @@ impl ToolOrchestrator {
             input: call.input.clone(),
         };
 
-        match handler.handle(invocation).await {
+        match handler.handle(invocation, None).await {
             Ok(output) => {
                 let is_error = output.is_error();
                 let content = output.to_content().into_string();
@@ -149,6 +149,7 @@ impl ToolOrchestrator {
 mod tests {
     use super::*;
     use crate::errors::ToolExecutionError;
+    use crate::events::ToolProgressSender;
     use crate::handler_kind::ToolHandlerKind;
     use crate::invocation::{FunctionToolOutput, ToolOutput};
     use crate::json_schema::JsonSchema;
@@ -169,6 +170,7 @@ mod tests {
         async fn handle(
             &self,
             _invocation: ToolInvocation,
+            _progress: Option<ToolProgressSender>,
         ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
             Ok(Box::new(FunctionToolOutput::success("read ok")))
         }
@@ -184,6 +186,7 @@ mod tests {
         async fn handle(
             &self,
             _invocation: ToolInvocation,
+            _progress: Option<ToolProgressSender>,
         ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
             Ok(Box::new(FunctionToolOutput::success("write ok")))
         }
@@ -199,6 +202,7 @@ mod tests {
         async fn handle(
             &self,
             _invocation: ToolInvocation,
+            _progress: Option<ToolProgressSender>,
         ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
             Err(ToolExecutionError::ExecutionFailed {
                 message: "something went wrong".into(),

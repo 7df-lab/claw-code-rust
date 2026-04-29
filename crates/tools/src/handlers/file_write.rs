@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use tracing::info;
 
 use crate::errors::ToolExecutionError;
+use crate::events::ToolProgressSender;
 use crate::handler_kind::ToolHandlerKind;
 use crate::invocation::{FunctionToolOutput, ToolInvocation, ToolOutput};
 use crate::tool_handler::ToolHandler;
@@ -19,6 +20,7 @@ impl ToolHandler for WriteHandler {
     async fn handle(
         &self,
         invocation: ToolInvocation,
+        _progress: Option<ToolProgressSender>,
     ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
         let path_str = invocation.input["filePath"].as_str().ok_or_else(|| {
             ToolExecutionError::ExecutionFailed {

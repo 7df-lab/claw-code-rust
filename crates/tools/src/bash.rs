@@ -124,17 +124,20 @@ impl Tool for BashTool {
             .map(|value| value as usize)
             .unwrap_or(default_max_output_tokens());
 
-        execute_shell_command(ShellExecRequest {
-            command: command.to_string(),
-            workdir,
-            description,
-            shell_override,
-            tty,
-            login,
-            timeout_ms,
-            yield_time_ms,
-            max_output_tokens,
-        })
+        execute_shell_command(
+            ShellExecRequest {
+                command: command.to_string(),
+                workdir,
+                description,
+                shell_override,
+                tty,
+                login,
+                timeout_ms,
+                yield_time_ms,
+                max_output_tokens,
+            },
+            None,
+        )
         .await
     }
 

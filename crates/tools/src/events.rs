@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+/// Sender for streaming tool output progress during execution.
+/// Each `String` is a text delta chunk. The sender is consumed when
+/// execution completes (sender drops after handle() returns).
+pub type ToolProgressSender = tokio::sync::mpsc::UnboundedSender<String>;
+
 #[cfg(test)]
 mod tests {
     use super::*;

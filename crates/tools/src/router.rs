@@ -63,6 +63,27 @@ impl ToolRuntime {
     }
 
     pub async fn execute_batch(&self, calls: &[ToolCall]) -> Vec<ToolCallResult> {
+        self.execute_batch_inner(calls, None).await
+    }
+
+    pub async fn execute_batch_streaming(
+        &self,
+        calls: &[ToolCall],
+        on_progress: impl Fn(&str, &str) + Send + Sync + 'static,
+    ) -> Vec<ToolCallResult> {
+        self.execute_batch_inner(calls, Some(Box::new(on_progress)))
+            .await
+    }
+
+    async fn execute_batch_inner(
+        &self,
+        calls: &[ToolCall],
+        on_progress: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
+    ) -> Vec<ToolCallResult> {
+        // Wrap the Box in an Arc so it can be shared across spawned tasks
+        let on_progress: Option<Arc<dyn Fn(&str, &str) + Send + Sync>> =
+            on_progress.map(|f| Arc::from(f));
+
         let mut results = Vec::with_capacity(calls.len());
 
         let (parallel, exclusive): (Vec<_>, Vec<_>) = calls
@@ -73,7 +94,7 @@ impl ToolRuntime {
             let _guard = self.gate.read().await;
             let futures: Vec<_> = parallel
                 .iter()
-                .map(|call| self.execute_single(call))
+                .map(|call| self.execute_single(call, &on_progress))
                 .collect();
             let parallel_results = join_all(futures).await;
             results.extend(parallel_results);
@@ -81,14 +102,18 @@ impl ToolRuntime {
 
         for call in &exclusive {
             let _guard = self.gate.write().await;
-            let result = self.execute_single(call).await;
+            let result = self.execute_single(call, &on_progress).await;
             results.push(result);
         }
 
         results
     }
 
-    async fn execute_single(&self, call: &ToolCall) -> ToolCallResult {
+    pub(crate) async fn execute_single(
+        &self,
+        call: &ToolCall,
+        on_progress: &Option<Arc<dyn Fn(&str, &str) + Send + Sync>>,
+    ) -> ToolCallResult {
         let tool = match self.registry.get(&call.name) {
             Some(t) => t.clone(),
             None => {
@@ -119,7 +144,19 @@ impl ToolRuntime {
             input: call.input.clone(),
         };
 
-        match tool.handle(invocation).await {
+        let progress_sender = on_progress.as_ref().map(|cb| {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let call_id = call.id.clone();
+            let cb = Arc::clone(cb);
+            tokio::spawn(async move {
+                while let Some(chunk) = rx.recv().await {
+                    cb(&call_id, &chunk);
+                }
+            });
+            tx
+        });
+
+        match tool.handle(invocation, progress_sender).await {
             Ok(output) => {
                 let is_error = output.is_error();
                 let content = output.to_content();
@@ -166,6 +203,7 @@ impl PermissionChecker {
 mod tests {
     use super::*;
     use crate::errors::ToolExecutionError;
+    use crate::events::ToolProgressSender;
     use crate::handler_kind::ToolHandlerKind;
     use crate::invocation::{FunctionToolOutput, ToolOutput};
     use crate::json_schema::JsonSchema;
@@ -185,6 +223,7 @@ mod tests {
         async fn handle(
             &self,
             _invocation: ToolInvocation,
+            _progress: Option<ToolProgressSender>,
         ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
             Ok(Box::new(FunctionToolOutput::success("read ok")))
         }
@@ -201,6 +240,7 @@ mod tests {
         async fn handle(
             &self,
             _invocation: ToolInvocation,
+            _progress: Option<ToolProgressSender>,
         ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
             Ok(Box::new(FunctionToolOutput::success("write ok")))
         }
@@ -240,7 +280,7 @@ mod tests {
             name: "nonexistent".into(),
             input: serde_json::json!({}),
         };
-        let result = runtime.execute_single(&call).await;
+        let result = runtime.execute_single(&call, &None).await;
         assert!(result.is_error);
         assert!(result.content.into_string().contains("unknown tool"));
     }
@@ -254,7 +294,7 @@ mod tests {
             name: "read_tool".into(),
             input: serde_json::json!({}),
         };
-        let result = runtime.execute_single(&call).await;
+        let result = runtime.execute_single(&call, &None).await;
         assert!(!result.is_error);
     }
 
@@ -315,7 +355,7 @@ mod tests {
             name: "read_tool".into(),
             input: serde_json::json!({}),
         };
-        let read_result = runtime.execute_single(&read_call).await;
+        let read_result = runtime.execute_single(&read_call, &None).await;
         assert!(
             !read_result.is_error,
             "read-only tool should bypass permission check"
@@ -327,7 +367,7 @@ mod tests {
             name: "write_tool".into(),
             input: serde_json::json!({}),
         };
-        let write_result = runtime.execute_single(&write_call).await;
+        let write_result = runtime.execute_single(&write_call, &None).await;
         assert!(write_result.is_error, "mutating tool should be denied");
         assert!(
             write_result
@@ -384,7 +424,7 @@ mod tests {
             name: "read_tool".into(),
             input: serde_json::json!({}),
         };
-        let result = runtime.execute_single(&call).await;
+        let result = runtime.execute_single(&call, &None).await;
         assert!(!result.is_error);
         assert_eq!(result.tool_use_id, "c1");
     }

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::errors::ToolExecutionError;
+use crate::events::ToolProgressSender;
 use crate::handler_kind::ToolHandlerKind;
 use crate::invocation::{FunctionToolOutput, ToolInvocation, ToolOutput};
 use crate::tool_handler::ToolHandler;
@@ -29,6 +30,7 @@ impl ToolHandler for ExecCommandHandler {
     async fn handle(
         &self,
         invocation: ToolInvocation,
+        progress: Option<ToolProgressSender>,
     ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
         let args = ExecCommandArgs {
             cmd: invocation
@@ -71,6 +73,19 @@ impl ToolHandler for ExecCommandHandler {
                     message: format!("failed to spawn process: {e}"),
                 })?;
 
+        if let Some(ref sender) = progress {
+            let mut progress_rx = proc.subscribe();
+            let s = sender.clone();
+            tokio::spawn(async move {
+                while let Ok(bytes) = progress_rx.recv().await {
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    if s.send(text).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
         let proc = Arc::new(proc);
         let session_id = self.store.allocate(Arc::clone(&proc)).await;
 
@@ -102,6 +117,7 @@ impl ToolHandler for WriteStdinHandler {
     async fn handle(
         &self,
         invocation: ToolInvocation,
+        _progress: Option<ToolProgressSender>,
     ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
         let args = WriteStdinArgs {
             session_id: invocation.input["session_id"].as_i64().ok_or_else(|| {

@@ -53,7 +53,7 @@ impl ToolRegistry {
                 name: name.to_string(),
             })?;
         handler
-            .handle(invocation)
+            .handle(invocation, None)
             .await
             .map_err(ToolDispatchError::from)
     }
@@ -126,6 +126,7 @@ impl Default for ToolRegistryBuilder {
 mod tests {
     use super::*;
     use crate::errors::ToolExecutionError;
+    use crate::events::ToolProgressSender;
     use crate::invocation::{FunctionToolOutput, ToolCallId, ToolName, ToolOutput};
     use crate::json_schema::JsonSchema;
     use crate::tool_spec::{ToolExecutionMode, ToolOutputMode, ToolSpec};
@@ -143,6 +144,7 @@ mod tests {
         async fn handle(
             &self,
             _invocation: ToolInvocation,
+            _progress: Option<ToolProgressSender>,
         ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
             Ok(Box::new(FunctionToolOutput::success("echo")))
         }

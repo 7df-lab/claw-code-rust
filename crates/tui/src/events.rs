@@ -69,6 +69,13 @@ pub(crate) enum WorkerEvent {
         /// Optional structured input preview for the tool call.
         detail: Option<String>,
     },
+    /// Incremental output delta from a running tool.
+    ToolOutputDelta {
+        /// Stable identifier matching the corresponding tool call.
+        tool_use_id: String,
+        /// Streaming output text chunk.
+        delta: String,
+    },
     /// A tool call finished.
     ToolResult {
         /// Stable identifier used to match the corresponding tool call.

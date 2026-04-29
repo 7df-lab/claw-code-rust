@@ -3,51 +3,120 @@ use std::sync::Arc;
 
 use devo_protocol::ToolDefinition;
 
-use crate::Tool;
+use crate::errors::ToolDispatchError;
+use crate::invocation::{ToolInvocation, ToolOutput};
+use crate::tool_handler::ToolHandler;
+use crate::tool_spec::{ToolExecutionMode, ToolSpec};
 
-/// Central registry of available tools.
-///
-/// The registry owns all tool instances and provides lookup by name.
-/// Tools are registered once at startup and remain immutable for the
-/// lifetime of the session.
+#[derive(Clone)]
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn Tool>>,
+    pub(crate) handlers: HashMap<String, Arc<dyn ToolHandler>>,
+    pub(crate) specs: Vec<ToolSpec>,
+    pub(crate) spec_index: HashMap<String, usize>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self {
-            tools: HashMap::new(),
+        ToolRegistry {
+            handlers: HashMap::new(),
+            specs: Vec::new(),
+            spec_index: HashMap::new(),
         }
     }
 
-    pub fn register(&mut self, tool: Arc<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
+    pub fn get(&self, name: &str) -> Option<&Arc<dyn ToolHandler>> {
+        self.handlers.get(name)
     }
 
-    pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
-        self.tools.get(name)
+    pub fn spec(&self, name: &str) -> Option<&ToolSpec> {
+        self.spec_index.get(name).map(|&idx| &self.specs[idx])
     }
 
-    /// Return all tools for inclusion in the model request.
-    pub fn all(&self) -> Vec<&Arc<dyn Tool>> {
-        self.tools.values().collect()
+    pub fn is_read_only(&self, name: &str) -> bool {
+        self.spec(name)
+            .map_or(false, |s| s.execution_mode == ToolExecutionMode::ReadOnly)
     }
 
-    /// Build tool definitions suitable for the model API.
+    pub fn supports_parallel(&self, name: &str) -> bool {
+        self.spec(name).map_or(false, |s| s.supports_parallel)
+    }
+
+    pub async fn dispatch(
+        &self,
+        name: &str,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn ToolOutput>, ToolDispatchError> {
+        let handler = self
+            .handlers
+            .get(name)
+            .ok_or_else(|| ToolDispatchError::UnknownTool {
+                name: name.to_string(),
+            })?;
+        handler
+            .handle(invocation, None)
+            .await
+            .map_err(ToolDispatchError::from)
+    }
+
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools
-            .values()
-            .map(|t| ToolDefinition {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                input_schema: t.input_schema(),
+        self.specs
+            .iter()
+            .map(|spec| ToolDefinition {
+                name: spec.name.clone(),
+                description: spec.description.clone(),
+                input_schema: spec.input_schema.to_json_value(),
             })
             .collect()
     }
+
+    pub fn all_handlers(&self) -> impl Iterator<Item = (&String, &Arc<dyn ToolHandler>)> {
+        self.handlers.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.handlers.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.handlers.len()
+    }
 }
 
-impl Default for ToolRegistry {
+pub struct ToolRegistryBuilder {
+    handlers: HashMap<String, Arc<dyn ToolHandler>>,
+    specs: Vec<ToolSpec>,
+    spec_index: HashMap<String, usize>,
+}
+
+impl ToolRegistryBuilder {
+    pub fn new() -> Self {
+        ToolRegistryBuilder {
+            handlers: HashMap::new(),
+            specs: Vec::new(),
+            spec_index: HashMap::new(),
+        }
+    }
+
+    pub fn push_spec(&mut self, spec: ToolSpec) {
+        let name = spec.name.clone();
+        self.spec_index.insert(name, self.specs.len());
+        self.specs.push(spec);
+    }
+
+    pub fn register_handler(&mut self, name: &str, handler: Arc<dyn ToolHandler>) {
+        self.handlers.insert(name.to_string(), handler);
+    }
+
+    pub fn build(self) -> ToolRegistry {
+        ToolRegistry {
+            handlers: self.handlers,
+            specs: self.specs,
+            spec_index: self.spec_index,
+        }
+    }
+}
+
+impl Default for ToolRegistryBuilder {
     fn default() -> Self {
         Self::new()
     }
@@ -56,95 +125,190 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::ToolExecutionError;
+    use crate::events::ToolProgressSender;
+    use crate::invocation::{FunctionToolOutput, ToolCallId, ToolName, ToolOutput};
+    use crate::json_schema::JsonSchema;
+    use crate::tool_spec::{ToolExecutionMode, ToolOutputMode, ToolSpec};
     use async_trait::async_trait;
-    use serde_json::json;
+    use std::path::PathBuf;
 
-    use crate::{ToolContext, ToolOutput};
-
-    struct DummyTool {
-        tool_name: &'static str,
-        read_only: bool,
-    }
+    struct EchoHandler;
 
     #[async_trait]
-    impl crate::Tool for DummyTool {
-        fn name(&self) -> &str {
-            self.tool_name
+    impl ToolHandler for EchoHandler {
+        fn tool_kind(&self) -> crate::handler_kind::ToolHandlerKind {
+            crate::handler_kind::ToolHandlerKind::Read
         }
-        fn description(&self) -> &str {
-            "dummy"
-        }
-        fn input_schema(&self) -> serde_json::Value {
-            json!({"type": "object"})
-        }
-        async fn execute(
+
+        async fn handle(
             &self,
-            _ctx: &ToolContext,
-            _input: serde_json::Value,
-        ) -> anyhow::Result<ToolOutput> {
-            Ok(ToolOutput::success("ok"))
-        }
-        fn is_read_only(&self) -> bool {
-            self.read_only
+            _invocation: ToolInvocation,
+            _progress: Option<ToolProgressSender>,
+        ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
+            Ok(Box::new(FunctionToolOutput::success("echo")))
         }
     }
 
     #[test]
-    fn register_and_get() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(DummyTool {
-            tool_name: "test_tool",
-            read_only: true,
-        }));
-        assert!(reg.get("test_tool").is_some());
-        assert!(reg.get("nonexistent").is_none());
+    fn registry_register_and_get() {
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register_handler("echo", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "echo".into(),
+            description: String::new(),
+            input_schema: JsonSchema::object(Default::default(), None, None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::ReadOnly,
+            capability_tags: vec![],
+            supports_parallel: true,
+        });
+        let registry = builder.build();
+        assert!(registry.get("echo").is_some());
+        assert!(registry.get("nonexistent").is_none());
     }
 
     #[test]
-    fn all_returns_registered_tools() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(DummyTool {
-            tool_name: "a",
-            read_only: true,
-        }));
-        reg.register(Arc::new(DummyTool {
-            tool_name: "b",
-            read_only: false,
-        }));
-        assert_eq!(reg.all().len(), 2);
-    }
-
-    #[test]
-    fn tool_definitions_maps_correctly() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(DummyTool {
-            tool_name: "my_tool",
-            read_only: true,
-        }));
-        let defs = reg.tool_definitions();
+    fn registry_tool_definitions() {
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register_handler("echo", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "echo".into(),
+            description: "test".into(),
+            input_schema: JsonSchema::string(None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::ReadOnly,
+            capability_tags: vec![],
+            supports_parallel: true,
+        });
+        let registry = builder.build();
+        let defs = registry.tool_definitions();
         assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].name, "my_tool");
-        assert_eq!(defs[0].description, "dummy");
+        assert_eq!(defs[0].name, "echo");
+        assert_eq!(defs[0].description, "test");
+    }
+
+    #[tokio::test]
+    async fn registry_dispatch_unknown_tool() {
+        let builder = ToolRegistryBuilder::new();
+        let registry = builder.build();
+        let invocation = ToolInvocation {
+            call_id: ToolCallId("c1".into()),
+            tool_name: ToolName("nonexistent".into()),
+            session_id: "s1".into(),
+            cwd: PathBuf::from("/tmp"),
+            input: serde_json::json!({}),
+        };
+        let result = registry.dispatch("nonexistent", invocation).await;
+        match result {
+            Err(ToolDispatchError::UnknownTool { name }) => assert_eq!(name, "nonexistent"),
+            Err(other) => panic!("expected UnknownTool error, got: {other}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_supports_parallel() {
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register_handler("read", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "read".into(),
+            description: String::new(),
+            input_schema: JsonSchema::object(Default::default(), None, None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::ReadOnly,
+            capability_tags: vec![],
+            supports_parallel: true,
+        });
+        let registry = builder.build();
+        assert!(registry.supports_parallel("read"));
     }
 
     #[test]
-    fn register_overwrites_duplicate_name() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(DummyTool {
-            tool_name: "same",
-            read_only: true,
-        }));
-        reg.register(Arc::new(DummyTool {
-            tool_name: "same",
-            read_only: false,
-        }));
-        let tool = reg.get("same").unwrap();
-        assert!(!tool.is_read_only());
+    fn registry_builder_default() {
+        let builder = ToolRegistryBuilder::default();
+        let registry = builder.build();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
     }
 
     #[test]
-    fn default_creates_empty_registry() {
-        let reg = ToolRegistry::default();
-        assert!(reg.all().is_empty());
+    fn registry_is_read_only() {
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register_handler("read", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "read".into(),
+            description: String::new(),
+            input_schema: JsonSchema::string(None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::ReadOnly,
+            capability_tags: vec![],
+            supports_parallel: true,
+        });
+        builder.register_handler("write", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "write".into(),
+            description: String::new(),
+            input_schema: JsonSchema::string(None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::Mutating,
+            capability_tags: vec![],
+            supports_parallel: false,
+        });
+        let registry = builder.build();
+        assert!(registry.is_read_only("read"));
+        assert!(!registry.is_read_only("write"));
+        assert!(!registry.is_read_only("nonexistent"));
+    }
+
+    #[test]
+    fn registry_spec_lookup() {
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register_handler("tool", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "tool".into(),
+            description: "desc".into(),
+            input_schema: JsonSchema::string(None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::Mutating,
+            capability_tags: vec![],
+            supports_parallel: false,
+        });
+        let registry = builder.build();
+        let spec = registry.spec("tool");
+        assert!(spec.is_some());
+        assert_eq!(spec.unwrap().description, "desc");
+        assert!(registry.spec("missing").is_none());
+    }
+
+    #[test]
+    fn registry_supports_parallel_for_missing_returns_false() {
+        let registry = ToolRegistryBuilder::new().build();
+        assert!(!registry.supports_parallel("nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn registry_dispatch_success() {
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register_handler("echo", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "echo".into(),
+            description: String::new(),
+            input_schema: JsonSchema::string(None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::ReadOnly,
+            capability_tags: vec![],
+            supports_parallel: true,
+        });
+        let registry = builder.build();
+        let invocation = ToolInvocation {
+            call_id: ToolCallId("c1".into()),
+            tool_name: ToolName("echo".into()),
+            session_id: "s1".into(),
+            cwd: PathBuf::from("/tmp"),
+            input: serde_json::json!({}),
+        };
+        let result = registry.dispatch("echo", invocation).await;
+        assert!(result.is_ok());
     }
 }

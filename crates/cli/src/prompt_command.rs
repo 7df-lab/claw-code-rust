@@ -19,8 +19,8 @@ pub(crate) async fn run_prompt(
     use devo_core::SessionConfig;
     use devo_core::SessionState;
     use devo_core::default_base_instructions;
-    use devo_tools::ToolOrchestrator;
     use devo_tools::ToolRegistry;
+    use devo_tools::ToolRuntime;
 
     let cwd = std::env::current_dir()?;
     let _stored_config = load_config().unwrap_or_default();
@@ -52,7 +52,7 @@ pub(crate) async fn run_prompt(
         devo_tools::register_builtin_tools(&mut reg);
         std::sync::Arc::new(reg)
     };
-    let orchestrator = ToolOrchestrator::new(std::sync::Arc::clone(&registry));
+    let runtime = ToolRuntime::new_without_permissions(std::sync::Arc::clone(&registry));
     let model_catalog = PresetModelCatalog::load()?;
 
     let turn_config = devo_core::TurnConfig {
@@ -74,7 +74,7 @@ pub(crate) async fn run_prompt(
         &turn_config,
         provider.provider.clone(),
         registry,
-        &orchestrator,
+        &runtime,
         None,
     )
     .await;

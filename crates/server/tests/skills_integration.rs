@@ -38,9 +38,12 @@ use devo_server::SkillListResult;
 use devo_server::SkillRecord;
 use devo_server::SkillSource;
 use devo_server::SuccessResponse;
-use devo_tools::Tool;
-use devo_tools::ToolOutput;
 use devo_tools::ToolRegistry;
+use devo_tools::invocation::{FunctionToolOutput, ToolInvocation, ToolOutput};
+use devo_tools::json_schema::JsonSchema;
+use devo_tools::registry::ToolRegistryBuilder;
+use devo_tools::tool_handler::ToolHandler;
+use devo_tools::tool_spec::{ToolExecutionMode, ToolOutputMode, ToolSpec};
 
 #[derive(Default)]
 struct CapturingProvider {
@@ -265,35 +268,19 @@ struct BlockingReadOnlyTool {
 }
 
 #[async_trait]
-impl Tool for BlockingReadOnlyTool {
-    fn name(&self) -> &str {
-        "blocking_wait"
+impl ToolHandler for BlockingReadOnlyTool {
+    fn tool_kind(&self) -> devo_tools::ToolHandlerKind {
+        devo_tools::ToolHandlerKind::Read
     }
 
-    fn description(&self) -> &str {
-        "Blocks until the integration test releases it."
-    }
-
-    fn input_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false
-        })
-    }
-
-    async fn execute(
+    async fn handle(
         &self,
-        _ctx: &devo_tools::ToolContext,
-        _input: serde_json::Value,
-    ) -> Result<ToolOutput> {
+        _invocation: ToolInvocation,
+        _progress: Option<devo_tools::events::ToolProgressSender>,
+    ) -> Result<Box<dyn ToolOutput>, devo_tools::ToolExecutionError> {
         self.started.notify_one();
         self.release.notified().await;
-        Ok(ToolOutput::success("released"))
-    }
-
-    fn is_read_only(&self) -> bool {
-        true
+        Ok(Box::new(FunctionToolOutput::success("released")))
     }
 }
 
@@ -657,18 +644,31 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
     );
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let mut registry = ToolRegistry::new();
-    registry.register(Arc::new(BlockingReadOnlyTool {
-        started: Arc::clone(&started),
-        release: Arc::clone(&release),
-    }));
+    let mut builder = ToolRegistryBuilder::new();
+    builder.register_handler(
+        "blocking_wait",
+        Arc::new(BlockingReadOnlyTool {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }),
+    );
+    builder.push_spec(ToolSpec {
+        name: "blocking_wait".into(),
+        description: "Blocks until the integration test releases it.".into(),
+        input_schema: JsonSchema::object(std::collections::BTreeMap::new(), None, None),
+        output_mode: ToolOutputMode::Text,
+        execution_mode: ToolExecutionMode::ReadOnly,
+        capability_tags: vec![],
+        supports_parallel: true,
+    });
+    let registry = Arc::new(builder.build());
     let provider = Arc::new(SteerCapturingProvider::default());
     let runtime = build_runtime_with_registry(
         temp_dir.path(),
         user_skill_root,
         Some(workspace_root.clone()),
         provider.clone(),
-        Arc::new(registry),
+        registry,
     );
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let session_id = start_session(&runtime, connection_id, &workspace_root).await?;

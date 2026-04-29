@@ -8,7 +8,8 @@ use devo_core::{
     AppConfigLoader, FileSystemAppConfigLoader, FileSystemSkillCatalog, ModelCatalog,
     PresetModelCatalog, SkillsConfig,
 };
-use devo_tools::ToolRegistry;
+use devo_tools::ToolPlanConfig;
+use devo_tools::handlers;
 use devo_utils::FileSystemConfigPathResolver;
 
 use crate::{
@@ -67,8 +68,7 @@ pub async fn run_server_process(args: ServerProcessArgs) -> Result<()> {
         "loaded server config"
     );
 
-    let mut registry = ToolRegistry::new();
-    devo_tools::register_builtin_tools(&mut registry);
+    let registry = handlers::build_registry_from_plan(&ToolPlanConfig::default());
     let provider = load_server_provider(&resolver.user_config_file(), None)?;
     let model_catalog: Arc<dyn ModelCatalog> = Arc::new(PresetModelCatalog::load()?);
     let skill_workspace_root = args.working_root.clone();

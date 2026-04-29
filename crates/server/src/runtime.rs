@@ -34,7 +34,7 @@ use devo_core::history::summarizer::DefaultHistorySummarizer;
 use devo_core::message_to_response_items;
 use devo_core::query;
 use devo_core::{ResponseItem, TokenInfo};
-use devo_tools::ToolOrchestrator;
+use devo_tools::ToolRuntime;
 
 use crate::ClientTransportKind;
 use crate::ConnectionState;
@@ -1886,6 +1886,7 @@ impl ServerRuntime {
                         tool_use_id,
                         content,
                         is_error,
+                        summary,
                     } => {
                         let tool_name = tool_names_by_id.get(&tool_use_id).cloned();
                         // First complete the pending ToolCall item so its item/completed
@@ -1931,9 +1932,35 @@ impl ServerRuntime {
                                     tool_name,
                                     content: serde_json::Value::String(content),
                                     is_error,
+                                    summary,
                                 })
                                 .expect("serialize tool result payload"),
                             )
+                            .await;
+                    }
+                    QueryEvent::ToolProgress {
+                        tool_use_id,
+                        content,
+                    } => {
+                        let _ = runtime
+                            .broadcast_event(ServerEvent::ItemDelta {
+                                delta_kind: ItemDeltaKind::CommandExecutionOutputDelta,
+                                payload: ItemDeltaPayload {
+                                    context: EventContext {
+                                        session_id,
+                                        turn_id: Some(turn_for_events.turn_id),
+                                        item_id: None,
+                                        seq: 0,
+                                    },
+                                    delta: serde_json::json!({
+                                        "tool_use_id": tool_use_id,
+                                        "text": content,
+                                    })
+                                    .to_string(),
+                                    stream_index: None,
+                                    channel: None,
+                                },
+                            })
                             .await;
                     }
                     QueryEvent::UsageDelta {
@@ -2043,13 +2070,13 @@ impl ServerRuntime {
                 let _ = event_callback_tx.send(event);
             });
             let registry = Arc::clone(&self.deps.registry);
-            let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
+            let runtime = ToolRuntime::new_without_permissions(Arc::clone(&registry));
             let result = query(
                 &mut core_session,
                 &turn_config,
                 self.deps.provider.clone(),
                 registry,
-                &orchestrator,
+                &runtime,
                 Some(callback),
             )
             .await;

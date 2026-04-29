@@ -15,11 +15,9 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        Box::leak(
-            DESCRIPTION
-                .replace("{{year}}", &chrono::Utc::now().year().to_string())
-                .into_boxed_str(),
-        )
+        static DESCRIPTION_CACHED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        DESCRIPTION_CACHED
+            .get_or_init(|| DESCRIPTION.replace("{{year}}", &chrono::Utc::now().year().to_string()))
     }
 
     fn input_schema(&self) -> serde_json::Value {

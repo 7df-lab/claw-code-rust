@@ -20,8 +20,8 @@ use devo_core::default_base_instructions;
 use devo_core::query;
 use devo_provider::ModelProviderSDK;
 use devo_provider::openai::OpenAIProvider;
-use devo_tools::ToolOrchestrator;
 use devo_tools::ToolRegistry;
+use devo_tools::ToolRuntime;
 
 #[derive(Debug, Clone)]
 struct RealLlmConfig {
@@ -110,7 +110,7 @@ async fn run_query(
     thinking_selection: Option<String>,
 ) -> Result<Vec<QueryEvent>> {
     let registry = Arc::new(ToolRegistry::new());
-    let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
+    let runtime = ToolRuntime::new_without_permissions(Arc::clone(&registry));
     let provider = RealLlmConfig::from_env()?.provider();
     let seen_events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let callback_events = Arc::clone(&seen_events);
@@ -129,7 +129,7 @@ async fn run_query(
         },
         provider,
         registry,
-        &orchestrator,
+        &runtime,
         Some(callback),
     )
     .await

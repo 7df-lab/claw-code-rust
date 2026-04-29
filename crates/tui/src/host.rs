@@ -365,6 +365,8 @@ fn handle_worker_event(
         WorkerEvent::TurnStarted { .. } => {
             loop_state.busy = true;
         }
+        // Streaming deltas are handled entirely within the ChatWidget
+        WorkerEvent::ToolOutputDelta { .. } => {}
         WorkerEvent::UsageUpdated {
             total_input_tokens: next_total_input_tokens,
             total_output_tokens: next_total_output_tokens,

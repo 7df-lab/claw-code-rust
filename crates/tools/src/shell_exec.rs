@@ -9,6 +9,7 @@ use tokio::time::{Duration, timeout};
 use tracing::info;
 
 use crate::ToolOutput;
+use crate::events::ToolProgressSender;
 
 const MAX_METADATA_LENGTH: usize = 30_000;
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -39,12 +40,14 @@ pub(crate) fn default_max_output_tokens() -> usize {
     DEFAULT_MAX_OUTPUT_TOKENS
 }
 
+#[allow(dead_code)]
 pub(crate) fn windows_destructive_filesystem_guidance() -> &'static str {
     r#"Windows safety rules:
 - Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.
 - Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked."#
 }
 
+#[allow(dead_code)]
 pub(crate) fn shell_command_description() -> String {
     if cfg!(windows) {
         format!(
@@ -67,7 +70,10 @@ Examples of valid command strings:
     }
 }
 
-pub(crate) async fn execute_shell_command(request: ShellExecRequest) -> anyhow::Result<ToolOutput> {
+pub(crate) async fn execute_shell_command(
+    request: ShellExecRequest,
+    progress: Option<ToolProgressSender>,
+) -> anyhow::Result<ToolOutput> {
     let ShellExecRequest {
         command,
         workdir,
@@ -112,6 +118,7 @@ pub(crate) async fn execute_shell_command(request: ShellExecRequest) -> anyhow::
             timeout_ms,
             yield_time_ms,
             max_output_tokens,
+            progress,
         )
         .await;
     }
@@ -139,6 +146,9 @@ pub(crate) async fn execute_shell_command(request: ShellExecRequest) -> anyhow::
             let stderr = String::from_utf8_lossy(&output.stderr);
 
             let result_text = merge_streams(&stdout, &stderr);
+            if let Some(ref sender) = progress {
+                let _ = sender.send(result_text.clone());
+            }
             let result_text = truncate_output(&result_text, max_output_tokens);
             if output.status.success() {
                 Ok(ToolOutput {
@@ -286,6 +296,7 @@ async fn run_with_pty(
     timeout_ms: u64,
     yield_time_ms: u64,
     max_output_tokens: usize,
+    progress: Option<ToolProgressSender>,
 ) -> anyhow::Result<ToolOutput> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -343,6 +354,10 @@ async fn run_with_pty(
     loop {
         while let Ok(chunk) = rx.try_recv() {
             output.extend_from_slice(&chunk);
+            if let Some(ref sender) = progress {
+                let text = String::from_utf8_lossy(&chunk).into_owned();
+                let _ = sender.send(text);
+            }
         }
 
         if let Some(status) = child
@@ -408,6 +423,65 @@ async fn run_with_pty(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn execute_shell_command_non_tty_sends_progress() {
+        let cmd = if cfg!(windows) {
+            "echo stream_test"
+        } else {
+            "echo stream_test"
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        let result = execute_shell_command(
+            ShellExecRequest {
+                command: cmd.to_string(),
+                workdir: std::env::current_dir().unwrap_or_default(),
+                description: "test".into(),
+                shell_override: None,
+                tty: false,
+                login: false,
+                timeout_ms: 5000,
+                yield_time_ms: 100,
+                max_output_tokens: 100,
+            },
+            Some(tx),
+        )
+        .await;
+
+        assert!(result.is_ok(), "command should succeed: {:?}", result.err());
+        // Progress channel should have received output
+        if let Ok(chunk) = rx.try_recv() {
+            assert!(!chunk.is_empty(), "progress chunk should not be empty");
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_shell_command_progress_none_does_not_crash() {
+        let cmd = if cfg!(windows) {
+            "echo test"
+        } else {
+            "echo test"
+        };
+        let result = execute_shell_command(
+            ShellExecRequest {
+                command: cmd.to_string(),
+                workdir: std::env::current_dir().unwrap_or_default(),
+                description: "test".into(),
+                shell_override: None,
+                tty: false,
+                login: false,
+                timeout_ms: 5000,
+                yield_time_ms: 100,
+                max_output_tokens: 100,
+            },
+            None,
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
     use super::{merge_streams, platform_shell_program, preview, resolve_shell, truncate_output};
 
     #[test]

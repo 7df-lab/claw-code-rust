@@ -824,6 +824,27 @@ async fn run_worker_inner(
                                     let _ = event_tx.send(WorkerEvent::TextDelta(payload.delta));
                                 }
                             }
+                            "item/commandExecution/outputDelta" => {
+                                if let ServerEvent::ItemDelta { payload, .. } = event {
+                                    let delta_str = &payload.delta;
+                                    if let Ok(val) =
+                                        serde_json::from_str::<serde_json::Value>(delta_str)
+                                    {
+                                        let tool_use_id = val
+                                            .get("tool_use_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let text =
+                                            val.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                        if !tool_use_id.is_empty() {
+                                            let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
+                                                tool_use_id: tool_use_id.to_string(),
+                                                delta: text.to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                             "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
                                 if let ServerEvent::ItemDelta { payload, .. } = event {
                                     let _ = event_tx.send(WorkerEvent::ReasoningDelta(payload.delta));
@@ -1092,9 +1113,14 @@ fn handle_completed_item(payload: ItemEventPayload, event_tx: &mpsc::UnboundedSe
             let Ok(payload) = serde_json::from_value::<ToolResultPayload>(payload) else {
                 return;
             };
+            let title = if payload.summary.is_empty() {
+                summarize_tool_result_title(payload.tool_name.as_deref(), payload.is_error)
+            } else {
+                payload.summary
+            };
             let _ = event_tx.send(WorkerEvent::ToolResult {
                 tool_use_id: payload.tool_call_id,
-                title: summarize_tool_result_title(payload.tool_name.as_deref(), payload.is_error),
+                title,
                 preview: render_json_value_text(&payload.content),
                 is_error: payload.is_error,
                 truncated: false,
@@ -1201,29 +1227,65 @@ fn summarize_tool_call(payload: &ToolCallPayload) -> String {
     }
 }
 
+fn make_path_relative(path: &str) -> String {
+    let p = std::path::PathBuf::from(path);
+    if p.is_absolute() {
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Ok(rel) = p.strip_prefix(&cwd) {
+                return rel.to_string_lossy().to_string();
+            }
+        }
+    }
+    path.to_string()
+}
+
+fn fmt_offset_limit(input: &serde_json::Value) -> String {
+    let offset = input.get("offset").and_then(|v| v.as_u64());
+    let limit = input.get("limit").and_then(|v| v.as_u64());
+    match (offset, limit) {
+        (Some(o), Some(l)) => format!(" (offset:{o}, limit:{l})"),
+        (Some(o), None) => format!(" (offset:{o})"),
+        (None, Some(l)) => format!(" (limit:{l})"),
+        (None, None) => String::new(),
+    }
+}
+
 fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
     let candidate = match tool_name {
         "bash" => input
             .get("command")
             .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("cmd").and_then(serde_json::Value::as_str)),
+            .or_else(|| input.get("cmd").and_then(serde_json::Value::as_str))
+            .map(|s| s.to_string()),
         "read" => input
             .get("filePath")
             .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("path").and_then(serde_json::Value::as_str)),
+            .or_else(|| input.get("path").and_then(serde_json::Value::as_str))
+            .map(|path| {
+                let rel = make_path_relative(path);
+                let ext = fmt_offset_limit(input);
+                format!("{rel}{ext}")
+            }),
         "write" | "edit" | "apply_patch" => input
             .get("path")
             .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("filePath").and_then(serde_json::Value::as_str)),
+            .or_else(|| input.get("filePath").and_then(serde_json::Value::as_str))
+            .map(|path| make_path_relative(path)),
         "webfetch" | "websearch" => input
             .get("url")
             .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("query").and_then(serde_json::Value::as_str)),
+            .map(|s| s.to_string())
+            .or_else(|| {
+                input
+                    .get("query")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|s| s.to_string())
+            }),
         _ => None,
     };
 
     candidate
-        .map(|text| compact_tool_summary(text, 96))
+        .map(|text| compact_tool_summary(&text, 96))
         .unwrap_or_else(|| compact_tool_summary(&render_json_preview(input), 96))
 }
 

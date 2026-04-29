@@ -1,0 +1,21 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolHandlerKind {
+    Bash,
+    ShellCommand,
+    Read,
+    Write,
+    Glob,
+    Grep,
+    ApplyPatch,
+    Plan,
+    Question,
+    Task,
+    TodoWrite,
+    WebFetch,
+    WebSearch,
+    Skill,
+    Lsp,
+    Invalid,
+    ExecCommand,
+    WriteStdin,
+}

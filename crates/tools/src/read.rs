@@ -91,7 +91,11 @@ impl Tool for ReadTool {
     }
 }
 
-fn read_directory(path: &Path, limit: usize, offset: usize) -> anyhow::Result<ToolOutput> {
+pub(crate) fn read_directory(
+    path: &Path,
+    limit: usize,
+    offset: usize,
+) -> anyhow::Result<ToolOutput> {
     let mut items = std::fs::read_dir(path)?
         .flatten()
         .map(|entry| {
@@ -147,7 +151,7 @@ fn read_directory(path: &Path, limit: usize, offset: usize) -> anyhow::Result<To
     })
 }
 
-fn read_file(path: &Path, limit: usize, offset: usize) -> anyhow::Result<ToolOutput> {
+pub(crate) fn read_file(path: &Path, limit: usize, offset: usize) -> anyhow::Result<ToolOutput> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let start = offset.saturating_sub(1);
@@ -224,7 +228,7 @@ fn read_file(path: &Path, limit: usize, offset: usize) -> anyhow::Result<ToolOut
     })
 }
 
-fn is_binary_file(path: &Path) -> anyhow::Result<bool> {
+pub(crate) fn is_binary_file(path: &Path) -> anyhow::Result<bool> {
     let ext = path
         .extension()
         .and_then(|value| value.to_str())
@@ -290,7 +294,7 @@ fn is_binary_file(path: &Path) -> anyhow::Result<bool> {
     Ok((non_printable as f64) / (read as f64) > 0.3)
 }
 
-fn missing_file_message(filepath: &str) -> String {
+pub(crate) fn missing_file_message(filepath: &str) -> String {
     let path = Path::new(filepath);
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let base = path

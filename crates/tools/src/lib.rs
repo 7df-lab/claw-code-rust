@@ -1,14 +1,14 @@
 // New modules
-pub mod handlers;
+pub mod errors;
+pub mod events;
 pub mod handler_kind;
+pub mod handlers;
 pub mod invocation;
 pub mod json_schema;
 pub mod registry;
 pub mod registry_plan;
 pub mod router;
 pub mod tool_handler;
-pub mod errors;
-pub mod events;
 pub mod tool_spec;
 pub mod unified_exec;
 
@@ -120,9 +120,23 @@ mod tests {
 
     fn expected_tool_names_default() -> [&'static str; 17] {
         [
-            "bash", "read", "write", "glob", "grep", "invalid", "question", "task",
-            "todowrite", "webfetch", "websearch", "skill", "apply_patch", "lsp",
-            "update_plan", "exec_command", "write_stdin",
+            "bash",
+            "read",
+            "write",
+            "glob",
+            "grep",
+            "invalid",
+            "question",
+            "task",
+            "todowrite",
+            "webfetch",
+            "websearch",
+            "skill",
+            "apply_patch",
+            "lsp",
+            "update_plan",
+            "exec_command",
+            "write_stdin",
         ]
     }
 
@@ -148,7 +162,10 @@ mod tests {
 
         // When use_shell_command = true, bash is replaced by shell_command
         assert!(registry.get("bash").is_none());
-        assert!(registry.get("shell_command").is_some(), "expected shell_command tool to be registered");
+        assert!(
+            registry.get("shell_command").is_some(),
+            "expected shell_command tool to be registered"
+        );
     }
 
     #[test]

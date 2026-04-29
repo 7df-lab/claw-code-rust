@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use devo_safety::legacy_permissions::{PermissionDecision, PermissionRequest, ResourceKind};
 
-use crate::invocation::{ToolInvocation, ToolName, ToolCallId};
+use crate::invocation::{ToolCallId, ToolInvocation, ToolName};
 use crate::{ToolContext, ToolOutput, ToolRegistry};
 
 /// A pending tool call extracted from the model response.

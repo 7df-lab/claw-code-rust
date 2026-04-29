@@ -114,3 +114,76 @@ impl JsonSchema {
         serde_json::to_value(self).unwrap_or(JsonValue::Null)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_schema() {
+        let s = JsonSchema::string(Some("a name"));
+        assert_eq!(s.schema_type, Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::String)));
+        assert_eq!(s.description, Some("a name".into()));
+    }
+
+    #[test]
+    fn boolean_schema() {
+        let s = JsonSchema::boolean(Some("flag"));
+        assert_eq!(s.schema_type, Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Boolean)));
+        assert_eq!(s.description, Some("flag".into()));
+    }
+
+    #[test]
+    fn integer_number_schema() {
+        let i = JsonSchema::integer(Some("count"));
+        assert_eq!(i.schema_type, Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Integer)));
+        let n = JsonSchema::number(Some("price"));
+        assert_eq!(n.schema_type, Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Number)));
+    }
+
+    #[test]
+    fn array_schema() {
+        let a = JsonSchema::array(JsonSchema::string(None), Some("list"));
+        assert_eq!(a.schema_type, Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Array)));
+        assert!(a.items.is_some());
+        assert_eq!(a.description, Some("list".into()));
+    }
+
+    #[test]
+    fn object_schema() {
+        let mut props = BTreeMap::new();
+        props.insert("name".into(), JsonSchema::string(Some("name")));
+        let o = JsonSchema::object(props, Some(vec!["name".into()]), Some(false));
+        assert_eq!(o.schema_type, Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Object)));
+        assert!(o.properties.is_some());
+        assert_eq!(o.required.unwrap(), vec!["name"]);
+        assert_eq!(o.additional_properties, Some(AdditionalProperties::Bool(false)));
+    }
+
+    #[test]
+    fn to_json_value_roundtrip() {
+        let s = JsonSchema::object(
+            BTreeMap::from([
+                ("name".into(), JsonSchema::string(Some("The name"))),
+                ("count".into(), JsonSchema::integer(None)),
+            ]),
+            Some(vec!["name".into()]),
+            Some(false),
+        );
+        let json = s.to_json_value();
+        assert!(json.is_object());
+        assert_eq!(json["type"], "object");
+        assert!(json["properties"].is_object());
+        assert_eq!(json["required"][0], "name");
+        assert_eq!(json["properties"]["name"]["type"], "string");
+        assert_eq!(json["properties"]["count"]["type"], "integer");
+        assert_eq!(json["additionalProperties"], false);
+    }
+
+    #[test]
+    fn default_schema_is_empty() {
+        let s = JsonSchema::default();
+        let json = s.to_json_value();
+        assert_eq!(json, serde_json::json!({}));
+    }
+}

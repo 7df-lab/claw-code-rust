@@ -221,4 +221,92 @@ mod tests {
         let registry = builder.build();
         assert!(registry.supports_parallel("read"));
     }
+
+    #[test]
+    fn registry_builder_default() {
+        let builder = ToolRegistryBuilder::default();
+        let registry = builder.build();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn registry_is_read_only() {
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register_handler("read", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "read".into(),
+            description: String::new(),
+            input_schema: JsonSchema::string(None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::ReadOnly,
+            capability_tags: vec![],
+            supports_parallel: true,
+        });
+        builder.register_handler("write", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "write".into(),
+            description: String::new(),
+            input_schema: JsonSchema::string(None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::Mutating,
+            capability_tags: vec![],
+            supports_parallel: false,
+        });
+        let registry = builder.build();
+        assert!(registry.is_read_only("read"));
+        assert!(!registry.is_read_only("write"));
+        assert!(!registry.is_read_only("nonexistent"));
+    }
+
+    #[test]
+    fn registry_spec_lookup() {
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register_handler("tool", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "tool".into(),
+            description: "desc".into(),
+            input_schema: JsonSchema::string(None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::Mutating,
+            capability_tags: vec![],
+            supports_parallel: false,
+        });
+        let registry = builder.build();
+        let spec = registry.spec("tool");
+        assert!(spec.is_some());
+        assert_eq!(spec.unwrap().description, "desc");
+        assert!(registry.spec("missing").is_none());
+    }
+
+    #[test]
+    fn registry_supports_parallel_for_missing_returns_false() {
+        let registry = ToolRegistryBuilder::new().build();
+        assert!(!registry.supports_parallel("nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn registry_dispatch_success() {
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register_handler("echo", Arc::new(EchoHandler));
+        builder.push_spec(ToolSpec {
+            name: "echo".into(),
+            description: String::new(),
+            input_schema: JsonSchema::string(None),
+            output_mode: ToolOutputMode::Text,
+            execution_mode: ToolExecutionMode::ReadOnly,
+            capability_tags: vec![],
+            supports_parallel: true,
+        });
+        let registry = builder.build();
+        let invocation = ToolInvocation {
+            call_id: ToolCallId("c1".into()),
+            tool_name: ToolName("echo".into()),
+            session_id: "s1".into(),
+            cwd: PathBuf::from("/tmp"),
+            input: serde_json::json!({}),
+        };
+        let result = registry.dispatch("echo", invocation).await;
+        assert!(result.is_ok());
+    }
 }

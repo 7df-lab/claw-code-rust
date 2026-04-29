@@ -9,8 +9,8 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::broadcast;
 use tokio::time::{Duration, sleep};
 
-use super::buffer::HeadTailBuffer;
 use super::ProcessOutput;
+use super::buffer::HeadTailBuffer;
 
 const PTY_READ_BUF: usize = 4096;
 const PTY_ROWS: u16 = 24;
@@ -101,27 +101,28 @@ impl UnifiedExecProcess {
             .try_clone_reader()
             .map_err(|e| format!("failed to clone PTY reader: {e}"))?;
 
-        let writer: Box<dyn Write + Send> = pair.master.take_writer().map_err(|e| {
-            format!("failed to take PTY writer: {e}")
-        })?;
+        let writer: Box<dyn Write + Send> = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("failed to take PTY writer: {e}"))?;
 
         let (tokio_tx, mut tokio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
         // Reader thread: blocking PTY read -> tokio::mpsc, with panic protection
         std::thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut buf = [0u8; PTY_READ_BUF];
-            loop {
-                match std::io::Read::read(&mut reader, &mut buf) {
-                    Ok(0) => break,
-                    Ok(size) => {
-                        if tokio_tx.send(buf[..size].to_vec()).is_err() {
-                            break;
+                let mut buf = [0u8; PTY_READ_BUF];
+                loop {
+                    match std::io::Read::read(&mut reader, &mut buf) {
+                        Ok(0) => break,
+                        Ok(size) => {
+                            if tokio_tx.send(buf[..size].to_vec()).is_err() {
+                                break;
+                            }
                         }
+                        Err(_) => break,
                     }
-                    Err(_) => break,
                 }
-            }
             }));
             if result.is_err() {
                 // Reader thread panicked - log and continue (process will be detected as exited)
@@ -158,7 +159,8 @@ impl UnifiedExecProcess {
 
             if let Ok(status) = child.try_wait() {
                 if let Some(s) = status {
-                    exit_code_clone.store(s.exit_code() as i32, std::sync::atomic::Ordering::SeqCst);
+                    exit_code_clone
+                        .store(s.exit_code() as i32, std::sync::atomic::Ordering::SeqCst);
                 } else {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -184,7 +186,10 @@ impl UnifiedExecProcess {
     }
 
     pub fn write_stdin(&self, chars: &str) -> Result<(), String> {
-        let mut guard = self.stdin_writer.lock().map_err(|e| format!("lock error: {e}"))?;
+        let mut guard = self
+            .stdin_writer
+            .lock()
+            .map_err(|e| format!("lock error: {e}"))?;
         if let Some(writer) = guard.as_mut() {
             writer
                 .write_all(chars.as_bytes())
@@ -204,11 +209,7 @@ impl UnifiedExecProcess {
 
     pub fn exit_code(&self) -> Option<i32> {
         let code = self.exit_code.load(std::sync::atomic::Ordering::SeqCst);
-        if code >= 0 {
-            Some(code)
-        } else {
-            None
-        }
+        if code >= 0 { Some(code) } else { None }
     }
 
     pub fn is_running(&self) -> bool {
@@ -255,9 +256,7 @@ pub async fn collect_output(
             }
         }
 
-        let done = !process.is_running()
-            || (process.exit_code().is_some()
-                && output_rx.len() == 0);
+        let done = !process.is_running() || (process.exit_code().is_some() && output_rx.len() == 0);
 
         if done {
             loop {
@@ -300,7 +299,11 @@ mod tests {
 
     #[tokio::test]
     async fn process_spawn_and_exit() {
-        let cmd = if cfg!(windows) { "echo hello" } else { "echo hello" };
+        let cmd = if cfg!(windows) {
+            "echo hello"
+        } else {
+            "echo hello"
+        };
         let (proc, mut rx) = UnifiedExecProcess::spawn(1, cmd, Path::new("."), None, false)
             .expect("spawn should succeed");
 
@@ -315,7 +318,10 @@ mod tests {
         // Process should have exited (echo is a short command)
         // On all platforms, echo finishes quickly
         if !proc.is_running() {
-            assert!(proc.exit_code().is_some(), "process should have an exit code");
+            assert!(
+                proc.exit_code().is_some(),
+                "process should have an exit code"
+            );
         }
     }
 

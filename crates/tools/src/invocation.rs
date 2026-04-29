@@ -101,3 +101,145 @@ impl ToolOutput for FunctionToolOutput {
         self.is_error
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_name_newtype() {
+        let name = ToolName("bash".into());
+        assert_eq!(name.0.as_str(), "bash");
+        let json = serde_json::to_string(&name).unwrap();
+        assert_eq!(json, "\"bash\"");
+    }
+
+    #[test]
+    fn tool_call_id_newtype() {
+        let id = ToolCallId("call-1".into());
+        assert_eq!(id.0, "call-1");
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"call-1\"");
+    }
+
+    #[test]
+    fn tool_content_text() {
+        let c = ToolContent::Text("hello".into());
+        assert_eq!(c.into_string(), "hello");
+    }
+
+    #[test]
+    fn tool_content_json() {
+        let c = ToolContent::Json(serde_json::json!({"key": "val"}));
+        assert!(c.into_string().contains("val"));
+    }
+
+    #[test]
+    fn tool_content_mixed() {
+        let c = ToolContent::Mixed {
+            text: Some("text".into()),
+            json: Some(serde_json::json!({"key": 1})),
+        };
+        let s = c.into_string();
+        assert!(s.contains("text"));
+        assert!(s.contains("key"));
+    }
+
+    #[test]
+    fn tool_content_mixed_text_only() {
+        let c = ToolContent::Mixed {
+            text: Some("just text".into()),
+            json: None,
+        };
+        assert_eq!(c.into_string(), "just text");
+    }
+
+    #[test]
+    fn tool_content_mixed_json_only() {
+        let c = ToolContent::Mixed {
+            text: None,
+            json: Some(serde_json::json!(42)),
+        };
+        assert_eq!(c.into_string(), "42");
+    }
+
+    #[test]
+    fn function_tool_output_success() {
+        let out = FunctionToolOutput::success("done");
+        assert!(!out.is_error);
+        assert!(matches!(out.content, ToolContent::Text(ref t) if t == "done"));
+    }
+
+    #[test]
+    fn function_tool_output_error() {
+        let out = FunctionToolOutput::error("failed");
+        assert!(out.is_error);
+        assert!(matches!(out.content, ToolContent::Text(ref t) if t == "failed"));
+    }
+
+    #[test]
+    fn function_tool_output_from_legacy_success_no_meta() {
+        let legacy = crate::ToolOutput {
+            content: "ok".into(),
+            is_error: false,
+            metadata: None,
+        };
+        let out = FunctionToolOutput::from_output(legacy);
+        assert!(!out.is_error);
+        assert!(matches!(out.content, ToolContent::Text(ref t) if t == "ok"));
+    }
+
+    #[test]
+    fn function_tool_output_from_legacy_success_with_meta() {
+        let legacy = crate::ToolOutput {
+            content: "result".into(),
+            is_error: false,
+            metadata: Some(serde_json::json!({"key": "val"})),
+        };
+        let out = FunctionToolOutput::from_output(legacy);
+        assert!(!out.is_error);
+        match out.content {
+            ToolContent::Mixed { text, json } => {
+                assert_eq!(text, Some("result".into()));
+                assert!(json.is_some());
+            }
+            _ => panic!("expected Mixed"),
+        }
+    }
+
+    #[test]
+    fn function_tool_output_from_legacy_error() {
+        let legacy = crate::ToolOutput {
+            content: "err".into(),
+            is_error: true,
+            metadata: None,
+        };
+        let out = FunctionToolOutput::from_output(legacy);
+        assert!(out.is_error);
+        assert!(matches!(out.content, ToolContent::Text(ref t) if t == "err"));
+    }
+
+    #[test]
+    fn tool_output_trait_impl() {
+        let out = Box::new(FunctionToolOutput::success("trait test"));
+        assert!(!out.is_error());
+        let content = out.to_content();
+        assert!(matches!(content, ToolContent::Text(ref t) if t == "trait test"));
+    }
+
+    #[test]
+    fn tool_name_serde_roundtrip() {
+        let name = ToolName("exec_command".into());
+        let json = serde_json::to_string(&name).unwrap();
+        let back: ToolName = serde_json::from_str(&json).unwrap();
+        assert_eq!(name, back);
+    }
+
+    #[test]
+    fn tool_call_id_serde_roundtrip() {
+        let id = ToolCallId("id-42".into());
+        let json = serde_json::to_string(&id).unwrap();
+        let back: ToolCallId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+}

@@ -461,19 +461,27 @@ fn exec_command_schema() -> JsonSchema {
             ),
             (
                 "shell".to_string(),
-                JsonSchema::string(Some("Shell binary to launch (e.g. 'bash' or 'powershell').")),
+                JsonSchema::string(Some(
+                    "Shell binary to launch (e.g. 'bash' or 'powershell').",
+                )),
             ),
             (
                 "login".to_string(),
-                JsonSchema::boolean(Some("Whether to run the shell with login shell semantics. Defaults to true.")),
+                JsonSchema::boolean(Some(
+                    "Whether to run the shell with login shell semantics. Defaults to true.",
+                )),
             ),
             (
                 "tty".to_string(),
-                JsonSchema::boolean(Some("Whether to allocate a PTY. Must be true for write_stdin to work.")),
+                JsonSchema::boolean(Some(
+                    "Whether to allocate a PTY. Must be true for write_stdin to work.",
+                )),
             ),
             (
                 "yield_time_ms".to_string(),
-                JsonSchema::number(Some("How long to wait (in ms) for output before returning. Default 10000.")),
+                JsonSchema::number(Some(
+                    "How long to wait (in ms) for output before returning. Default 10000.",
+                )),
             ),
             (
                 "max_output_tokens".to_string(),
@@ -494,11 +502,15 @@ fn write_stdin_schema() -> JsonSchema {
             ),
             (
                 "chars".to_string(),
-                JsonSchema::string(Some("Bytes to write to stdin. Empty string to poll for output.")),
+                JsonSchema::string(Some(
+                    "Bytes to write to stdin. Empty string to poll for output.",
+                )),
             ),
             (
                 "yield_time_ms".to_string(),
-                JsonSchema::number(Some("How long to wait (in ms) for output before returning. Default 250.")),
+                JsonSchema::number(Some(
+                    "How long to wait (in ms) for output before returning. Default 250.",
+                )),
             ),
             (
                 "max_output_tokens".to_string(),
@@ -769,4 +781,90 @@ pub fn build_tool_registry_plan(config: &ToolPlanConfig) -> ToolRegistryPlan {
     }
 
     plan
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_default_starts_empty() {
+        let plan = ToolRegistryPlan::new();
+        assert!(plan.specs.is_empty());
+        assert!(plan.handlers.is_empty());
+    }
+
+    #[test]
+    fn plan_push_adds_spec_and_handler() {
+        let mut plan = ToolRegistryPlan::new();
+        plan.push(
+            ToolSpec::new("test", "desc", JsonSchema::string(None)),
+            ToolHandlerKind::Read,
+        );
+        assert_eq!(plan.specs.len(), 1);
+        assert_eq!(plan.handlers.len(), 1);
+        assert_eq!(plan.handlers[0].0, ToolHandlerKind::Read);
+        assert_eq!(plan.handlers[0].1, "test");
+    }
+
+    #[test]
+    fn config_default_has_unified_exec_enabled() {
+        let config = ToolPlanConfig::default();
+        assert!(config.use_unified_exec);
+        assert!(!config.use_shell_command);
+    }
+
+    #[test]
+    fn config_validate_does_not_panic() {
+        let config = ToolPlanConfig::default();
+        config.validate(); // should not panic
+    }
+
+    #[test]
+    fn schema_exec_command_requires_cmd() {
+        let schema = exec_command_schema();
+        let required = schema.required.as_ref().unwrap();
+        assert!(required.contains(&"cmd".to_string()));
+    }
+
+    #[test]
+    fn schema_write_stdin_requires_session_id() {
+        let schema = write_stdin_schema();
+        let required = schema.required.as_ref().unwrap();
+        assert!(required.contains(&"session_id".to_string()));
+    }
+
+    #[test]
+    fn schema_invalid_has_no_required() {
+        let schema = invalid_schema();
+        // invalid tool has no required fields and no properties
+        assert!(schema.properties.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bash_schema_has_command_and_cmd() {
+        let schema = bash_schema();
+        let props = schema.properties.as_ref().unwrap();
+        assert!(props.contains_key("command"));
+        assert!(props.contains_key("cmd"));
+        assert!(props.contains_key("tty"));
+    }
+
+    #[test]
+    fn shell_command_schema_has_cmd() {
+        let schema = shell_command_schema();
+        let props = schema.properties.as_ref().unwrap();
+        assert!(props.contains_key("cmd"));
+    }
+
+    #[test]
+    fn plan_builder_without_unified_exec() {
+        let plan = build_tool_registry_plan(&ToolPlanConfig {
+            use_unified_exec: false,
+            ..ToolPlanConfig::default()
+        });
+        let handler_names: Vec<&str> = plan.handlers.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(!handler_names.contains(&"exec_command"));
+        assert!(!handler_names.contains(&"write_stdin"));
+    }
 }

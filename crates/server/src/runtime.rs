@@ -1184,40 +1184,36 @@ impl ServerRuntime {
         let turn = {
             let mut session = session_arc.lock().await;
             if session.active_turn.is_some() {
-                // Queue instead of rejecting — the input will be consumed when
-                // the current turn completes.
-                let core_session = session.core_session.lock().await;
-                core_session.enqueue_pending_input(devo_core::PendingInputItem {
-                    kind: devo_core::PendingInputKind::UserText {
-                        text: input_text.clone(),
-                    },
-                    metadata: None,
-                    created_at: chrono::Utc::now(),
-                });
-                let (pending_count, pending_texts) = {
-                    let queue = core_session.pending_user_prompts.lock().expect("lock");
-                    let texts: Vec<String> = queue
-                        .iter()
-                        .filter_map(|item| match &item.kind {
-                            devo_core::PendingInputKind::UserText { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    (texts.len(), texts)
-                };
-                drop(core_session);
+                // Queue instead of rejecting — push directly to the steering_queue
+                // (independent lock) so we don't block on core_session which is
+                // held by the running query() loop.
+                let steering_queue = Arc::clone(&session.steering_queue);
+                let active_turn_id = session.active_turn.as_ref().expect("active turn").turn_id;
+                drop(session);
+
+                steering_queue
+                    .lock()
+                    .expect("steering queue mutex should not be poisoned")
+                    .push_back(devo_core::PendingInputItem {
+                        kind: devo_core::PendingInputKind::UserText {
+                            text: input_text.clone(),
+                        },
+                        metadata: None,
+                        created_at: chrono::Utc::now(),
+                    });
+                let pending_count = steering_queue.lock().expect("lock").len();
                 self.broadcast_event(ServerEvent::InputQueueUpdated(
                     devo_core::InputQueueUpdatedPayload {
                         session_id: params.session_id,
                         pending_count,
-                        pending_texts,
+                        pending_texts: vec![display_input.clone()],
                     },
                 ))
                 .await;
                 return serde_json::to_value(SuccessResponse {
                     id: request_id,
                     result: TurnStartResult {
-                        turn_id: session.active_turn.as_ref().expect("active turn").turn_id,
+                        turn_id: active_turn_id,
                         status: TurnStatus::Running,
                         accepted_at: now,
                     },
@@ -2114,6 +2110,103 @@ impl ServerRuntime {
                 session_id,
                 status: SessionRuntimeStatus::Idle,
             },
+        ))
+        .await;
+
+        // After the turn completes, check for queued inputs and start the next turn.
+        // Drop all local state before the recursive spawn so the closure is Send.
+        let input_text = {
+            let session_arc = match self.sessions.lock().await.get(&session_id).cloned() {
+                Some(s) => s,
+                None => return,
+            };
+            let steering_queue = {
+                let session = session_arc.lock().await;
+                if session.active_turn.is_some() {
+                    return;
+                }
+                Arc::clone(&session.steering_queue)
+            };
+            let mut queue = steering_queue
+                .lock()
+                .expect("steering queue mutex should not be poisoned");
+            match queue.pop_front() {
+                Some(devo_core::PendingInputItem {
+                    kind: devo_core::PendingInputKind::UserText { text },
+                    ..
+                }) => {
+                    queue.clear();
+                    text
+                }
+                _ => return,
+            }
+        };
+        let display_input = input_text.clone();
+
+        let (turn_config, resolved_request) = {
+            let session_arc = match self.sessions.lock().await.get(&session_id).cloned() {
+                Some(s) => s,
+                None => return,
+            };
+            let session = session_arc.lock().await;
+            let model_override = session.summary.model.as_deref();
+            let thinking_override = session.summary.thinking.clone();
+            let turn_config = self
+                .deps
+                .resolve_turn_config(model_override, thinking_override);
+            let resolved_request = turn_config
+                .model
+                .resolve_thinking_selection(turn_config.thinking_selection.as_deref());
+            (turn_config, resolved_request)
+        };
+
+        let sequence = {
+            let session_arc = match self.sessions.lock().await.get(&session_id).cloned() {
+                Some(s) => s,
+                None => return,
+            };
+            let session = session_arc.lock().await;
+            session.latest_turn.as_ref().map_or(1, |t| t.sequence + 1)
+        };
+
+        let now = Utc::now();
+        let turn = TurnMetadata {
+            turn_id: TurnId::new(),
+            session_id,
+            sequence,
+            status: TurnStatus::Running,
+            kind: devo_core::TurnKind::Regular,
+            model: turn_config.model.slug.clone(),
+            thinking: turn_config.thinking_selection.clone(),
+            request_model: resolved_request.request_model.clone(),
+            request_thinking: resolved_request.request_thinking.clone(),
+            started_at: now,
+            completed_at: None,
+            usage: None,
+        };
+        {
+            let session_arc = match self.sessions.lock().await.get(&session_id).cloned() {
+                Some(s) => s,
+                None => return,
+            };
+            let mut session = session_arc.lock().await;
+            session.summary.status = SessionRuntimeStatus::ActiveTurn;
+            session.summary.updated_at = now;
+            session.active_turn = Some(turn.clone());
+        }
+        self.broadcast_event(ServerEvent::TurnStarted(TurnEventPayload {
+            session_id,
+            turn: turn.clone(),
+        }))
+        .await;
+        // Chain the next turn directly (not spawned) so it runs after the
+        // current turn completes, and calls back into this drain logic.
+        Box::pin(Arc::clone(&self).execute_turn(
+            session_id,
+            turn,
+            turn_config,
+            display_input,
+            input_text,
         ))
         .await;
     }

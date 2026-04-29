@@ -152,14 +152,22 @@ impl FileSystemSkillCatalog {
             });
         }
 
-        let mut discovered = Vec::new();
-        for entry in fs::read_dir(root).map_err(|_| SkillError::SkillRootUnavailable {
-            root: root.to_path_buf(),
-        })? {
-            let entry = entry.map_err(|_| SkillError::SkillRootUnavailable {
+        let mut skill_dirs = fs::read_dir(root)
+            .map_err(|_| SkillError::SkillRootUnavailable {
                 root: root.to_path_buf(),
-            })?;
-            let path = entry.path();
+            })?
+            .map(|entry| {
+                entry
+                    .map(|entry| entry.path())
+                    .map_err(|_| SkillError::SkillRootUnavailable {
+                        root: root.to_path_buf(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        skill_dirs.sort();
+
+        let mut discovered = Vec::new();
+        for path in skill_dirs {
             if path.is_dir() {
                 let skill_doc = path.join("SKILL.md");
                 if skill_doc.exists() {

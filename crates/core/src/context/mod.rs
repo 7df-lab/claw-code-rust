@@ -1,9 +1,109 @@
+use std::marker::PhantomData;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::{ItemId, SessionId, SummaryModelSelection, TurnId};
+use crate::{ItemId, ResponseItem, SessionId, SummaryModelSelection, TurnId};
+use devo_protocol::{ContentBlock, Message, Role};
+
+// ---------------------------------------------------------------------------
+// Contextual user fragment traits and registration
+// ---------------------------------------------------------------------------
+
+/// Type-erased registration for a contextual user fragment.
+///
+/// Implementations are used by context filtering code to recognize injected
+/// fragments without constructing the concrete context payload.
+#[allow(dead_code)]
+pub(crate) trait FragmentRegistration: Sync {
+    fn matches_text(&self, text: &str) -> bool;
+}
+
+#[allow(dead_code)]
+pub(crate) struct FragmentRegistrationProxy<T> {
+    _marker: PhantomData<fn() -> T>,
+}
+
+#[allow(dead_code)]
+impl<T> FragmentRegistrationProxy<T> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: ContextualUserFragment> FragmentRegistration for FragmentRegistrationProxy<T> {
+    fn matches_text(&self, text: &str) -> bool {
+        T::matches_text(text)
+    }
+}
+
+/// Context payload that is injected as a message fragment.
+///
+/// Implementations own the response role and provide the exact fragment body.
+/// Marked fragments also provide start/end markers used to recognize injected
+/// context later. `render()` concatenates markers and body without adding
+/// separators, so implementations should include any whitespace they need
+/// between tags in `body()`. Unmarked fragments should leave both markers empty,
+/// in which case the default helpers render only the body and never match
+/// arbitrary text.
+pub trait ContextualUserFragment {
+    const ROLE: &'static str;
+    const START_MARKER: &'static str;
+    const END_MARKER: &'static str;
+
+    fn body(&self) -> String;
+
+    fn matches_text(text: &str) -> bool
+    where
+        Self: Sized,
+    {
+        if Self::START_MARKER.is_empty() || Self::END_MARKER.is_empty() {
+            return false;
+        }
+
+        let trimmed = text.trim_start();
+        let starts_with_marker = trimmed
+            .get(..Self::START_MARKER.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(Self::START_MARKER));
+        let trimmed = trimmed.trim_end();
+        let ends_with_marker = trimmed
+            .get(trimmed.len().saturating_sub(Self::END_MARKER.len())..)
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(Self::END_MARKER));
+        starts_with_marker && ends_with_marker
+    }
+
+    fn render(&self) -> String {
+        if Self::START_MARKER.is_empty() && Self::END_MARKER.is_empty() {
+            return self.body();
+        }
+
+        format!("{}{}{}", Self::START_MARKER, self.body(), Self::END_MARKER)
+    }
+
+    fn to_response_item(self) -> ResponseItem
+    where
+        Self: Sized,
+    {
+        let role = match Self::ROLE {
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            _ => Role::User,
+        };
+        ResponseItem::Message(Message {
+            role,
+            content: vec![ContentBlock::Text {
+                text: self.render(),
+            }],
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Existing context module code starts here
+// ---------------------------------------------------------------------------
 
 /// Stores the token budget configuration for a session or turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -259,6 +359,15 @@ pub trait ContextCompactor: Send + Sync {
         budget: TokenBudget,
     ) -> Result<ContextSummaryPayload, CompactionError>;
 }
+
+mod agents_md;
+pub(crate) mod compaction_summary;
+mod execution_context;
+pub(crate) mod turn_aborted;
+pub(crate) mod user_instructions;
+
+pub use agents_md::*;
+pub use execution_context::*;
 
 #[cfg(test)]
 mod tests {

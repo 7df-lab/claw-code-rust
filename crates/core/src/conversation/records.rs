@@ -4,9 +4,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::conversation::{ItemId, SessionId, SessionTitleState, TurnId, TurnStatus, TurnUsage};
+use crate::{SessionContext, TurnContext};
 
 /// Stores persistent metadata for one session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {
     /// The stable session identifier.
     pub id: SessionId,
@@ -56,12 +57,18 @@ pub struct SessionRecord {
     pub git_origin_url: Option<String>,
     /// The parent session identifier when this session was created by forking.
     pub parent_session_id: Option<SessionId>,
+    /// The latest locked session context known for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_context: Option<SessionContext>,
+    /// The latest turn context snapshot known for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_turn_context: Option<TurnContext>,
     /// The schema version for persisted session metadata.
     pub schema_version: u32,
 }
 
 /// Stores persistent metadata for one turn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TurnRecord {
     /// The stable turn identifier.
     pub id: TurnId,
@@ -87,6 +94,12 @@ pub struct TurnRecord {
     pub input_token_estimate: Option<u32>,
     /// The authoritative provider token usage, when available.
     pub usage: Option<TurnUsage>,
+    /// The locked session context used to build the stable request prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_context: Option<SessionContext>,
+    /// The turn context used for this user-visible turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_context: Option<TurnContext>,
     /// The schema version for persisted turn metadata.
     pub schema_version: u32,
 }
@@ -234,7 +247,7 @@ pub struct ItemRecord {
 }
 
 /// Stores the first canonical line written for a session rollout file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetaLine {
     /// The time when this rollout line was persisted.
     pub timestamp: DateTime<Utc>,
@@ -243,7 +256,7 @@ pub struct SessionMetaLine {
 }
 
 /// Stores one turn metadata line in the rollout file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TurnLine {
     /// The time when this rollout line was persisted.
     pub timestamp: DateTime<Utc>,
@@ -286,15 +299,17 @@ pub struct CompactionSnapshotLine {
     pub turn_id: TurnId,
     /// The summary item that represents the compacted history.
     pub summary_item_id: ItemId,
+    /// The pre-existing item ids that remain after compaction, in prompt order.
+    pub preserved_item_ids: Vec<ItemId>,
 }
 
 /// Enumerates every canonical line type written to the rollout journal.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RolloutLine {
     /// Session metadata line.
     SessionMeta(Box<SessionMetaLine>),
     /// Turn metadata line.
-    Turn(TurnLine),
+    Turn(Box<TurnLine>),
     /// Item record line.
     Item(ItemLine),
     /// Session-title update line.
@@ -341,7 +356,9 @@ mod tests {
             git_branch: None,
             git_origin_url: None,
             parent_session_id: None,
-            schema_version: 1,
+            session_context: None,
+            latest_turn_context: None,
+            schema_version: 2,
         };
 
         assert!(session.title.is_none());
@@ -380,7 +397,7 @@ mod tests {
 
     #[test]
     fn rollout_line_roundtrip() {
-        let line = RolloutLine::Turn(TurnLine {
+        let line = RolloutLine::Turn(Box::new(TurnLine {
             timestamp: Utc::now(),
             turn: TurnRecord {
                 id: TurnId::new(),
@@ -395,9 +412,11 @@ mod tests {
                 request_thinking: None,
                 input_token_estimate: Some(42),
                 usage: None,
-                schema_version: 1,
+                session_context: None,
+                turn_context: None,
+                schema_version: 2,
             },
-        });
+        }));
 
         let json = serde_json::to_string(&line).expect("serialize");
         let restored: RolloutLine = serde_json::from_str(&json).expect("deserialize");

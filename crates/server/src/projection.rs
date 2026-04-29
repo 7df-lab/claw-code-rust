@@ -110,13 +110,13 @@ pub(crate) fn history_item_from_turn_item(item: &TurnItem) -> Option<SessionHist
         | TurnItem::Plan(TextItem { text })
         | TurnItem::WebSearch(TextItem { text })
         | TurnItem::ImageGeneration(TextItem { text })
-        | TurnItem::ContextCompaction(TextItem { text })
         | TurnItem::HookPrompt(TextItem { text }) => Some(SessionHistoryItem {
             tool_call_id: None,
             kind: SessionHistoryItemKind::Assistant,
             title: String::new(),
             body: text.clone(),
         }),
+        TurnItem::ContextCompaction(TextItem { .. }) => None,
         TurnItem::Reasoning(TextItem { text }) => Some(SessionHistoryItem {
             tool_call_id: None,
             kind: SessionHistoryItemKind::Reasoning,
@@ -177,6 +177,7 @@ impl SessionProjector for DefaultProjection {
             thinking: session.thinking.clone(),
             total_input_tokens: 0,
             total_output_tokens: 0,
+            prompt_token_estimate: 0,
             status,
         }
     }

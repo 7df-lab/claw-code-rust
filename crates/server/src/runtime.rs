@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use chrono::Utc;
+use futures::FutureExt;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
@@ -24,7 +26,14 @@ use devo_core::TurnItem;
 use devo_core::TurnStatus;
 use devo_core::TurnUsage;
 use devo_core::Worklog;
+use devo_core::history::compaction::CompactAction;
+use devo_core::history::compaction::CompactionConfig;
+use devo_core::history::compaction::CompactionKind;
+use devo_core::history::compaction::compact_history;
+use devo_core::history::summarizer::DefaultHistorySummarizer;
+use devo_core::message_to_response_items;
 use devo_core::query;
+use devo_core::{ResponseItem, TokenInfo};
 use devo_tools::ToolOrchestrator;
 
 use crate::ClientTransportKind;
@@ -46,6 +55,9 @@ use crate::ProtocolErrorCode;
 use crate::ServerCapabilities;
 use crate::ServerEvent;
 use crate::ServerRequestResolvedPayload;
+use crate::SessionCompactParams;
+use crate::SessionCompactResult;
+use crate::SessionCompactionFailedPayload;
 use crate::SessionEventPayload;
 use crate::SessionForkParams;
 use crate::SessionForkResult;
@@ -220,6 +232,7 @@ impl ServerRuntime {
             "session/title/update" => Some(self.handle_session_title_update(id?, params).await),
             "session/resume" => Some(self.handle_session_resume(connection_id, id?, params).await),
             "session/fork" => Some(self.handle_session_fork(connection_id, id?, params).await),
+            "session/compact" => Some(self.handle_session_compact(id?, params).await),
             "skills/list" => Some(self.handle_skills_list(id?, params).await),
             "skills/changed" => Some(self.handle_skills_changed(id?, params).await),
             "turn/start" => Some(self.handle_turn_start(id?, params).await),
@@ -334,6 +347,7 @@ impl ServerRuntime {
             thinking: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            prompt_token_estimate: 0,
             status: SessionRuntimeStatus::Idle,
         };
         if let Some(record) = &record
@@ -357,6 +371,8 @@ impl ServerRuntime {
                 latest_turn: None,
                 loaded_item_count: 0,
                 history_items: Vec::new(),
+                persisted_turn_items: Vec::new(),
+                latest_compaction_snapshot: None,
                 steering_queue,
                 active_task: None,
                 next_item_seq: 1,
@@ -635,10 +651,14 @@ impl ServerRuntime {
             thinking: source.summary.thinking.clone(),
             total_input_tokens: source_core_session.total_input_tokens,
             total_output_tokens: source_core_session.total_output_tokens,
+            prompt_token_estimate: source_core_session.prompt_token_estimate,
             status: SessionRuntimeStatus::Idle,
         };
         let mut core_session = self.deps.new_session_state(forked_id, fork_cwd);
         core_session.messages = source_core_session.messages.clone();
+        core_session.prompt_messages = source_core_session.prompt_messages.clone();
+        core_session.session_context = source_core_session.session_context.clone();
+        core_session.latest_turn_context = source_core_session.latest_turn_context.clone();
         core_session.turn_count = source_core_session.turn_count;
         core_session.total_input_tokens = source_core_session.total_input_tokens;
         core_session.total_output_tokens = source_core_session.total_output_tokens;
@@ -648,6 +668,8 @@ impl ServerRuntime {
         let latest_turn = source.latest_turn.clone();
         let loaded_item_count = source.loaded_item_count;
         let history_items = source.history_items.clone();
+        let latest_compaction_snapshot = source.latest_compaction_snapshot.clone();
+        let persisted_turn_items = source.persisted_turn_items.clone();
         drop(source_core_session);
         drop(source);
         let steering_queue = Arc::clone(&core_session.pending_user_prompts);
@@ -661,6 +683,8 @@ impl ServerRuntime {
                 latest_turn,
                 loaded_item_count,
                 history_items,
+                persisted_turn_items,
+                latest_compaction_snapshot,
                 steering_queue,
                 active_task: None,
                 next_item_seq: loaded_item_count + 1,
@@ -717,6 +741,369 @@ impl ServerRuntime {
             },
         })
         .expect("serialize session/fork response")
+    }
+
+    async fn handle_session_compact(
+        self: &Arc<Self>,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: SessionCompactParams = match serde_json::from_value(params) {
+            Ok(params) => params,
+            Err(error) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    format!("invalid session/compact params: {error}"),
+                );
+            }
+        };
+
+        let session_arc = match self.sessions.lock().await.get(&params.session_id).cloned() {
+            Some(session) => session,
+            None => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::SessionNotFound,
+                    "session does not exist",
+                );
+            }
+        };
+
+        let summary = {
+            let runtime_session = session_arc.lock().await;
+            runtime_session.summary.clone()
+        };
+
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(panic) =
+                AssertUnwindSafe(runtime.run_session_compaction(params.session_id, session_arc))
+                    .catch_unwind()
+                    .await
+            {
+                tracing::error!(
+                    session_id = %params.session_id,
+                    panic = ?panic,
+                    "session compaction task panicked"
+                );
+            }
+        });
+        tracing::info!(session_id = %params.session_id, "accepted async session compaction request");
+
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: SessionCompactResult { session: summary },
+        })
+        .expect("serialize session/compact response")
+    }
+
+    async fn run_session_compaction(
+        self: Arc<Self>,
+        session_id: SessionId,
+        session_arc: Arc<tokio::sync::Mutex<crate::execution::RuntimeSession>>,
+    ) {
+        tracing::info!(session_id = %session_id, "session compaction task started");
+        let started_summary = {
+            let runtime_session = session_arc.lock().await;
+            runtime_session.summary.clone()
+        };
+        self.broadcast_event(ServerEvent::SessionCompactionStarted(SessionEventPayload {
+            session: started_summary,
+        }))
+        .await;
+
+        let result = {
+            let runtime_session = session_arc.lock().await;
+            let core_session = runtime_session.core_session.lock().await;
+
+            let items: Vec<ResponseItem> = core_session
+                .messages
+                .iter()
+                .flat_map(|msg| message_to_response_items(msg.clone()))
+                .collect();
+
+            let token_info = TokenInfo {
+                input_tokens: core_session.total_input_tokens,
+                cached_input_tokens: core_session.total_cache_read_tokens,
+                output_tokens: core_session.total_output_tokens,
+            };
+
+            let model_slug = runtime_session
+                .summary
+                .model
+                .as_deref()
+                .unwrap_or(&self.deps.default_model);
+            let max_tokens = self
+                .deps
+                .model_catalog
+                .get(model_slug)
+                .and_then(|m| m.max_tokens.map(|t| t as usize))
+                .unwrap_or(4096);
+
+            let summarizer = DefaultHistorySummarizer::with_slug(
+                self.deps.provider.clone(),
+                model_slug,
+                max_tokens,
+            );
+            tracing::debug!(
+                session_id = %session_id,
+                model = %model_slug,
+                item_count = items.len(),
+                input_tokens = token_info.input_tokens,
+                cached_input_tokens = token_info.cached_input_tokens,
+                output_tokens = token_info.output_tokens,
+                "starting compaction summarization"
+            );
+
+            let config = CompactionConfig {
+                budget: core_session.config.token_budget.clone(),
+                kind: CompactionKind::Proactive,
+            };
+
+            compact_history(&items, &token_info, &summarizer, &config).await
+        };
+
+        match result {
+            Ok(CompactAction::Replaced(compacted_items)) => {
+                let mut runtime_session = session_arc.lock().await;
+                let preserved_item_ids = Self::preserved_item_ids_from_compacted(
+                    &runtime_session.persisted_turn_items,
+                    &compacted_items,
+                );
+                let new_messages: Vec<Message> = compacted_items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ResponseItem::Message(msg) => Some(msg.clone()),
+                        _ => None,
+                    })
+                    .collect();
+
+                {
+                    let mut core_session = runtime_session.core_session.lock().await;
+                    core_session.set_prompt_messages(new_messages);
+                    let compacted_total_input_tokens = core_session.total_input_tokens;
+                    let compacted_total_output_tokens = core_session.total_output_tokens;
+                    let compacted_prompt_token_estimate = core_session
+                        .prompt_source_messages()
+                        .iter()
+                        .map(|message| serde_json::to_string(message).map_or(0, |json| json.len()))
+                        .sum::<usize>()
+                        .div_ceil(4);
+                    core_session.prompt_token_estimate = compacted_prompt_token_estimate;
+                    drop(core_session);
+                    runtime_session.summary.total_input_tokens = compacted_total_input_tokens;
+                    runtime_session.summary.total_output_tokens = compacted_total_output_tokens;
+                    runtime_session.summary.prompt_token_estimate = compacted_prompt_token_estimate;
+                }
+
+                if let Some(turn_id) = runtime_session
+                    .latest_turn
+                    .as_ref()
+                    .map(|t| t.turn_id)
+                    .or_else(|| runtime_session.active_turn.as_ref().map(|t| t.turn_id))
+                {
+                    let item_id = devo_core::ItemId::new();
+                    let item_seq = runtime_session.next_item_seq;
+                    runtime_session.loaded_item_count += 1;
+                    runtime_session.next_item_seq += 1;
+
+                    let payload = serde_json::json!({ "title": "Context Compaction" });
+                    self.broadcast_event(ServerEvent::ItemStarted(ItemEventPayload {
+                        context: EventContext {
+                            session_id,
+                            turn_id: Some(turn_id),
+                            item_id: Some(item_id),
+                            seq: item_seq,
+                        },
+                        item: ItemEnvelope {
+                            item_id,
+                            item_kind: ItemKind::ContextCompaction,
+                            payload: payload.clone(),
+                        },
+                    }))
+                    .await;
+
+                    self.broadcast_event(ServerEvent::ItemCompleted(ItemEventPayload {
+                        context: EventContext {
+                            session_id,
+                            turn_id: Some(turn_id),
+                            item_id: Some(item_id),
+                            seq: item_seq,
+                        },
+                        item: ItemEnvelope {
+                            item_id,
+                            item_kind: ItemKind::ContextCompaction,
+                            payload,
+                        },
+                    }))
+                    .await;
+
+                    if let Some(record) = runtime_session.record.clone() {
+                        let summary_turn_item =
+                            Self::summary_turn_item_from_compacted(&compacted_items);
+                        runtime_session.latest_compaction_snapshot =
+                            Some(devo_core::CompactionSnapshotLine {
+                                timestamp: Utc::now(),
+                                session_id,
+                                turn_id,
+                                summary_item_id: item_id,
+                                preserved_item_ids: preserved_item_ids.clone(),
+                            });
+                        runtime_session.persisted_turn_items.push(
+                            crate::execution::PersistedTurnItem {
+                                item_id,
+                                turn_item: summary_turn_item.clone(),
+                            },
+                        );
+
+                        let item_record = crate::persistence::build_item_record(
+                            session_id,
+                            turn_id,
+                            item_id,
+                            item_seq,
+                            summary_turn_item,
+                            None,
+                            None,
+                        );
+                        if let Err(error) = self.rollout_store.append_item(&record, item_record) {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = %error,
+                                "failed to persist compaction summary item"
+                            );
+                        }
+                        if let Err(error) = self.rollout_store.append_compaction_snapshot(
+                            &record,
+                            runtime_session
+                                .latest_compaction_snapshot
+                                .clone()
+                                .expect("compaction snapshot should be set"),
+                        ) {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = %error,
+                                "failed to persist compaction snapshot"
+                            );
+                        }
+                    }
+                }
+
+                let summary = runtime_session.summary.clone();
+                tracing::info!(session_id = %session_id, "session compaction completed with replacement");
+                self.broadcast_event(ServerEvent::SessionCompactionCompleted(
+                    SessionEventPayload { session: summary },
+                ))
+                .await;
+            }
+            Ok(CompactAction::Skipped) => {
+                let runtime_session = session_arc.lock().await;
+                let summary = runtime_session.summary.clone();
+                tracing::info!(session_id = %session_id, "session compaction completed without replacement");
+                self.broadcast_event(ServerEvent::SessionCompactionCompleted(
+                    SessionEventPayload { session: summary },
+                ))
+                .await;
+            }
+            Err(error) => {
+                tracing::warn!(session_id = %session_id, error = %error, "session compaction failed");
+                self.broadcast_event(ServerEvent::SessionCompactionFailed(
+                    SessionCompactionFailedPayload {
+                        session_id,
+                        message: format!("compaction failed: {error}"),
+                    },
+                ))
+                .await;
+            }
+        }
+    }
+
+    fn preserved_item_ids_from_compacted(
+        persisted_turn_items: &[crate::execution::PersistedTurnItem],
+        compacted_items: &[ResponseItem],
+    ) -> Vec<ItemId> {
+        let normalized_persisted_items = persisted_turn_items
+            .iter()
+            .filter_map(|item| {
+                let response_item = match &item.turn_item {
+                    TurnItem::UserMessage(TextItem { text })
+                    | TurnItem::SteerInput(TextItem { text }) => {
+                        ResponseItem::Message(Message::user(text.clone()))
+                    }
+                    TurnItem::AgentMessage(TextItem { text })
+                    | TurnItem::Plan(TextItem { text })
+                    | TurnItem::WebSearch(TextItem { text })
+                    | TurnItem::ImageGeneration(TextItem { text })
+                    | TurnItem::ContextCompaction(TextItem { text })
+                    | TurnItem::HookPrompt(TextItem { text }) => {
+                        ResponseItem::Message(Message::assistant_text(text.clone()))
+                    }
+                    TurnItem::Reasoning(TextItem { text }) => {
+                        ResponseItem::Reason { text: text.clone() }
+                    }
+                    TurnItem::ToolCall(ToolCallItem {
+                        tool_call_id,
+                        tool_name,
+                        input,
+                    }) => ResponseItem::ToolCall {
+                        id: tool_call_id.clone(),
+                        name: tool_name.clone(),
+                        input: input.clone(),
+                    },
+                    TurnItem::ToolResult(ToolResultItem {
+                        tool_call_id,
+                        output,
+                        is_error,
+                        ..
+                    }) => ResponseItem::ToolCallOutput {
+                        tool_use_id: tool_call_id.clone(),
+                        content: match output {
+                            serde_json::Value::String(text) => text.clone(),
+                            other => other.to_string(),
+                        },
+                        is_error: *is_error,
+                    },
+                    TurnItem::ToolProgress(_)
+                    | TurnItem::ApprovalRequest(_)
+                    | TurnItem::ApprovalDecision(_) => return None,
+                };
+                (!response_item.is_reason()).then_some((item.item_id, response_item))
+            })
+            .collect::<Vec<_>>();
+        let preserved = compacted_items.get(1..).unwrap_or(&[]);
+        if preserved.is_empty() {
+            return Vec::new();
+        }
+        let preserved_len = preserved.len();
+        if normalized_persisted_items.len() < preserved_len {
+            return Vec::new();
+        }
+        let suffix =
+            &normalized_persisted_items[normalized_persisted_items.len() - preserved_len..];
+        if suffix.iter().map(|(_, item)| item).eq(preserved.iter()) {
+            suffix.iter().map(|(item_id, _)| *item_id).collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn summary_turn_item_from_compacted(compacted_items: &[ResponseItem]) -> TurnItem {
+        let summary_text = compacted_items
+            .first()
+            .and_then(|item| match item {
+                ResponseItem::Message(message) => {
+                    message.content.iter().find_map(|block| match block {
+                        devo_core::ContentBlock::Text { text } => Some(text.clone()),
+                        devo_core::ContentBlock::Reasoning { .. }
+                        | devo_core::ContentBlock::ToolUse { .. }
+                        | devo_core::ContentBlock::ToolResult { .. } => None,
+                    })
+                }
+                ResponseItem::Reason { text } => Some(text.clone()),
+                ResponseItem::ToolCall { .. } | ResponseItem::ToolCallOutput { .. } => None,
+            })
+            .unwrap_or_default();
+        TurnItem::ContextCompaction(TextItem { text: summary_text })
     }
 
     async fn handle_turn_start(
@@ -868,10 +1255,20 @@ impl ServerRuntime {
         };
         self.maybe_assign_provisional_title(params.session_id, &display_input)
             .await;
-        if let Some(record) = session_arc.lock().await.record.clone()
-            && let Err(error) = self
-                .rollout_store
-                .append_turn(&record, build_turn_record(&turn))
+        let (record, session_context, turn_context) = {
+            let session = session_arc.lock().await;
+            let core_session = session.core_session.lock().await;
+            (
+                session.record.clone(),
+                core_session.session_context.clone(),
+                core_session.latest_turn_context.clone(),
+            )
+        };
+        if let Some(record) = record
+            && let Err(error) = self.rollout_store.append_turn(
+                &record,
+                build_turn_record(&turn, session_context, turn_context),
+            )
         {
             return self.error_response(
                 request_id,
@@ -971,10 +1368,20 @@ impl ServerRuntime {
             }
             turn
         };
-        if let Some(record) = session_arc.lock().await.record.clone()
-            && let Err(error) = self
-                .rollout_store
-                .append_turn(&record, build_turn_record(&interrupted_turn))
+        let (record, session_context, turn_context) = {
+            let session = session_arc.lock().await;
+            let core_session = session.core_session.lock().await;
+            (
+                session.record.clone(),
+                core_session.session_context.clone(),
+                core_session.latest_turn_context.clone(),
+            )
+        };
+        if let Some(record) = record
+            && let Err(error) = self.rollout_store.append_turn(
+                &record,
+                build_turn_record(&interrupted_turn, session_context, turn_context),
+            )
         {
             return self.error_response(
                 request_id,
@@ -1501,6 +1908,7 @@ impl ServerRuntime {
             first_assistant_reply,
             session_total_input_tokens,
             session_total_output_tokens,
+            session_prompt_token_estimate,
         ) = {
             let core_session = {
                 let session = session_arc.lock().await;
@@ -1517,7 +1925,7 @@ impl ServerRuntime {
             let result = query(
                 &mut core_session,
                 &turn_config,
-                self.deps.provider.as_ref(),
+                self.deps.provider.clone(),
                 registry,
                 &orchestrator,
                 Some(callback),
@@ -1542,6 +1950,7 @@ impl ServerRuntime {
                 first_assistant_reply,
                 core_session.total_input_tokens,
                 core_session.total_output_tokens,
+                core_session.prompt_token_estimate,
             )
         };
         drop(event_tx);
@@ -1565,12 +1974,23 @@ impl ServerRuntime {
             session.summary.updated_at = Utc::now();
             session.summary.total_input_tokens = session_total_input_tokens;
             session.summary.total_output_tokens = session_total_output_tokens;
+            session.summary.prompt_token_estimate = session_prompt_token_estimate;
             final_turn
         };
-        if let Some(record) = session_arc.lock().await.record.clone()
-            && let Err(error) = self
-                .rollout_store
-                .append_turn(&record, build_turn_record(&final_turn))
+        let (record, session_context, turn_context) = {
+            let session = session_arc.lock().await;
+            let core_session = session.core_session.lock().await;
+            (
+                session.record.clone(),
+                core_session.session_context.clone(),
+                core_session.latest_turn_context.clone(),
+            )
+        };
+        if let Some(record) = record
+            && let Err(error) = self.rollout_store.append_turn(
+                &record,
+                build_turn_record(&final_turn, session_context, turn_context),
+            )
         {
             tracing::warn!(session_id = %session_id, error = %error, "failed to persist terminal turn line");
         }
@@ -1923,6 +2343,12 @@ impl ServerRuntime {
                 if let Some(history_item) = history_item_from_turn_item(&turn_item) {
                     session.history_items.push(history_item);
                 }
+                session
+                    .persisted_turn_items
+                    .push(crate::execution::PersistedTurnItem {
+                        item_id,
+                        turn_item: turn_item.clone(),
+                    });
                 session.record.clone()
             };
             if let Some(record) = record {

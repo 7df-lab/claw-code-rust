@@ -97,6 +97,42 @@ fn find_row_index(rows: &[String], needle: &str) -> Option<usize> {
     rows.iter().position(|row| row.contains(needle))
 }
 
+fn trim_trailing_blank_scrollback_lines(
+    mut lines: Vec<crate::history_cell::ScrollbackLine>,
+) -> Vec<crate::history_cell::ScrollbackLine> {
+    while lines.last().is_some_and(|line| {
+        line.line
+            .spans
+            .iter()
+            .all(|span| span.content.trim().is_empty())
+    }) {
+        lines.pop();
+    }
+    lines
+}
+
+#[test]
+fn resume_command_opens_loading_browser_immediately() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_app_event(AppEvent::Command(AppCommand::RunUserShellCommand {
+        command: "session list".to_string(),
+    }));
+
+    assert!(widget.is_resume_browser_open());
+
+    let rows = rendered_rows(&widget, 80, 12);
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("Loading saved sessions"))
+    );
+}
+
 #[test]
 fn thinking_entries_are_generated_from_model_capability_options() {
     let model = Model {
@@ -394,6 +430,7 @@ fn streamed_lines_stay_in_live_viewport_until_turn_finishes() {
         turn_count: 1,
         total_input_tokens: 0,
         total_output_tokens: 0,
+        prompt_token_estimate: 0,
     });
 
     let committed_after_finish = widget.drain_scrollback_lines(80);
@@ -424,9 +461,10 @@ fn committed_history_drains_to_scrollback_lines() {
         turn_count: 1,
         total_input_tokens: 0,
         total_output_tokens: 0,
+        prompt_token_estimate: 0,
     });
 
-    let committed_lines = widget.drain_scrollback_lines(80);
+    let committed_lines = trim_trailing_blank_scrollback_lines(widget.drain_scrollback_lines(80));
     assert!(committed_lines.is_empty());
 }
 
@@ -445,12 +483,12 @@ fn streamed_history_stays_empty_until_turn_finishes() {
         "first\nsecond\n".to_string(),
     ));
 
-    let committed_lines = widget.drain_scrollback_lines(80);
+    let committed_lines = trim_trailing_blank_scrollback_lines(widget.drain_scrollback_lines(80));
     assert!(committed_lines.is_empty());
 }
 
 #[test]
-fn batched_history_inserts_one_blank_line_between_cells() {
+fn batched_history_inserts_separator_and_trailing_blank_lines() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
         slug: "test-model".to_string(),
@@ -481,13 +519,13 @@ fn batched_history_inserts_one_blank_line_between_cells() {
         .count();
 
     assert_eq!(
-        1, blank_lines,
+        2, blank_lines,
         "unexpected blank lines: {committed_lines:?}"
     );
 }
 
 #[test]
-fn session_switch_restores_one_header_and_compact_history() {
+fn session_switch_restores_header_and_double_blank_line_before_user_input() {
     let initial_cwd = std::env::current_dir().expect("current directory is available");
     let resumed_cwd = initial_cwd.join("resumed");
     let model = Model {
@@ -511,6 +549,7 @@ fn session_switch_restores_one_header_and_compact_history() {
         thinking: None,
         total_input_tokens: 3,
         total_output_tokens: 5,
+        prompt_token_estimate: 3,
         history_items: vec![
             crate::events::TranscriptItem::new(
                 crate::events::TranscriptItemKind::User,
@@ -532,22 +571,25 @@ fn session_switch_restores_one_header_and_compact_history() {
         .flat_map(|line| line.line.spans.iter())
         .map(|span| span.content.as_ref())
         .collect::<String>();
-    let has_consecutive_blank_lines = committed_lines.windows(2).any(|window| {
-        window.iter().all(|line| {
+    let blank_line_indexes = committed_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
             line.line
                 .spans
                 .iter()
                 .all(|span| span.content.trim().is_empty())
+                .then_some(index)
         })
-    });
+        .collect::<Vec<_>>();
 
     assert_eq!(1, committed_text.matches("directory:").count());
     assert!(committed_text.contains("hello"));
     assert!(committed_text.contains("world"));
     assert!(!committed_text.contains("session 1 lingering line"));
     assert!(
-        !has_consecutive_blank_lines,
-        "unexpected consecutive blank lines: {committed_lines:?}"
+        blank_line_indexes.windows(2).any(|window| window == [6, 7]),
+        "expected two blank lines before restored user input: {committed_lines:?}"
     );
 }
 
@@ -567,6 +609,7 @@ fn turn_finished_does_not_add_completion_status_line_to_history() {
         turn_count: 1,
         total_input_tokens: 0,
         total_output_tokens: 0,
+        prompt_token_estimate: 0,
     });
 
     let committed_lines = widget.drain_scrollback_lines(80);
@@ -668,6 +711,7 @@ fn committed_assistant_markdown_does_not_double_wrap() {
         turn_count: 1,
         total_input_tokens: 0,
         total_output_tokens: 0,
+        prompt_token_estimate: 0,
     });
 
     let committed = widget
@@ -717,6 +761,7 @@ fn reasoning_text_commits_to_history_when_turn_finishes() {
         turn_count: 1,
         total_input_tokens: 0,
         total_output_tokens: 0,
+        prompt_token_estimate: 0,
     });
 
     let scrollback = widget.drain_scrollback_lines(80);
@@ -741,6 +786,7 @@ fn restored_reasoning_text_is_visible_in_transcript() {
         thinking: None,
         total_input_tokens: 0,
         total_output_tokens: 0,
+        prompt_token_estimate: 0,
         history_items: vec![crate::events::TranscriptItem::new(
             crate::events::TranscriptItemKind::Reasoning,
             "",
@@ -885,6 +931,7 @@ fn session_switch_updates_session_identity_projection() {
         thinking: None,
         total_input_tokens: 3,
         total_output_tokens: 5,
+        prompt_token_estimate: 3,
         history_items: Vec::new(),
         loaded_item_count: 0,
     });
@@ -918,6 +965,7 @@ fn new_session_prepared_resets_session_identity_projection() {
         thinking: None,
         total_input_tokens: 3,
         total_output_tokens: 5,
+        prompt_token_estimate: 3,
         history_items: Vec::new(),
         loaded_item_count: 0,
     });

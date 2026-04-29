@@ -6,13 +6,14 @@ use std::{
 
 use devo_safety::legacy_permissions::PermissionMode;
 
-use crate::{Message, Model, TokenBudget};
+use crate::{AgentsMdConfig, Message, Model, SessionContext, TokenBudget, TurnContext};
 
 /// Configuration for a session.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub token_budget: TokenBudget,
     pub permission_mode: PermissionMode,
+    pub agents_md: AgentsMdConfig,
 }
 
 impl Default for SessionConfig {
@@ -20,6 +21,7 @@ impl Default for SessionConfig {
         Self {
             token_budget: TokenBudget::default(),
             permission_mode: PermissionMode::AutoApprove,
+            agents_md: AgentsMdConfig::default(),
         }
     }
 }
@@ -39,12 +41,16 @@ pub struct SessionState {
     pub id: String,
     pub config: SessionConfig,
     pub messages: Vec<Message>,
+    pub prompt_messages: Option<Vec<Message>>,
+    pub session_context: Option<SessionContext>,
+    pub latest_turn_context: Option<TurnContext>,
     pub cwd: PathBuf,
     pub turn_count: usize,
     pub total_input_tokens: usize,
     pub total_output_tokens: usize,
     pub total_cache_creation_tokens: usize,
     pub total_cache_read_tokens: usize,
+    pub prompt_token_estimate: usize,
     /// Input tokens reported by the model for the most recent turn.
     /// Used by `TokenBudget::should_compact()` to decide when to compact.
     pub last_input_tokens: usize,
@@ -59,26 +65,54 @@ impl SessionState {
             id: uuid::Uuid::new_v4().to_string(),
             config,
             messages: Vec::new(),
+            prompt_messages: None,
+            session_context: None,
+            latest_turn_context: None,
             cwd,
             turn_count: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
             total_cache_creation_tokens: 0,
             total_cache_read_tokens: 0,
+            prompt_token_estimate: 0,
             last_input_tokens: 0,
             pending_user_prompts: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
     pub fn push_message(&mut self, msg: Message) {
-        self.messages.push(msg);
+        self.messages.push(msg.clone());
+        if let Some(prompt_messages) = self.prompt_messages.as_mut() {
+            prompt_messages.push(msg);
+        }
     }
 
     pub fn to_request_messages(&self) -> Vec<devo_protocol::RequestMessage> {
-        self.messages
+        self.prompt_source_messages()
             .iter()
             .map(|m| m.to_request_message())
             .collect()
+    }
+
+    pub fn prompt_source_messages(&self) -> &[Message] {
+        self.prompt_messages
+            .as_deref()
+            .unwrap_or(self.messages.as_slice())
+    }
+
+    pub fn set_prompt_messages(&mut self, messages: Vec<Message>) {
+        self.prompt_messages = Some(messages);
+    }
+
+    pub fn clear_prompt_messages(&mut self) {
+        self.prompt_messages = None;
+    }
+
+    pub fn insert_context_message(&mut self, msg: Message) {
+        crate::history::insert_context_diff_message(&mut self.messages, msg.clone());
+        if let Some(prompt_messages) = self.prompt_messages.as_mut() {
+            crate::history::insert_context_diff_message(prompt_messages, msg);
+        }
     }
 
     pub fn enqueue_user_prompt(&self, prompt: String) {
@@ -115,6 +149,8 @@ mod tests {
 
         assert!(!state.id.is_empty());
         assert!(state.messages.is_empty());
+        assert!(state.session_context.is_none());
+        assert!(state.latest_turn_context.is_none());
         assert_eq!(state.cwd, cwd);
         assert_eq!(state.turn_count, 0);
         assert_eq!(state.total_input_tokens, 0);

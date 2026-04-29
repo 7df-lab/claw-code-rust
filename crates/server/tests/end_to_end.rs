@@ -31,6 +31,8 @@ use devo_server::ServerRuntimeDependencies;
 use devo_tools::ToolRegistry;
 use futures::stream;
 
+const STDIO_SERVER_LINE_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn write_test_config(home_dir: &TempDir, listen: &[&str]) -> Result<()> {
     let config_dir = home_dir.path().join(".devo");
 
@@ -89,7 +91,8 @@ async fn stdio_server_process_supports_handshake_and_session_start() -> Result<(
 
     let test_cwd = home_dir.path().to_string_lossy().into_owned();
 
-    let mut child = Command::new(devo_binary_path()?)
+    let mut command = devo_command()?;
+    let mut child = command
         .arg("server")
         .arg("--transport")
         .arg("stdio")
@@ -204,6 +207,7 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
             Arc::new(PresetModelCatalog::default()),
             None,
             Box::new(FileSystemSkillCatalog::new(SkillsConfig::default())),
+            devo_core::AgentsMdConfig::default(),
         ),
     );
     let listen = vec![format!("ws://{bind_address}")];
@@ -385,6 +389,34 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
     Ok(())
 }
 
+fn devo_command() -> Result<Command> {
+    if let Some(binary_path) = std::env::var_os("CARGO_BIN_EXE_devo").map(PathBuf::from)
+        && binary_path.is_file()
+    {
+        return Ok(Command::new(binary_path));
+    }
+
+    let binary_path = devo_binary_path()?;
+    if binary_path.is_file() {
+        return Ok(Command::new(binary_path));
+    }
+
+    let cargo_path = std::env::var_os("CARGO")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("cargo"));
+    let mut command = Command::new(cargo_path);
+    command
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .arg("run")
+        .arg("--quiet")
+        .arg("-p")
+        .arg("devo-cli")
+        .arg("--bin")
+        .arg("devo")
+        .arg("--");
+    Ok(command)
+}
+
 fn devo_binary_path() -> Result<PathBuf> {
     let mut path = std::env::current_exe()?;
     path.pop();
@@ -475,7 +507,7 @@ async fn read_stdio_line(
     reader: &mut tokio::io::Lines<AsyncBufReader<tokio::process::ChildStdout>>,
     context: &str,
 ) -> Result<String> {
-    timeout(Duration::from_secs(5), reader.next_line())
+    timeout(STDIO_SERVER_LINE_TIMEOUT, reader.next_line())
         .await
         .with_context(|| format!("timed out waiting for {context}"))?
         .with_context(|| format!("failed reading {context} from child stdout"))?

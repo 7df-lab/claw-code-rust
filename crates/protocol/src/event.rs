@@ -76,6 +76,12 @@ pub struct SessionStatusChangedPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCompactionFailedPayload {
+    pub session_id: SessionId,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerRequestResolvedPayload {
     pub session_id: SessionId,
     pub request_id: SmolStr,
@@ -151,6 +157,9 @@ pub struct RequestUserInputPayload {
 pub enum ServerEvent {
     SessionStarted(SessionEventPayload),
     SessionTitleUpdated(SessionEventPayload),
+    SessionCompactionStarted(SessionEventPayload),
+    SessionCompactionCompleted(SessionEventPayload),
+    SessionCompactionFailed(SessionCompactionFailedPayload),
     SessionStatusChanged(SessionStatusChangedPayload),
     SessionArchived(SessionEventPayload),
     SessionUnarchived(SessionEventPayload),
@@ -176,9 +185,12 @@ impl ServerEvent {
         match self {
             Self::SessionStarted(payload)
             | Self::SessionTitleUpdated(payload)
+            | Self::SessionCompactionStarted(payload)
+            | Self::SessionCompactionCompleted(payload)
             | Self::SessionArchived(payload)
             | Self::SessionUnarchived(payload)
             | Self::SessionClosed(payload) => Some(payload.session.session_id),
+            Self::SessionCompactionFailed(payload) => Some(payload.session_id),
             Self::SessionStatusChanged(payload) => Some(payload.session_id),
             Self::TurnStarted(payload)
             | Self::TurnCompleted(payload)
@@ -199,6 +211,9 @@ impl ServerEvent {
         match self {
             Self::SessionStarted(_) => "session/started",
             Self::SessionTitleUpdated(_) => "session/title/updated",
+            Self::SessionCompactionStarted(_) => "session/compaction/started",
+            Self::SessionCompactionCompleted(_) => "session/compaction/completed",
+            Self::SessionCompactionFailed(_) => "session/compaction/failed",
             Self::SessionStatusChanged(_) => "session/status/changed",
             Self::SessionArchived(_) => "session/archived",
             Self::SessionUnarchived(_) => "session/unarchived",

@@ -83,6 +83,8 @@ use crate::tui::event_stream::TuiEventStream;
 use crate::tui::frame_requester::FrameRequester;
 #[cfg(unix)]
 use crate::tui::job_control::SuspendContext;
+use devo_utils::terminal_detection::Multiplexer;
+use devo_utils::terminal_detection::TerminalName;
 
 #[cfg(unix)]
 mod job_control;
@@ -98,6 +100,28 @@ pub(crate) const TARGET_FRAME_INTERVAL: Duration =
 /// A type alias for the terminal type used in this application
 pub type Terminal = CustomTerminal<CrosstermBackend<Stdout>>;
 
+fn keyboard_enhancement_supported() -> bool {
+    if !supports_keyboard_enhancement().unwrap_or(false) {
+        return false;
+    }
+
+    let info = devo_utils::terminal_detection::terminal_info();
+    if matches!(
+        info.multiplexer,
+        Some(Multiplexer::Tmux { .. } | Multiplexer::Zellij {})
+    ) {
+        return false;
+    }
+
+    matches!(
+        info.name,
+        TerminalName::Kitty
+            | TerminalName::WezTerm
+            | TerminalName::Alacritty
+            | TerminalName::Ghostty
+    )
+}
+
 pub fn set_modes() -> Result<()> {
     execute!(stdout(), EnableBracketedPaste)?;
 
@@ -108,14 +132,16 @@ pub fn set_modes() -> Result<()> {
     // Some terminals (notably legacy Windows consoles) do not support
     // keyboard enhancement flags. Attempt to enable them, but continue
     // gracefully if unsupported.
-    let _ = execute!(
-        stdout(),
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-        )
-    );
+    if keyboard_enhancement_supported() {
+        let _ = execute!(
+            stdout(),
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+            )
+        );
+    }
 
     let _ = execute!(stdout(), EnableFocusChange);
     Ok(())
@@ -165,7 +191,9 @@ impl Command for DisableAlternateScroll {
 
 fn restore_common(should_disable_raw_mode: bool) -> Result<()> {
     // Pop may fail on platforms that didn't support the push; ignore errors.
-    let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
+    if keyboard_enhancement_supported() {
+        let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
+    }
     execute!(stdout(), DisableBracketedPaste)?;
     let _ = execute!(stdout(), DisableFocusChange);
     let _ = execute!(stdout(), DisableAlternateScroll);
@@ -445,8 +473,11 @@ impl Tui {
                 size.height,
             ));
             let _ = self.terminal.clear();
+            self.terminal.invalidate_viewport();
         }
         self.alt_screen_active.store(true, Ordering::Relaxed);
+        self.needs_full_repaint.store(true, Ordering::Relaxed);
+        self.frame_requester.schedule_frame();
         Ok(())
     }
 
@@ -460,8 +491,11 @@ impl Tui {
         let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
         if let Some(saved) = self.alt_saved_viewport.take() {
             self.terminal.set_viewport_area(saved);
+            self.terminal.invalidate_viewport();
         }
         self.alt_screen_active.store(false, Ordering::Relaxed);
+        self.needs_full_repaint.store(true, Ordering::Relaxed);
+        self.frame_requester.schedule_frame();
         Ok(())
     }
 

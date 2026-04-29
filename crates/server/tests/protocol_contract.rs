@@ -215,7 +215,9 @@ fn session_projection_maps_core_record() {
         git_branch: None,
         git_origin_url: None,
         parent_session_id: None,
-        schema_version: 1,
+        session_context: None,
+        latest_turn_context: None,
+        schema_version: 2,
     };
 
     let projected = projection.project_session(&session, false, SessionRuntimeStatus::Idle);
@@ -239,7 +241,9 @@ fn turn_projection_preserves_turn_status_vocabulary() {
         request_thinking: None,
         input_token_estimate: None,
         usage: None,
-        schema_version: 1,
+        session_context: None,
+        turn_context: None,
+        schema_version: 2,
     };
 
     let projected = projection.project_turn(&turn);
@@ -307,10 +311,58 @@ fn session_title_updated_event_serializes_expected_kind() {
             thinking: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            prompt_token_estimate: 0,
             status: SessionRuntimeStatus::Idle,
         },
     });
 
     let json = serde_json::to_string(&event).expect("serialize");
     assert!(json.contains("session_title_updated"));
+}
+
+#[test]
+fn session_compaction_events_serialize_expected_kinds() {
+    let metadata = SessionMetadata {
+        session_id: SessionId::new(),
+        cwd: ".".into(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        title: Some("Compacting session".into()),
+        title_state: SessionTitleState::Unset,
+        ephemeral: false,
+        model: Some("claude-sonnet".into()),
+        thinking: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        prompt_token_estimate: 0,
+        status: SessionRuntimeStatus::Idle,
+    };
+
+    let started = ServerEvent::SessionCompactionStarted(devo_server::SessionEventPayload {
+        session: metadata.clone(),
+    });
+    let completed = ServerEvent::SessionCompactionCompleted(devo_server::SessionEventPayload {
+        session: metadata,
+    });
+    let failed =
+        ServerEvent::SessionCompactionFailed(devo_server::SessionCompactionFailedPayload {
+            session_id: SessionId::new(),
+            message: "boom".into(),
+        });
+
+    assert!(
+        serde_json::to_string(&started)
+            .expect("serialize")
+            .contains("session_compaction_started")
+    );
+    assert!(
+        serde_json::to_string(&completed)
+            .expect("serialize")
+            .contains("session_compaction_completed")
+    );
+    assert!(
+        serde_json::to_string(&failed)
+            .expect("serialize")
+            .contains("session_compaction_failed")
+    );
 }

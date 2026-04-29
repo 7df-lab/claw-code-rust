@@ -2,6 +2,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SlashCommand {
     Model,
+    Compact,
     Thinking,
     Resume,
     New,
@@ -16,6 +17,7 @@ impl SlashCommand {
     pub fn description(self) -> &'static str {
         match self {
             SlashCommand::Model => "choose the active model",
+            SlashCommand::Compact => "compact the current session context",
             SlashCommand::Thinking => "choose the active thinking mode",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::New => "start a new chat",
@@ -30,6 +32,7 @@ impl SlashCommand {
     pub fn command(self) -> &'static str {
         match self {
             SlashCommand::Model => "model",
+            SlashCommand::Compact => "compact",
             SlashCommand::Thinking => "thinking",
             SlashCommand::Resume => "resume",
             SlashCommand::New => "new",
@@ -46,7 +49,7 @@ impl SlashCommand {
     }
 
     pub fn available_during_task(self) -> bool {
-        !matches!(self, SlashCommand::Diff)
+        !matches!(self, SlashCommand::Diff | SlashCommand::Compact)
     }
 }
 
@@ -56,6 +59,7 @@ impl std::str::FromStr for SlashCommand {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "model" => Ok(Self::Model),
+            "compact" => Ok(Self::Compact),
             "thinking" => Ok(Self::Thinking),
             "resume" => Ok(Self::Resume),
             "new" => Ok(Self::New),
@@ -72,6 +76,7 @@ impl std::str::FromStr for SlashCommand {
 pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
     vec![
         ("model", SlashCommand::Model),
+        ("compact", SlashCommand::Compact),
         ("thinking", SlashCommand::Thinking),
         ("resume", SlashCommand::Resume),
         ("new", SlashCommand::New),

@@ -1,18 +1,13 @@
-use std::env;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use devo_protocol::ModelRequest;
-use devo_protocol::RequestContent;
-use devo_protocol::RequestMessage;
 use devo_protocol::ResolvedThinkingRequest;
 use devo_protocol::ResponseContent;
 use devo_protocol::ResponseExtra;
 use devo_protocol::SamplingControls;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
-use devo_protocol::UserInput;
 use futures::StreamExt;
 use tokio::time::sleep;
 use tracing::debug;
@@ -33,6 +28,38 @@ use crate::Model;
 use crate::Role;
 use crate::SessionState;
 use crate::TurnConfig;
+use crate::context::AgentsMdDiffFragment;
+use crate::context::AgentsMdManager;
+use crate::context::ContextualUserFragment;
+use crate::context::SessionContext;
+use crate::context::TurnContext;
+use crate::context::load_workspace_instructions;
+use crate::context::turn_aborted::TurnAborted;
+use crate::history::ContextView;
+use crate::history::History;
+use crate::history::TokenInfo;
+use crate::history::compaction::CompactAction;
+use crate::history::compaction::CompactionConfig;
+use crate::history::compaction::CompactionKind;
+use crate::history::compaction::compact_history;
+use crate::history::summarizer::DefaultHistorySummarizer;
+use crate::response_item::ResponseItem;
+use crate::response_item::message_to_response_items;
+
+fn estimate_request_prompt_tokens(request: &ModelRequest) -> usize {
+    let system_bytes = request.system.as_ref().map_or(0, String::len);
+    let message_bytes = request
+        .messages
+        .iter()
+        .map(|message| serde_json::to_string(message).map_or(0, |json| json.len()))
+        .sum::<usize>();
+    let tool_bytes = request
+        .tools
+        .as_ref()
+        .map(|tools| serde_json::to_string(tools).map_or(0, |json| json.len()))
+        .unwrap_or(0);
+    (system_bytes + message_bytes + tool_bytes).div_ceil(4)
+}
 
 /// Events emitted during a query for the caller (CLI/UI) to observe.
 #[derive(Debug, Clone)]
@@ -198,45 +225,65 @@ fn provider_retry_decision(
 // Session compaction
 // ---------------------------------------------------------------------------
 
-/// TODO: The context compact is weired, should compact with a seperate LLM invoke.
-/// Remove older messages to bring the conversation within budget.
-/// Returns how many messages were removed.
-fn compact_session(session: &mut SessionState) -> usize {
-    let msg_count = session.messages.len();
-    if msg_count <= 2 {
-        return 0;
+/// Compact session messages using LLM-backed summarization.
+///
+/// Converts session messages to ResponseItems, runs compact_history()
+/// with the history module's LLM summarizer, and converts the compacted
+/// items back to Messages.
+async fn summarize_and_compact(
+    session: &mut SessionState,
+    provider: &Arc<dyn ModelProviderSDK>,
+    model_slug: &str,
+    max_tokens: usize,
+) {
+    let items: Vec<ResponseItem> = session
+        .prompt_source_messages()
+        .iter()
+        .cloned()
+        .flat_map(message_to_response_items)
+        .collect();
+
+    let token_info = TokenInfo {
+        input_tokens: session.total_input_tokens,
+        cached_input_tokens: session.total_cache_read_tokens,
+        output_tokens: session.total_output_tokens,
+    };
+
+    let config = CompactionConfig {
+        budget: session.config.token_budget.clone(),
+        kind: CompactionKind::Proactive,
+    };
+
+    let summarizer =
+        DefaultHistorySummarizer::with_slug(Arc::clone(provider), model_slug, max_tokens);
+
+    match compact_history(&items, &token_info, &summarizer, &config).await {
+        Ok(CompactAction::Replaced(compacted_items)) => {
+            let new_messages: Vec<Message> = compacted_items
+                .into_iter()
+                .filter_map(|item| match item {
+                    ResponseItem::Message(msg) => Some(msg),
+                    _ => None,
+                })
+                .collect();
+            let removed = session
+                .prompt_source_messages()
+                .len()
+                .saturating_sub(new_messages.len());
+            info!("LLM compaction removed {removed} messages");
+            session.set_prompt_messages(new_messages);
+        }
+        Ok(CompactAction::Skipped) => {
+            debug!("LLM compaction skipped, nothing to compact");
+        }
+        Err(e) => {
+            warn!("LLM compaction failed: {e}");
+        }
     }
-
-    let input_budget = session.config.token_budget.input_budget();
-    let last_tokens = session.last_input_tokens;
-
-    if last_tokens == 0 {
-        // No token data yet drop the oldest half
-        let remove = msg_count / 2;
-        session.messages.drain(..remove);
-        return remove;
-    }
-
-    let avg_tokens_per_msg = last_tokens / msg_count;
-    if avg_tokens_per_msg == 0 {
-        let remove = msg_count / 2;
-        session.messages.drain(..remove);
-        return remove;
-    }
-
-    // Aim for 70 % of input budget so the next request has headroom
-    let target_tokens = (input_budget as f64 * 0.7) as usize;
-    let keep_count = (target_tokens / avg_tokens_per_msg).max(2).min(msg_count);
-    let remove_count = msg_count - keep_count;
-
-    if remove_count > 0 {
-        session.messages.drain(..remove_count);
-    }
-    remove_count
 }
 
 // ---------------------------------------------------------------------------
-// Micro compact (capability 1.4)
+// Micro compact
 // ---------------------------------------------------------------------------
 
 /// TODO: Now, the micro compact acts like a truncation, however, we already
@@ -258,170 +305,6 @@ fn micro_compact(content: String) -> String {
     } else {
         content
     }
-}
-
-// ---------------------------------------------------------------------------
-// Memory prefetch (capability 1.9)
-// ---------------------------------------------------------------------------
-
-/// TODO: Current the Agent automatically read the `AGENTS.md` / `CLAUDE.md` at
-/// current workspace root directory, for those md in sub-directory, what is
-/// the load policy ? not sure, should investigate and design.
-fn load_prompt_md(cwd: &std::path::Path) -> Option<String> {
-    let mut sections = Vec::new();
-
-    for file_name in ["AGENTS.md", "CLAUDE.md"] {
-        let path = cwd.join(file_name);
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let content = content.trim().to_string();
-            if !content.is_empty() {
-                sections.push(format!(
-                    "# {} instructions for {}\n\n <INSTRUCTIONS>\n{}\n</INSTRUCTIONS>",
-                    file_name,
-                    cwd.display(),
-                    content,
-                ));
-            }
-        }
-    }
-
-    if sections.is_empty() {
-        None
-    } else {
-        Some(sections.join("\n\n"))
-    }
-}
-
-fn build_system_prompt(base_instructions: &str) -> String {
-    let mut sections = Vec::new();
-    if !base_instructions.is_empty() {
-        sections.push(base_instructions.to_string());
-    }
-    sections.join("\n\n")
-}
-
-fn build_environment_context(cwd: &Path) -> String {
-    let shell = shell_basename();
-    let current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let timezone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
-
-    format!(
-        "<environment_context>\n  <cwd>{}</cwd>\n  <shell>{}</shell>\n  <current_date>{}</current_date>\n  <timezone>{}</timezone>\n</environment_context>",
-        cwd.display(),
-        shell,
-        current_date,
-        timezone,
-    )
-}
-
-pub fn default_shell_name() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        return default_shell_windows();
-    }
-
-    #[cfg(target_os = "android")]
-    {
-        return default_shell_android();
-    }
-
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    {
-        return default_shell_unix();
-    }
-
-    #[allow(unreachable_code)]
-    "sh".to_string()
-}
-
-#[cfg(target_os = "windows")]
-fn default_shell_windows() -> String {
-    if let Some(shell) = env::var_os("COMSPEC")
-        && !shell.is_empty()
-    {
-        return shell.to_string_lossy().into_owned();
-    }
-
-    "cmd.exe".to_string()
-}
-
-#[cfg(target_os = "android")]
-fn default_shell_android() -> String {
-    if let Some(shell) = env::var_os("SHELL") {
-        if !shell.is_empty() {
-            return shell.to_string_lossy().into_owned();
-        }
-    }
-
-    "/system/bin/sh".to_string()
-}
-
-#[cfg(any(
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "dragonfly"
-))]
-fn default_shell_unix() -> String {
-    if let Some(shell) = env::var_os("SHELL")
-        && !shell.is_empty()
-    {
-        return shell.to_string_lossy().into_owned();
-    }
-
-    "/bin/sh".to_string()
-}
-
-pub fn shell_basename() -> String {
-    let shell = default_shell_name();
-
-    Path::new(&shell)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or(shell.to_ascii_lowercase())
-}
-
-fn build_prefetched_user_inputs(cwd: &Path) -> Vec<UserInput> {
-    let mut inputs = Vec::new();
-    if let Some(text) = load_prompt_md(cwd) {
-        inputs.push(UserInput::Text {
-            text,
-            text_elements: Vec::new(),
-        });
-    }
-    inputs.push(UserInput::Text {
-        text: build_environment_context(cwd),
-        text_elements: Vec::new(),
-    });
-    inputs
-}
-
-fn append_prefetched_user_inputs(messages: &mut Vec<RequestMessage>, user_inputs: &[UserInput]) {
-    messages.splice(
-        0..0,
-        user_inputs.iter().filter_map(|input| match input {
-            UserInput::Text { text, .. } if !text.trim().is_empty() => Some(RequestMessage {
-                role: Role::User.as_str().to_string(),
-                content: vec![RequestContent::Text { text: text.clone() }],
-            }),
-            UserInput::Text { .. }
-            | UserInput::Image { .. }
-            | UserInput::LocalImage { .. }
-            | UserInput::Skill { .. }
-            | UserInput::Mention { .. }
-            | _ => None,
-        }),
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -451,7 +334,7 @@ const INITIAL_RETRY_BACKOFF_MS: u64 = 250;
 pub async fn query(
     session: &mut SessionState,
     turn_config: &TurnConfig,
-    provider: &dyn ModelProviderSDK,
+    provider: Arc<dyn ModelProviderSDK>,
     registry: Arc<ToolRegistry>,
     orchestrator: &ToolOrchestrator,
     on_event: Option<EventCallback>,
@@ -463,15 +346,65 @@ pub async fn query(
         }
     };
 
-    // Memory prefetch load workspace instructions and environment context once
-    // before the loop and inject them as leading user inputs.
-    let prefetched_user_inputs = build_prefetched_user_inputs(&session.cwd);
+    let agents_md_manager = AgentsMdManager::new(session.config.agents_md.clone());
+    let current_agents_snapshot = load_workspace_instructions(&session.cwd, &agents_md_manager);
+
+    if session.session_context.is_none() {
+        session.session_context = Some(SessionContext::capture(
+            &turn_config.model,
+            turn_config.thinking_selection.as_deref(),
+            &session.cwd,
+            current_agents_snapshot.clone(),
+        ));
+    }
+    let current_turn_context = TurnContext::capture(
+        &turn_config.model,
+        turn_config.thinking_selection.as_deref(),
+        &session.cwd,
+        current_agents_snapshot.clone(),
+    );
+    if let Some(diff) = session
+        .latest_turn_context
+        .as_ref()
+        .and_then(|previous| current_turn_context.diff_since(previous))
+    {
+        session.insert_context_message(diff.to_message());
+    }
+    if let Some(previous_turn_context) = session.latest_turn_context.as_ref()
+        && let Some(diff) = AgentsMdManager::diff(
+            previous_turn_context.observed_agents_snapshot.as_ref(),
+            current_agents_snapshot.as_ref(),
+        )
+    {
+        session.insert_context_message(AgentsMdDiffFragment::new(diff).to_message());
+    }
+    session.latest_turn_context = Some(current_turn_context);
+    let session_context = session
+        .session_context
+        .clone()
+        .expect("session context should be initialized");
+    let prefetched_user_inputs = session_context.prefix_user_inputs();
 
     let mut retry_count: usize = 0;
     let mut context_compacted = false;
 
     'query_loop: loop {
-        for prompt in session.drain_pending_user_prompts() {
+        let pending = session.drain_pending_user_prompts();
+
+        // If the user interrupted the assistant mid-turn, explain the interruption
+        if !pending.is_empty()
+            && session
+                .messages
+                .last()
+                .is_some_and(|m| m.role == Role::Assistant)
+        {
+            let fragment = TurnAborted::new(TurnAborted::INTERRUPTED_GUIDANCE);
+            if let ResponseItem::Message(msg) = fragment.to_response_item() {
+                session.push_message(msg);
+            }
+        }
+
+        for prompt in pending {
             session.push_message(Message::user(prompt));
         }
 
@@ -482,8 +415,14 @@ pub async fn query(
                 .token_budget
                 .should_compact(session.last_input_tokens)
         {
-            info!("token budget threshold exceeded compacting session");
-            compact_session(session);
+            info!("token budget threshold exceeded, running LLM compaction");
+            summarize_and_compact(
+                session,
+                &provider,
+                &turn_config.model.slug,
+                turn_config.model.max_tokens.unwrap_or(4096) as usize,
+            )
+            .await;
         }
 
         session.turn_count += 1;
@@ -497,9 +436,8 @@ pub async fn query(
         let _turn_guard = turn_span.enter();
         info!("starting turn");
 
-        // Build model request
-        // TODO: Should remove `memory_content` from system prompt
-        let system = build_system_prompt(&turn_config.model.base_instructions);
+        // Build model request from the session-locked prefix.
+        let system = session_context.build_system_prompt();
 
         // resolve thinking request parameter
         let ResolvedThinkingRequest {
@@ -512,8 +450,29 @@ pub async fn query(
             .model
             .resolve_thinking_selection(turn_config.thinking_selection.as_deref());
 
-        let mut messages = session.to_request_messages();
-        append_prefetched_user_inputs(&mut messages, &prefetched_user_inputs);
+        let history = History {
+            items: session
+                .prompt_source_messages()
+                .iter()
+                .cloned()
+                .flat_map(message_to_response_items)
+                .collect(),
+            token_info: TokenInfo::default(),
+            context: ContextView::new(
+                std::env::consts::OS,
+                session_context.environment.shell.clone(),
+                session_context.environment.timezone.clone(),
+                session_context.model.slug.clone(),
+                session_context
+                    .reasoning_effort
+                    .map(|effort| effort.label().to_lowercase()),
+                Some(session_context.persona.as_str().to_string()),
+                session_context.environment.current_date.clone(),
+                session_context.environment.cwd.display().to_string(),
+            ),
+        };
+        let messages = history
+            .for_prompt_with_prefix(&prefetched_user_inputs, &turn_config.model.input_modalities);
 
         let request = ModelRequest {
             model: request_model,
@@ -539,6 +498,7 @@ pub async fn query(
             reasoning_effort: request_reasoning_effort,
             extra_body,
         };
+        session.prompt_token_estimate = estimate_request_prompt_tokens(&request);
         debug!(
             messages = request.messages.len(),
             tools = request.tools.as_ref().map_or(0, Vec::len),
@@ -563,7 +523,13 @@ pub async fn query(
                 match provider_retry_decision(&e, &mut retry_count, &mut context_compacted) {
                     ProviderRetryDecision::CompactAndRetry => {
                         warn!("context_too_long - compacting and retrying");
-                        compact_session(session);
+                        summarize_and_compact(
+                            session,
+                            &provider,
+                            &turn_config.model.slug,
+                            turn_config.model.max_tokens.unwrap_or(4096) as usize,
+                        )
+                        .await;
                         session.turn_count -= 1;
                         continue;
                     }
@@ -662,7 +628,13 @@ pub async fn query(
                     match provider_retry_decision(&e, &mut retry_count, &mut context_compacted) {
                         ProviderRetryDecision::CompactAndRetry => {
                             warn!("context_too_long - compacting and retrying");
-                            compact_session(session);
+                            summarize_and_compact(
+                                session,
+                                &provider,
+                                &turn_config.model.slug,
+                                turn_config.model.max_tokens.unwrap_or(4096) as usize,
+                            )
+                            .await;
                             session.turn_count -= 1;
                             continue 'query_loop;
                         }
@@ -913,6 +885,7 @@ mod tests {
     use devo_protocol::StopReason;
     use devo_protocol::StreamEvent;
     use devo_protocol::Usage;
+    use devo_provider::ModelProviderSDK;
     use devo_safety::legacy_permissions::PermissionMode;
     use devo_tools::Tool;
     use devo_tools::ToolOrchestrator;
@@ -1183,9 +1156,10 @@ mod tests {
 
     #[tokio::test]
     async fn query_retries_transient_stream_creation_errors() {
-        let provider = TransientStreamCreateProvider {
+        let provider = Arc::new(TransientStreamCreateProvider {
             attempts: AtomicUsize::new(0),
-        };
+        });
+        let provider_sdk: Arc<dyn ModelProviderSDK> = provider.clone();
         let registry = Arc::new(ToolRegistry::new());
         let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
         let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
@@ -1197,7 +1171,7 @@ mod tests {
                 model: Model::default(),
                 thinking_selection: None,
             },
-            &provider,
+            provider_sdk,
             registry,
             &orchestrator,
             None,
@@ -1214,9 +1188,10 @@ mod tests {
 
     #[tokio::test]
     async fn query_retries_transient_stream_event_errors_before_content() {
-        let provider = TransientStreamEventProvider {
+        let provider = Arc::new(TransientStreamEventProvider {
             attempts: AtomicUsize::new(0),
-        };
+        });
+        let provider_sdk: Arc<dyn ModelProviderSDK> = provider.clone();
         let registry = Arc::new(ToolRegistry::new());
         let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
         let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
@@ -1228,7 +1203,7 @@ mod tests {
                 model: Model::default(),
                 thinking_selection: None,
             },
-            &provider,
+            provider_sdk,
             registry,
             &orchestrator,
             None,
@@ -1265,9 +1240,9 @@ mod tests {
                 model: Model::default(),
                 thinking_selection: None,
             },
-            &SingleToolUseProvider {
+            Arc::new(SingleToolUseProvider {
                 requests: AtomicUsize::new(0),
-            },
+            }),
             registry,
             &orchestrator,
             None,
@@ -1308,9 +1283,9 @@ mod tests {
     #[tokio::test]
     async fn query_resolves_model_variant_thinking_before_building_request() {
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let provider = CapturingProvider {
+        let provider: Arc<dyn ModelProviderSDK> = Arc::new(CapturingProvider {
             requests: Arc::clone(&requests),
-        };
+        });
         let registry = Arc::new(ToolRegistry::new());
         let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
         let model = Model {
@@ -1363,7 +1338,7 @@ mod tests {
                 model,
                 thinking_selection: Some("enabled".into()),
             },
-            &provider,
+            Arc::clone(&provider),
             registry,
             &orchestrator,
             None,
@@ -1375,6 +1350,191 @@ mod tests {
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].model, "kimi-k2.5-thinking");
         assert_eq!(captured[0].thinking, None);
+    }
+
+    #[tokio::test]
+    async fn query_locks_system_prompt_and_environment_prefix_per_session() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn ModelProviderSDK> = Arc::new(CapturingProvider {
+            requests: Arc::clone(&requests),
+        });
+        let registry = Arc::new(ToolRegistry::new());
+        let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
+        let temp_root =
+            std::env::temp_dir().join(format!("devo-query-lock-{}", uuid::Uuid::new_v4()));
+        let second_cwd = temp_root.join("nested");
+        let first_model = Model {
+            slug: "model-a".into(),
+            base_instructions: "base-a".into(),
+            ..Model::default()
+        };
+        let second_model = Model {
+            slug: "model-b".into(),
+            base_instructions: "base-b".into(),
+            ..Model::default()
+        };
+
+        let mut session = SessionState::new(SessionConfig::default(), temp_root.clone());
+        session.push_message(Message::user("hello"));
+
+        query(
+            &mut session,
+            &TurnConfig {
+                model: first_model,
+                thinking_selection: None,
+            },
+            Arc::clone(&provider),
+            Arc::clone(&registry),
+            &orchestrator,
+            None,
+        )
+        .await
+        .expect("first query should succeed");
+
+        session.cwd = second_cwd;
+        session.push_message(Message::user("follow up"));
+
+        query(
+            &mut session,
+            &TurnConfig {
+                model: second_model,
+                thinking_selection: Some("enabled".into()),
+            },
+            Arc::clone(&provider),
+            registry,
+            &orchestrator,
+            None,
+        )
+        .await
+        .expect("second query should succeed");
+
+        let captured = requests.lock().expect("lock requests");
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].system.as_deref(), Some("base-a"));
+        assert_eq!(captured[1].system.as_deref(), Some("base-a"));
+
+        let first_prefix = &captured[0].messages[0];
+        let second_prefix = &captured[1].messages[0];
+        assert_eq!(first_prefix.role, second_prefix.role);
+        let devo_protocol::RequestContent::Text { text: first_text } = &first_prefix.content[0]
+        else {
+            panic!("expected text prefix");
+        };
+        let devo_protocol::RequestContent::Text { text: second_text } = &second_prefix.content[0]
+        else {
+            panic!("expected text prefix");
+        };
+        assert_eq!(first_text, second_text);
+    }
+
+    #[tokio::test]
+    async fn query_inserts_context_diff_before_changed_turn_input() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn ModelProviderSDK> = Arc::new(CapturingProvider {
+            requests: Arc::clone(&requests),
+        });
+        let registry = Arc::new(ToolRegistry::new());
+        let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
+        let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+        let first_model = Model {
+            slug: "model-a".into(),
+            ..Model::default()
+        };
+        let second_model = Model {
+            slug: "model-b".into(),
+            ..Model::default()
+        };
+
+        session.push_message(Message::user("hello"));
+        query(
+            &mut session,
+            &TurnConfig {
+                model: first_model,
+                thinking_selection: None,
+            },
+            Arc::clone(&provider),
+            Arc::clone(&registry),
+            &orchestrator,
+            None,
+        )
+        .await
+        .expect("first query should succeed");
+
+        session.push_message(Message::user("follow up"));
+        query(
+            &mut session,
+            &TurnConfig {
+                model: second_model,
+                thinking_selection: Some("enabled".into()),
+            },
+            Arc::clone(&provider),
+            registry,
+            &orchestrator,
+            None,
+        )
+        .await
+        .expect("second query should succeed");
+
+        let diff_message = &session.messages[session.messages.len() - 3];
+        let user_message = &session.messages[session.messages.len() - 2];
+        assert_eq!(user_message, &Message::user("follow up"));
+        let ContentBlock::Text { text } = &diff_message.content[0] else {
+            panic!("expected text diff message");
+        };
+        assert!(text.contains("<context_changes>"));
+        assert!(text.contains("model: model-a -> model-b"));
+    }
+
+    #[tokio::test]
+    async fn query_drops_orphaned_tool_calls_from_prompt_history() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn ModelProviderSDK> = Arc::new(CapturingProvider {
+            requests: Arc::clone(&requests),
+        });
+        let registry = Arc::new(ToolRegistry::new());
+        let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
+        let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+
+        session.push_message(Message::user("first"));
+        session.push_message(Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "Calling tool".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "bash".into(),
+                    input: json!({ "cmd": "pwd" }),
+                },
+            ],
+        });
+        session.push_message(Message::user("follow up"));
+
+        query(
+            &mut session,
+            &TurnConfig {
+                model: Model::default(),
+                thinking_selection: None,
+            },
+            provider,
+            registry,
+            &orchestrator,
+            None,
+        )
+        .await
+        .expect("query should succeed");
+
+        let captured = requests.lock().expect("lock requests");
+        assert_eq!(captured.len(), 1);
+        assert!(
+            captured[0]
+                .messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .all(|content| !matches!(content, devo_protocol::RequestContent::ToolUse { .. })),
+            "expected orphaned tool calls to be removed from prompt history"
+        );
     }
 
     #[tokio::test]
@@ -1463,7 +1623,7 @@ mod tests {
                 model: Model::default(),
                 thinking_selection: None,
             },
-            &ReasoningProvider,
+            Arc::new(ReasoningProvider),
             registry,
             &orchestrator,
             Some(callback),
@@ -1502,9 +1662,9 @@ mod tests {
     #[tokio::test]
     async fn query_disables_openai_thinking_when_reasoning_context_is_missing() {
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let provider = OpenAiCapturingProvider {
+        let provider: Arc<dyn ModelProviderSDK> = Arc::new(OpenAiCapturingProvider {
             requests: Arc::clone(&requests),
-        };
+        });
         let registry = Arc::new(ToolRegistry::new());
         let orchestrator = ToolOrchestrator::new(Arc::clone(&registry));
         let model = Model {
@@ -1524,7 +1684,7 @@ mod tests {
                 model,
                 thinking_selection: Some("enabled".into()),
             },
-            &provider,
+            Arc::clone(&provider),
             registry,
             &orchestrator,
             None,

@@ -48,6 +48,8 @@ pub struct OpenAIProvider {
 
 impl OpenAIProvider {
     pub fn new(base_url: impl Into<String>) -> Self {
+        // TODO: Should we pertain the env `DEV_REQUEST_TIMEOUT` here ?
+        //       maybe move to config toml is a good choice.
         let timeout_secs = std::env::var("DEVO_REQUEST_TIMEOUT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())

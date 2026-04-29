@@ -391,6 +391,21 @@ fn handle_worker_event(
         WorkerEvent::ProviderValidationFailed { .. } => {
             loop_state.pending_onboarding = None;
         }
+        WorkerEvent::SessionCompactionStarted => {
+            loop_state.busy = true;
+        }
+        WorkerEvent::SessionCompacted {
+            total_input_tokens: next_total_input_tokens,
+            total_output_tokens: next_total_output_tokens,
+            prompt_token_estimate: _,
+        } => {
+            loop_state.busy = false;
+            loop_state.total_input_tokens = *next_total_input_tokens;
+            loop_state.total_output_tokens = *next_total_output_tokens;
+        }
+        WorkerEvent::SessionCompactionFailed { .. } => {
+            loop_state.busy = false;
+        }
         WorkerEvent::SessionSwitched { .. } => {
             loop_state.session_switch_pending = false;
         }
@@ -508,6 +523,9 @@ fn handle_app_command(
             } else {
                 chat_widget.set_status_message(format!("Unsupported command: {}", command));
             }
+        }
+        AppCommand::Compact => {
+            worker.compact_session()?;
         }
         AppCommand::BrowseInputHistory { direction } => {
             worker.browse_input_history(*direction)?;

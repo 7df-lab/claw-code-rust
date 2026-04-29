@@ -1,24 +1,40 @@
-use std::{
-    collections::VecDeque,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex as StdMutex},
-};
+use std::collections::VecDeque;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
-use devo_core::{
-    Model, ModelCatalog, ResolvedSkill, SessionConfig, SessionId, SessionRecord, SessionState,
-    SkillCatalog, SkillError, SkillId, TurnConfig, default_base_instructions,
-    normalize_canonical_path,
-};
+use devo_core::AgentsMdConfig;
+use devo_core::Model;
+use devo_core::ModelCatalog;
+use devo_core::ResolvedSkill;
+use devo_core::SessionConfig;
+use devo_core::SessionId;
+use devo_core::SessionRecord;
+use devo_core::SessionState;
+use devo_core::SkillCatalog;
+use devo_core::SkillError;
+use devo_core::SkillId;
+use devo_core::TurnConfig;
+use devo_core::default_base_instructions;
+use devo_core::normalize_canonical_path;
 use devo_provider::ModelProviderSDK;
 use devo_tools::ToolRegistry;
 
-use crate::{
-    InputItem, SkillRecord,
-    session::{SessionHistoryItem, SessionMetadata},
-    turn::TurnMetadata,
-};
+use crate::InputItem;
+use crate::SkillRecord;
+use crate::session::SessionHistoryItem;
+use crate::session::SessionMetadata;
+use crate::turn::TurnMetadata;
+
+#[derive(Debug, Clone)]
+pub(crate) struct PersistedTurnItem {
+    pub(crate) item_id: devo_core::ItemId,
+    pub(crate) turn_item: devo_core::TurnItem,
+}
 
 /// Shared server-owned runtime dependencies used by live turn execution.
 pub struct ServerRuntimeDependencies {
@@ -34,6 +50,8 @@ pub struct ServerRuntimeDependencies {
     pub(crate) skill_workspace_root: Option<PathBuf>,
     /// Skill catalog for discovering and loading skills.
     pub(crate) skill_catalog: StdMutex<Box<dyn SkillCatalog + Send>>,
+    /// AGENTS.md discovery configuration applied to new sessions.
+    pub(crate) agents_md: AgentsMdConfig,
 }
 
 impl ServerRuntimeDependencies {
@@ -45,6 +63,7 @@ impl ServerRuntimeDependencies {
         model_catalog: Arc<dyn ModelCatalog>,
         skill_workspace_root: Option<PathBuf>,
         skill_catalog: Box<dyn SkillCatalog + Send>,
+        agents_md: AgentsMdConfig,
     ) -> Self {
         Self {
             provider,
@@ -53,12 +72,19 @@ impl ServerRuntimeDependencies {
             model_catalog,
             skill_workspace_root,
             skill_catalog: StdMutex::new(skill_catalog),
+            agents_md,
         }
     }
 
     /// Creates an initial core session state for a newly created server session.
     pub(crate) fn new_session_state(&self, session_id: SessionId, cwd: PathBuf) -> SessionState {
-        let mut state = SessionState::new(SessionConfig::default(), cwd);
+        let mut state = SessionState::new(
+            SessionConfig {
+                agents_md: self.agents_md.clone(),
+                ..SessionConfig::default()
+            },
+            cwd,
+        );
         state.id = session_id.to_string();
         state
     }
@@ -195,6 +221,10 @@ pub(crate) struct RuntimeSession {
     pub(crate) loaded_item_count: u64,
     /// Replay-friendly ordered history used by interactive clients during session resume.
     pub(crate) history_items: Vec<SessionHistoryItem>,
+    /// Canonical persisted turn items in prompt order for replay/compaction bookkeeping.
+    pub(crate) persisted_turn_items: Vec<PersistedTurnItem>,
+    /// Latest compaction snapshot used to rebuild the model-facing prompt view.
+    pub(crate) latest_compaction_snapshot: Option<devo_core::CompactionSnapshotLine>,
     /// Pending same-turn steering inputs.
     pub(crate) steering_queue: Arc<StdMutex<VecDeque<String>>>,
     /// Live query task for the active turn.

@@ -25,6 +25,7 @@ use devo_server::ItemEnvelope;
 use devo_server::ItemEventPayload;
 use devo_server::ItemKind;
 use devo_server::ServerEvent;
+use devo_server::SessionCompactParams;
 use devo_server::SessionHistoryItem;
 use devo_server::SessionHistoryItemKind;
 use devo_server::SessionListParams;
@@ -100,6 +101,8 @@ enum OperationCommand {
     ListSessions,
     /// Request a skills list from the server.
     ListSkills,
+    /// Request proactive compaction for the active session.
+    CompactSession,
     /// Clear the active session so the next prompt starts a fresh one lazily.
     StartNewSession,
     /// Switch the active session to a persisted session identifier.
@@ -208,6 +211,13 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
+    /// Requests proactive compaction for the current active session.
+    pub(crate) fn compact_session(&self) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::CompactSession)
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
     /// Clears the active session so the next submitted prompt starts a fresh one lazily.
     pub(crate) fn start_new_session(&self) -> Result<()> {
         self.command_tx
@@ -291,6 +301,7 @@ async fn run_worker(
             turn_count: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            prompt_token_estimate: 0,
         });
     }
 }
@@ -354,6 +365,7 @@ async fn run_worker_inner(
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
+                                    prompt_token_estimate: total_input_tokens,
                                 });
                             }
                         }
@@ -458,6 +470,7 @@ async fn run_worker_inner(
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
+                                    prompt_token_estimate: total_input_tokens,
                                 });
                             }
                             Err(_) => {
@@ -466,6 +479,7 @@ async fn run_worker_inner(
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
+                                    prompt_token_estimate: total_input_tokens,
                                 });
                             }
                         }
@@ -489,6 +503,7 @@ async fn run_worker_inner(
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
+                                    prompt_token_estimate: total_input_tokens,
                                 });
                             }
                             Err(_) => {
@@ -497,6 +512,54 @@ async fn run_worker_inner(
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
+                                    prompt_token_estimate: total_input_tokens,
+                                });
+                            }
+                        }
+                    }
+                    Some(OperationCommand::CompactSession) => {
+                        let Some(active_session_id) = session_id else {
+                            let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                turn_count,
+                                total_input_tokens,
+                                total_output_tokens,
+                                prompt_token_estimate: total_input_tokens,
+                            });
+                            continue;
+                        };
+                        if active_turn_id.is_some() {
+                            let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                message: "cannot compact while a turn is in progress".to_string(),
+                                turn_count,
+                                total_input_tokens,
+                                total_output_tokens,
+                                prompt_token_estimate: total_input_tokens,
+                            });
+                            continue;
+                        }
+                        match client
+                            .session_compact(SessionCompactParams {
+                                session_id: active_session_id,
+                            })
+                            .await
+                        {
+                            Ok(result) => {
+                                model = result
+                                    .session
+                                    .model
+                                    .clone()
+                                    .unwrap_or(model);
+                                thinking_selection = result.session.thinking.clone();
+                                let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
+                            }
+                            Err(error) => {
+                                let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                    message: error.to_string(),
+                                    turn_count,
+                                    total_input_tokens,
+                                    total_output_tokens,
+                                    prompt_token_estimate: total_input_tokens,
                                 });
                             }
                         }
@@ -532,6 +595,7 @@ async fn run_worker_inner(
                                     thinking: result.session.thinking.clone(),
                                     total_input_tokens: result.session.total_input_tokens,
                                     total_output_tokens: result.session.total_output_tokens,
+                                    prompt_token_estimate: result.session.prompt_token_estimate,
                                     history_items: project_history_items(&result.history_items),
                                     loaded_item_count: result.loaded_item_count,
                                 });
@@ -550,6 +614,7 @@ async fn run_worker_inner(
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
+                                    prompt_token_estimate: total_input_tokens,
                                 });
                             }
                         }
@@ -561,6 +626,7 @@ async fn run_worker_inner(
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
+                                prompt_token_estimate: total_input_tokens,
                             });
                             continue;
                         };
@@ -586,6 +652,7 @@ async fn run_worker_inner(
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
+                                    prompt_token_estimate: total_input_tokens,
                                 });
                             }
                         }
@@ -605,6 +672,7 @@ async fn run_worker_inner(
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
+                                    prompt_token_estimate: total_input_tokens,
                                 });
                             }
                     }
@@ -659,6 +727,7 @@ async fn run_worker_inner(
                                         turn_count,
                                         total_input_tokens,
                                         total_output_tokens,
+                                        prompt_token_estimate: total_input_tokens,
                                     });
                                     None
                                 }
@@ -739,6 +808,12 @@ async fn run_worker_inner(
                                             turn_count,
                                             total_input_tokens,
                                             total_output_tokens,
+                                            prompt_token_estimate: payload
+                                                .turn
+                                                .usage
+                                                .as_ref()
+                                                .map(|usage| usage.input_tokens as usize)
+                                                .unwrap_or(total_input_tokens),
                                         });
                                         latest_completed_agent_message = None;
                                     }
@@ -769,6 +844,11 @@ async fn run_worker_inner(
                                         turn_count,
                                         total_input_tokens,
                                         total_output_tokens,
+                                        prompt_token_estimate: turn
+                                            .usage
+                                            .as_ref()
+                                            .map(|usage| usage.input_tokens as usize)
+                                            .unwrap_or(total_input_tokens),
                                     });
                                 }
                             }
@@ -780,6 +860,27 @@ async fn run_worker_inner(
                                             title,
                                         });
                                     }
+                            }
+                            "session/compaction/started" => {
+                                let _ = event;
+                            }
+                            "session/compaction/completed" => {
+                                if let ServerEvent::SessionCompactionCompleted(payload) = event {
+                                    total_input_tokens = payload.session.total_input_tokens;
+                                    total_output_tokens = payload.session.total_output_tokens;
+                                    let _ = event_tx.send(WorkerEvent::SessionCompacted {
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        prompt_token_estimate: payload.session.prompt_token_estimate,
+                                    });
+                                }
+                            }
+                            "session/compaction/failed" => {
+                                if let ServerEvent::SessionCompactionFailed(payload) = event {
+                                    let _ = event_tx.send(WorkerEvent::SessionCompactionFailed {
+                                        message: payload.message,
+                                    });
+                                }
                             }
                             _ => {}
                         }
@@ -1301,6 +1402,7 @@ mod tests {
             thinking: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            prompt_token_estimate: 0,
             status: SessionRuntimeStatus::Idle,
         };
         let entry = SessionListEntry {
@@ -1331,6 +1433,7 @@ mod tests {
             thinking: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            prompt_token_estimate: 0,
             status: SessionRuntimeStatus::Idle,
         };
         let entry = SessionListEntry {

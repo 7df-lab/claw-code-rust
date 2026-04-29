@@ -1,10 +1,12 @@
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use tracing::{info, warn};
 
 use devo_safety::legacy_permissions::{PermissionDecision, PermissionRequest, ResourceKind};
 
-use crate::invocation::{ToolCallId, ToolInvocation, ToolName};
+use crate::invocation::{ToolInvocation, ToolName, ToolCallId};
 use crate::{ToolContext, ToolOutput, ToolRegistry};
 
 /// A pending tool call extracted from the model response.
@@ -23,26 +25,20 @@ pub struct ToolCallResult {
 }
 
 /// Orchestrates the execution of tool calls.
-///
-/// Corresponds to Claude Code's `toolOrchestration.ts` and
-/// `toolExecution.ts`. Handles:
-/// - Looking up tools in the registry
-/// - Permission checks before execution
-/// - Serial vs concurrent dispatch
-/// - Error wrapping
+#[allow(dead_code)]
 pub struct ToolOrchestrator {
     registry: Arc<ToolRegistry>,
 }
 
+#[allow(dead_code)]
 impl ToolOrchestrator {
+    #[allow(dead_code)]
     pub fn new(registry: Arc<ToolRegistry>) -> Self {
         Self { registry }
     }
 
     /// Execute a batch of tool calls.
-    ///
-    /// Read-only tools that support concurrency are executed in parallel.
-    /// Mutating tools are executed sequentially to avoid conflicts.
+    #[allow(dead_code)]
     pub async fn execute_batch(
         &self,
         calls: &[ToolCall],

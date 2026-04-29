@@ -46,6 +46,9 @@ fn resolve_shell(shell_override: Option<&str>, login: bool) -> ShellSpec {
     }
 }
 
+/// Max time (in seconds) a process can live without any write_stdin interaction.
+const IDLE_TIMEOUT_SECS: u64 = 1800;
+
 pub struct UnifiedExecProcess {
     exit_code: Arc<std::sync::atomic::AtomicI32>,
     shutdown_flag: Arc<AtomicBool>,
@@ -104,8 +107,9 @@ impl UnifiedExecProcess {
 
         let (tokio_tx, mut tokio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
-        // Reader thread: blocking PTY read -> tokio::mpsc
+        // Reader thread: blocking PTY read -> tokio::mpsc, with panic protection
         std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut buf = [0u8; PTY_READ_BUF];
             loop {
                 match std::io::Read::read(&mut reader, &mut buf) {
@@ -118,19 +122,29 @@ impl UnifiedExecProcess {
                     Err(_) => break,
                 }
             }
+            }));
+            if result.is_err() {
+                // Reader thread panicked - log and continue (process will be detected as exited)
+            }
         });
 
         let exit_code = Arc::new(std::sync::atomic::AtomicI32::new(-1));
         let exit_code_clone = Arc::clone(&exit_code);
         let output_tx_clone = output_tx.clone();
 
-        // Background task: forward tokio::mpsc -> broadcast, handle shutdown/exit
+        let idle_timeout = Duration::from_secs(IDLE_TIMEOUT_SECS);
+        let started_at = std::time::Instant::now();
+
+        // Background task: forward tokio::mpsc -> broadcast, handle shutdown/exit/idle timeout
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = async {
                         while !shutdown_flag_clone.load(Ordering::SeqCst) {
-                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            if started_at.elapsed() >= idle_timeout {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                     } => {
                         break;
@@ -210,9 +224,6 @@ impl UnifiedExecProcess {
     }
 }
 
-unsafe impl Send for UnifiedExecProcess {}
-unsafe impl Sync for UnifiedExecProcess {}
-
 impl Drop for UnifiedExecProcess {
     fn drop(&mut self) {
         self.terminate();
@@ -265,8 +276,7 @@ pub async fn collect_output(
         sleep(Duration::from_millis(10)).await;
     }
 
-    let bytes = buf.collect();
-    let mut output = String::from_utf8_lossy(&bytes).into_owned();
+    let mut output = buf.collect();
 
     let max_chars = max_output_tokens.saturating_mul(4);
     let truncated = output.len() > max_chars;

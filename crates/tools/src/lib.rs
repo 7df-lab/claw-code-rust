@@ -12,7 +12,7 @@ pub mod events;
 pub mod tool_spec;
 pub mod unified_exec;
 
-// Existing modules (tools, deprecated)
+// Existing modules (tools)
 mod apply_patch;
 mod bash;
 mod context;
@@ -25,12 +25,8 @@ mod orchestrator;
 mod plan;
 mod question;
 mod read;
-#[allow(dead_code)]
-mod runtime;
 mod shell_exec;
 mod skill;
-#[allow(dead_code)]
-mod spec;
 mod task;
 mod todo;
 mod tool;
@@ -41,7 +37,7 @@ mod websearch;
 pub use errors::*;
 pub use events::*;
 pub use handler_kind::ToolHandlerKind;
-pub use invocation::*;
+pub use invocation::{FunctionToolOutput, ToolCallId, ToolContent, ToolInvocation, ToolName};
 pub use json_schema::JsonSchema;
 pub use registry::*;
 pub use registry_plan::*;
@@ -57,9 +53,6 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use invalid::InvalidTool;
 pub use lsp::LspTool;
-pub use orchestrator::{
-    ToolCall as LegacyToolCall, ToolCallResult as LegacyToolCallResult, ToolOrchestrator,
-};
 pub use plan::PlanTool;
 pub use question::QuestionTool;
 pub use read::ReadTool;
@@ -78,8 +71,6 @@ pub fn create_default_tool_registry() -> registry::ToolRegistry {
     handlers::build_registry_from_plan(&ToolPlanConfig::default())
 }
 
-/// Register all old-style Tool implementations into a registry (deprecated).
-/// Prefer `create_default_tool_registry()` or `handlers::build_registry_from_plan()`.
 #[allow(deprecated)]
 pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     let plan = build_tool_registry_plan(&ToolPlanConfig::default());

@@ -41,6 +41,15 @@ pub struct ToolPlanConfig {
     pub use_unified_exec: bool,
 }
 
+impl ToolPlanConfig {
+    pub fn validate(&self) {
+        // No incompatible combinations currently exist.
+        // - use_shell_command and use_unified_exec are independent (shell_command replaces bash,
+        //   unified exec adds new tools)
+        // - both can be true simultaneously with no conflict
+    }
+}
+
 impl Default for ToolPlanConfig {
     fn default() -> Self {
         ToolPlanConfig {
@@ -506,6 +515,7 @@ fn invalid_schema() -> JsonSchema {
 }
 
 pub fn build_tool_registry_plan(config: &ToolPlanConfig) -> ToolRegistryPlan {
+    config.validate();
     let mut plan = ToolRegistryPlan::new();
 
     if config.use_shell_command {

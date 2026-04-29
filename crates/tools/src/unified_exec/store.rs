@@ -11,7 +11,6 @@ use super::{MAX_PROCESSES, WARNING_PROCESSES};
 struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
     created_at: std::time::Instant,
-    last_used: std::time::Instant,
 }
 
 pub struct ProcessStore {
@@ -61,20 +60,14 @@ impl ProcessStore {
             ProcessEntry {
                 process,
                 created_at: std::time::Instant::now(),
-                last_used: std::time::Instant::now(),
             },
         );
         id
     }
 
     pub async fn get(&self, id: i32) -> Option<Arc<UnifiedExecProcess>> {
-        let mut map = self.processes.write().await;
-        if let Some(entry) = map.get_mut(&id) {
-            entry.last_used = std::time::Instant::now();
-            Some(Arc::clone(&entry.process))
-        } else {
-            None
-        }
+        let map = self.processes.read().await;
+        map.get(&id).map(|entry| Arc::clone(&entry.process))
     }
 
     pub async fn remove(&self, id: i32) {

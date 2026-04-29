@@ -61,7 +61,25 @@ impl HeadTailBuffer {
         }
     }
 
-    pub fn collect(&self) -> Vec<u8> {
+    pub fn collect(&self) -> String {
+        let mut result = String::with_capacity(self.head.len() + self.tail.len() + 100);
+
+        // SAFETY: head bytes are from PTY output, lossy conversion is acceptable
+        let head_str = String::from_utf8_lossy(&self.head);
+        result.push_str(&head_str);
+
+        if self.dropped {
+            result.push_str("\n\n... [output truncated]\n\n");
+        }
+
+        let tail_str = String::from_utf8_lossy(&self.tail);
+        result.push_str(&tail_str);
+
+        result
+    }
+
+    /// Collect raw bytes (for when callers need Vec<u8> directly)
+    pub fn collect_bytes(&self) -> Vec<u8> {
         let mut result = Vec::with_capacity(self.head.len() + self.tail.len() + 100);
         result.extend_from_slice(&self.head);
         if self.dropped {
@@ -95,7 +113,7 @@ mod tests {
         let mut buf = HeadTailBuffer::new();
         buf.push(b"hello world");
         let result = buf.collect();
-        assert_eq!(String::from_utf8_lossy(&result), "hello world");
+        assert_eq!(result, "hello world");
         assert!(!buf.truncated());
     }
 
@@ -107,8 +125,7 @@ mod tests {
 
         let data = b"0123456789ABCDEFGHIJ";
         buf.push(data);
-        let collected = buf.collect();
-        let result = String::from_utf8_lossy(&collected);
+        let result = buf.collect();
         assert!(result.starts_with("0123456789"));
         assert!(result.contains("GHIJ"));
         assert!(buf.truncated());
@@ -124,8 +141,7 @@ mod tests {
         buf.push(b"AAAAA");
         buf.push(b"BBBBB");
         buf.push(b"CCCCC");
-        let collected = buf.collect();
-        let result = String::from_utf8_lossy(&collected);
+        let result = buf.collect();
         assert!(result.starts_with("AAAAA"));
         assert!(result.contains("CCCCC"));
         assert!(buf.truncated());

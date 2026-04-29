@@ -16,4 +16,6 @@ pub enum ToolHandlerKind {
     Skill,
     Lsp,
     Invalid,
+    ExecCommand,
+    WriteStdin,
 }

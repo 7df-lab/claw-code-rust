@@ -1,0 +1,193 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+
+use crate::errors::ToolExecutionError;
+use crate::handler_kind::ToolHandlerKind;
+use crate::invocation::{FunctionToolOutput, ToolInvocation, ToolOutput};
+use crate::tool_handler::ToolHandler;
+use crate::unified_exec::process::{collect_output, UnifiedExecProcess};
+use crate::unified_exec::store::ProcessStore;
+use crate::unified_exec::{ExecCommandArgs, ProcessOutput, WriteStdinArgs};
+
+pub struct ExecCommandHandler {
+    store: Arc<ProcessStore>,
+}
+
+impl ExecCommandHandler {
+    pub fn new(store: Arc<ProcessStore>) -> Self {
+        ExecCommandHandler { store }
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ExecCommandHandler {
+    fn tool_kind(&self) -> ToolHandlerKind {
+        ToolHandlerKind::ExecCommand
+    }
+
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
+        let args = ExecCommandArgs {
+            cmd: invocation.input
+                .get("cmd")
+                .or_else(|| invocation.input.get("command"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolExecutionError::ExecutionFailed {
+                    message: "missing 'cmd' field".into(),
+                })?
+                .to_string(),
+            workdir: invocation.input["workdir"].as_str().map(|s| s.to_string()),
+            shell: invocation.input["shell"].as_str().map(|s| s.to_string()),
+            login: invocation.input["login"].as_bool().unwrap_or(true),
+            tty: invocation.input["tty"].as_bool().unwrap_or(true),
+            yield_time_ms: invocation.input["yield_time_ms"]
+                .as_u64()
+                .unwrap_or(crate::unified_exec::DEFAULT_YIELD_MS),
+            max_output_tokens: invocation.input["max_output_tokens"]
+                .as_u64()
+                .map(|v| v as usize)
+                .unwrap_or(crate::unified_exec::MAX_OUTPUT_TOKENS),
+        };
+
+        let cwd = invocation
+            .input["workdir"]
+            .as_str()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| invocation.cwd.clone());
+
+        if !cwd.exists() {
+            return Ok(Box::new(FunctionToolOutput::error(format!(
+                "working directory does not exist: {}",
+                cwd.display()
+            ))));
+        }
+
+        let (proc, _broadcast_rx) = UnifiedExecProcess::spawn(
+            0,
+            &args.cmd,
+            &cwd,
+            args.shell.as_deref(),
+            args.login,
+        )
+        .map_err(|e| ToolExecutionError::ExecutionFailed {
+            message: format!("failed to spawn process: {e}"),
+        })?;
+
+        let proc = Arc::new(proc);
+        let session_id = self.store.allocate(Arc::clone(&proc)).await;
+
+        let mut rx = proc.subscribe();
+        let output = collect_output(
+            &mut rx,
+            &proc,
+            args.yield_time_ms,
+            args.max_output_tokens,
+        )
+        .await;
+
+        let response = format_exec_response(&output, Some(session_id));
+        Ok(Box::new(FunctionToolOutput::success(response)))
+    }
+}
+
+pub struct WriteStdinHandler {
+    store: Arc<ProcessStore>,
+}
+
+impl WriteStdinHandler {
+    pub fn new(store: Arc<ProcessStore>) -> Self {
+        WriteStdinHandler { store }
+    }
+}
+
+#[async_trait]
+impl ToolHandler for WriteStdinHandler {
+    fn tool_kind(&self) -> ToolHandlerKind {
+        ToolHandlerKind::WriteStdin
+    }
+
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn ToolOutput>, ToolExecutionError> {
+        let args = WriteStdinArgs {
+            session_id: invocation.input["session_id"]
+                .as_i64()
+                .ok_or_else(|| ToolExecutionError::ExecutionFailed {
+                    message: "missing 'session_id' field".into(),
+                })? as i32,
+            chars: invocation.input["chars"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
+            yield_time_ms: invocation.input["yield_time_ms"]
+                .as_u64()
+                .unwrap_or(crate::unified_exec::DEFAULT_POLL_YIELD_MS),
+            max_output_tokens: invocation.input["max_output_tokens"]
+                .as_u64()
+                .map(|v| v as usize)
+                .unwrap_or(crate::unified_exec::MAX_OUTPUT_TOKENS),
+        };
+
+        let proc = self
+            .store
+            .get(args.session_id)
+            .await
+            .ok_or_else(|| ToolExecutionError::ExecutionFailed {
+                message: format!("Unknown process id {}", args.session_id),
+            })?;
+
+        if !args.chars.is_empty() {
+            proc.write_stdin(&args.chars).map_err(|e| {
+                ToolExecutionError::ExecutionFailed {
+                    message: format!("write_stdin failed: {e}"),
+                }
+            })?;
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        let mut rx = proc.subscribe();
+        let output = collect_output(
+            &mut rx,
+            &proc,
+            args.yield_time_ms,
+            args.max_output_tokens,
+        )
+        .await;
+
+        if output.exit_code.is_some() && output.output.is_empty() {
+            self.store.remove(args.session_id).await;
+        }
+
+        let response = format_exec_response(&output, None);
+        Ok(Box::new(FunctionToolOutput::success(response)))
+    }
+}
+
+fn format_exec_response(output: &ProcessOutput, session_id: Option<i32>) -> String {
+    let mut parts = Vec::new();
+
+    parts.push(format!("Wall time: {:.1} seconds", output.wall_time_secs));
+
+    if let Some(code) = output.exit_code {
+        parts.push(format!("Process exited with code {code}"));
+    }
+    if let Some(sid) = session_id {
+        if output.exit_code.is_none() {
+            parts.push(format!("Process running with session ID {sid}"));
+        }
+    }
+
+    if output.truncated {
+        parts.push("Output (truncated):".to_string());
+    } else {
+        parts.push("Output:".to_string());
+    }
+    parts.push(output.output.clone());
+
+    parts.join("\n")
+}

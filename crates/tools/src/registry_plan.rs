@@ -35,9 +35,19 @@ impl Default for ToolRegistryPlan {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ToolPlanConfig {
     pub use_shell_command: bool,
+    pub use_unified_exec: bool,
+}
+
+impl Default for ToolPlanConfig {
+    fn default() -> Self {
+        ToolPlanConfig {
+            use_shell_command: false,
+            use_unified_exec: true,
+        }
+    }
 }
 
 fn bash_schema() -> JsonSchema {
@@ -425,6 +435,72 @@ fn lsp_schema() -> JsonSchema {
     )
 }
 
+fn exec_command_schema() -> JsonSchema {
+    JsonSchema::object(
+        BTreeMap::from([
+            (
+                "cmd".to_string(),
+                JsonSchema::string(Some("Shell command to execute")),
+            ),
+            (
+                "command".to_string(),
+                JsonSchema::string(Some("Alias for cmd")),
+            ),
+            (
+                "workdir".to_string(),
+                JsonSchema::string(Some("Working directory. Defaults to current directory.")),
+            ),
+            (
+                "shell".to_string(),
+                JsonSchema::string(Some("Shell binary to launch (e.g. 'bash' or 'powershell').")),
+            ),
+            (
+                "login".to_string(),
+                JsonSchema::boolean(Some("Whether to run the shell with login shell semantics. Defaults to true.")),
+            ),
+            (
+                "tty".to_string(),
+                JsonSchema::boolean(Some("Whether to allocate a PTY. Must be true for write_stdin to work.")),
+            ),
+            (
+                "yield_time_ms".to_string(),
+                JsonSchema::number(Some("How long to wait (in ms) for output before returning. Default 10000.")),
+            ),
+            (
+                "max_output_tokens".to_string(),
+                JsonSchema::number(Some("Maximum number of tokens of output to return.")),
+            ),
+        ]),
+        Some(vec!["cmd".to_string()]),
+        Some(false),
+    )
+}
+
+fn write_stdin_schema() -> JsonSchema {
+    JsonSchema::object(
+        BTreeMap::from([
+            (
+                "session_id".to_string(),
+                JsonSchema::integer(Some("Session ID of the running exec_command process")),
+            ),
+            (
+                "chars".to_string(),
+                JsonSchema::string(Some("Bytes to write to stdin. Empty string to poll for output.")),
+            ),
+            (
+                "yield_time_ms".to_string(),
+                JsonSchema::number(Some("How long to wait (in ms) for output before returning. Default 250.")),
+            ),
+            (
+                "max_output_tokens".to_string(),
+                JsonSchema::number(Some("Maximum number of tokens of output to return.")),
+            ),
+        ]),
+        Some(vec!["session_id".to_string()]),
+        Some(false),
+    )
+}
+
 fn invalid_schema() -> JsonSchema {
     JsonSchema::object(BTreeMap::new(), None, Some(false))
 }
@@ -650,6 +726,37 @@ pub fn build_tool_registry_plan(config: &ToolPlanConfig) -> ToolRegistryPlan {
         },
         ToolHandlerKind::Invalid,
     );
+
+    if config.use_unified_exec {
+        plan.push(
+            ToolSpec {
+                name: "exec_command".to_string(),
+                description:
+                    "Run a shell command in a PTY and return output. If the process runs longer than yield_time_ms, a session_id is returned so you can interact with the process using write_stdin."
+                        .to_string(),
+                input_schema: exec_command_schema(),
+                output_mode: ToolOutputMode::Mixed,
+                execution_mode: ToolExecutionMode::Mutating,
+                capability_tags: vec![ToolCapabilityTag::ExecuteProcess],
+                supports_parallel: true,
+            },
+            ToolHandlerKind::ExecCommand,
+        );
+        plan.push(
+            ToolSpec {
+                name: "write_stdin".to_string(),
+                description:
+                    "Write bytes to stdin of a running unified exec session, or poll for output without writing. Returns any output produced since the last write_stdin."
+                        .to_string(),
+                input_schema: write_stdin_schema(),
+                output_mode: ToolOutputMode::Mixed,
+                execution_mode: ToolExecutionMode::Mutating,
+                capability_tags: vec![ToolCapabilityTag::ExecuteProcess],
+                supports_parallel: false,
+            },
+            ToolHandlerKind::WriteStdin,
+        );
+    }
 
     plan
 }

@@ -49,6 +49,11 @@ curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh
 irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
+> [!TIP]
+> `devo` can check for newer GitHub releases on startup and print the matching
+> upgrade command. You can disable or tune this with the `[updates]` section in
+> `DEVO_HOME/config.toml` or `<workspace>/.devo/config.toml`.
+
 ## 🚀 Quick Start
 
 If you prefer to build from source, use the instructions below.

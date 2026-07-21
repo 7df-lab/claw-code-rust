@@ -37,7 +37,7 @@ resolver = "3"
 edition = "2024"
 license = "MIT"
 rust-version = "1.88.0"
-version = "0.1.30"
+version = "0.1.31"
 
 [workspace.dependencies]
 agent-client-protocol = "0.14.0"

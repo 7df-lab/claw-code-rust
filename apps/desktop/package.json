@@ -1,7 +1,7 @@
 {
 	"name": "@devo/desktop",
 	"productName": "Devo",
-	"version": "0.1.30",
+	"version": "0.1.31",
 	"description": "AI-powered coding assistant desktop app",
 	"author": "Devo",
 	"license": "MIT",

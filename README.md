@@ -213,9 +213,21 @@ devo resume <session-id>
 
 ## Configuration
 
-`devo onboard` is the recommended setup path. For manual `config.toml` paths,
-provider/model binding fields, and custom model catalog examples, see
-[Configuration](./docs/configuration.md).
+`devo onboard` is the recommended setup path. It writes provider and model
+bindings to `config.toml` and stores your API key in user-scoped `auth.json`.
+
+To bring your own key with a custom model manually:
+
+1. Define `[model.<slug>]` parameters, `[providers.<id>]`, and
+   `[model_bindings.<id>]` in `config.toml`.
+2. Put the secret in `DEVO_HOME/auth.json` and reference that credential id from
+   `[providers.<id>].credential` — never put the API key itself in
+   `config.toml`.
+3. Set `invocation_method` to match the endpoint protocol:
+   `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
+
+Full worked example (custom model parameters + API key) and protocol details:
+[Configuration](./docs/configuration.md#bring-your-own-api-key).
 
 ## Docs
 
@@ -236,6 +248,14 @@ Built-in model metadata currently covers Qwen, Kimi, MiniMax, GLM, and DeepSeek
 families. Any model endpoint that supports OpenAI-compatible Chat Completions,
 OpenAI-compatible Responses, or the Anthropic Messages API can be connected through
 provider/model bindings.
+
+### How do I bring my own API key?
+
+Use `devo onboard`, or manually define a custom `[model.<slug>]`, provider, and
+binding in `config.toml`, store the key in user-scoped `auth.json`, and set
+`invocation_method` to `openai_chat_completions`, `openai_responses`, or
+`anthropic_messages`. See
+[Configuration](./docs/configuration.md#bring-your-own-api-key).
 
 ### Should I use the Desktop app or the TUI/CLI?
 

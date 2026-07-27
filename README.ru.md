@@ -217,9 +217,20 @@ devo resume <session-id>
 
 ## Конфигурация
 
-`devo onboard` - рекомендуемый путь настройки. Пути ручного `config.toml`,
-поля provider/model binding и примеры custom model catalog описаны в
-[Конфигурации](./docs/configuration.ru.md).
+`devo onboard` - рекомендуемый путь настройки. Он записывает provider и model
+bindings в `config.toml` и сохраняет API key в пользовательском `auth.json`.
+
+Чтобы вручную подключить свой ключ и кастомную модель:
+
+1. Определите параметры `[model.<slug>]`, `[providers.<id>]` и
+   `[model_bindings.<id>]` в `config.toml`.
+2. Положите секрет в `DEVO_HOME/auth.json` и ссылайтесь на этот credential id из
+   `[providers.<id>].credential` — не пишите сам API key в `config.toml`.
+3. Установите `invocation_method` в соответствии с протоколом endpoint:
+   `openai_chat_completions`, `openai_responses` или `anthropic_messages`.
+
+Полный пример (параметры кастомной модели + API key) и описание протоколов:
+[Конфигурация](./docs/configuration.ru.md#свой-api-key).
 
 ## Docs
 
@@ -240,6 +251,12 @@ Devo находится на стадии pre-1.0 и активно развив
 GLM и DeepSeek. Любой endpoint модели, который поддерживает OpenAI-compatible
 Chat Completions, OpenAI-compatible Responses или Anthropic Messages API, можно
 подключить через provider/model bindings.
+
+### Как подключить свой API key?
+
+Используйте `devo onboard` или отредактируйте пользовательский `auth.json` и
+укажите этот credential id в `[providers.<id>].credential` в `config.toml`. См.
+[Конфигурацию](./docs/configuration.ru.md#свой-api-key).
 
 ### Что выбрать: Desktop app или TUI/CLI?
 

@@ -204,9 +204,22 @@ devo resume <session-id>
 
 ## 設定
 
-`devo onboard` が推奨されるセットアップ方法です。手動の `config.toml`
-パス、provider/model binding フィールド、カスタムモデルカタログの例は
-[設定](./docs/configuration.ja.md) を参照してください。
+`devo onboard` が推奨されるセットアップ方法です。provider/model binding を
+`config.toml` に書き、API key をユーザースコープの `auth.json` に保存します。
+
+自分の API key とカスタムモデルを手動で設定する場合:
+
+1. `config.toml` で `[model.<slug>]` パラメータ、`[providers.<id>]`、
+   `[model_bindings.<id>]` を定義します。
+2. シークレットを `DEVO_HOME/auth.json` に置き、`[providers.<id>].credential`
+   からその credential id を参照します — API key 自体を `config.toml` に
+   書かないでください。
+3. エンドポイントのプロトコルに合わせて `invocation_method` を
+   `openai_chat_completions`、`openai_responses`、`anthropic_messages` の
+   いずれかに設定します。
+
+完全な作業例（カスタムモデルパラメータ + API key）とプロトコルの説明は
+[設定](./docs/configuration.ja.md#自分の-api-key-を使う) を参照してください。
 
 ## Docs
 
@@ -225,6 +238,12 @@ Devo は pre-1.0 で、活発に開発されています。ローカル評価、
 組み込みモデルメタデータは現在、Qwen、Kimi、MiniMax、GLM、DeepSeek ファミリーをカバーしています。
 OpenAI 互換 Chat Completions、OpenAI 互換 Responses、または Anthropic Messages API をサポートするモデルエンドポイントであれば、
 provider/model binding を通じて接続できます。
+
+### 自分の API key を使うには?
+
+`devo onboard` を使うか、ユーザースコープの `auth.json` を編集し、
+`config.toml` の `[providers.<id>].credential` からその credential id を参照します。
+詳細は [設定](./docs/configuration.ja.md#自分の-api-key-を使う) を参照してください。
 
 ### Desktop app と TUI/CLI のどちらを使うべきですか?
 

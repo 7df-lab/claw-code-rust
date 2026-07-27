@@ -1,5 +1,9 @@
 use super::*;
 
+use crate::execution::PendingApproval;
+use crate::runtime::session_actor::approval_scope::{
+    apply_approval_scope_to_state, apply_path_scope_to_permission_profile,
+};
 use crate::runtime::session_interactive::complete_approval_wait;
 
 use std::path::Component;
@@ -84,6 +88,10 @@ impl ServerRuntime {
         if let Some(grant) = self.approval_cache_grant(session_id, &request).await {
             return Ok(grant);
         }
+        let permission_profile = self
+            .live_permission_profile(session_id)
+            .await
+            .unwrap_or(permission_profile);
         let policy = policy_decision(
             &permission_profile,
             &request,
@@ -394,6 +402,59 @@ impl ServerRuntime {
         None
     }
 
+    /// Prefer the live turn-inline profile when a turn is in flight so mid-turn
+    /// PathPrefix/Session grants are visible to `policy_decision`.
+    async fn live_permission_profile(
+        &self,
+        session_id: SessionId,
+    ) -> Option<devo_safety::RuntimePermissionProfile> {
+        if let Some(profile) = self.turn_inline_permission_profile(session_id).await {
+            return Some(profile);
+        }
+        if let Some(parent_session_id) = self.parent_session_id(session_id).await {
+            return self.turn_inline_permission_profile(parent_session_id).await;
+        }
+        None
+    }
+
+    async fn turn_inline_permission_profile(
+        &self,
+        session_id: SessionId,
+    ) -> Option<devo_safety::RuntimePermissionProfile> {
+        let stream = self.active_stream_state(session_id).await?;
+        let stream = stream.lock().await;
+        stream
+            .turn_inline
+            .as_ref()
+            .map(|inline| inline.hook_context.config.permission_profile.clone())
+    }
+
+    async fn apply_approval_scope_to_turn_inline(
+        &self,
+        session_id: SessionId,
+        scope: &ApprovalScopeValue,
+        pending: &PendingApproval,
+    ) {
+        let Some(stream) = self.active_stream_state(session_id).await else {
+            return;
+        };
+        let mut stream = stream.lock().await;
+        let Some(inline) = stream.turn_inline.as_mut() else {
+            return;
+        };
+        apply_approval_scope_to_state(
+            &mut inline.session_approval_cache,
+            &mut inline.turn_approval_cache,
+            scope,
+            pending,
+        );
+        apply_path_scope_to_permission_profile(
+            &mut inline.hook_context.config.permission_profile,
+            scope,
+            pending,
+        );
+    }
+
     async fn session_approval_cache_grant(
         &self,
         session_id: SessionId,
@@ -593,40 +654,47 @@ impl ServerRuntime {
             .await
         {
             let _ = pending.tx.send(decision.clone());
-            if matches!(decision, ApprovalDecisionValue::Approve)
-                && let Some(session_handle) = self.session(host_session_id).await
-            {
-                let prefix_to_persist = (scope == ApprovalScopeValue::CommandPrefixPersist)
-                    .then(|| pending.command_prefix.clone())
-                    .flatten();
+            if matches!(decision, ApprovalDecisionValue::Approve) {
                 let (scope_tx, _) = oneshot::channel();
-                session_handle
-                    .apply_approval_scope(
-                        scope,
-                        PendingApproval {
-                            owner_session_id: pending.owner_session_id,
-                            tool_name: pending.tool_name,
-                            resource: pending.resource,
-                            path: pending.path,
-                            host: pending.host,
-                            command_prefix: pending.command_prefix,
-                            command_pattern: pending.command_pattern,
-                            requests_escalation: pending.requests_escalation,
-                            command: pending.command,
-                            cwd: pending.cwd,
-                            sandbox_permissions: pending.sandbox_permissions,
-                            tx: scope_tx,
-                        },
-                    )
-                    .await;
-                if let Some(prefix) = prefix_to_persist
-                    && let Err(error) = self.persist_command_prefix_rule(&prefix).await
-                {
-                    tracing::warn!(
-                        session_id = %host_session_id,
-                        error = %error,
-                        "failed to persist command prefix rule"
-                    );
+                let pending_for_scope = PendingApproval {
+                    owner_session_id: pending.owner_session_id,
+                    tool_name: pending.tool_name,
+                    resource: pending.resource,
+                    path: pending.path,
+                    host: pending.host,
+                    command_prefix: pending.command_prefix,
+                    command_pattern: pending.command_pattern,
+                    requests_escalation: pending.requests_escalation,
+                    command: pending.command,
+                    cwd: pending.cwd,
+                    sandbox_permissions: pending.sandbox_permissions,
+                    tx: scope_tx,
+                };
+                // ExecuteTurn owns the session mailbox, so ApplyApprovalScope cannot
+                // run until the turn ends. Update live TurnInlineState here so the
+                // same turn's later tool calls see PathPrefix/Session grants.
+                self.apply_approval_scope_to_turn_inline(
+                    host_session_id,
+                    &scope,
+                    &pending_for_scope,
+                )
+                .await;
+                if let Some(session_handle) = self.session(host_session_id).await {
+                    let prefix_to_persist = (scope == ApprovalScopeValue::CommandPrefixPersist)
+                        .then(|| pending_for_scope.command_prefix.clone())
+                        .flatten();
+                    session_handle
+                        .apply_approval_scope(scope, pending_for_scope)
+                        .await;
+                    if let Some(prefix) = prefix_to_persist
+                        && let Err(error) = self.persist_command_prefix_rule(&prefix).await
+                    {
+                        tracing::warn!(
+                            session_id = %host_session_id,
+                            error = %error,
+                            "failed to persist command prefix rule"
+                        );
+                    }
                 }
             }
         }

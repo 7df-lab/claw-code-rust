@@ -195,9 +195,20 @@ devo resume <session-id>
 
 ## 配置
 
-`devo onboard` 是推薦的設定路徑。如需手動 `config.toml` 路徑、
-provider/model 綁定欄位和自訂模型目錄範例，請參閱
-[配置](./docs/configuration.zh-Hant.md)。
+`devo onboard` 是推薦的設定路徑。它會把 provider 和 model binding 寫入
+`config.toml`，並把 API key 保存在使用者級 `auth.json`。
+
+如需手動接入自有 API key 與自訂模型：
+
+1. 在 `config.toml` 中定義 `[model.<slug>]` 參數、`[providers.<id>]` 和
+   `[model_bindings.<id>]`。
+2. 把密鑰寫入 `DEVO_HOME/auth.json`，並在 `[providers.<id>].credential` 中引用該
+   credential id — 不要把 API key 本身寫進 `config.toml`。
+3. 將 `invocation_method` 設為與端點協議一致：`openai_chat_completions`、
+   `openai_responses` 或 `anthropic_messages`。
+
+完整範例（自訂模型參數 + API key）與協議說明見
+[配置](./docs/configuration.zh-Hant.md#接入自有-api-key)。
 
 ## Docs
 
@@ -216,6 +227,13 @@ Devo 仍處於 1.0 之前並在積極開發中。它已經適合本地評估、�
 內建模型中繼資料目前覆蓋 Qwen、Kimi、MiniMax、GLM 和 DeepSeek 系列。
 任何支援 OpenAI 相容 Chat Completions、OpenAI 相容 Responses 或
 Anthropic Messages API 的模型端點，都可以透過 provider/model 綁定接入。
+
+### 如何接入自有 API key？
+
+使用 `devo onboard`，或在 `config.toml` 中手動定義自訂 `[model.<slug>]`、
+provider 與 binding，把 key 存入使用者級 `auth.json`，並將 `invocation_method`
+設為 `openai_chat_completions`、`openai_responses` 或 `anthropic_messages`。詳見
+[配置](./docs/configuration.zh-Hant.md#接入自有-api-key)。
 
 ### 應該使用 Desktop app 還是 TUI/CLI？
 

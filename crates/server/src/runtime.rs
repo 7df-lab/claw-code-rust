@@ -111,7 +111,6 @@ use crate::approval_reviewer::ReviewerDecision;
 use crate::approval_reviewer::build_approval_review_request;
 use crate::approval_reviewer::parse_reviewer_decision;
 use crate::db::QueueType;
-use crate::execution::PendingApproval;
 use crate::execution::PendingUserInput;
 use crate::execution::RuntimeSession;
 use crate::execution::ServerRuntimeDependencies;

@@ -33,6 +33,9 @@ pub struct Session {
     /// of the session's identity, not the client's location; resuming from a
     /// different cwd does not change it.
     pub cwd: PathBuf,
+    /// Additional absolute workspace roots associated with the session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_directories: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SessionParent>,
     pub ephemeral: bool,
@@ -123,6 +126,10 @@ pub struct SessionSettings {
     /// ACP-style session mode id, if one is active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// Active sandbox profile description; needed to restore the sandbox when
+    /// resuming the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_profile: Option<String>,
 }
 
 /// Snapshot semantics: the current value is *copied* into the record at

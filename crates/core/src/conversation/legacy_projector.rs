@@ -33,7 +33,10 @@ use crate::conversation::{
     TurnStatus as LegacyTurnStatus,
 };
 
-use super::rollout_v2::{InternalRecordV2, RolloutLineV2, ROLLOUT_FORMAT_VERSION};
+use super::rollout_v2::{
+    InternalRecordV2, RolloutLineV2, SessionPersistenceExtras, TurnPersistenceExtras,
+    ROLLOUT_FORMAT_VERSION,
+};
 
 /// Errors from projecting a legacy rollout line. Every known legacy shape
 /// projects successfully; this exists so genuinely unrecoverable data fails
@@ -281,6 +284,7 @@ impl LegacyProjector {
             id: SessionId::from_legacy_uuid(legacy_uuid(record.id)?),
             version: 1,
             cwd: record.cwd.clone(),
+            additional_directories: record.additional_directories.clone(),
             parent,
             ephemeral: false,
             created_at: record.created_at,
@@ -304,6 +308,8 @@ impl LegacyProjector {
                 permission_profile,
                 reasoning_effort: None,
                 mode: None,
+                sandbox_profile: (!record.sandbox_policy.is_empty())
+                    .then(|| record.sandbox_policy.clone()),
             },
             git_info,
             preview: record.first_user_message.clone().unwrap_or_default(),
@@ -318,7 +324,12 @@ impl LegacyProjector {
         Ok(vec![RolloutLineV2::SessionMeta {
             v: ROLLOUT_FORMAT_VERSION,
             timestamp: line.timestamp,
-            session,
+            session: Box::new(session),
+            extras: Some(Box::new(SessionPersistenceExtras {
+                session_context: record.session_context.clone(),
+                cli_version: record.cli_version.clone(),
+                source: record.source.clone(),
+            })),
         }])
     }
 
@@ -407,6 +418,15 @@ impl LegacyProjector {
             v: ROLLOUT_FORMAT_VERSION,
             timestamp: line.timestamp,
             turn,
+            extras: Some(Box::new(TurnPersistenceExtras {
+                session_context: record.session_context.clone(),
+                turn_context: record.turn_context.clone(),
+                request_thinking: record.request_thinking.clone(),
+                input_token_estimate: record.input_token_estimate,
+                latest_query_usage: record.latest_query_usage.clone(),
+                stop_reason: record.stop_reason.clone(),
+                failure_reason: record.failure_reason,
+            })),
         }])
     }
 
@@ -425,11 +445,15 @@ impl LegacyProjector {
         {
             // A legacy record packs N payloads under a single record id; the
             // first payload keeps that id, the rest get fresh canonical ids
-            // because persistence is one-record-one-item in v2.
+            // because persistence is one-record-one-item in v2. Fresh ids are
+            // bare UUIDs (not prefixed) so they still round-trip into legacy
+            // UUID newtypes via the inverse projector; prefixed ids only
+            // appear once the runtime natively creates canonical resources,
+            // at which point the legacy replay path is gone.
             let item_id = if index == 0 {
                 first_item_id.clone()
             } else {
-                ItemId::new()
+                ItemId::from_legacy_uuid(Uuid::now_v7())
             };
             let (id, seq, revision, state, item) = match self.project_payload(
                 record,
@@ -683,9 +707,11 @@ impl LegacyProjector {
                     None => {
                         // Orphan decision (no matching request in this file):
                         // keep the information as a warning item with a fresh
-                        // id/seq rather than dropping history.
+                        // id/seq rather than dropping history. The fresh id is
+                        // a bare UUID for the same round-trip reason as the
+                        // expansion ids above.
                         Projected::FoldedItem {
-                            id: ItemId::new(),
+                            id: ItemId::from_legacy_uuid(Uuid::now_v7()),
                             seq: self.next_seq(),
                             revision: 1,
                             state: ItemState::Completed,

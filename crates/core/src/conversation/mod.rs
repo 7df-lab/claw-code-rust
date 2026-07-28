@@ -1,5 +1,6 @@
 pub mod legacy_projector;
 pub mod rollout_v2;
+pub mod v2_inverse;
 
 mod records;
 
@@ -7,8 +8,9 @@ pub use devo_protocol::{ItemId, SessionId, SessionTitleState, TurnId, TurnStatus
 pub use legacy_projector::{LegacyProjectError, LegacyProjector};
 pub use rollout_v2::{
     InternalRecordV2, ParsedRolloutLine, ROLLOUT_FORMAT_VERSION, RolloutLineReadError,
-    RolloutLineV2, parse_rollout_line,
+    RolloutLineV2, SessionPersistenceExtras, TurnPersistenceExtras, parse_rollout_line,
 };
+pub use v2_inverse::{V2InverseError, V2InverseProjector};
 pub use records::{
     ApprovalDecisionItem, ApprovalRequestItem, CommandExecutionItem, CompactionSnapshotLine,
     ItemLine, ItemRecord, MessageEditRecordedLine, RolloutLine, SessionContextUpdatedLine,

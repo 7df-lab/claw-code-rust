@@ -16,7 +16,7 @@ use devo_protocol::canonical::session::Session;
 use devo_protocol::canonical::turn::Turn;
 
 use crate::{
-    MessageEditRecordedRecord, SessionContext, TurnSupersededRecord,
+    MessageEditRecordedRecord, SessionContext, TurnContext, TurnSupersededRecord,
     TurnWorkspaceChangeRecordedRecord, TurnWorkspaceCheckpointRecordedRecord,
     TurnWorkspaceRestoreCompletedRecord, TurnWorkspaceRestoreStartedRecord,
 };
@@ -26,23 +26,72 @@ use super::records::RolloutLine;
 /// The format version written by the v2 write path.
 pub const ROLLOUT_FORMAT_VERSION: u32 = 2;
 
+/// Persistence-only extras on the v2 SessionMeta line: internal
+/// implementation details that canonical `Session` deliberately omits from
+/// the public surface but legacy replay needs at resume time. Never enters
+/// the public schema — `RolloutLineV2` is a core type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionPersistenceExtras {
+    /// The locked session context captured for prompt replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_context: Option<SessionContext>,
+    /// The CLI version that created the session (audit field).
+    pub cli_version: String,
+    /// The session source kind, such as `cli` or `api` (audit field).
+    pub source: String,
+}
+
+/// Persistence-only extras on the v2 Turn line, same rationale as
+/// [`SessionPersistenceExtras`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnPersistenceExtras {
+    /// The locked session context used to build the stable request prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_context: Option<SessionContext>,
+    /// The turn context snapshot used for this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_context: Option<TurnContext>,
+    /// The concrete request thinking parameter used to execute the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_thinking: Option<String>,
+    /// The estimated input-token count at turn start, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_token_estimate: Option<u32>,
+    /// Provider usage of the latest model query (excludes tool/retry calls).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_query_usage: Option<crate::TurnUsage>,
+    /// The terminal provider/model stop reason, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<crate::StopReason>,
+    /// The typed terminal failure reason, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<crate::TurnFailureReason>,
+}
+
 /// The v2 whole-line rollout envelope. Every line kind carries the format
 /// version, a wall-clock timestamp, and its payload in a stable flat shape,
 /// e.g. `{"v":2,"kind":"item","timestamp":"...","item":{...}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum RolloutLineV2 {
-    /// Canonical session metadata.
+    /// Canonical session metadata. Session and extras are boxed to keep the
+    /// enum small (serde-transparent).
     SessionMeta {
         v: u32,
         timestamp: DateTime<Utc>,
-        session: Session,
+        session: Box<Session>,
+        /// Replay-only fields the canonical session does not model.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extras: Option<Box<SessionPersistenceExtras>>,
     },
     /// Canonical turn metadata.
     Turn {
         v: u32,
         timestamp: DateTime<Utc>,
         turn: Turn,
+        /// Replay-only fields the canonical turn does not model.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extras: Option<Box<TurnPersistenceExtras>>,
     },
     /// One typed item envelope (`{"kind":"item","item":{...}}`).
     Item {

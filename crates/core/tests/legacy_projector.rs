@@ -14,15 +14,15 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, TimeZone, Utc};
 use devo_core::{
-    ApprovalDecisionItem, ApprovalRequestItem, CommandExecutionItem, CompactionSnapshotLine,
-    ContentPart, EditId, EditState, EnvironmentContext, ItemId, ItemLine, ItemRecord,
-    LanguageContext, LegacyProjector, MessageEditRecordedLine, MessageEditRecordedRecord, Model,
-    ParsedRolloutLine, Persona, RolloutLine, RolloutLineV2, SessionContext,
-    SessionContextUpdatedLine, SessionId, SessionMetaLine, SessionRecord, SessionRollbackLine,
-    SessionTitleFinalSource, SessionTitleState, SessionTitleUpdatedLine, SystemPromptMode,
-    TextItem, ToolCallItem, ToolProgressItem, ToolResultItem, TurnError, TurnId, TurnItem,
-    TurnKind, TurnLine, TurnRecord, TurnStatus, TurnUsage, WorkspaceRestorePolicy,
-    parse_rollout_line,
+    ApprovalDecisionItem, ApprovalRequestItem, CollaborationMode, CommandExecutionItem,
+    CompactionSnapshotLine, ContentPart, EditId, EditState, EnvironmentContext, ItemId, ItemLine,
+    ItemRecord, LanguageContext, LegacyProjector, MessageEditRecordedLine,
+    MessageEditRecordedRecord, Model, ParsedRolloutLine, Persona, RolloutLine, RolloutLineV2,
+    SessionContext, SessionContextUpdatedLine, SessionId, SessionMetaLine, SessionRecord,
+    SessionRollbackLine, SessionTitleFinalSource, SessionTitleState, SessionTitleUpdatedLine,
+    SystemPromptMode, TextItem, ToolCallItem, ToolProgressItem, ToolResultItem, TurnContext,
+    TurnError, TurnId, TurnItem, TurnKind, TurnLine, TurnRecord, TurnStatus, TurnUsage,
+    WorkspaceRestorePolicy, parse_rollout_line,
 };
 use devo_protocol::canonical::ids::ItemId as CanonicalItemId;
 use devo_protocol::canonical::item::{
@@ -73,7 +73,7 @@ fn session_record(n: u128) -> SessionRecord {
         model_binding_id: Some("binding-1".into()),
         reasoning_effort_selection: Some("high".into()),
         cwd: "/tmp/legacy-project".into(),
-        additional_directories: Vec::new(),
+        additional_directories: vec!["/tmp/legacy-extra".into()],
         cli_version: "0.1.31".into(),
         title: Some("Legacy Session".into()),
         title_state: SessionTitleState::Final(SessionTitleFinalSource::ModelGenerated),
@@ -148,6 +148,30 @@ fn item_line(record: ItemRecord) -> RolloutLine {
         timestamp: record.timestamp,
         item: record,
     })
+}
+
+fn sample_session_context() -> SessionContext {
+    SessionContext {
+        base_instructions: "base".into(),
+        available_skills: None,
+        workspace_instructions: None,
+        locked_agents_snapshot: None,
+        environment: EnvironmentContext {
+            cwd: ".".into(),
+            shell: "bash".into(),
+            current_date: "2026-07-01".into(),
+            timezone: "UTC".into(),
+        },
+        language: LanguageContext::default(),
+        persona: Persona::Default,
+        model: Model {
+            slug: "gpt-5.2".into(),
+            ..Model::default()
+        },
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        system_prompt_mode: SystemPromptMode::CodingAgent,
+    }
 }
 
 // ── Fixture builders ────────────────────────────────────────────────────
@@ -291,6 +315,7 @@ fn internal_lines() -> Vec<RolloutLine> {
     record.git_origin_url = None;
     record.first_user_message = None;
     record.last_activity_at = None;
+    record.session_context = Some(sample_session_context());
 
     let mut turn = turn_record(turn, session);
     turn.kind = TurnKind::ManualCompaction;
@@ -301,6 +326,34 @@ fn internal_lines() -> Vec<RolloutLine> {
         code: "PROVIDER_SERVER_ERROR".into(),
         message: "provider request failed".into(),
         recovery_hint: Some("retry later".into()),
+    });
+    turn.session_context = Some(sample_session_context());
+    turn.turn_context = Some(TurnContext {
+        environment: EnvironmentContext {
+            cwd: "/tmp/legacy-project".into(),
+            shell: "bash".into(),
+            current_date: "2026-07-01".into(),
+            timezone: "UTC".into(),
+        },
+        persona: Persona::Default,
+        model: Model {
+            slug: "gpt-5.2".into(),
+            ..Model::default()
+        },
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        observed_agents_snapshot: None,
+        collaboration_mode: CollaborationMode::default(),
+    });
+    turn.request_thinking = Some("enabled".into());
+    turn.input_token_estimate = Some(42);
+    turn.latest_query_usage = Some(TurnUsage {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        reasoning_output_tokens: None,
+        total_tokens: Some(15),
     });
 
     let mut internals = item_record(0xc3, 0xc1, 0xc2, 1);
@@ -347,27 +400,7 @@ fn internal_lines() -> Vec<RolloutLine> {
         RolloutLine::SessionContextUpdated(Box::new(SessionContextUpdatedLine {
             timestamp: ts(41),
             session_id: session_id(0xc1),
-            session_context: SessionContext {
-                base_instructions: "base".into(),
-                available_skills: None,
-                workspace_instructions: None,
-                locked_agents_snapshot: None,
-                environment: EnvironmentContext {
-                    cwd: ".".into(),
-                    shell: "bash".into(),
-                    current_date: "2026-07-01".into(),
-                    timezone: "UTC".into(),
-                },
-                language: LanguageContext::default(),
-                persona: Persona::Default,
-                model: Model {
-                    slug: "gpt-5.2".into(),
-                    ..Model::default()
-                },
-                reasoning_effort_selection: None,
-                reasoning_effort: None,
-                system_prompt_mode: SystemPromptMode::CodingAgent,
-            },
+            session_context: sample_session_context(),
             schema_version: 1,
         })),
     ]
@@ -522,10 +555,11 @@ fn basic_session_projects_all_lines_in_order() {
     assert_eq!(seqs, vec![1, 2, 3, 4, 5, 6, 7, 7, 8, 9, 10, 11]);
 
     // The first payload of the packed conversation record keeps the legacy
-    // record id; the sibling payloads get fresh canonical ids.
+    // record id; the sibling payloads get fresh bare-UUID ids (prefixed ids
+    // could not round-trip into legacy UUID newtypes).
     assert_eq!(envelopes[0].id.as_str(), uuid(0xb3).to_string());
-    assert!(envelopes[1].id.as_str().starts_with("item_"));
-    assert!(envelopes[2].id.as_str().starts_with("item_"));
+    assert!(uuid::Uuid::parse_str(envelopes[1].id.as_str()).is_ok());
+    assert!(uuid::Uuid::parse_str(envelopes[2].id.as_str()).is_ok());
 
     assert!(
         matches!(&envelopes[0].item, Item::UserMessage { content, entry: UserMessageEntry::TurnStart, .. }
@@ -736,8 +770,9 @@ fn orphan_approval_decision_becomes_warning_item() {
         matches!(&warning.item, Item::Warning { code, retryable: false, .. }
             if code == "legacyOrphanApprovalDecision")
     );
-    // The orphan warning gets a fresh id and its own first-appearance seq.
-    assert!(warning.id.as_str().starts_with("item_"));
+    // The orphan warning gets a fresh bare-UUID id and its own
+    // first-appearance seq.
+    assert!(uuid::Uuid::parse_str(warning.id.as_str()).is_ok());
     assert_eq!((warning.seq, warning.revision), (1, 1));
 
     assert!(

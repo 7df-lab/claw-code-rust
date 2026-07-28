@@ -226,25 +226,47 @@ fn edit_schema() -> JsonSchema {
         BTreeMap::from([
             (
                 "filePath".to_string(),
-                JsonSchema::string(Some("The absolute path to the file to modify")),
+                JsonSchema::string(Some(
+                    "The absolute path to the file to modify. Preferred field name; `path` and `file_path` are also accepted.",
+                )),
+            ),
+            (
+                "path".to_string(),
+                JsonSchema::string(Some("Alias for `filePath`.")),
+            ),
+            (
+                "file_path".to_string(),
+                JsonSchema::string(Some("Alias for `filePath`.")),
             ),
             (
                 "oldString".to_string(),
                 JsonSchema::string(Some(
-                    "The exact text to replace. Must be non-empty and unique unless replaceAll is true.",
+                    "The exact text to replace. Must be non-empty and unique unless replaceAll is true. Preferred field name; `old_string` is also accepted.",
                 )),
+            ),
+            (
+                "old_string".to_string(),
+                JsonSchema::string(Some("Alias for `oldString`.")),
             ),
             (
                 "newString".to_string(),
                 JsonSchema::string(Some(
-                    "The text to replace oldString with. May be empty to delete text.",
+                    "The text to replace oldString with. May be empty to delete text. Preferred field name; `new_string` is also accepted.",
                 )),
+            ),
+            (
+                "new_string".to_string(),
+                JsonSchema::string(Some("Alias for `newString`.")),
             ),
             (
                 "replaceAll".to_string(),
                 JsonSchema::boolean(Some(
-                    "Replace every occurrence of oldString. Defaults to false.",
+                    "Replace every occurrence of oldString. Defaults to false. Preferred field name; `replace_all` is also accepted.",
                 )),
+            ),
+            (
+                "replace_all".to_string(),
+                JsonSchema::boolean(Some("Alias for `replaceAll`.")),
             ),
         ]),
         Some(vec![

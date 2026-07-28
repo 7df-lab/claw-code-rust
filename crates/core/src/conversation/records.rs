@@ -319,6 +319,9 @@ pub struct TurnError {
     pub code: String,
     /// The human-readable error message.
     pub message: String,
+    /// Optional user-facing next step for recovering from this failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_hint: Option<String>,
 }
 
 /// Stores one persisted item record in the canonical journal.
@@ -626,6 +629,7 @@ mod tests {
             error: Some(TurnError {
                 code: "PROVIDER_SERVER_ERROR".into(),
                 message: "provider request failed".into(),
+                recovery_hint: None,
             }),
             schema_version: 4,
             ..make_test_turn(TurnStatus::Running)
@@ -729,6 +733,7 @@ mod tests {
             error: Some(TurnError {
                 code: "TOOL_EXECUTION_FAILED".into(),
                 message: "command exited with code 1".into(),
+                recovery_hint: None,
             }),
             ..make_test_item()
         };
@@ -1036,26 +1041,32 @@ mod tests {
             TurnError {
                 code: "CONTEXT_LIMIT_EXCEEDED".into(),
                 message: "Too many tokens".into(),
+                recovery_hint: None,
             },
             TurnError {
                 code: "MODEL_RESOLUTION_FAILED".into(),
                 message: "No valid binding".into(),
+                recovery_hint: None,
             },
             TurnError {
                 code: "PROVIDER_RATE_LIMITED".into(),
                 message: "Retry after 30s".into(),
+                recovery_hint: None,
             },
             TurnError {
                 code: "PERSISTENCE_FAILURE".into(),
                 message: "Disk full".into(),
+                recovery_hint: None,
             },
             TurnError {
                 code: "TOOL_EXECUTION_FAILED".into(),
                 message: "exit code 1".into(),
+                recovery_hint: None,
             },
             TurnError {
                 code: "APPROVAL_TIMEOUT".into(),
                 message: "User did not respond".into(),
+                recovery_hint: None,
             },
         ];
         for err in &errors {

@@ -826,6 +826,7 @@ async fn run_worker(
     if let Err(error) = run_worker_inner(config, &mut command_rx, &event_tx).await {
         let _ = event_tx.send(WorkerEvent::TurnFailed {
             message: error.to_string(),
+            hint: None,
             turn_count: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
@@ -925,6 +926,7 @@ async fn run_worker_inner(
             Err(error) => {
                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                     message: format!("failed to resume session: {error}"),
+                    hint: None,
                     turn_count,
                     total_input_tokens,
                     total_output_tokens,
@@ -984,6 +986,7 @@ async fn run_worker_inner(
                             Err(error) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: error.to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -1002,6 +1005,7 @@ async fn run_worker_inner(
                         if active_turn_id.is_some() {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: "cannot run shell command while a turn is in progress".to_string(),
+                                hint: None,
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
@@ -1086,13 +1090,22 @@ async fn run_worker_inner(
                                 });
                             }
                             Ok(Err(error)) => {
+                                let message = error.to_string();
+                                let hint =
+                                    devo_provider::recovery_hint_for_message(&message);
                                 let _ = event_tx.send(WorkerEvent::ProviderValidationFailed {
-                                    message: error.to_string(),
+                                    message,
+                                    hint,
                                 });
                             }
                             Err(_) => {
+                                let message =
+                                    "provider validation request timed out".to_string();
+                                let hint =
+                                    devo_provider::recovery_hint_for_message(&message);
                                 let _ = event_tx.send(WorkerEvent::ProviderValidationFailed {
-                                    message: "provider validation request timed out".to_string(),
+                                    message,
+                                    hint,
                                 });
                             }
                         }
@@ -1112,6 +1125,7 @@ async fn run_worker_inner(
                             Ok(Err(error)) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: error.to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -1124,6 +1138,7 @@ async fn run_worker_inner(
                             Err(_) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: "provider list request timed out".to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -1227,6 +1242,7 @@ async fn run_worker_inner(
                             Ok(Err(error)) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: error.to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -1239,6 +1255,7 @@ async fn run_worker_inner(
                             Err(_) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: "session list request timed out".to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -1256,6 +1273,7 @@ async fn run_worker_inner(
                         {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: error.to_string(),
+                                hint: None,
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
@@ -1293,6 +1311,7 @@ async fn run_worker_inner(
                         let Some(active_session_id) = session_id else {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                hint: None,
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
@@ -1306,6 +1325,7 @@ async fn run_worker_inner(
                         if active_turn_id.is_some() {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: "cannot compact while a turn is in progress".to_string(),
+                                hint: None,
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
@@ -1335,6 +1355,7 @@ async fn run_worker_inner(
                             Err(error) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: error.to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -1553,6 +1574,7 @@ async fn run_worker_inner(
                             Err(error) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: error.to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -1690,6 +1712,7 @@ async fn run_worker_inner(
                             Err(error) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: error.to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -1705,6 +1728,7 @@ async fn run_worker_inner(
                         let Some(active_session_id) = session_id else {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                hint: None,
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
@@ -1734,6 +1758,7 @@ async fn run_worker_inner(
                             Err(error) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: error.to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -1752,6 +1777,7 @@ async fn run_worker_inner(
                         let Some(active_session_id) = session_id else {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                hint: None,
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
@@ -1823,6 +1849,7 @@ async fn run_worker_inner(
                             Err(error) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: error.to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -1838,6 +1865,7 @@ async fn run_worker_inner(
                         let Some(active_session_id) = session_id else {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                hint: None,
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
@@ -1929,6 +1957,7 @@ async fn run_worker_inner(
                                     Err(error) => {
                                         let _ = event_tx.send(WorkerEvent::TurnFailed {
                                             message: error.to_string(),
+                                            hint: None,
                                             turn_count,
                                             total_input_tokens,
                                             total_output_tokens,
@@ -1943,6 +1972,7 @@ async fn run_worker_inner(
                             Err(error) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: error.to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -2027,6 +2057,7 @@ async fn run_worker_inner(
                             Err(error) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                                     message: error.to_string(),
+                                    hint: None,
                                     turn_count,
                                     total_input_tokens,
                                     total_output_tokens,
@@ -2058,6 +2089,7 @@ async fn run_worker_inner(
                         {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: error.to_string(),
+                                hint: None,
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
@@ -2085,6 +2117,7 @@ async fn run_worker_inner(
                         {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: error.to_string(),
+                                hint: None,
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
@@ -2105,6 +2138,7 @@ async fn run_worker_inner(
                         {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: error.to_string(),
+                                hint: None,
                                 turn_count,
                                 total_input_tokens,
                                 total_output_tokens,
@@ -2181,6 +2215,7 @@ async fn run_worker_inner(
                                 Err(error) => {
                                     let _ = event_tx.send(WorkerEvent::TurnFailed {
                                         message: error.to_string(),
+                                        hint: None,
                                         turn_count,
                                         total_input_tokens,
                                         total_output_tokens,
@@ -2635,10 +2670,29 @@ async fn run_worker_inner(
                             "turn/failed" => {
                                 if let ServerEvent::TurnFailed(TurnFailedPayload { turn, error, .. }) = event {
                                     active_turn_id = None;
-                                    let message = error
-                                        .map(|error| error.message)
-                                        .or_else(|| latest_completed_agent_message.take())
-                                        .unwrap_or_else(|| format!("turn failed with status {:?}", turn.status));
+                                    let (message, hint) = match error {
+                                        Some(error) => {
+                                            let hint = error.recovery_hint.or_else(|| {
+                                                devo_provider::recovery_hint_for_message(
+                                                    &error.message,
+                                                )
+                                            });
+                                            (error.message, hint)
+                                        }
+                                        None => {
+                                            let message = latest_completed_agent_message
+                                                .take()
+                                                .unwrap_or_else(|| {
+                                                    format!(
+                                                        "turn failed with status {:?}",
+                                                        turn.status
+                                                    )
+                                                });
+                                            let hint =
+                                                devo_provider::recovery_hint_for_message(&message);
+                                            (message, hint)
+                                        }
+                                    };
                                     if let Some(usage) = &turn.usage {
                                         if !saw_usage_update_for_turn {
                                             last_query_input_tokens = usage.input_tokens as usize;
@@ -2658,6 +2712,7 @@ async fn run_worker_inner(
                                     }
                                     let _ = event_tx.send(WorkerEvent::TurnFailed {
                                         message,
+                                        hint,
                                         turn_count,
                                         total_input_tokens,
                                         total_output_tokens,

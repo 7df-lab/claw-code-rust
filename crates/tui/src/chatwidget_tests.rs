@@ -1077,6 +1077,37 @@ fn approval_request_does_not_duplicate_already_committed_assistant_text() {
 }
 
 #[test]
+fn approval_request_apply_patch_uses_friendly_label() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    let session_id = SessionId::new();
+    let turn_id = TurnId::new();
+
+    widget.handle_worker_event(crate::events::WorkerEvent::ApprovalRequest {
+        session_id,
+        turn_id,
+        approval_id: "approval-call-friendly".to_string(),
+        action_summary: "apply_patch".to_string(),
+        justification: "Tool execution requires approval.".to_string(),
+        resource: Some("FileWrite".to_string()),
+        available_scopes: vec!["once".to_string()],
+        path: Some("src/main.rs".to_string()),
+        host: None,
+        target: None,
+        command_pattern: None,
+        command_prefix: None,
+    });
+
+    let rendered = rendered_rows(&widget, 80, 24).join("\n");
+    assert!(rendered.contains("Permission approval required"));
+    assert!(rendered.contains("Patch"));
+}
+
+#[test]
 fn approval_request_bottom_pane_menu_denies_with_n_shortcut() {
     let model = Model {
         slug: "test-model".to_string(),
@@ -3319,6 +3350,7 @@ fn onboarding_validation_bypassed_exits_when_configured() {
 
     widget.handle_worker_event(crate::events::WorkerEvent::ProviderValidationFailed {
         message: "validation failed".to_string(),
+        hint: None,
     });
     widget.handle_key_event(press_key(KeyCode::Enter));
     match app_event_rx.try_recv().expect("skip validation command") {
@@ -5008,6 +5040,7 @@ fn paired_failed_turn_events_finalize_ui_once_in_order() {
 
     widget.handle_worker_event(crate::events::WorkerEvent::TurnFailed {
         message: provider_error.to_string(),
+        hint: None,
         turn_count: 0,
         total_input_tokens: 10,
         total_output_tokens: 2,
@@ -5070,6 +5103,35 @@ fn paired_failed_turn_events_finalize_ui_once_in_order() {
     );
     assert_eq!(history.matches(" · failed").count(), 1);
     assert!(!history.contains("interrupted"), "history:\n{history}");
+}
+
+#[test]
+fn turn_failed_renders_recovery_hint() {
+    let mut widget = widget_with_live_explored_cell();
+    let provider_error = "model provider error: provider timeout: stream idle timeout";
+    let recovery_hint = devo_provider::NETWORK_PROXY_HINT;
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnFailed {
+        message: provider_error.to_string(),
+        hint: Some(recovery_hint.to_string()),
+        turn_count: 0,
+        total_input_tokens: 10,
+        total_output_tokens: 2,
+        total_tokens: 12,
+        total_cache_read_tokens: 1,
+        prompt_token_estimate: 10,
+        last_query_input_tokens: 10,
+    });
+
+    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        history.contains(provider_error),
+        "history should contain provider error:\n{history}"
+    );
+    assert!(
+        history.contains(recovery_hint),
+        "history should contain recovery hint:\n{history}"
+    );
 }
 
 #[test]
@@ -9484,6 +9546,38 @@ fn patch_applied_event_with_diff_only_reports_non_zero_counts() {
     assert!(
         !blob.contains("Edited 0 files (+0 -0)"),
         "patch-derived edited block should not collapse to zero summary:\n{blob}"
+    );
+}
+
+#[test]
+fn patch_applied_event_with_empty_update_is_not_rendered() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    let mut changes = std::collections::HashMap::new();
+    changes.insert(
+        PathBuf::from("foo.txt"),
+        devo_protocol::protocol::FileChange::Update {
+            unified_diff: String::new(),
+            old_text: None,
+            new_text: None,
+            move_path: None,
+        },
+    );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
+        tool_use_id: "tool-1".to_string(),
+        changes,
+    });
+
+    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    assert!(
+        !blob.contains("Edited"),
+        "empty patch summary should not be rendered:\n{blob}"
     );
 }
 

@@ -8,6 +8,7 @@ use std::time::Instant;
 use devo_protocol::ProviderRetryPhase;
 use devo_protocol::parse_command::ParsedCommand;
 use devo_protocol::protocol::ExecCommandSource;
+use devo_protocol::protocol::FileChange;
 use ratatui::text::Line;
 
 use crate::bottom_pane::ApprovalOverlay;
@@ -35,6 +36,33 @@ use super::text_stream::ActiveTextItemId;
 fn format_retry_status_message(attempt: usize, backoff_ms: u64) -> String {
     let seconds = (backoff_ms as f64 / 1000.0).max(0.1);
     format!("Retrying provider request in {seconds:.1}s (attempt {attempt})")
+}
+
+fn normalize_approval_action_summary(action_summary: String) -> String {
+    if action_summary == "apply_patch" {
+        return "Patch".to_string();
+    }
+    if let Some(command) = action_summary.strip_prefix("shell_command: ") {
+        return format!("Shell: {command}");
+    }
+    if let Some(command) = action_summary.strip_prefix("bash: ") {
+        return format!("Shell: {command}");
+    }
+    action_summary
+}
+
+fn has_visible_file_changes(
+    changes: &std::collections::HashMap<std::path::PathBuf, FileChange>,
+) -> bool {
+    changes.values().any(|change| match change {
+        FileChange::Add { content } | FileChange::Delete { content } => !content.trim().is_empty(),
+        FileChange::Update {
+            unified_diff,
+            old_text,
+            new_text,
+            move_path,
+        } => !unified_diff.trim().is_empty() || old_text != new_text || move_path.is_some(),
+    })
 }
 
 impl ChatWidget {
@@ -759,13 +787,15 @@ impl ChatWidget {
                 self.active_tool_calls.remove(&tool_use_id);
                 self.pending_tool_calls
                     .retain(|pending| pending.tool_use_id != tool_use_id);
-                self.add_to_history(FileChangeToolIoCell::new(
-                    Some(Self::ran_tool_line(&tool_name)),
-                    tool_name,
-                    input,
-                    changes,
-                    self.session.cwd.clone(),
-                ));
+                if has_visible_file_changes(&changes) {
+                    self.add_to_history(FileChangeToolIoCell::new(
+                        Some(Self::ran_tool_line(&tool_name)),
+                        tool_name,
+                        input,
+                        changes,
+                        self.session.cwd.clone(),
+                    ));
+                }
                 self.set_status_message("Patch applied");
             }
             WorkerEvent::PatchApplied {
@@ -775,7 +805,9 @@ impl ChatWidget {
                 self.active_tool_calls.remove(&tool_use_id);
                 self.pending_tool_calls
                     .retain(|pending| pending.tool_use_id != tool_use_id);
-                self.add_to_history(history_cell::new_patch_event(changes, &self.session.cwd));
+                if has_visible_file_changes(&changes) {
+                    self.add_to_history(history_cell::new_patch_event(changes, &self.session.cwd));
+                }
                 self.set_status_message("Patch applied");
             }
             WorkerEvent::ApprovalRequest {
@@ -793,6 +825,7 @@ impl ChatWidget {
                 command_prefix,
             } => {
                 self.commit_active_streams(DotStatus::Completed);
+                let action_summary = normalize_approval_action_summary(action_summary);
                 self.pending_approval = Some(PendingApprovalRequest {
                     session_id,
                     turn_id,
@@ -995,6 +1028,7 @@ impl ChatWidget {
             }
             WorkerEvent::TurnFailed {
                 message,
+                hint,
                 turn_count,
                 total_input_tokens,
                 total_output_tokens,
@@ -1042,7 +1076,7 @@ impl ChatWidget {
                         .unwrap_or_default()
                 };
                 let accent_color = self.active_accent_color();
-                self.add_to_history(history_cell::new_error_event(message));
+                self.add_to_history(history_cell::new_error_event_with_hint(message, hint));
                 self.add_to_history(history_cell::TurnSummaryCell::new_failed(
                     input_mode,
                     model_name,
@@ -1067,15 +1101,17 @@ impl ChatWidget {
                 self.busy = false;
                 self.set_status_message("Saving provider");
             }
-            WorkerEvent::ProviderValidationFailed { message } => {
+            WorkerEvent::ProviderValidationFailed { message, hint } => {
                 if let Some(onboarding) = self.onboarding.as_mut() {
-                    onboarding.on_validation_failed(message.clone());
+                    onboarding.on_validation_failed(message.clone(), hint.clone());
                 }
                 self.drain_onboarding_transcript_events();
                 self.busy = false;
+                let transcript_hint =
+                    hint.unwrap_or_else(|| "provider validation failed".to_string());
                 self.add_to_history(history_cell::new_error_event_with_hint(
                     message,
-                    Some("provider validation failed".to_string()),
+                    Some(transcript_hint),
                 ));
                 self.set_status_message("Provider validation failed");
             }

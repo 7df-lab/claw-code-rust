@@ -384,6 +384,8 @@ pub(crate) enum WorkerEvent {
     TurnFailed {
         /// Human-readable error text to surface in the transcript and status bar.
         message: String,
+        /// Optional user-facing next step for recovering from this failure.
+        hint: Option<String>,
         /// Total turns completed in the session so far.
         turn_count: usize,
         /// Total input tokens accumulated in the session.
@@ -408,6 +410,8 @@ pub(crate) enum WorkerEvent {
     ProviderValidationFailed {
         /// Human-readable failure reason from the probe request.
         message: String,
+        /// Optional user-facing next step for recovering from this failure.
+        hint: Option<String>,
     },
     /// Current provider vendors were listed from the server.
     ProviderVendorsListed {

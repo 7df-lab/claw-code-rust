@@ -159,7 +159,7 @@ fn failed_validation_widget() -> (OnboardingWidget, mpsc::UnboundedReceiver<AppE
 
     let command = next_shell_command(&mut app_event_rx);
     assert_eq!(command.starts_with("onboard "), true);
-    widget.on_validation_failed("probe failed".to_string());
+    widget.on_validation_failed("probe failed".to_string(), /*recovery_hint*/ None);
     (widget, app_event_rx)
 }
 
@@ -277,7 +277,7 @@ fn onboarding_existing_provider_validation_payload_preserves_edited_model_name()
 fn onboarding_existing_provider_bypass_payload_preserves_edited_model_name() {
     let (mut widget, mut app_event_rx) = edited_existing_provider_widget();
     let _ = next_shell_command(&mut app_event_rx);
-    widget.on_validation_failed("probe failed".to_string());
+    widget.on_validation_failed("probe failed".to_string(), /*recovery_hint*/ None);
 
     widget.handle_key_event(press(KeyCode::Enter));
 

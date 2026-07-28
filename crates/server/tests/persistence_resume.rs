@@ -867,6 +867,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
     let terminal_error = TurnError {
         code: "PROVIDER_SERVER_ERROR".to_string(),
         message: "exact persisted provider failure".to_string(),
+        recovery_hint: None,
     };
     let session = SessionRecord {
         id: session_id,

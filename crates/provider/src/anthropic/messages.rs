@@ -391,9 +391,10 @@ impl ModelProviderSDK for AnthropicProvider {
                     Ok(Some(event)) => event,
                     Ok(None) => break,
                     Err(idle) => {
-                        Err(anyhow::anyhow!(
-                            "anthropic stream idle timeout for model {}: {idle}",
-                            request.model
+                        Err(timeout::stream_idle_timeout_provider_error(
+                            "anthropic",
+                            &request.model,
+                            idle,
                         ))?
                     }
                 };

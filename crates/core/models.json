@@ -42,7 +42,8 @@
             "limit": 10000
         },
         "input_modalities": [
-            "text"
+            "text",
+            "image"
         ],
         "reasoning_implementation": {
             "model_variant": {

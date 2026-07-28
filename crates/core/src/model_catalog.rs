@@ -154,6 +154,17 @@ mod tests {
     }
 
     #[test]
+    fn builtin_minimax_m3_supports_image_input() {
+        let model = load_builtin_models()
+            .expect("load builtin models")
+            .into_iter()
+            .find(|model| model.slug == "MiniMax-M3")
+            .expect("MiniMax-M3 model");
+
+        assert!(model.input_modalities.contains(&InputModality::Image));
+    }
+
+    #[test]
     fn load_from_config_applies_partial_builtin_override_without_replacing_metadata() {
         let builtin = load_builtin_models()
             .expect("load builtins")

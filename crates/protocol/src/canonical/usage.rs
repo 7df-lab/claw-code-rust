@@ -102,6 +102,10 @@ pub struct UsageRecord {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageTotals {
+    /// Aggregate tokens. For ledger-derived totals this equals
+    /// `input_tokens + output_tokens`; for legacy lumps it is the only known
+    /// number (the input/output split was never recorded).
+    pub total_tokens: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_tokens: u64,

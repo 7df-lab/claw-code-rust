@@ -136,6 +136,8 @@ pub struct GitInfo {
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_url: Option<String>,
-    pub dirty: bool,
+    /// `None` = unknown (e.g. converted from legacy data that never recorded
+    /// the dirty flag); fresh snapshots always compute it.
+    pub dirty: Option<bool>,
     pub observed_at: DateTime<Utc>,
 }

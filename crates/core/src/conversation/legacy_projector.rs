@@ -116,6 +116,70 @@ impl LegacyProjector {
         seq
     }
 
+    /// Re-syncs the write-path state (seq counter, approval folds, cwd) with
+    /// a v2 line that is already on disk. Stores hydrating a projector for a
+    /// pre-existing file replay legacy lines through [`Self::project_line`]
+    /// and feed v2 lines through this method so subsequent appends never
+    /// collide with or orphan the on-disk history.
+    pub fn observe_v2_line(&mut self, line: &RolloutLineV2) {
+        match line {
+            RolloutLineV2::SessionMeta { session, .. } => {
+                self.session_cwd = Some(session.cwd.clone());
+            }
+            RolloutLineV2::Item { item, .. } => {
+                self.next_seq = self.next_seq.max(item.seq + 1);
+                if let Item::Approval {
+                    approval_id,
+                    action_summary,
+                    justification,
+                    resource,
+                    available_scopes,
+                    target,
+                    decision,
+                    ..
+                } = &item.item
+                {
+                    match decision {
+                        None => {
+                            self.approvals.insert(
+                                approval_id.clone(),
+                                ApprovalFold {
+                                    item_id: item.id.clone(),
+                                    seq: item.seq,
+                                    revision: item.revision,
+                                    request: approval_request_from_parts(
+                                        approval_id,
+                                        action_summary,
+                                        justification,
+                                        resource,
+                                        available_scopes,
+                                        target,
+                                    ),
+                                },
+                            );
+                        }
+                        Some(_) => {
+                            if let Some(fold) = self.approvals.get_mut(approval_id) {
+                                fold.revision = fold.revision.max(item.revision);
+                            }
+                        }
+                    }
+                }
+            }
+            RolloutLineV2::Internal { seq, .. } => {
+                self.next_seq = self.next_seq.max(seq + 1);
+            }
+            RolloutLineV2::Turn { .. }
+            | RolloutLineV2::SessionTitleUpdated { .. }
+            | RolloutLineV2::CompactionSnapshot { .. }
+            | RolloutLineV2::SessionRollback { .. }
+            | RolloutLineV2::WorkspaceCheckpoint { .. }
+            | RolloutLineV2::WorkspaceChange { .. }
+            | RolloutLineV2::WorkspaceRestoreStarted { .. }
+            | RolloutLineV2::WorkspaceRestoreCompleted { .. } => {}
+        }
+    }
+
     /// Projects one legacy rollout line into zero or more v2 lines. Most
     /// lines map 1:1; an `Item` record expands to one line per packed
     /// payload, and internal payloads (HookPrompt/TurnSummary/ToolProgress)
@@ -141,6 +205,9 @@ impl LegacyProjector {
                 Ok(vec![RolloutLineV2::Internal {
                     v: ROLLOUT_FORMAT_VERSION,
                     timestamp: line.timestamp,
+                    session_id: SessionId::from_legacy_uuid(legacy_uuid(line.session_id)?),
+                    turn_id: None,
+                    seq: 0,
                     entry: InternalRecordV2::SessionContext(Box::new(
                         line.session_context.clone(),
                     )),
@@ -160,16 +227,34 @@ impl LegacyProjector {
                         .collect::<Result<_, _>>()?,
                 }])
             }
-            RolloutLine::MessageEditRecorded(line) => Ok(vec![RolloutLineV2::Internal {
-                v: ROLLOUT_FORMAT_VERSION,
-                timestamp: line.timestamp,
-                entry: InternalRecordV2::MessageEdit(line.record.clone()),
-            }]),
-            RolloutLine::TurnSuperseded(line) => Ok(vec![RolloutLineV2::Internal {
-                v: ROLLOUT_FORMAT_VERSION,
-                timestamp: line.timestamp,
-                entry: InternalRecordV2::TurnSuperseded(line.record.clone()),
-            }]),
+            RolloutLine::MessageEditRecorded(line) => {
+                let record = &line.record;
+                Ok(vec![RolloutLineV2::Internal {
+                    v: ROLLOUT_FORMAT_VERSION,
+                    timestamp: line.timestamp,
+                    session_id: SessionId::from_legacy_uuid(legacy_uuid(record.session_id)?),
+                    turn_id: record
+                        .replacement_turn_id
+                        .or(record.target_turn_id)
+                        .map(|id| legacy_uuid(id).map(TurnId::from_legacy_uuid))
+                        .transpose()?,
+                    seq: 0,
+                    entry: InternalRecordV2::MessageEdit(line.record.clone()),
+                }])
+            }
+            RolloutLine::TurnSuperseded(line) => {
+                let record = &line.record;
+                Ok(vec![RolloutLineV2::Internal {
+                    v: ROLLOUT_FORMAT_VERSION,
+                    timestamp: line.timestamp,
+                    session_id: SessionId::from_legacy_uuid(legacy_uuid(record.session_id)?),
+                    turn_id: Some(TurnId::from_legacy_uuid(legacy_uuid(
+                        record.replacement_turn_id,
+                    )?)),
+                    seq: 0,
+                    entry: InternalRecordV2::TurnSuperseded(line.record.clone()),
+                }])
+            }
             RolloutLine::TurnWorkspaceCheckpointRecorded(line) => {
                 Ok(vec![RolloutLineV2::WorkspaceCheckpoint {
                     v: ROLLOUT_FORMAT_VERSION,
@@ -471,9 +556,15 @@ impl LegacyProjector {
                     state,
                 } => (id, seq, revision, state, item),
                 Projected::Internal(entry) => {
+                    // Internal entries consume one sequence position, shared
+                    // with the item stream, so their order among items is
+                    // exactly recoverable by the inverse projector.
                     out.push(RolloutLineV2::Internal {
                         v: ROLLOUT_FORMAT_VERSION,
                         timestamp: line.timestamp,
+                        session_id: session_id.clone(),
+                        turn_id: Some(turn_id.clone()),
+                        seq: self.next_seq(),
                         entry: *entry,
                     });
                     continue;
@@ -738,6 +829,34 @@ impl LegacyProjector {
 fn legacy_uuid(id: impl Display) -> Result<Uuid, LegacyProjectError> {
     let text = id.to_string();
     Uuid::parse_str(&text).map_err(|_| LegacyProjectError::InvalidLegacyId(text))
+}
+
+/// Rebuilds a legacy approval request payload from the canonical approval
+/// parts (the inverse of [`approval_request_item`]); used when hydrating the
+/// fold map from an on-disk v2 approval envelope.
+fn approval_request_from_parts(
+    approval_id: &str,
+    action_summary: &str,
+    justification: &str,
+    resource: &Option<String>,
+    available_scopes: &[String],
+    target: &Option<ApprovalTarget>,
+) -> ApprovalRequestItem {
+    let (path, host, target) = target.as_ref().map_or((None, None, None), |target| match target {
+        ApprovalTarget::Path { path } => (Some(path.display().to_string()), None, None),
+        ApprovalTarget::Host { host } => (None, Some(host.clone()), None),
+        ApprovalTarget::Command { command } => (None, None, Some(command.clone())),
+    });
+    ApprovalRequestItem {
+        approval_id: approval_id.into(),
+        action_summary: action_summary.into(),
+        justification: justification.into(),
+        resource: resource.clone(),
+        available_scopes: available_scopes.into(),
+        path,
+        host,
+        target,
+    }
 }
 
 /// Builds the approval target from the legacy request's optional path, host,

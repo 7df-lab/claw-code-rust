@@ -56,40 +56,29 @@ pub enum V2InverseError {
     /// then the legacy replay path this projector feeds is gone.
     #[error("canonical id is not a legacy bare UUID: {0}")]
     NonLegacyId(String),
-    /// An internal or session-context line arrived before the SessionMeta
-    /// line established the session identity (internal lines carry no
-    /// ids of their own).
-    #[error("line arrived before the session meta line: {0}")]
-    MissingSessionMeta(&'static str),
+    /// A turn-scoped internal entry arrived without its turn id (the v2
+    /// writer always sets one for `Entry` records).
+    #[error("internal entry line is missing its turn id")]
+    MissingTurnId,
 }
 
-/// Stateful v2 → legacy line converter, one instance per session file. The
-/// state exists because v2 `Internal` lines carry no session/turn identity
-/// or sequence of their own; both are approximated from the surrounding
-/// lines (see the comments at the use sites).
+/// v2 → legacy line converter. Stateless: every v2 line carries the
+/// identity the inverse needs (internal lines got explicit
+/// session/turn/seq fields in the same change that introduced the write
+/// switch).
 #[derive(Debug, Default)]
-pub struct V2InverseProjector {
-    /// Session id learned from the SessionMeta line.
-    session_id: Option<SessionId>,
-    /// Turn id learned from the most recent Turn line; internal entries are
-    /// attributed to it (their original owning turn is not recorded on the
-    /// v2 internal line).
-    current_turn_id: Option<TurnId>,
-    /// Highest item envelope seq seen so far; synthesized records for
-    /// internal lines sort at this position.
-    max_seq_seen: u64,
-}
+pub struct V2InverseProjector;
 
 impl V2InverseProjector {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     /// Projects one v2 line into zero or more legacy lines. Most lines map
     /// 1:1; items the legacy format cannot represent at all (`Warning` and
     /// the new-only canonical variants) produce no line — see the comment on
     /// the item mapping.
-    pub fn project_line(&mut self, line: &RolloutLineV2) -> Result<Vec<RolloutLine>, V2InverseError> {
+    pub fn project_line(&self, line: &RolloutLineV2) -> Result<Vec<RolloutLine>, V2InverseError> {
         match line {
             RolloutLineV2::SessionMeta {
                 timestamp,
@@ -104,12 +93,16 @@ impl V2InverseProjector {
                 ..
             } => self.project_turn(*timestamp, turn, extras.as_deref()),
             RolloutLineV2::Item { item, .. } => {
-                self.max_seq_seen = self.max_seq_seen.max(item.seq);
                 Ok(self.project_item_envelope(item)?.into_iter().collect())
             }
             RolloutLineV2::Internal {
-                timestamp, entry, ..
-            } => self.project_internal(*timestamp, entry),
+                timestamp,
+                session_id,
+                turn_id,
+                seq,
+                entry,
+                ..
+            } => self.project_internal(*timestamp, session_id, turn_id.as_ref(), *seq, entry),
             RolloutLineV2::SessionTitleUpdated {
                 timestamp,
                 session_id,
@@ -204,13 +197,12 @@ impl V2InverseProjector {
     }
 
     fn project_session_meta(
-        &mut self,
+        &self,
         timestamp: DateTime<Utc>,
         session: &Session,
         extras: Option<&SessionPersistenceExtras>,
     ) -> Result<Vec<RolloutLine>, V2InverseError> {
         let id = legacy_session_id(&session.id)?;
-        self.session_id = Some(id);
 
         let (parent_session_id, agent_role) = match &session.parent {
             Some(SessionParent::Fork { session_id, .. }) => {
@@ -303,13 +295,12 @@ impl V2InverseProjector {
     }
 
     fn project_turn(
-        &mut self,
+        &self,
         timestamp: DateTime<Utc>,
         turn: &Turn,
         extras: Option<&TurnPersistenceExtras>,
     ) -> Result<Vec<RolloutLine>, V2InverseError> {
         let id = legacy_turn_id(&turn.id)?;
-        self.current_turn_id = Some(id);
 
         let status = match turn.status {
             // Pending/WaitingApproval are not distinguishable after the
@@ -582,6 +573,9 @@ impl V2InverseProjector {
     fn project_internal(
         &self,
         timestamp: DateTime<Utc>,
+        session_id: &CanonicalSessionId,
+        turn_id: Option<&CanonicalTurnId>,
+        seq: u64,
         entry: &InternalRecordV2,
     ) -> Result<Vec<RolloutLine>, V2InverseError> {
         match entry {
@@ -600,24 +594,16 @@ impl V2InverseProjector {
                         text: text.clone(),
                     }),
                 };
-                // Internal v2 lines carry no ids or seq. The id is a fresh
-                // bare UUID (replay only needs uniqueness); the seq is the
-                // highest envelope seq seen so far, so the record sorts at
-                // the position where the internal line appeared.
-                let envelope_seq = self.max_seq_seen;
-                let session_id = self
-                    .session_id
-                    .ok_or(V2InverseError::MissingSessionMeta("internal entry"))?;
-                let turn_id = self
-                    .current_turn_id
-                    .ok_or(V2InverseError::MissingSessionMeta("internal entry"))?;
+                // Identity and position travel on the line (exact); only the
+                // record id is synthesized, since internal entries have no
+                // item id of their own (replay only needs uniqueness).
                 Ok(vec![RolloutLine::Item(ItemLine {
                     timestamp,
                     item: ItemRecord {
                         id: ItemId::new(),
-                        session_id,
-                        turn_id,
-                        seq: envelope_seq,
+                        session_id: legacy_session_id(session_id)?,
+                        turn_id: legacy_turn_id(turn_id.ok_or(V2InverseError::MissingTurnId)?)?,
+                        seq,
                         timestamp,
                         attempt_placement: None,
                         turn_status: None,
@@ -631,13 +617,10 @@ impl V2InverseProjector {
                 })])
             }
             InternalRecordV2::SessionContext(context) => {
-                let session_id = self
-                    .session_id
-                    .ok_or(V2InverseError::MissingSessionMeta("session context"))?;
                 Ok(vec![RolloutLine::SessionContextUpdated(Box::new(
                     SessionContextUpdatedLine {
                         timestamp,
-                        session_id,
+                        session_id: legacy_session_id(session_id)?,
                         session_context: (**context).clone(),
                         schema_version: CURRENT_SNAPSHOT_SCHEMA_VERSION,
                     },

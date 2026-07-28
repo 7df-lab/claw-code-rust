@@ -60,6 +60,11 @@ pub struct SessionStats {
     pub prompt_token_estimate: usize,
 }
 
+/// Current index schema version recorded in `schema_meta` (05 §2.3).
+/// Bump when a migration changes the index layout; the rollout files are
+/// the rebuildable source of truth on any mismatch.
+const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 /// SQLite database for session metadata, token stats, and pending queues.
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
@@ -239,7 +244,43 @@ impl Database {
             conn.execute("ALTER TABLE sessions ADD COLUMN agent_path TEXT", [])
                 .context("failed to add agent_path column")?;
         }
+        // Schema version table (05 §2.3): the new authority going forward.
+        // The ad-hoc column probes above are the v0 baseline and keep working
+        // for databases created before this table existed.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+        )
+        .context("failed to create schema_meta table")?;
+        conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?1)
+             ON CONFLICT(key) DO NOTHING",
+            [CURRENT_SCHEMA_VERSION.to_string()],
+        )
+        .context("failed to record schema version")?;
         Ok(())
+    }
+
+    /// The recorded schema version, if any. `None` means the database
+    /// predates the `schema_meta` table (implicitly version 0).
+    pub fn schema_version(&self) -> Result<Option<u32>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        value
+            .map(|value| {
+                value
+                    .parse::<u32>()
+                    .context("invalid schema_version in schema_meta")
+            })
+            .transpose()
     }
 
     // === Session CRUD ===
@@ -841,6 +882,23 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let db = Database::open(db_path).expect("open database");
         (db, dir)
+    }
+
+    #[test]
+    fn schema_meta_records_current_schema_version() {
+        let (db, _dir) = test_db();
+        assert_eq!(
+            db.schema_version().expect("read schema version"),
+            Some(CURRENT_SCHEMA_VERSION)
+        );
+        // Re-opening an existing database keeps the recorded version.
+        let (db, dir) = test_db();
+        drop(db);
+        let db = Database::open(dir.path().join("test.db")).expect("reopen database");
+        assert_eq!(
+            db.schema_version().expect("read schema version"),
+            Some(CURRENT_SCHEMA_VERSION)
+        );
     }
 
     #[test]

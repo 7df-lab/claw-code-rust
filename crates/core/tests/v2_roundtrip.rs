@@ -50,7 +50,7 @@ fn fixture_lines(name: &str) -> Vec<RolloutLine> {
 /// inverse project back to legacy lines.
 fn round_trip(lines: &[RolloutLine]) -> Vec<RolloutLine> {
     let mut forward = LegacyProjector::new();
-    let mut inverse = V2InverseProjector::new();
+    let inverse = V2InverseProjector::new();
     let mut out = Vec::new();
     for line in lines {
         let v2_lines = forward.project_line(line).expect("forward projection");
@@ -143,12 +143,13 @@ impl Normalizer {
             let stable_id = (index == 0).then_some(record.id);
             match payload {
                 TurnItem::HookPrompt(_) | TurnItem::ToolProgress(_) | TurnItem::TurnSummary(_) => {
-                    out.push(item_line(
-                        sentinel_id(),
-                        record,
-                        self.next_seq.saturating_sub(1),
-                        payload.clone(),
-                    ));
+                    // Internal entries consume one sequence position in v2
+                    // and the inverse restores it verbatim; the record id
+                    // is still synthesized (internal entries have no item
+                    // id), so it stays unstable.
+                    let seq = self.next_seq;
+                    self.next_seq += 1;
+                    out.push(item_line(sentinel_id(), record, seq, payload.clone()));
                 }
                 TurnItem::ApprovalRequest(request) => {
                     let seq = self.next_seq;
@@ -579,26 +580,26 @@ fn inverse_rejects_prefixed_canonical_ids() {
         }),
         extras: None,
     };
-    let mut inverse = V2InverseProjector::new();
+    let inverse = V2InverseProjector::new();
     let error = inverse.project_line(&line).expect_err("prefixed id must fail");
     assert!(matches!(error, V2InverseError::NonLegacyId(_)));
 }
 
 #[test]
-fn inverse_rejects_internal_lines_before_session_meta() {
+fn inverse_rejects_turn_scoped_internal_line_without_turn_id() {
     let line = RolloutLineV2::Internal {
         v: devo_core::ROLLOUT_FORMAT_VERSION,
         timestamp: ts(0),
+        session_id: devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::nil()),
+        turn_id: None,
+        seq: 1,
         entry: devo_core::InternalRecordV2::Entry {
             entry: devo_protocol::canonical::item::InternalEntry::TurnSummary {
                 text: "1".into(),
             },
         },
     };
-    let mut inverse = V2InverseProjector::new();
-    let error = inverse.project_line(&line).expect_err("missing session meta");
-    assert_eq!(
-        error,
-        V2InverseError::MissingSessionMeta("internal entry")
-    );
+    let inverse = V2InverseProjector::new();
+    let error = inverse.project_line(&line).expect_err("missing turn id");
+    assert_eq!(error, V2InverseError::MissingTurnId);
 }

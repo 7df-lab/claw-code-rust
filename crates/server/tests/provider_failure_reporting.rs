@@ -3,6 +3,9 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+#[path = "support/rollout.rs"]
+mod support;
+
 use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -213,9 +216,8 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
     wait_for_original_event(&mut notifications_rx, "turn/completed").await?;
     let rollout = std::fs::read_to_string(rollout_path(data_root.path(), &session))?;
     assert!(rollout.contains(PROVIDER_ERROR_TEXT));
-    let persisted_error = rollout
-        .lines()
-        .filter_map(|line| serde_json::from_str::<devo_core::RolloutLine>(line).ok())
+    let persisted_error = support::read_rollout_lines_dual(&rollout_path(data_root.path(), &session))?
+        .into_iter()
         .find_map(|line| match line {
             devo_core::RolloutLine::Turn(line) if line.turn.id == failed_turn_id => line.turn.error,
             _ => None,

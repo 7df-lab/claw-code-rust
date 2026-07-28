@@ -100,10 +100,18 @@ pub enum RolloutLineV2 {
         item: ItemEnvelope,
     },
     /// Rollout-only records that are not public items; see
-    /// [`InternalRecordV2`].
+    /// [`InternalRecordV2`]. Identity and position travel on the line so
+    /// internal entries are exactly recoverable: `Entry` records are
+    /// turn-scoped and consume one sequence position (shared with the item
+    /// stream); the other records are session-scoped markers that carry
+    /// their own identity inside the payload, so `turn_id` is `None` and
+    /// `seq` is 0 for them.
     Internal {
         v: u32,
         timestamp: DateTime<Utc>,
+        session_id: SessionId,
+        turn_id: Option<TurnId>,
+        seq: u64,
         entry: InternalRecordV2,
     },
     /// Session title change. The legacy `title_state` is dropped: title

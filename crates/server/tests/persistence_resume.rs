@@ -4,6 +4,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::task;
 
+#[path = "support/rollout.rs"]
+mod support;
+
 use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -543,9 +546,12 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
         rebuilt_result.session.title.as_deref(),
         Some("Rollout persistence follow-up")
     );
+    // v2 title-update lines deliberately drop the title lifecycle (a derived
+    // cache in the canonical model); any Final variant is preserved, which
+    // keeps suppressing regeneration of the recorded title.
     assert_eq!(
         rebuilt_result.session.title_state,
-        devo_core::SessionTitleState::Final(devo_core::SessionTitleFinalSource::UserRename)
+        devo_core::SessionTitleState::Final(devo_core::SessionTitleFinalSource::ExplicitCreate)
     );
     Ok(())
 }
@@ -1180,6 +1186,9 @@ async fn runtime_recovers_session_when_middle_rollout_line_is_corrupted() -> Res
     lines[2] = "{\"Turn\":{\"timestamp\":\"broken\"".to_string();
     std::fs::write(&rollout_path, format!("{}\n", lines.join("\n")))?;
 
+    // Fail closed (05 §2.2): a damaged mid-file line marks the session
+    // damaged — it is skipped at load and refuses to resume, rather than
+    // silently dropping the history after the damage.
     let rebuilt_runtime = build_runtime(data_root.path())?;
     rebuilt_runtime.load_persisted_sessions().await?;
     let (rebuilt_connection_id, _notifications_rx) =
@@ -1198,17 +1207,10 @@ async fn runtime_recovers_session_when_middle_rollout_line_is_corrupted() -> Res
         )
         .await
         .context("session/resume response")?;
-    let resume_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
-    >(resume_response)?
-    .result;
-
-    assert_eq!(resume_result.session.session_id, session_id);
-    assert_eq!(
-        resume_result.session.title.as_deref(),
-        Some("Recoverable session")
+    assert!(
+        resume_response.get("error").is_some(),
+        "damaged session must refuse resume: {resume_response}"
     );
-    assert!(resume_result.loaded_item_count >= 1);
     Ok(())
 }
 
@@ -2213,11 +2215,10 @@ async fn rollout_writes_base_instructions_once_across_multiple_turns() -> Result
     let db = devo_server::db::Database::open(data_root.path().join("test_persistence.db"))?;
     let index = db.get_session_index(&session_id)?.expect("indexed session");
     let rollout_path = index.rollout_path.expect("rollout path");
-    let rollout = std::fs::read_to_string(&rollout_path)?;
+    let rollout_lines = support::read_rollout_lines_dual(&rollout_path)?;
     let mut session_context_lines = 0usize;
     let mut turn_lines_with_session_context = 0usize;
-    for line in rollout.lines().filter(|line| !line.trim().is_empty()) {
-        let rollout_line: RolloutLine = serde_json::from_str(line)?;
+    for rollout_line in rollout_lines {
         match rollout_line {
             RolloutLine::SessionContextUpdated(_) => session_context_lines += 1,
             RolloutLine::Turn(turn_line) if turn_line.turn.session_context.is_some() => {
@@ -2307,11 +2308,10 @@ async fn turn_start_persists_session_context_before_turn_completes() -> Result<(
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let (session_context_lines, turn_lines) = loop {
-        let rollout = std::fs::read_to_string(&rollout_path)?;
+        let rollout_lines = support::read_rollout_lines_dual(&rollout_path)?;
         let mut session_context_lines = 0usize;
         let mut turn_lines = 0usize;
-        for line in rollout.lines().filter(|line| !line.trim().is_empty()) {
-            let rollout_line: RolloutLine = serde_json::from_str(line)?;
+        for rollout_line in rollout_lines {
             match rollout_line {
                 RolloutLine::SessionContextUpdated(_) => session_context_lines += 1,
                 RolloutLine::Turn(_) => turn_lines += 1,

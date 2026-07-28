@@ -24,8 +24,10 @@ use devo_core::ItemRecord;
 use devo_core::Message;
 use devo_core::MessageEditRecordedLine;
 use devo_core::MessageEditRecordedRecord;
+use devo_core::ParsedRolloutLine;
 use devo_core::Role;
 use devo_core::RolloutLine;
+use devo_core::RolloutLineReadError;
 use devo_core::SessionContext;
 use devo_core::SessionContextUpdatedLine;
 use devo_core::SessionId;
@@ -54,7 +56,10 @@ use devo_core::TurnWorkspaceRestoreCompletedLine;
 use devo_core::TurnWorkspaceRestoreCompletedRecord;
 use devo_core::TurnWorkspaceRestoreStartedLine;
 use devo_core::TurnWorkspaceRestoreStartedRecord;
+use devo_core::V2InverseProjector;
 use devo_core::Worklog;
+use devo_core::parse_rollout_line;
+use devo_core::legacy_projector::LegacyProjector;
 
 use crate::execution::PersistedTurnItem;
 use crate::execution::RuntimeSession;
@@ -71,6 +76,10 @@ pub(crate) struct RolloutStore {
     /// Per-file locks that serialise concurrent writes to the same rollout file,
     /// preventing interleaved JSON lines.
     file_locks: Arc<StdMutex<HashMap<PathBuf, Arc<StdMutex<()>>>>>,
+    /// Per-file write-path projectors (v2 single-write, 05 §2.2). One
+    /// instance per rollout path, hydrated from the on-disk history on first
+    /// append so item seqs and approval folds never collide with it.
+    projectors: Arc<StdMutex<HashMap<PathBuf, LegacyProjector>>>,
 }
 
 impl std::fmt::Debug for RolloutStore {
@@ -86,6 +95,7 @@ impl Clone for RolloutStore {
         Self {
             data_root: self.data_root.clone(),
             file_locks: Arc::clone(&self.file_locks),
+            projectors: Arc::clone(&self.projectors),
         }
     }
 }
@@ -96,6 +106,7 @@ impl RolloutStore {
         Self {
             data_root,
             file_locks: Arc::new(StdMutex::new(HashMap::new())),
+            projectors: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
 
@@ -524,6 +535,9 @@ impl RolloutStore {
             .with_context(|| format!("open rollout file {}", rollout_path.display()))?;
         let reader = BufReader::new(file);
         let mut replay = ReplayState::default();
+        // Dual read (05 §2.2): legacy lines replay directly, v2 lines are
+        // projected back into legacy lines by the per-load inverse.
+        let inverse = V2InverseProjector::new();
         let mut lines = reader.lines().enumerate().peekable();
 
         while let Some((line_index, line)) = lines.next() {
@@ -532,26 +546,50 @@ impl RolloutStore {
             if line.trim().is_empty() {
                 continue;
             }
-            match serde_json::from_str::<RolloutLine>(&line) {
-                Ok(parsed) => replay.apply_line(parsed)?,
+            let parsed = match parse_rollout_line(&line) {
+                Ok(parsed) => parsed,
+                // A truncated final line is a crash tail: the write never
+                // completed, nothing was acknowledged.
+                Err(RolloutLineReadError::TruncatedTail) if lines.peek().is_none() => break,
+                // Fail closed: a damaged or unsupported mid-file line means
+                // the session's history is unreadable past this point; the
+                // session refuses to resume rather than silently dropping
+                // history and appending onto a fork.
                 Err(error) => {
-                    if lines.peek().is_none() {
-                        break;
+                    return Err(error).with_context(|| {
+                        format!(
+                            "rollout {} is damaged at line {}; refusing to resume",
+                            rollout_path.display(),
+                            line_index + 1
+                        )
+                    });
+                }
+            };
+            match parsed {
+                ParsedRolloutLine::Legacy(legacy) => replay.apply_line(*legacy)?,
+                ParsedRolloutLine::V2(v2) => {
+                    for legacy_line in inverse
+                        .project_line(&v2)
+                        .with_context(|| format!("project v2 line from {}", rollout_path.display()))?
+                    {
+                        replay.apply_line(legacy_line)?;
                     }
-                    tracing::warn!(
-                        rollout_path = %rollout_path.display(),
-                        line_number = line_index + 1,
-                        error = %error,
-                        "skipping corrupt rollout line"
-                    );
                 }
             }
         }
 
-        replay
+        let mut recovered = replay
             .into_runtime_session(deps)
             .await
-            .with_context(|| format!("replay rollout {}", rollout_path.display()))
+            .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
+        // Inverse-projected (v2) session records carry an empty rollout_path
+        // by design; the real location is always the file being read.
+        if let Some(record) = recovered.record.as_mut()
+            && record.rollout_path.as_os_str().is_empty()
+        {
+            record.rollout_path = rollout_path.to_path_buf();
+        }
+        Ok(recovered)
     }
 
     pub(crate) fn rollout_paths(&self) -> Result<Vec<PathBuf>> {
@@ -578,6 +616,10 @@ impl RolloutStore {
         partition.join(format!("rollout-{timestamp}-{session_id}.jsonl"))
     }
 
+    /// Appends one legacy-shaped line to the rollout file. The write path is
+    /// single-write v2 (05 §2.2): the line is projected through the per-file
+    /// [`LegacyProjector`] and every resulting v2 line becomes its own JSONL
+    /// row. Legacy callers (the typed wrappers above) are unchanged.
     fn append_line(&self, rollout_path: &Path, line: &RolloutLine) -> Result<()> {
         if let Some(parent) = rollout_path.parent() {
             std::fs::create_dir_all(parent)
@@ -596,19 +638,90 @@ impl RolloutStore {
                 .clone()
         };
         let _guard = file_lock.lock().expect("rollout per-file lock poisoned");
+
+        let mut projectors = self
+            .projectors
+            .lock()
+            .expect("rollout projector table poisoned");
+        let projector = match projectors.get_mut(rollout_path) {
+            Some(projector) => projector,
+            None => {
+                let projector = hydrate_projector(rollout_path)?;
+                projectors.entry(rollout_path.to_path_buf()).or_insert(projector)
+            }
+        };
+        let v2_lines = projector
+            .project_line(line)
+            .with_context(|| format!("project rollout line for {}", rollout_path.display()))?;
+
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(rollout_path)
             .with_context(|| format!("open rollout file {}", rollout_path.display()))?;
-        serde_json::to_writer(&mut file, line)
-            .with_context(|| format!("serialize rollout line {}", rollout_path.display()))?;
-        file.write_all(b"\n")
-            .with_context(|| format!("write rollout newline {}", rollout_path.display()))?;
+        for v2_line in &v2_lines {
+            serde_json::to_writer(&mut file, v2_line)
+                .with_context(|| format!("serialize rollout line {}", rollout_path.display()))?;
+            file.write_all(b"\n")
+                .with_context(|| format!("write rollout newline {}", rollout_path.display()))?;
+        }
         file.flush()
             .with_context(|| format!("flush rollout file {}", rollout_path.display()))?;
+        // The rollout is the event log: an acknowledged write must survive a
+        // crash, so every append ends in fsync (file data only, not the
+        // directory entry — matches the pre-v2 durability floor plus the
+        // event-log requirement).
+        file.sync_data()
+            .with_context(|| format!("fsync rollout file {}", rollout_path.display()))?;
         Ok(())
     }
+}
+
+/// Builds the write-path projector for an existing rollout file by replaying
+/// its current contents: legacy lines go through the forward projector (so
+/// the seq counter and approval folds advance exactly as if the file had
+/// been written through the v2 path), v2 lines re-sync that state via
+/// [`LegacyProjector::observe_v2_line`]. Bounded per path: runs once, on the
+/// first append, and the result is cached in the store.
+///
+/// Fails closed on any damaged or unsupported line: appending onto history
+/// the projector could not fully read would fork the session's history.
+fn hydrate_projector(rollout_path: &Path) -> Result<LegacyProjector> {
+    let mut projector = LegacyProjector::new();
+    let file = match File::open(rollout_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(projector),
+        Err(error) => {
+            return Err(error).with_context(|| format!("open rollout file {}", rollout_path.display()));
+        }
+    };
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines().enumerate().peekable();
+    while let Some((line_index, line)) = lines.next() {
+        let line = line.with_context(|| format!("read line from {}", rollout_path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_rollout_line(&line) {
+            Ok(ParsedRolloutLine::Legacy(legacy)) => {
+                projector
+                    .project_line(&legacy)
+                    .with_context(|| format!("hydrate projector from {}", rollout_path.display()))?;
+            }
+            Ok(ParsedRolloutLine::V2(v2)) => projector.observe_v2_line(&v2),
+            Err(RolloutLineReadError::TruncatedTail) if lines.peek().is_none() => break,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "rollout {} is damaged at line {}; refusing to append",
+                        rollout_path.display(),
+                        line_index + 1
+                    )
+                });
+            }
+        }
+    }
+    Ok(projector)
 }
 
 #[derive(Default)]
@@ -1700,34 +1813,43 @@ fn read_rollout_index_fields(path: &Path) -> Result<(SessionRecord, chrono::Date
     let reader = BufReader::new(file);
     let mut session: Option<SessionRecord> = None;
     let mut last_activity_at: Option<chrono::DateTime<Utc>> = None;
+    // Dual read for the index path (05 §2.2/§2.3). The index is a rebuildable
+    // cache, so — unlike resume — unreadable lines are skipped, not fatal.
+    let inverse = V2InverseProjector::new();
 
     for line in reader.lines() {
         let line = line.with_context(|| format!("read line from {}", path.display()))?;
         if line.trim().is_empty() {
             continue;
         }
-        let parsed = match serde_json::from_str::<RolloutLine>(&line) {
-            Ok(parsed) => parsed,
+        let legacy_lines: Vec<RolloutLine> = match parse_rollout_line(&line) {
+            Ok(ParsedRolloutLine::Legacy(legacy)) => vec![*legacy],
+            Ok(ParsedRolloutLine::V2(v2)) => match inverse.project_line(&v2) {
+                Ok(lines) => lines,
+                Err(_) => continue,
+            },
             Err(_) => continue,
         };
-        match parsed {
-            RolloutLine::SessionMeta(meta_line) => {
-                let mut record = meta_line.session;
-                if record.last_activity_at.is_none() {
-                    record.last_activity_at = Some(record.created_at);
+        for parsed in legacy_lines {
+            match parsed {
+                RolloutLine::SessionMeta(meta_line) => {
+                    let mut record = meta_line.session;
+                    if record.last_activity_at.is_none() {
+                        record.last_activity_at = Some(record.created_at);
+                    }
+                    last_activity_at = record.last_activity_at;
+                    session = Some(record);
                 }
-                last_activity_at = record.last_activity_at;
-                session = Some(record);
-            }
-            RolloutLine::SessionTitleUpdated(line) => {
-                if let Some(record) = session.as_mut() {
-                    record.title = Some(line.title);
-                    record.title_state = line.title_state;
-                    record.updated_at = line.timestamp;
-                    last_activity_at = Some(line.timestamp);
+                RolloutLine::SessionTitleUpdated(line) => {
+                    if let Some(record) = session.as_mut() {
+                        record.title = Some(line.title);
+                        record.title_state = line.title_state;
+                        record.updated_at = line.timestamp;
+                        last_activity_at = Some(line.timestamp);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -1883,15 +2005,19 @@ pub(crate) fn build_item_record(
 mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use chrono::TimeZone;
     use chrono::Utc;
     use pretty_assertions::assert_eq;
 
+    use super::ParsedRolloutLine;
     use super::ReplayHistoryItemPayload;
     use super::ReplayState;
     use super::build_prompt_messages_from_snapshot;
+    use super::parse_rollout_line;
     use crate::execution::PersistedTurnItem;
+    use crate::execution::ServerRuntimeDependencies;
     use crate::persistence::apply_turn_item;
     use devo_core::CompactionSnapshotLine;
     use devo_core::ContentPart;
@@ -3124,6 +3250,507 @@ mod tests {
         assert!(session_context_recorded);
         let rollout = std::fs::read_to_string(&record.rollout_path).expect("read rollout");
         assert_eq!(rollout.matches("unique-base-instruction-marker").count(), 1);
-        assert!(rollout.contains("SessionContextUpdated"));
+        // v2 write path: the locked context travels as an internal line.
+        assert!(rollout.contains("\"sessionContext\""));
+    }
+
+    // ── v2 write switch / dual read (P3b) ─────────────────────────────
+
+    struct NoopProvider;
+
+    #[async_trait::async_trait]
+    impl devo_provider::ModelProviderSDK for NoopProvider {
+        async fn completion(
+            &self,
+            _request: devo_protocol::ModelRequest,
+        ) -> anyhow::Result<devo_protocol::ModelResponse> {
+            anyhow::bail!("noop provider does not support completion")
+        }
+
+        async fn completion_stream(
+            &self,
+            _request: devo_protocol::ModelRequest,
+        ) -> anyhow::Result<
+            std::pin::Pin<
+                Box<dyn futures::Stream<Item = anyhow::Result<devo_protocol::StreamEvent>> + Send>,
+            >,
+        > {
+            anyhow::bail!("noop provider does not support streaming")
+        }
+
+        fn name(&self) -> &str {
+            "noop-provider"
+        }
+    }
+
+    fn test_deps(data_root: &std::path::Path) -> ServerRuntimeDependencies {
+        let provider: Arc<dyn devo_provider::ModelProviderSDK> = Arc::new(NoopProvider);
+        ServerRuntimeDependencies::new(
+            Arc::clone(&provider),
+            Arc::new(devo_provider::SingleProviderRouter::new(provider)),
+            Arc::new(devo_core::tools::ToolRegistry::new()),
+            "test-model".to_string(),
+            Arc::new(devo_core::PresetModelCatalog::default()),
+            Arc::new(devo_core::ProviderVendorCatalog::default()),
+            Box::new(devo_core::FileSystemSkillCatalog::new(
+                devo_core::SkillsConfig {
+                    bundled: Some(devo_core::BundledSkillsConfig { enabled: false }),
+                    ..devo_core::SkillsConfig::default()
+                },
+            )),
+            devo_core::AgentsMdConfig::default(),
+            Arc::new(
+                crate::db::Database::open(data_root.join("test.db")).expect("open test database"),
+            ),
+            Arc::new(std::sync::Mutex::new(
+                devo_core::AppConfigStore::load(data_root.to_path_buf(), None)
+                    .expect("load app config store"),
+            )),
+        )
+    }
+
+    fn write_raw_lines(path: &std::path::Path, raw_lines: &[String]) {
+        use std::io::Write;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create rollout directory");
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open rollout for raw append");
+        for raw in raw_lines {
+            file.write_all(raw.as_bytes()).expect("write raw line");
+            file.write_all(b"\n").expect("write newline");
+        }
+    }
+
+    fn raw_rollout_lines(path: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .expect("read rollout")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn test_turn_metadata(session_id: SessionId, turn_id: TurnId) -> crate::turn::TurnMetadata {
+        crate::turn::TurnMetadata {
+            turn_id,
+            session_id,
+            sequence: 1,
+            status: TurnStatus::Completed,
+            kind: TurnKind::Regular,
+            model: "test-model".into(),
+            model_binding_id: None,
+            reasoning_effort_selection: None,
+            reasoning_effort: None,
+            request_model: "test-model".into(),
+            request_thinking: None,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            usage: None,
+            stop_reason: None,
+            failure_reason: None,
+        }
+    }
+
+    #[test]
+    fn write_path_appends_only_v2_lines() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None);
+        rollout_store.append_turn(&record, turn).expect("append turn");
+        let item = super::build_item_record(
+            record.id,
+            metadata.turn_id,
+            ItemId::new(),
+            1,
+            TurnItem::AgentMessage(TextItem { text: "hi".into() }),
+            Some(TurnStatus::Running),
+            None,
+        );
+        rollout_store.append_item(&record, item).expect("append item");
+
+        let raw_lines = raw_rollout_lines(&record.rollout_path);
+        assert_eq!(raw_lines.len(), 3);
+        for raw in &raw_lines {
+            assert!(raw.contains("\"v\":2"), "line is v2: {raw}");
+            match parse_rollout_line(raw).expect("line parses") {
+                ParsedRolloutLine::V2(_) => {}
+                ParsedRolloutLine::Legacy(_) => panic!("freshly written line parsed as legacy"),
+            }
+        }
+    }
+
+    #[test]
+    fn hydration_folds_approval_decision_onto_request_across_restart() {
+        use devo_core::ApprovalDecisionItem;
+        use devo_core::ApprovalRequestItem;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None);
+        rollout_store.append_turn(&record, turn).expect("append turn");
+        let request_record_id = ItemId::new();
+        rollout_store
+            .append_item(
+                &record,
+                super::build_item_record(
+                    record.id,
+                    metadata.turn_id,
+                    request_record_id,
+                    1,
+                    TurnItem::ApprovalRequest(ApprovalRequestItem {
+                        approval_id: "appr-1".into(),
+                        action_summary: "Run ls".into(),
+                        justification: "listing".into(),
+                        resource: Some("ShellExec".into()),
+                        available_scopes: vec!["once".into()],
+                        path: None,
+                        host: None,
+                        target: Some("ls".into()),
+                    }),
+                    Some(TurnStatus::Running),
+                    None,
+                ),
+            )
+            .expect("append approval request");
+
+        // "Restart": a brand-new store must hydrate its projector from the
+        // on-disk v2 history before appending.
+        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf());
+        restarted_store
+            .append_item(
+                &record,
+                super::build_item_record(
+                    record.id,
+                    metadata.turn_id,
+                    ItemId::new(),
+                    2,
+                    TurnItem::ApprovalDecision(ApprovalDecisionItem {
+                        approval_id: "appr-1".into(),
+                        decision: "approve".into(),
+                        scope: "once".into(),
+                    }),
+                    Some(TurnStatus::Running),
+                    None,
+                ),
+            )
+            .expect("append approval decision");
+
+        let approvals: Vec<devo_core::RolloutLineV2> = raw_rollout_lines(&record.rollout_path)
+            .iter()
+            .map(|raw| match parse_rollout_line(raw).expect("line parses") {
+                ParsedRolloutLine::V2(line) => *line,
+                ParsedRolloutLine::Legacy(_) => panic!("line parsed as legacy"),
+            })
+            .filter(|line| {
+                matches!(
+                    line,
+                    devo_core::RolloutLineV2::Item { item, .. }
+                        if matches!(item.item, devo_protocol::canonical::item::Item::Approval { .. })
+                )
+            })
+            .collect();
+        assert_eq!(approvals.len(), 2);
+        let devo_core::RolloutLineV2::Item { item: request, .. } = &approvals[0] else {
+            panic!("request line");
+        };
+        let devo_core::RolloutLineV2::Item { item: decision, .. } = &approvals[1] else {
+            panic!("decision line");
+        };
+        // The decision folded onto the request's item id and seq — not an
+        // orphan Warning with a fresh id.
+        assert_eq!(request.id.as_str(), request_record_id.to_string());
+        assert_eq!(decision.id, request.id);
+        assert_eq!(decision.seq, request.seq);
+        assert_eq!((request.revision, decision.revision), (1, 2));
+        assert_eq!(
+            decision.state,
+            devo_protocol::canonical::item::ItemState::Completed
+        );
+        assert!(
+            matches!(&decision.item, devo_protocol::canonical::item::Item::Approval { decision: Some(d), .. }
+                if d.decision == devo_protocol::canonical::item::ApprovalDecisionKind::Approved
+                    && d.scope == devo_protocol::canonical::item::ApprovalScope::Once)
+        );
+    }
+
+    #[test]
+    fn hydration_fails_closed_on_damaged_history() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        write_raw_lines(&record.rollout_path, &[r#"{"v":2,"kind":"nope"}"#.to_string()]);
+
+        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None);
+        let error = restarted_store
+            .append_turn(&record, turn)
+            .expect_err("append onto damaged history must fail");
+        assert!(
+            format!("{error:#}").contains("refusing to append"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn hydration_tolerates_truncated_final_line() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        write_raw_lines(
+            &record.rollout_path,
+            &[r#"{"v":2,"kind":"item","timestamp":"2026"#.to_string()],
+        );
+
+        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None);
+        restarted_store
+            .append_turn(&record, turn)
+            .expect("crash tail is tolerated");
+    }
+
+    #[tokio::test]
+    async fn dual_read_fails_closed_on_mid_file_damage_but_tolerates_crash_tail() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let deps = test_deps(dir.path());
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        // Damaged middle line, then a valid line after it.
+        write_raw_lines(&record.rollout_path, &[r#"{"v":2,"kind":"nope"}"#.to_string()]);
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None);
+        rollout_store.append_turn(&record, turn).expect("append turn");
+
+        let error = rollout_store
+            .load_session_from_rollout(&record.rollout_path, &deps)
+            .await
+            .err()
+            .expect("damaged mid-file line must fail the load");
+        assert!(
+            format!("{error:#}").contains("refusing to resume"),
+            "unexpected error: {error:#}"
+        );
+
+        // A truncated final line (crash tail) is tolerated instead.
+        let tail_record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&tail_record)
+            .expect("append session meta");
+        write_raw_lines(
+            &tail_record.rollout_path,
+            &[r#"{"v":2,"kind":"item","timestamp":"2026"#.to_string()],
+        );
+        let recovered = rollout_store
+            .load_session_from_rollout(&tail_record.rollout_path, &deps)
+            .await
+            .expect("crash tail is tolerated");
+        assert_eq!(recovered.summary.session_id, tail_record.id);
+    }
+
+    #[tokio::test]
+    async fn mixed_v1_v2_file_resumes_with_reconciled_next_seq() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let deps = test_deps(dir.path());
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            Some("Mixed session".into()),
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+
+        // v1 portion: hand-written legacy lines, as produced before the v2
+        // write switch (never rewritten afterwards).
+        let legacy_lines = [
+            RolloutLine::SessionMeta(Box::new(SessionMetaLine {
+                timestamp: Utc::now(),
+                session: record.clone(),
+            })),
+            RolloutLine::Turn(Box::new(TurnLine {
+                timestamp: Utc::now(),
+                turn: super::build_turn_record(&metadata, None, None, None),
+            })),
+            RolloutLine::Item(ItemLine {
+                timestamp: Utc::now(),
+                item: super::build_item_record(
+                    record.id,
+                    metadata.turn_id,
+                    ItemId::new(),
+                    1,
+                    TurnItem::UserMessage(TextItem {
+                        text: "legacy hello".into(),
+                    }),
+                    Some(TurnStatus::Running),
+                    None,
+                ),
+            }),
+        ];
+        write_raw_lines(
+            &record.rollout_path,
+            &legacy_lines
+                .iter()
+                .map(|line| serde_json::to_string(line).expect("serialize legacy line"))
+                .collect::<Vec<_>>(),
+        );
+
+        // The v2 write path appends onto the legacy file (hydrating first).
+        rollout_store
+            .append_item(
+                &record,
+                super::build_item_record(
+                    record.id,
+                    metadata.turn_id,
+                    ItemId::new(),
+                    2,
+                    TurnItem::AgentMessage(TextItem {
+                        text: "v2 reply".into(),
+                    }),
+                    Some(TurnStatus::Running),
+                    None,
+                ),
+            )
+            .expect("append v2 item");
+
+        // The file mixes both formats; every line dispatches cleanly.
+        let raw_lines = raw_rollout_lines(&record.rollout_path);
+        assert_eq!(raw_lines.len(), 4);
+        for (index, raw) in raw_lines.iter().enumerate() {
+            let parsed = parse_rollout_line(raw).expect("line dispatches");
+            if index < 3 {
+                assert!(
+                    matches!(parsed, ParsedRolloutLine::Legacy(_)),
+                    "line {index} must be legacy"
+                );
+            } else {
+                assert!(matches!(parsed, ParsedRolloutLine::V2(_)), "line {index} must be v2");
+            }
+        }
+
+        // Dual read: the resumed session holds the union of both histories,
+        // and the next runtime seq matches the write-path projector's (the
+        // v1 item took seq 1, the v2 item seq 2 — no collision).
+        let recovered = rollout_store
+            .load_session_from_rollout(&record.rollout_path, &deps)
+            .await
+            .expect("mixed file resumes");
+        assert_eq!(recovered.summary.session_id, record.id);
+        assert_eq!(recovered.summary.title.as_deref(), Some("Mixed session"));
+        assert_eq!(recovered.loaded_item_count, 2);
+        assert_eq!(recovered.next_item_seq, 3);
+        let texts: Vec<&str> = recovered
+            .history_items
+            .iter()
+            .map(|item| item.body.as_str())
+            .collect();
+        assert!(texts.contains(&"legacy hello"), "history: {texts:?}");
+        assert!(texts.contains(&"v2 reply"), "history: {texts:?}");
     }
 }

@@ -116,6 +116,10 @@ pub struct TurnFailedPayload {
 pub struct TurnErrorPayload {
     pub code: String,
     pub message: String,
+    /// Optional user-facing next step for recovering from this failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recovery_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -572,6 +576,7 @@ mod tests {
             error: Some(TurnErrorPayload {
                 code: "PROVIDER_SERVER_ERROR".to_string(),
                 message: "Internal server error".to_string(),
+                recovery_hint: None,
             }),
         };
 

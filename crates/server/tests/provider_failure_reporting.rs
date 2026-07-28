@@ -205,6 +205,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
             message: format!(
                 "model provider error: provider server error (Some(500)): {PROVIDER_ERROR_TEXT}"
             ),
+            recovery_hint: None,
         })
     );
     assert_eq!(failed_agent_items, Vec::new());
@@ -226,6 +227,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
             message: format!(
                 "model provider error: provider server error (Some(500)): {PROVIDER_ERROR_TEXT}"
             ),
+            recovery_hint: None,
         })
     );
 

@@ -92,6 +92,7 @@ impl ServerRuntime {
             .map(|error| TurnError {
                 code: error.code,
                 message: error.message,
+                recovery_hint: error.recovery_hint,
             });
         if let Some(snapshot) = usage_snapshot {
             session_total_input_tokens = snapshot.session_totals.input_tokens;
@@ -344,6 +345,7 @@ impl ServerRuntime {
                     error: terminal_error.map(|error| devo_protocol::TurnErrorPayload {
                         code: error.code.clone(),
                         message: error.message.clone(),
+                        recovery_hint: error.recovery_hint.clone(),
                     }),
                 }))
                 .await;
@@ -381,10 +383,14 @@ fn append_terminal_history_items(
     terminal_error: Option<&TurnError>,
 ) {
     if let Some(error) = terminal_error {
+        let title = error
+            .recovery_hint
+            .clone()
+            .unwrap_or_else(|| error.code.clone());
         state.history_items.push(SessionHistoryItem::new(
             None,
             SessionHistoryItemKind::Error,
-            error.code.clone(),
+            title,
             error.message.clone(),
         ));
     }

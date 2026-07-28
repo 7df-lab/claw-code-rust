@@ -995,6 +995,7 @@ impl ChatWidget {
             }
             WorkerEvent::TurnFailed {
                 message,
+                hint,
                 turn_count,
                 total_input_tokens,
                 total_output_tokens,
@@ -1042,7 +1043,7 @@ impl ChatWidget {
                         .unwrap_or_default()
                 };
                 let accent_color = self.active_accent_color();
-                self.add_to_history(history_cell::new_error_event(message));
+                self.add_to_history(history_cell::new_error_event_with_hint(message, hint));
                 self.add_to_history(history_cell::TurnSummaryCell::new_failed(
                     input_mode,
                     model_name,
@@ -1067,15 +1068,17 @@ impl ChatWidget {
                 self.busy = false;
                 self.set_status_message("Saving provider");
             }
-            WorkerEvent::ProviderValidationFailed { message } => {
+            WorkerEvent::ProviderValidationFailed { message, hint } => {
                 if let Some(onboarding) = self.onboarding.as_mut() {
-                    onboarding.on_validation_failed(message.clone());
+                    onboarding.on_validation_failed(message.clone(), hint.clone());
                 }
                 self.drain_onboarding_transcript_events();
                 self.busy = false;
+                let transcript_hint =
+                    hint.unwrap_or_else(|| "provider validation failed".to_string());
                 self.add_to_history(history_cell::new_error_event_with_hint(
                     message,
-                    Some("provider validation failed".to_string()),
+                    Some(transcript_hint),
                 ));
                 self.set_status_message("Provider validation failed");
             }

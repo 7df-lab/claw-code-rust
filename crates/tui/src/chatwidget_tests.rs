@@ -3319,6 +3319,7 @@ fn onboarding_validation_bypassed_exits_when_configured() {
 
     widget.handle_worker_event(crate::events::WorkerEvent::ProviderValidationFailed {
         message: "validation failed".to_string(),
+        hint: None,
     });
     widget.handle_key_event(press_key(KeyCode::Enter));
     match app_event_rx.try_recv().expect("skip validation command") {
@@ -5008,6 +5009,7 @@ fn paired_failed_turn_events_finalize_ui_once_in_order() {
 
     widget.handle_worker_event(crate::events::WorkerEvent::TurnFailed {
         message: provider_error.to_string(),
+        hint: None,
         turn_count: 0,
         total_input_tokens: 10,
         total_output_tokens: 2,
@@ -5070,6 +5072,35 @@ fn paired_failed_turn_events_finalize_ui_once_in_order() {
     );
     assert_eq!(history.matches(" · failed").count(), 1);
     assert!(!history.contains("interrupted"), "history:\n{history}");
+}
+
+#[test]
+fn turn_failed_renders_recovery_hint() {
+    let mut widget = widget_with_live_explored_cell();
+    let provider_error = "model provider error: provider timeout: stream idle timeout";
+    let recovery_hint = devo_provider::NETWORK_PROXY_HINT;
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnFailed {
+        message: provider_error.to_string(),
+        hint: Some(recovery_hint.to_string()),
+        turn_count: 0,
+        total_input_tokens: 10,
+        total_output_tokens: 2,
+        total_tokens: 12,
+        total_cache_read_tokens: 1,
+        prompt_token_estimate: 10,
+        last_query_input_tokens: 10,
+    });
+
+    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        history.contains(provider_error),
+        "history should contain provider error:\n{history}"
+    );
+    assert!(
+        history.contains(recovery_hint),
+        "history should contain recovery hint:\n{history}"
+    );
 }
 
 #[test]

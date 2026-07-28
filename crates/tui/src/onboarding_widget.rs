@@ -218,6 +218,7 @@ enum OnboardingState {
         base_url: Option<String>,
         api_key: Option<String>,
         error_message: String,
+        recovery_hint: Option<String>,
         selected_action: usize,
     },
 }
@@ -423,6 +424,7 @@ impl OnboardingWidget {
             ..
         } = &self.state
         {
+            let recovery_hint = devo_provider::recovery_hint_for_message(&error_message);
             self.state = OnboardingState::ValidationFailed {
                 model: model_slug.clone(),
                 request_model: request_model.clone(),
@@ -434,13 +436,18 @@ impl OnboardingWidget {
                 base_url: base_url.clone(),
                 api_key: api_key.clone(),
                 error_message,
+                recovery_hint,
                 selected_action: 0,
             };
         }
     }
 
     /// Called when validation fails.
-    pub(crate) fn on_validation_failed(&mut self, error_message: String) {
+    pub(crate) fn on_validation_failed(
+        &mut self,
+        error_message: String,
+        recovery_hint: Option<String>,
+    ) {
         if let OnboardingState::Validating {
             model_slug,
             request_model,
@@ -465,6 +472,7 @@ impl OnboardingWidget {
                 base_url: base_url.clone(),
                 api_key: api_key.clone(),
                 error_message,
+                recovery_hint,
                 selected_action: 0,
             };
         }
@@ -1439,6 +1447,7 @@ impl OnboardingWidget {
             base_url,
             api_key,
             error_message: _,
+            recovery_hint: _,
             selected_action,
         } = &mut self.state
         else {
@@ -2350,6 +2359,7 @@ impl OnboardingWidget {
 
     fn render_validation_failed(
         error_message: &str,
+        recovery_hint: Option<&str>,
         selected_action: usize,
         area: Rect,
         buf: &mut Buffer,
@@ -2373,8 +2383,14 @@ impl OnboardingWidget {
                 error_message.to_string(),
                 Style::default().red(),
             )]),
-            Line::from(""),
         ];
+        if let Some(hint) = recovery_hint.filter(|hint| !hint.trim().is_empty()) {
+            lines.push(Line::from(vec![Span::styled(
+                hint.to_string(),
+                Style::default().dim(),
+            )]));
+        }
+        lines.push(Line::from(""));
 
         for (idx, action) in actions.iter().enumerate() {
             let is_selected = idx == selected_action;
@@ -2473,7 +2489,16 @@ impl Renderable for OnboardingWidget {
             }
             OnboardingState::Validating { .. } => 10,
             OnboardingState::Saving { .. } => 10,
-            OnboardingState::ValidationFailed { .. } => 13,
+            OnboardingState::ValidationFailed { recovery_hint, .. } => {
+                if recovery_hint
+                    .as_ref()
+                    .is_some_and(|hint| !hint.trim().is_empty())
+                {
+                    14
+                } else {
+                    13
+                }
+            }
         }
     }
 
@@ -2642,10 +2667,17 @@ impl Renderable for OnboardingWidget {
             }
             OnboardingState::ValidationFailed {
                 error_message,
+                recovery_hint,
                 selected_action,
                 ..
             } => {
-                Self::render_validation_failed(error_message, *selected_action, area, buf);
+                Self::render_validation_failed(
+                    error_message,
+                    recovery_hint.as_deref(),
+                    *selected_action,
+                    area,
+                    buf,
+                );
             }
         }
     }

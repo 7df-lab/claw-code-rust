@@ -290,6 +290,14 @@ fn classify_error(e: &anyhow::Error) -> ErrorClass {
     }
 
     if e.chain().any(|cause| {
+        cause
+            .downcast_ref::<devo_provider::timeout::StreamIdleTimeoutError>()
+            .is_some()
+    }) {
+        return ErrorClass::NetworkError;
+    }
+
+    if e.chain().any(|cause| {
         cause.downcast_ref::<reqwest::Error>().is_some_and(|error| {
             error.is_timeout()
                 || error.is_connect()
@@ -362,6 +370,7 @@ fn classify_error(e: &anyhow::Error) -> ErrorClass {
         || msg.contains("deadline has elapsed")
         || msg.contains("deadline exceeded")
         || msg.contains("provider timeout")
+        || msg.contains("stream idle timeout")
         || msg.contains("network error")
         || msg.contains("network is unreachable")
         || msg.contains("network unreachable")
@@ -2160,6 +2169,19 @@ mod tests {
                 message: "provider request timed out".into(),
                 provider_name: Some("test-provider".into()),
             }),
+            anyhow::Error::new(devo_provider::timeout::stream_idle_timeout_provider_error(
+                "openai",
+                "gpt-test",
+                devo_provider::timeout::StreamIdleTimeoutError {
+                    idle_timeout: std::time::Duration::from_secs(60),
+                },
+            )),
+            anyhow::Error::new(devo_provider::timeout::StreamIdleTimeoutError {
+                idle_timeout: std::time::Duration::from_secs(60),
+            }),
+            anyhow::anyhow!(
+                "openai stream idle timeout for model gpt-test: provider stream idle timeout after 60s without receiving data"
+            ),
         ];
 
         for error in cases {

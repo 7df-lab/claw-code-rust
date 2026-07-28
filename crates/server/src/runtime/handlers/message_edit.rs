@@ -548,6 +548,9 @@ impl ServerRuntime {
             params.session_id,
             replacement_turn_id,
             replacement_message_id,
+            // The replacement message id is reused as-is; no new item
+            // sequence is allocated on this path.
+            None,
             ItemKind::UserMessage,
             serde_json::json!({ "title": "You", "text": display_input.clone() }),
         )
@@ -556,6 +559,7 @@ impl ServerRuntime {
             params.session_id,
             replacement_turn_id,
             replacement_message_id,
+            None,
             ItemKind::UserMessage,
             serde_json::json!({ "title": "You", "text": display_input }),
         )

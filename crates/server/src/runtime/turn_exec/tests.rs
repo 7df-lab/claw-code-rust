@@ -69,6 +69,7 @@ fn context_compaction_events_share_stable_item_lifecycle() {
                     turn_id: Some(turn_id),
                     item_id: Some(item_id),
                     seq: 0,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id,
@@ -82,6 +83,7 @@ fn context_compaction_events_share_stable_item_lifecycle() {
                     turn_id: Some(turn_id),
                     item_id: Some(item_id),
                     seq: 0,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id,
@@ -109,6 +111,7 @@ fn context_compaction_failure_closes_item_and_reports_visible_error() {
                     turn_id: Some(turn_id),
                     item_id: Some(item_id),
                     seq: 0,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id,

@@ -20,6 +20,11 @@ pub struct EventContext {
     pub turn_id: Option<TurnId>,
     pub item_id: Option<ItemId>,
     pub seq: u64,
+    /// The item's own sequence number within the session, when the emitter
+    /// allocated one. Additive (P2): absent for older emitters and for
+    /// events without an allocated item sequence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +93,17 @@ pub struct FileChangePayload {
 pub struct ItemEventPayload {
     pub context: EventContext,
     pub item: ItemEnvelope,
+}
+
+/// Opt-in typed item event payload (P2, 06-item-model migration step 2):
+/// the same context as [`ItemEventPayload`], but the item is the canonical
+/// typed envelope — a typed `Item` instead of the legacy `ItemKind` +
+/// `serde_json::Value` payload bag. Only emitted to connections that set
+/// `_meta.devo.typedItems` on initialize.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypedItemEventPayload {
+    pub context: EventContext,
+    pub item: crate::canonical::item::ItemEnvelope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

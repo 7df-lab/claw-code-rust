@@ -23,3 +23,4 @@ pub mod rpc_turn;
 pub mod session;
 pub mod turn;
 pub mod usage;
+pub mod wire_projector;

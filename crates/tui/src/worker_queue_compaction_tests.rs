@@ -115,6 +115,7 @@ fn completed_context_compaction_item_emits_worker_event() {
                 turn_id: Some(TurnId::new()),
                 item_id: None,
                 seq: 1,
+                item_seq: None,
             },
             item: ItemEnvelope {
                 item_id: ItemId::new(),

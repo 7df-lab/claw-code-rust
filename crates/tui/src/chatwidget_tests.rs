@@ -6472,6 +6472,7 @@ fn context_compaction_item_lifecycle_emits_worker_events() {
         turn_id: Some(turn_id),
         item_id: Some(item_id),
         seq: 1,
+        item_seq: None,
     };
     let item = devo_server::ItemEnvelope {
         item_id,
@@ -6515,6 +6516,7 @@ fn failed_context_compaction_item_emits_failure_event() {
                 turn_id: Some(TurnId::new()),
                 item_id: None,
                 seq: 1,
+                item_seq: None,
             },
             item: devo_server::ItemEnvelope {
                 item_id: ItemId::new(),

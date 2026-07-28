@@ -4956,6 +4956,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5129,6 +5130,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5181,6 +5183,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5234,6 +5237,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5277,6 +5281,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5895,6 +5900,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5945,6 +5951,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5995,6 +6002,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -6050,6 +6058,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),

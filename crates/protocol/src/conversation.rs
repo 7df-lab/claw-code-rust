@@ -67,6 +67,12 @@ macro_rules! define_id {
             }
         }
 
+        impl From<$name> for Uuid {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
         impl TryFrom<&str> for $name {
             type Error = uuid::Error;
 

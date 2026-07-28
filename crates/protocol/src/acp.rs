@@ -36,11 +36,27 @@ pub const DEVO_HISTORY_INDEX_META: &str = "devo/historyIndex";
 pub const DEVO_PARENT_MESSAGE_ID_META: &str = "devo/parentMessageId";
 pub const DEVO_ITEM_KIND_META: &str = "devo/itemKind";
 pub const DEVO_TURN_USAGE_META: &str = "devo/turnUsage";
+/// Top-level `_meta` object key that carries devo extension capabilities as
+/// a nested object, e.g. `_meta: { "devo": { "typedItems": true } }`.
+pub const DEVO_EXTENSION_META: &str = "devo";
+/// Capability key inside the `devo` extension meta object: the client opts
+/// in to native typed `item/started` / `item/completed` notifications
+/// carrying the canonical `ItemEnvelope` (P2, 06-item-model step 2).
+pub const DEVO_TYPED_ITEMS_META: &str = "typedItems";
 
 pub type AcpMeta = serde_json::Map<String, serde_json::Value>;
 
 pub use crate::acp_event_to_update::acp_notification_from_server_event;
 pub use crate::acp_event_to_update::original_event_from_acp_notification;
+
+/// Returns whether the given `_meta` map opts in to typed item
+/// notifications (`{ "devo": { "typedItems": true } }`).
+pub fn devo_typed_items_opted_in(meta: Option<&AcpMeta>) -> bool {
+    meta.and_then(|meta| meta.get(DEVO_EXTENSION_META))
+        .and_then(|devo| devo.get(DEVO_TYPED_ITEMS_META))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
 
 pub fn devo_extension_method(method: &str) -> String {
     format!("{DEVO_EXTENSION_METHOD_PREFIX}{method}")
@@ -785,6 +801,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 1,
+                item_seq: None,
             },
             item: crate::ItemEnvelope {
                 item_id: ItemId::new(),
@@ -957,6 +974,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 1,
+                item_seq: None,
             },
             item: crate::ItemEnvelope {
                 item_id: ItemId::new(),
@@ -1018,6 +1036,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 1,
+                item_seq: None,
             },
             item: crate::ItemEnvelope {
                 item_id: ItemId::new(),
@@ -1093,6 +1112,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 0,
+                item_seq: None,
             },
             item: crate::ItemEnvelope {
                 item_id,
@@ -1141,6 +1161,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 0,
+                item_seq: None,
             },
             item: crate::ItemEnvelope {
                 item_id,
@@ -1248,6 +1269,7 @@ mod tests {
                     turn_id: None,
                     item_id: Some(item_id),
                     seq: 7,
+                    item_seq: None,
                 },
                 delta: "hello".to_string(),
                 stream_index: None,
@@ -1289,6 +1311,7 @@ mod tests {
                     turn_id: None,
                     item_id: Some(reasoning_item_id),
                     seq: 8,
+                    item_seq: None,
                 },
                 delta: "thinking".to_string(),
                 stream_index: None,

@@ -228,6 +228,7 @@ impl ServerRuntime {
                             turn_id: Some(turn_id),
                             item_id: Some(item_id),
                             seq: item_seq,
+                            item_seq: Some(item_seq),
                         },
                         item: ItemEnvelope {
                             item_id,
@@ -243,6 +244,7 @@ impl ServerRuntime {
                             turn_id: Some(turn_id),
                             item_id: Some(item_id),
                             seq: item_seq,
+                            item_seq: Some(item_seq),
                         },
                         item: ItemEnvelope {
                             item_id,

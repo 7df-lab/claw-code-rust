@@ -23,6 +23,7 @@ use crate::ACP_SESSION_SET_MODE_METHOD;
 use crate::acp_auth_required_response;
 use crate::acp_notification_from_server_event;
 use crate::devo_extension_inner_method;
+use devo_protocol::canonical::wire_projector::typed_item_notification_from_server_event;
 
 use super::outbound::OutboundDeliveryPolicy;
 use super::outbound::OutboundFrame;
@@ -142,6 +143,7 @@ impl ServerRuntime {
                 state: ConnectionState::Connected,
                 acp_authenticated: false,
                 acp_client_capabilities: crate::AcpClientCapabilities::default(),
+                typed_items: false,
                 outbound_tx,
                 opt_out_notification_methods: HashSet::new(),
                 subscriptions: Vec::new(),
@@ -716,7 +718,7 @@ impl ServerRuntime {
             }
             let event_seq = connection.next_seq();
             let event = event.with_seq(event_seq);
-            let (method, value) = acp_notification_from_server_event(method, &event);
+            let (method, value) = connection.notification_for(method, &event);
             Some((
                 connection.outbound_tx.clone(),
                 OutboundFrame::notification(connection_id, method, event_seq, value),
@@ -765,7 +767,7 @@ impl ServerRuntime {
                     }
                     let event_seq = connection.next_seq();
                     let event = event.clone().with_seq(event_seq);
-                    let (method, value) = acp_notification_from_server_event(method, &event);
+                    let (method, value) = connection.notification_for(method, &event);
                     Some((
                         connection.outbound_tx.clone(),
                         OutboundFrame::notification(*connection_id, method, event_seq, value),
@@ -1198,6 +1200,9 @@ pub(crate) struct ConnectionRuntime {
     pub(crate) state: ConnectionState,
     pub(crate) acp_authenticated: bool,
     pub(crate) acp_client_capabilities: crate::AcpClientCapabilities,
+    /// Whether the client opted in to native typed `item/*` notifications
+    /// via `_meta.devo.typedItems` on ACP initialize (P2).
+    pub(crate) typed_items: bool,
     pub(crate) outbound_tx: mpsc::Sender<OutboundFrame>,
     pub(crate) opt_out_notification_methods: HashSet<String>,
     pub(crate) subscriptions: Vec<SubscriptionFilter>,
@@ -1221,6 +1226,18 @@ impl ConnectionRuntime {
     /// Connection-local notifications bypass session subscription filters.
     pub(super) fn should_deliver_connection_local(&self, method: &str) -> bool {
         !self.opt_out_notification_methods.contains(method)
+    }
+
+    /// Routes one server event to its wire notification for this connection:
+    /// native typed `item/*` when the connection opted in and the payload
+    /// projects, otherwise the legacy ACP-wrapped shape (P2 fallback).
+    pub(super) fn notification_for(&self, method: &str, event: &ServerEvent) -> (String, serde_json::Value) {
+        if self.typed_items
+            && let Some(typed) = typed_item_notification_from_server_event(event)
+        {
+            return typed;
+        }
+        acp_notification_from_server_event(method, event)
     }
 
     pub(super) fn should_deliver(
@@ -1392,6 +1409,7 @@ mod tests {
             turn_id: Some(turn_id),
             item_id: Some(item_id),
             seq: 0,
+            item_seq: None,
         };
         let events = [
             ServerEvent::ItemCompleted(ItemEventPayload {
@@ -1702,6 +1720,7 @@ mod tests {
                         turn_id: Some(turn_id),
                         item_id: Some(item_id),
                         seq: 0,
+                        item_seq: None,
                     },
                     delta: "hello".to_string(),
                     stream_index: None,
@@ -1760,6 +1779,7 @@ mod tests {
                         turn_id: Some(turn_id),
                         item_id: Some(item_id),
                         seq: 0,
+                        item_seq: None,
                     },
                     delta: "hello".to_string(),
                     stream_index: None,
@@ -1847,5 +1867,198 @@ mod tests {
 
         assert!(!subscription.session_matches(None, &child_parent_by_session));
         assert!(subscription.session_matches(Some(subscribed_session), &child_parent_by_session));
+    }
+
+    /// Verifies (P2): an opted-in connection receives native typed
+    /// `item/completed` while a legacy connection on the same session keeps
+    /// the ACP-wrapped shape for the same event.
+    #[tokio::test]
+    async fn typed_items_opt_in_receives_native_item_notification() -> Result<()> {
+        use devo_protocol::TypedItemEventPayload;
+        use devo_protocol::canonical::item::{Item, ItemState};
+
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = SessionId::new();
+        let (typed_outbound, mut typed_receiver) = super::outbound::test_outbound_channel(1);
+        let (legacy_outbound, mut legacy_receiver) = super::outbound::test_outbound_channel(1);
+        let typed_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, typed_outbound)
+            .await;
+        let legacy_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, legacy_outbound)
+            .await;
+        runtime
+            .subscribe_connection_to_session(typed_connection_id, session_id, None)
+            .await;
+        runtime
+            .subscribe_connection_to_session(legacy_connection_id, session_id, None)
+            .await;
+        runtime
+            .connections
+            .lock()
+            .await
+            .get_mut(&typed_connection_id)
+            .expect("typed connection")
+            .typed_items = true;
+
+        let turn_id = TurnId::new();
+        let item_id = ItemId::new();
+        runtime
+            .broadcast_event(ServerEvent::ItemCompleted(ItemEventPayload {
+                context: EventContext {
+                    session_id,
+                    turn_id: Some(turn_id),
+                    item_id: Some(item_id),
+                    seq: 0,
+                    item_seq: Some(3),
+                },
+                item: ItemEnvelope {
+                    item_id,
+                    item_kind: ItemKind::AgentMessage,
+                    payload: serde_json::json!({ "title": "Assistant", "text": "hello" }),
+                },
+            }))
+            .await;
+
+        let typed = tokio::time::timeout(Duration::from_secs(1), typed_receiver.recv())
+            .await?
+            .expect("typed connection receives notification");
+        assert_eq!(typed["method"], serde_json::json!("item/completed"));
+        let payload: TypedItemEventPayload =
+            serde_json::from_value(typed["params"].clone()).expect("typed item payload");
+        assert_eq!(payload.item.id.as_str(), item_id.to_string());
+        assert_eq!(payload.item.session_id.as_str(), session_id.to_string());
+        assert_eq!(payload.item.turn_id.as_str(), turn_id.to_string());
+        assert_eq!((payload.item.seq, payload.item.revision), (3, 1));
+        assert_eq!(payload.item.state, ItemState::Completed);
+        assert_eq!(
+            payload.item.item,
+            Item::AssistantMessage {
+                text: "hello".into(),
+                phase: None,
+            }
+        );
+
+        let legacy = tokio::time::timeout(Duration::from_secs(1), legacy_receiver.recv())
+            .await?
+            .expect("legacy connection receives notification");
+        assert_eq!(
+            legacy["method"],
+            serde_json::json!(crate::ACP_SESSION_UPDATE_METHOD)
+        );
+
+        Ok(())
+    }
+
+    /// Verifies (P2): an opted-in connection falls back to the legacy
+    /// ACP-wrapped shape when the payload does not project.
+    #[tokio::test]
+    async fn typed_items_falls_back_to_legacy_shape_on_unprojectable_payload() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = SessionId::new();
+        let (outbound, mut receiver) = super::outbound::test_outbound_channel(1);
+        let connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, outbound)
+            .await;
+        runtime
+            .subscribe_connection_to_session(connection_id, session_id, None)
+            .await;
+        runtime
+            .connections
+            .lock()
+            .await
+            .get_mut(&connection_id)
+            .expect("connection")
+            .typed_items = true;
+
+        runtime
+            .broadcast_event(ServerEvent::ItemStarted(ItemEventPayload {
+                context: EventContext {
+                    session_id,
+                    turn_id: Some(TurnId::new()),
+                    item_id: Some(ItemId::new()),
+                    seq: 0,
+                    item_seq: Some(1),
+                },
+                item: ItemEnvelope {
+                    item_id: ItemId::new(),
+                    item_kind: ItemKind::ToolCall,
+                    // Missing tool_call_id/tool_name: cannot project.
+                    payload: serde_json::json!({ "bogus": true }),
+                },
+            }))
+            .await;
+
+        let notification = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await?
+            .expect("connection receives notification");
+        assert_eq!(
+            notification["method"],
+            serde_json::json!(crate::ACP_SESSION_UPDATE_METHOD)
+        );
+
+        Ok(())
+    }
+
+    /// Verifies (P2): `_meta.devo.typedItems` on initialize is stored on the
+    /// connection and echoed in the initialize result; absence defaults off.
+    #[tokio::test]
+    async fn initialize_typed_items_opt_in_is_stored_and_echoed() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let (typed_outbound, _typed_receiver) = super::outbound::test_outbound_channel(1);
+        let (plain_outbound, _plain_receiver) = super::outbound::test_outbound_channel(1);
+        let typed_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, typed_outbound)
+            .await;
+        let plain_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, plain_outbound)
+            .await;
+
+        let response = runtime
+            .handle_acp_initialize(
+                typed_connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                    "_meta": { "devo": { "typedItems": true } },
+                }),
+            )
+            .await;
+        assert_eq!(
+            response["result"]["_meta"]["devo"]["typedItems"],
+            serde_json::json!(true)
+        );
+
+        let response = runtime
+            .handle_acp_initialize(
+                plain_connection_id,
+                Some(serde_json::json!(2)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                }),
+            )
+            .await;
+        assert!(response["result"]["_meta"].get("devo").is_none());
+
+        let connections = runtime.connections.lock().await;
+        assert!(
+            connections
+                .get(&typed_connection_id)
+                .expect("typed connection")
+                .typed_items
+        );
+        assert!(
+            !connections
+                .get(&plain_connection_id)
+                .expect("plain connection")
+                .typed_items
+        );
+
+        Ok(())
     }
 }

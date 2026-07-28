@@ -328,16 +328,25 @@ impl ServerRuntime {
     ) -> (ItemId, u64) {
         let item_id = ItemId::new();
         let item_seq = self.allocate_item_sequence(session_id).await;
-        self.emit_item_started(session_id, turn_id, item_id, item_kind, payload)
-            .await;
+        self.emit_item_started(
+            session_id,
+            turn_id,
+            item_id,
+            Some(item_seq),
+            item_kind,
+            payload,
+        )
+        .await;
         (item_id, item_seq)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn emit_item_started(
         &self,
         session_id: SessionId,
         turn_id: TurnId,
         item_id: ItemId,
+        item_seq: Option<u64>,
         item_kind: ItemKind,
         payload: serde_json::Value,
     ) {
@@ -347,6 +356,7 @@ impl ServerRuntime {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 0,
+                item_seq,
             },
             item: ItemEnvelope {
                 item_id,
@@ -357,11 +367,13 @@ impl ServerRuntime {
         .await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn emit_item_completed(
         &self,
         session_id: SessionId,
         turn_id: TurnId,
         item_id: ItemId,
+        item_seq: Option<u64>,
         item_kind: ItemKind,
         payload: serde_json::Value,
     ) {
@@ -371,6 +383,7 @@ impl ServerRuntime {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 0,
+                item_seq,
             },
             item: ItemEnvelope {
                 item_id,
@@ -402,8 +415,15 @@ impl ServerRuntime {
             None,
         )
         .await;
-        self.emit_item_completed(session_id, turn_id, item_id, item_kind, payload)
-            .await;
+        self.emit_item_completed(
+            session_id,
+            turn_id,
+            item_id,
+            Some(item_seq),
+            item_kind,
+            payload,
+        )
+        .await;
     }
 
     #[allow(clippy::too_many_arguments)]

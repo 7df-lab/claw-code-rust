@@ -1,0 +1,19 @@
+{
+  "id": "item_019b1c2d3e4f7890abcdef1234567890",
+  "sessionId": "019b1c2d-3e4f-7890-abcd-ef1234567890",
+  "turnId": "turn_019b1c2d3e4f7890abcdef1234567891",
+  "seq": 1,
+  "revision": 1,
+  "createdAt": "2026-08-01T00:00:00Z",
+  "updatedAt": "2026-08-01T00:00:00Z",
+  "state": "completed",
+  "item": {
+    "type": "userMessage",
+    "clientUserMessageId": "cmsg-1",
+    "content": [
+      { "type": "text", "text": "hello world" },
+      { "type": "image", "uri": "data:image/png;base64,AA==", "mimeType": "image/png" }
+    ],
+    "entry": "turnStart"
+  }
+}

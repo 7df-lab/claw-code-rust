@@ -130,16 +130,48 @@ impl ServerRuntime {
             }
         }
 
-        if let Err(err) = self
+        // Stale btw (steer) inputs are no longer discarded (01 §4.3): they
+        // degrade into the session turn queue like any other queued input.
+        match self
             .deps
             .db
-            .clear_pending(&session_id, crate::db::QueueType::Btw)
+            .drain_pending(&session_id, crate::db::QueueType::Btw)
         {
-            tracing::warn!(
-                session_id = %session_id,
-                error = %err,
-                "failed to clear stale btw inputs from database"
-            );
+            Ok(items) => {
+                if !items.is_empty() {
+                    let core_session = runtime_session.core_session.lock().await;
+                    let mut queue = core_session
+                        .pending_turn_queue
+                        .lock()
+                        .expect("pending turn queue mutex should not be poisoned");
+                    for item in &items {
+                        queue.push_back(item.clone());
+                        if let Err(error) =
+                            self.deps
+                                .db
+                                .push_pending(&session_id, crate::db::QueueType::Turn, item)
+                        {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = %error,
+                                "failed to restore btw input into the turn queue"
+                            );
+                        }
+                    }
+                    tracing::debug!(
+                        session_id = %session_id,
+                        restored_btw_count = items.len(),
+                        "degraded stale btw inputs into the pending turn queue"
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %err,
+                    "failed to restore stale btw inputs from database"
+                );
+            }
         }
 
         match self.goal_durable_store.replay_goal_store(session_id).await {

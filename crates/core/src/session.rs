@@ -438,12 +438,27 @@ impl SessionState {
                 queue.push_front(item);
             }
         }
-        // /btw steer inputs are scoped to the current turn only; discard any
-        // that arrived too late to be consumed.
-        self.btw_input_queue
-            .lock()
-            .expect("btw input queue mutex should not be poisoned")
-            .clear();
+        // /btw steer inputs that arrived too late to be consumed degrade
+        // back into the session turn queue (01 §4.3: a steer racing the
+        // turn end must never lose the message). They append behind
+        // already-queued inputs — re-queued at turn end, arrival order among
+        // themselves preserved.
+        let late_steer: Vec<PendingInputItem> = {
+            let mut btw = self
+                .btw_input_queue
+                .lock()
+                .expect("btw input queue mutex should not be poisoned");
+            btw.drain(..).collect()
+        };
+        if !late_steer.is_empty() {
+            let mut queue = self
+                .pending_turn_queue
+                .lock()
+                .expect("pending turn queue mutex should not be poisoned");
+            for item in late_steer {
+                queue.push_back(item);
+            }
+        }
     }
 
     /// Merge turn-scoped pending input with both cross-thread inboxes.
@@ -460,6 +475,7 @@ impl SessionState {
 
 #[cfg(test)]
 mod tests {
+    use devo_protocol::PendingInputKind;
     use devo_protocol::ReasoningCapability;
     use devo_protocol::ReasoningEffort;
     use devo_protocol::SessionId;
@@ -541,6 +557,40 @@ mod tests {
         assert_eq!(
             provider_bound.reasoning_effort_selection,
             Some("high".to_string())
+        );
+    }
+
+    #[test]
+    fn end_turn_degrades_unconsumed_btw_inputs_into_the_turn_queue() {
+        let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+        session.start_turn(TurnKind::Regular);
+        let steer = PendingInputItem::new(
+            PendingInputKind::UserText {
+                text: "late steer".to_string(),
+            },
+            None,
+            chrono::Utc::now(),
+        );
+        session
+            .btw_input_queue
+            .lock()
+            .expect("btw lock")
+            .push_back(steer.clone());
+
+        session.end_turn();
+
+        let queue = session.pending_turn_queue.lock().expect("queue lock");
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].id, steer.id);
+        assert!(
+            matches!(&queue[0].kind, PendingInputKind::UserText { text } if text == "late steer")
+        );
+        assert!(
+            session
+                .btw_input_queue
+                .lock()
+                .expect("btw lock")
+                .is_empty()
         );
     }
 

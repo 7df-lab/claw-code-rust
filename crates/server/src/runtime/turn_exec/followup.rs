@@ -36,6 +36,18 @@ impl ServerRuntime {
             turn: turn.clone(),
         }))
         .await;
+        // `drained` carries queueItemId + startedTurnId, emitted in the same
+        // session-actor operation as the matching turn/started so handles
+        // bind atomically (01 §4.3).
+        self.broadcast_queue_updated(
+            session_id,
+            devo_protocol::canonical::queue::QueueChange::Drained,
+            queued.queued_item_id,
+            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(uuid::Uuid::from(
+                turn.turn_id,
+            ))),
+        )
+        .await;
         let runtime = Arc::clone(self);
         tokio::spawn(async move {
             runtime
@@ -80,6 +92,15 @@ impl ServerRuntime {
             session_id,
             turn: turn.clone(),
         }))
+        .await;
+        self.broadcast_queue_updated(
+            session_id,
+            devo_protocol::canonical::queue::QueueChange::Drained,
+            queued.queued_item_id.clone(),
+            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(uuid::Uuid::from(
+                turn.turn_id,
+            ))),
+        )
         .await;
         Box::pin(Arc::clone(self).execute_turn(ExecuteTurnRequest {
             session_id,
@@ -136,6 +157,9 @@ impl ServerRuntime {
             );
         }
         Some(QueuedTurnInput {
+            queued_item_id: devo_protocol::canonical::ids::QueueItemId::from_legacy_uuid(
+                uuid::Uuid::from(popped.queued_input_id),
+            ),
             display_input: popped.display_input,
             input_text: popped.input_text,
             input_messages: popped.input_messages,

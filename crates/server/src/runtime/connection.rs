@@ -474,6 +474,22 @@ impl ServerRuntime {
             Some(ClientMethod::SubscriptionUnsubscribe) => {
                 Some(self.handle_subscription_unsubscribe(connection_id, id?, params).await)
             }
+            // Session input queue of the new Native API (01 §4.3).
+            Some(ClientMethod::SessionQueuePush) => {
+                Some(self.handle_session_queue_push(connection_id, id?, params).await)
+            }
+            Some(ClientMethod::SessionQueueList) => {
+                Some(self.handle_session_queue_list(id?, params).await)
+            }
+            Some(ClientMethod::SessionQueueUpdate) => {
+                Some(self.handle_session_queue_update(id?, params).await)
+            }
+            Some(ClientMethod::SessionQueueRemove) => {
+                Some(self.handle_session_queue_remove(id?, params).await)
+            }
+            Some(ClientMethod::SessionQueueSteer) => {
+                Some(self.handle_session_queue_steer(connection_id, id?, params).await)
+            }
             // TODO: add endpoint to kill background process opened by unified exec command.
             // TODO: add endpoint to list current background processes.
             None => Some(self.error_response(
@@ -1394,7 +1410,13 @@ mod tests {
     }
 
     fn build_runtime(data_root: &std::path::Path) -> Arc<ServerRuntime> {
-        let provider: Arc<dyn ModelProviderSDK> = Arc::new(NoopProvider);
+        build_runtime_with_provider(data_root, Arc::new(NoopProvider))
+    }
+
+    fn build_runtime_with_provider(
+        data_root: &std::path::Path,
+        provider: Arc<dyn ModelProviderSDK>,
+    ) -> Arc<ServerRuntime> {
         let db = Arc::new(
             crate::db::Database::open(data_root.join("connection.db")).expect("open test database"),
         );
@@ -2852,6 +2874,590 @@ mod tests {
         )
         .await;
         assert!(removed_again.get("error").is_some());
+
+        Ok(())
+    }
+
+    // ── Session input queue (P4c: session/queue/*) ────────────────────
+
+    /// A provider whose stream blocks until `open` flips, so tests can hold
+    /// a turn open and finish it on demand. The gate is level-triggered:
+    /// once open, every later call completes immediately (a plain
+    /// `Notify::notify_waiters` only wakes current waiters and deadlocks
+    /// follow-up turns). `started` flips once the first stream is requested,
+    /// letting tests distinguish "model call in flight" from "turn
+    /// registered but query not started yet".
+    struct GatedProvider {
+        open: Arc<std::sync::atomic::AtomicBool>,
+        started: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl ModelProviderSDK for GatedProvider {
+        async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            anyhow::bail!("gated provider does not support completion")
+        }
+
+        async fn completion_stream(
+            &self,
+            _request: ModelRequest,
+        ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent>> + Send>>>
+        {
+            self.started
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let open = Arc::clone(&self.open);
+            // Tick like a real provider stream so the session actor keeps
+            // servicing its mailbox (a perfectly silent stream would stall
+            // every mailbox round-trip the way no production stream can).
+            Ok(Box::pin(futures::stream::unfold(false, move |done| {
+                let open = Arc::clone(&open);
+                async move {
+                    if done {
+                        return None;
+                    }
+                    let gate_open = async {
+                        while !open.load(std::sync::atomic::Ordering::SeqCst) {
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    };
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                            Some((
+                                Ok(StreamEvent::TextDelta {
+                                    index: 0,
+                                    text: "tick".into(),
+                                }),
+                                false,
+                            ))
+                        }
+                        _ = gate_open => {
+                            Some((
+                                Ok(StreamEvent::MessageDone {
+                                    response: ModelResponse {
+                                        id: "gated-response".into(),
+                                        content: vec![devo_protocol::ResponseContent::Text(
+                                            "done".into(),
+                                        )],
+                                        stop_reason: Some(devo_protocol::StopReason::EndTurn),
+                                        usage: devo_protocol::Usage::default(),
+                                        metadata: devo_protocol::ResponseMetadata::default(),
+                                    },
+                                }),
+                                true,
+                            ))
+                        }
+                    }
+                }
+            })))
+        }
+
+        fn name(&self) -> &str {
+            "gated-provider"
+        }
+    }
+
+    async fn start_durable_session(
+        runtime: &Arc<ServerRuntime>,
+        connection_id: u64,
+        data_root: &std::path::Path,
+    ) -> Result<SessionId> {
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 100,
+                    "method": "session/start",
+                    "params": {
+                        "cwd": data_root,
+                        "ephemeral": false,
+                        "title": "queue session",
+                        "model": "test-model"
+                    }
+                }),
+            )
+            .await
+            .expect("session/start response");
+        Ok(serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(
+            response,
+        )?
+        .result
+        .session
+        .session_id)
+    }
+
+    async fn start_turn(
+        runtime: &Arc<ServerRuntime>,
+        connection_id: u64,
+        session_id: SessionId,
+        text: &str,
+    ) -> Result<TurnId> {
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 101,
+                    "method": "_devo/turn/start",
+                    "params": {
+                        "session_id": session_id,
+                        "input": [{ "type": "text", "text": text }],
+                        "model": null,
+                        "sandbox": null,
+                        "approval_policy": null,
+                        "cwd": null
+                    }
+                }),
+            )
+            .await
+            .expect("turn/start response");
+        let result: crate::SuccessResponse<crate::TurnStartResult> =
+            serde_json::from_value(response)?;
+        Ok(result.result.turn_id().expect("turn started"))
+    }
+
+    async fn queue_list(
+        runtime: &Arc<ServerRuntime>,
+        connection_id: u64,
+        session_id: SessionId,
+    ) -> Vec<devo_protocol::canonical::queue::QueueEntry> {
+        let response = history_request(
+            runtime,
+            connection_id,
+            1,
+            "session/queue/list",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let result: devo_protocol::canonical::rpc_turn::SessionQueueListResult =
+            serde_json::from_value(response["result"].clone()).expect("queue/list result");
+        result.entries
+    }
+
+    async fn session_turns_json(
+        runtime: &Arc<ServerRuntime>,
+        connection_id: u64,
+        session_id: SessionId,
+    ) -> Vec<serde_json::Value> {
+        let response = history_request(
+            runtime,
+            connection_id,
+            90,
+            "session/turns/list",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        response["result"]["data"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn queue_push_idle_starts_turn_and_busy_queues_then_update_remove() -> Result<()> {
+        use devo_protocol::canonical::rpc_turn::{SessionQueuePushResult, SessionQueueUpdateResult};
+        use devo_protocol::canonical::turn::TurnStatus as CanonicalTurnStatus;
+
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Default::default(),
+            }),
+        );
+        let (outbound, mut notifications) = super::outbound::test_outbound_channel(64);
+        let connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, outbound)
+            .await;
+        runtime
+            .handle_acp_initialize(
+                connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                }),
+            )
+            .await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        // Subscribe so queue/updated notifications are observable.
+        let created = history_request(
+            &runtime,
+            connection_id,
+            2,
+            "subscription/create",
+            serde_json::json!({
+                "selectors": [{ "kind": "session", "sessionId": session_id.to_string() }],
+                "includeSnapshot": false,
+            }),
+        )
+        .await;
+        assert!(created.get("error").is_none(), "subscribe: {created}");
+
+        // Idle push → a turn starts immediately.
+        let pushed = history_request(
+            &runtime,
+            connection_id,
+            3,
+            "session/queue/push",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "first" }],
+                "idempotencyKey": "push-1",
+            }),
+        )
+        .await;
+        let pushed: SessionQueuePushResult =
+            serde_json::from_value(pushed["result"].clone()).expect("push result");
+        let SessionQueuePushResult::Started { turn } = pushed else {
+            panic!("idle push must start a turn");
+        };
+        assert_eq!(turn.session_id.as_str(), session_id.to_string());
+        assert_eq!(turn.status, CanonicalTurnStatus::InProgress);
+        assert_eq!(turn.sequence, 1);
+
+        // Busy push → queued pre-item.
+        let queued = history_request(
+            &runtime,
+            connection_id,
+            4,
+            "session/queue/push",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "second" }],
+                "idempotencyKey": "push-2",
+            }),
+        )
+        .await;
+        let queued: SessionQueuePushResult =
+            serde_json::from_value(queued["result"].clone()).expect("push result");
+        let SessionQueuePushResult::Queued { entry } = queued else {
+            panic!("busy push must queue");
+        };
+        assert_eq!(entry.position, 1);
+        assert_eq!(entry.preview, "second");
+        assert!(
+            matches!(&entry.input.as_slice(), [devo_protocol::canonical::item::UserInput::Text { text }] if text == "second")
+        );
+
+        // Update replaces the content wholesale.
+        let updated = history_request(
+            &runtime,
+            connection_id,
+            5,
+            "session/queue/update",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "queueItemId": entry.queue_item_id.as_str(),
+                "input": [{ "type": "text", "text": "edited" }],
+            }),
+        )
+        .await;
+        let updated: SessionQueueUpdateResult =
+            serde_json::from_value(updated["result"].clone()).expect("update result");
+        assert!(
+            matches!(&updated.entry.input.as_slice(), [devo_protocol::canonical::item::UserInput::Text { text }] if text == "edited")
+        );
+
+        // Reorder: push another entry, then move it to position 1.
+        let third = history_request(
+            &runtime,
+            connection_id,
+            6,
+            "session/queue/push",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "third" }],
+                "idempotencyKey": "push-3",
+            }),
+        )
+        .await;
+        let third: SessionQueuePushResult =
+            serde_json::from_value(third["result"].clone()).expect("push result");
+        let SessionQueuePushResult::Queued { entry: third_entry } = third else {
+            panic!("busy push must queue");
+        };
+        let reordered = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/queue/update",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "queueItemId": third_entry.queue_item_id.as_str(),
+                "position": 1,
+            }),
+        )
+        .await;
+        let reordered: SessionQueueUpdateResult =
+            serde_json::from_value(reordered["result"].clone()).expect("reorder result");
+        assert_eq!(reordered.entry.position, 1);
+        let entries = queue_list(&runtime, connection_id, session_id).await;
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.queue_item_id.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                third_entry.queue_item_id.as_str().to_owned(),
+                entry.queue_item_id.as_str().to_owned()
+            ]
+        );
+        // The reorder survives in SQLite too.
+        let db_entries = runtime
+            .deps
+            .db
+            .list_pending(&session_id, crate::db::QueueType::Turn)?;
+        assert_eq!(db_entries.len(), 2);
+        assert_eq!(db_entries[0].id.to_string(), third_entry.queue_item_id.as_str());
+
+        // Remove works; removing again reports the entry is gone.
+        let removed = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "session/queue/remove",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "queueItemId": third_entry.queue_item_id.as_str(),
+            }),
+        )
+        .await;
+        assert!(removed.get("error").is_none(), "remove: {removed}");
+        let removed_again = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "session/queue/remove",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "queueItemId": third_entry.queue_item_id.as_str(),
+            }),
+        )
+        .await;
+        assert_eq!(
+            removed_again["error"]["code"],
+            serde_json::json!("QueueItemNotFound")
+        );
+
+        // queue/updated notifications reached the new-style subscriber.
+        let mut changes = Vec::new();
+        while let Ok(Some(frame)) =
+            tokio::time::timeout(Duration::from_millis(50), notifications.recv()).await
+        {
+            if frame["method"] == serde_json::json!("queue/updated") {
+                changes.push(frame["params"]["change"].clone());
+            }
+        }
+        assert!(
+            changes.contains(&serde_json::json!("added"))
+                && changes.contains(&serde_json::json!("updated"))
+                && changes.contains(&serde_json::json!("removed")),
+            "expected added/updated/removed notifications, got {changes:?}"
+        );
+        // Let the held turn settle so teardown does not race the provider.
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn queue_steer_promotes_and_late_steer_degrades_back_to_queue() -> Result<()> {
+        use devo_protocol::canonical::rpc_turn::SessionQueueSteerResult;
+
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Arc::clone(&started),
+            }),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        let turn_id = start_turn(&runtime, connection_id, session_id, "go").await?;
+        // Wait until the model call is actually in flight: a steer promoted
+        // before the query loop's first pending-input drain would be consumed
+        // into the prompt (the correct injection outcome), which is not the
+        // degrade path this test exercises.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+
+        let queued = history_request(
+            &runtime,
+            connection_id,
+            3,
+            "session/queue/push",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "steer me" }],
+                "idempotencyKey": "push-steer",
+            }),
+        )
+        .await;
+        let queued: devo_protocol::canonical::rpc_turn::SessionQueuePushResult =
+            serde_json::from_value(queued["result"].clone()).expect("push result");
+        let devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Queued { entry } = queued
+        else {
+            panic!("busy push must queue");
+        };
+
+        let steered = history_request(
+            &runtime,
+            connection_id,
+            4,
+            "session/queue/steer",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "queueItemId": entry.queue_item_id.as_str(),
+                "expectedTurnId": turn_id.to_string(),
+            }),
+        )
+        .await;
+        let steered: SessionQueueSteerResult =
+            serde_json::from_value(steered["result"].clone()).expect("steer result");
+        assert!(!steered.item_id.as_str().is_empty());
+        assert!(queue_list(&runtime, connection_id, session_id).await.is_empty());
+
+        // Interrupt the turn before the next injection boundary: the
+        // promoted steer is never consumed; it degrades back into the
+        // session queue, and the now-idle session drains it into a new
+        // turn — the message is never lost (01 §4.3).
+        let interrupted = history_request(
+            &runtime,
+            connection_id,
+            5,
+            "turn/interrupt",
+            serde_json::json!({
+                "session_id": session_id.to_string(),
+                "turn_id": turn_id.to_string(),
+            }),
+        )
+        .await;
+        assert!(interrupted.get("error").is_none(), "interrupt: {interrupted}");
+        // Open the gate: turn 1 settles as interrupted; the follow-up turn
+        // started by the queue drain runs to completion immediately.
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let turns = session_turns_json(&runtime, connection_id, session_id).await;
+                let has_completed_followup = turns
+                    .iter()
+                    .any(|turn| turn["status"] == serde_json::json!("completed"));
+                if has_completed_followup
+                    && queue_list(&runtime, connection_id, session_id)
+                        .await
+                        .is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+        // Turn 1 is interrupted; the degraded steer drained into a second,
+        // completed turn (two distinct turn ids, message processed).
+        let turns = session_turns_json(&runtime, connection_id, session_id).await;
+        let statuses: Vec<&str> = turns
+            .iter()
+            .filter_map(|turn| turn["status"].as_str())
+            .collect();
+        assert!(
+            statuses.contains(&"interrupted") && statuses.contains(&"completed"),
+            "expected interrupted + completed turns, got {statuses:?}"
+        );
+        let turn_ids: std::collections::HashSet<&str> = turns
+            .iter()
+            .filter_map(|turn| turn["id"].as_str())
+            .collect();
+        assert_eq!(turn_ids.len(), 2, "expected two distinct turns: {turns:?}");
+
+        // Synchronous race: turn already over — turn/steer degrades to the
+        // queue instead of failing (message preserved).
+        let degraded = history_request(
+            &runtime,
+            connection_id,
+            5,
+            "turn/steer",
+            serde_json::json!({
+                "session_id": session_id.to_string(),
+                "expected_turn_id": turn_id.to_string(),
+                "input": [{ "type": "text", "text": "too late" }],
+            }),
+        )
+        .await;
+        assert_eq!(
+            degraded["result"]["disposition"],
+            serde_json::json!("queued"),
+            "late steer must degrade: {degraded}"
+        );
+        let entries = queue_list(&runtime, connection_id, session_id).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].preview, "too late");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn queue_survives_restart_and_btw_restores_into_turn_queue() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        // Seed one queued and one stale-btw row directly in SQLite.
+        let queued_item = devo_core::PendingInputItem::new(
+            devo_core::PendingInputKind::UserText {
+                text: "queued text".into(),
+            },
+            None,
+            chrono::Utc::now(),
+        );
+        let btw_item = devo_core::PendingInputItem::new(
+            devo_core::PendingInputKind::UserText {
+                text: "stale steer".into(),
+            },
+            None,
+            chrono::Utc::now(),
+        );
+        runtime
+            .deps
+            .db
+            .push_pending(&session_id, crate::db::QueueType::Turn, &queued_item)?;
+        runtime
+            .deps
+            .db
+            .push_pending(&session_id, crate::db::QueueType::Btw, &btw_item)?;
+        drop(runtime);
+
+        let rebuilt = build_runtime(data_root.path());
+        rebuilt.load_persisted_sessions().await?;
+        let rebuilt_connection = initialized_connection(&rebuilt).await;
+        let entries = queue_list(&rebuilt, rebuilt_connection, session_id).await;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].preview, "queued text");
+        assert_eq!(entries[1].preview, "stale steer");
+        // The btw row moved into the turn queue table (the original queued
+        // row is consumed by the resume drain and lives in memory only).
+        assert!(
+            rebuilt
+                .deps
+                .db
+                .list_pending(&session_id, crate::db::QueueType::Btw)?
+                .is_empty()
+        );
+        let turn_rows = rebuilt
+            .deps
+            .db
+            .list_pending(&session_id, crate::db::QueueType::Turn)?;
+        assert_eq!(turn_rows.len(), 1);
+        assert_eq!(turn_rows[0].id, btw_item.id);
 
         Ok(())
     }

@@ -272,6 +272,15 @@ impl Database {
             conn.execute("ALTER TABLE sessions ADD COLUMN agent_path TEXT", [])
                 .context("failed to add agent_path column")?;
         }
+        // Queue entries have an explicit position so `session/queue/update`
+        // can reorder without rewriting row ids (P4c); existing rows keep
+        // their insertion order (position = id).
+        if !pending_messages_has_column(&conn, "position")? {
+            conn.execute("ALTER TABLE pending_messages ADD COLUMN position INTEGER", [])
+                .context("failed to add pending_messages position column")?;
+            conn.execute("UPDATE pending_messages SET position = id WHERE position IS NULL", [])
+                .context("failed to backfill pending_messages position")?;
+        }
         // Schema version table (05 §2.3): the new authority going forward.
         // The ad-hoc column probes above are the v0 baseline and keep working
         // for databases created before this table existed.
@@ -733,38 +742,12 @@ impl Database {
         item: &PendingInputItem,
     ) -> Result<()> {
         let conn = self.conn.lock().expect("database mutex poisoned");
-        let (kind_str, content) = match &item.kind {
-            PendingInputKind::UserText { text } => ("user_text", text.clone()),
-            PendingInputKind::UserInput {
-                input,
-                display_text,
-                prompt_text,
-                prompt_messages,
-            } => {
-                let content = serde_json::json!({
-                    "input": input,
-                    "display_text": display_text,
-                    "prompt_text": prompt_text,
-                    "prompt_messages": prompt_messages,
-                });
-                ("user_input", content.to_string())
-            }
-            PendingInputKind::ToolCallBlockedByHook {
-                tool_use_id,
-                reason,
-            } => {
-                let content = serde_json::json!({
-                    "tool_use_id": tool_use_id,
-                    "reason": reason,
-                });
-                ("tool_call_blocked", content.to_string())
-            }
-            PendingInputKind::BudgetLimitSteering => ("budget_limit", String::new()),
-        };
+        let (kind_str, content) = pending_kind_parts(&item.kind);
         let metadata_str = item.metadata.as_ref().map(|v| v.to_string());
         conn.execute(
-            "INSERT INTO pending_messages (session_id, queue_type, kind, content, pending_input_id, metadata, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO pending_messages (session_id, queue_type, kind, content, pending_input_id, metadata, created_at, position)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                (SELECT COALESCE(MAX(position), 0) + 1 FROM pending_messages WHERE session_id = ?1 AND queue_type = ?2)",
             params![
                 session_id.to_string(),
                 queue.as_str(),
@@ -776,6 +759,90 @@ impl Database {
             ],
         )
         .context("failed to push pending message")?;
+        Ok(())
+    }
+
+    /// Replaces one pending message's content (kind/content/metadata), keyed
+    /// by its stable `pending_input_id` (`session/queue/update`). Returns
+    /// whether the entry still existed.
+    pub fn update_pending_content(
+        &self,
+        session_id: &SessionId,
+        queue: QueueType,
+        item: &PendingInputItem,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let (kind_str, content) = pending_kind_parts(&item.kind);
+        let metadata_str = item.metadata.as_ref().map(|v| v.to_string());
+        let changes = conn
+            .execute(
+                "UPDATE pending_messages SET kind = ?4, content = ?5, metadata = ?6
+                 WHERE session_id = ?1 AND queue_type = ?2 AND pending_input_id = ?3",
+                params![
+                    session_id.to_string(),
+                    queue.as_str(),
+                    item.id.to_string(),
+                    kind_str,
+                    content,
+                    metadata_str,
+                ],
+            )
+            .context("failed to update pending message")?;
+        Ok(changes == 1)
+    }
+
+    /// Merges one key into a pending message's metadata JSON (used for the
+    /// `clientUserMessageId` dedup key, 01 §4.3). Returns whether the entry
+    /// existed.
+    pub fn set_pending_metadata_field(
+        &self,
+        session_id: &SessionId,
+        queue: QueueType,
+        pending_input_id: &PendingInputId,
+        key: &str,
+        value: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let changes = conn
+            .execute(
+                "UPDATE pending_messages
+                 SET metadata = json_set(COALESCE(metadata, '{}'), '$.' || ?4, ?5)
+                 WHERE session_id = ?1 AND queue_type = ?2 AND pending_input_id = ?3",
+                params![
+                    session_id.to_string(),
+                    queue.as_str(),
+                    pending_input_id.to_string(),
+                    key,
+                    value,
+                ],
+            )
+            .context("failed to update pending message metadata")?;
+        Ok(changes == 1)
+    }
+
+    /// Rewrites queue positions to 1..=N following `ordered_ids`
+    /// (`session/queue/update` reorder). Ids not listed keep their relative
+    /// order at the end.
+    pub fn set_pending_positions(
+        &self,
+        session_id: &SessionId,
+        queue: QueueType,
+        ordered_ids: &[PendingInputId],
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        for (index, id) in ordered_ids.iter().enumerate() {
+            conn.execute(
+                "UPDATE pending_messages SET position = ?4
+                 WHERE session_id = ?1 AND queue_type = ?2 AND pending_input_id = ?3",
+                params![
+                    session_id.to_string(),
+                    queue.as_str(),
+                    id.to_string(),
+                    (index + 1) as i64,
+                ],
+            )
+            .context("failed to reorder pending messages")?;
+        }
         Ok(())
     }
 
@@ -792,7 +859,7 @@ impl Database {
                 "SELECT kind, content, pending_input_id, metadata, created_at
                  FROM pending_messages
                  WHERE session_id = ?1 AND queue_type = ?2
-                 ORDER BY id ASC",
+                 ORDER BY position ASC, id ASC",
             )
             .context("failed to prepare list_pending statement")?;
         let items = stmt
@@ -834,7 +901,7 @@ impl Database {
                     "SELECT kind, content, pending_input_id, metadata, created_at
                      FROM pending_messages
                      WHERE session_id = ?1 AND queue_type = ?2
-                     ORDER BY id ASC",
+                     ORDER BY position ASC, id ASC",
                 )
                 .context("failed to prepare drain_pending statement")?;
             let rows = stmt
@@ -920,9 +987,17 @@ impl Database {
 }
 
 fn sessions_has_column(conn: &Connection, column: &str) -> Result<bool> {
+    table_has_column(conn, "sessions", column)
+}
+
+fn pending_messages_has_column(conn: &Connection, column: &str) -> Result<bool> {
+    table_has_column(conn, "pending_messages", column)
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = conn
-        .prepare("PRAGMA table_info(sessions)")
-        .context("failed to inspect sessions schema")?;
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .with_context(|| format!("failed to inspect {table} schema"))?;
     let columns = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .context("failed to read sessions schema")?;
@@ -1019,6 +1094,39 @@ fn parse_additional_directories_column(
     serde_json::from_str(&value).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
     })
+}
+
+/// Maps a `PendingInputKind` to its `(kind, content)` storage pair (shared
+/// by `push_pending` and `update_pending_content`).
+fn pending_kind_parts(kind: &PendingInputKind) -> (&'static str, String) {
+    match kind {
+        PendingInputKind::UserText { text } => ("user_text", text.clone()),
+        PendingInputKind::UserInput {
+            input,
+            display_text,
+            prompt_text,
+            prompt_messages,
+        } => {
+            let content = serde_json::json!({
+                "input": input,
+                "display_text": display_text,
+                "prompt_text": prompt_text,
+                "prompt_messages": prompt_messages,
+            });
+            ("user_input", content.to_string())
+        }
+        PendingInputKind::ToolCallBlockedByHook {
+            tool_use_id,
+            reason,
+        } => {
+            let content = serde_json::json!({
+                "tool_use_id": tool_use_id,
+                "reason": reason,
+            });
+            ("tool_call_blocked", content.to_string())
+        }
+        PendingInputKind::BudgetLimitSteering => ("budget_limit", String::new()),
+    }
 }
 
 /// Maps one `pending_messages` row to its `PendingInputItem` (shared by

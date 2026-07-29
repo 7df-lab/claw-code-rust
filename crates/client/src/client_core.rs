@@ -950,6 +950,7 @@ fn format_protocol_error_code(code: &ProtocolErrorCode) -> &'static str {
         ProtocolErrorCode::ForkTurnNotStable => "fork_turn_not_stable",
         ProtocolErrorCode::PermissionDenied => "permission_denied",
         ProtocolErrorCode::CursorExpired => "cursor_expired",
+        ProtocolErrorCode::QueueItemNotFound => "queue_item_not_found",
         ProtocolErrorCode::WorkspaceUnavailable => "workspace_unavailable",
         ProtocolErrorCode::InheritedSegmentWriteFailed => "inherited_segment_write_failed",
         ProtocolErrorCode::ForkRetentionRequired => "fork_retention_required",

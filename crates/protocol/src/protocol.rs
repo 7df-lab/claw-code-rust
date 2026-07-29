@@ -113,6 +113,11 @@ pub enum ClientMethod {
     SubscriptionUpdate,
     SubscriptionAck,
     SubscriptionUnsubscribe,
+    SessionQueuePush,
+    SessionQueueList,
+    SessionQueueUpdate,
+    SessionQueueRemove,
+    SessionQueueSteer,
 }
 
 impl ClientMethod {
@@ -173,6 +178,11 @@ impl ClientMethod {
             Self::SubscriptionUpdate => "subscription/update",
             Self::SubscriptionAck => "subscription/ack",
             Self::SubscriptionUnsubscribe => "subscription/unsubscribe",
+            Self::SessionQueuePush => "session/queue/push",
+            Self::SessionQueueList => "session/queue/list",
+            Self::SessionQueueUpdate => "session/queue/update",
+            Self::SessionQueueRemove => "session/queue/remove",
+            Self::SessionQueueSteer => "session/queue/steer",
         }
     }
 
@@ -233,6 +243,11 @@ impl ClientMethod {
             "subscription/update" => Self::SubscriptionUpdate,
             "subscription/ack" => Self::SubscriptionAck,
             "subscription/unsubscribe" => Self::SubscriptionUnsubscribe,
+            "session/queue/push" => Self::SessionQueuePush,
+            "session/queue/list" => Self::SessionQueueList,
+            "session/queue/update" => Self::SessionQueueUpdate,
+            "session/queue/remove" => Self::SessionQueueRemove,
+            "session/queue/steer" => Self::SessionQueueSteer,
             _ => return None,
         })
     }
@@ -278,6 +293,10 @@ pub enum ProtocolErrorCode {
     /// value, or unknown stream); the client must re-snapshot (08 §4).
     #[error("CursorExpired")]
     CursorExpired,
+    /// The addressed queue entry is no longer queued (drained, removed, or
+    /// never existed) — `session/queue/*` (01 §4.3).
+    #[error("QueueItemNotFound")]
+    QueueItemNotFound,
     #[error("WorkspaceUnavailable")]
     WorkspaceUnavailable,
     #[error("InheritedSegmentWriteFailed")]

@@ -7,6 +7,7 @@ pub mod goal;
 mod history;
 mod message_edit;
 mod message_edit_restore;
+mod queue;
 mod session;
 pub(crate) mod subscription;
 mod turn;

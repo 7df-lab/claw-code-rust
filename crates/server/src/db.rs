@@ -19,15 +19,15 @@ use devo_protocol::{
 pub enum QueueType {
     /// Pending turn inputs (from turn/start while a turn is active).
     Turn,
-    /// /btw steer inputs (from turn/steer, scoped to current turn only).
-    Btw,
+    /// Inputs injected into the active turn by `turn/steer`.
+    Steer,
 }
 
 impl QueueType {
     fn as_str(&self) -> &'static str {
         match self {
             QueueType::Turn => "turn",
-            QueueType::Btw => "btw",
+            QueueType::Steer => "steer",
         }
     }
 }
@@ -91,7 +91,8 @@ pub struct EventLogRow {
 /// Bump when a migration changes the index layout; the rollout files are
 /// the rebuildable source of truth on any mismatch.
 /// v2: adds `event_log` + `projection_watermark` (08 §5/§7).
-const CURRENT_SCHEMA_VERSION: u32 = 2;
+/// v3: renames the persisted active-turn steer queue from `btw` to `steer`.
+const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// SQLite database for session metadata, token stats, and pending queues.
 pub struct Database {
@@ -145,7 +146,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS pending_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                queue_type TEXT NOT NULL CHECK(queue_type IN ('turn', 'btw')),
+                queue_type TEXT NOT NULL CHECK(queue_type IN ('turn', 'steer')),
                 kind TEXT NOT NULL,
                 content TEXT NOT NULL,
                 pending_input_id TEXT,
@@ -276,10 +277,59 @@ impl Database {
         // can reorder without rewriting row ids (P4c); existing rows keep
         // their insertion order (position = id).
         if !pending_messages_has_column(&conn, "position")? {
-            conn.execute("ALTER TABLE pending_messages ADD COLUMN position INTEGER", [])
-                .context("failed to add pending_messages position column")?;
-            conn.execute("UPDATE pending_messages SET position = id WHERE position IS NULL", [])
-                .context("failed to backfill pending_messages position")?;
+            conn.execute(
+                "ALTER TABLE pending_messages ADD COLUMN position INTEGER",
+                [],
+            )
+            .context("failed to add pending_messages position column")?;
+            conn.execute(
+                "UPDATE pending_messages SET position = id WHERE position IS NULL",
+                [],
+            )
+            .context("failed to backfill pending_messages position")?;
+        }
+        let pending_messages_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pending_messages'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        if pending_messages_sql
+            .as_deref()
+            .is_some_and(|sql| sql.contains("'btw'"))
+        {
+            // P4c originally used `btw` for the active-turn steer queue. The
+            // product `/btw` feature is an unrelated ephemeral side question,
+            // so migrate the storage value and CHECK constraint together.
+            conn.execute_batch(
+                "
+                BEGIN;
+                ALTER TABLE pending_messages RENAME TO pending_messages_legacy;
+                CREATE TABLE pending_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    queue_type TEXT NOT NULL CHECK(queue_type IN ('turn', 'steer')),
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    pending_input_id TEXT,
+                    metadata TEXT,
+                    created_at INTEGER NOT NULL,
+                    position INTEGER NOT NULL
+                );
+                INSERT INTO pending_messages
+                    (id, session_id, queue_type, kind, content, pending_input_id, metadata, created_at, position)
+                SELECT id, session_id,
+                    CASE queue_type WHEN 'btw' THEN 'steer' ELSE queue_type END,
+                    kind, content, pending_input_id, metadata, created_at, position
+                FROM pending_messages_legacy;
+                DROP TABLE pending_messages_legacy;
+                CREATE INDEX idx_pending_session
+                    ON pending_messages(session_id, queue_type);
+                COMMIT;
+                ",
+            )
+            .context("failed to migrate pending steer queue from btw to steer")?;
         }
         // Schema version table (05 §2.3): the new authority going forward.
         // The ad-hoc column probes above are the v0 baseline and keep working
@@ -442,12 +492,19 @@ impl Database {
     }
 
     /// Advances the projection watermark for a rollout file.
-    pub fn set_projection_watermark(&self, rollout_path: &Path, last_line_index: u64) -> Result<()> {
+    pub fn set_projection_watermark(
+        &self,
+        rollout_path: &Path,
+        last_line_index: u64,
+    ) -> Result<()> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         conn.execute(
             "INSERT INTO projection_watermark (rollout_path, last_line_index) VALUES (?1, ?2)
              ON CONFLICT(rollout_path) DO UPDATE SET last_line_index = excluded.last_line_index",
-            params![rollout_path.to_string_lossy().as_ref(), last_line_index as i64],
+            params![
+                rollout_path.to_string_lossy().as_ref(),
+                last_line_index as i64
+            ],
         )
         .context("failed to update projection watermark")?;
         Ok(())
@@ -1169,7 +1226,10 @@ fn pending_input_from_row(
         "tool_call_blocked" => {
             let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
             PendingInputKind::ToolCallBlockedByHook {
-                tool_use_id: parsed["tool_use_id"].as_str().unwrap_or_default().to_string(),
+                tool_use_id: parsed["tool_use_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
                 reason: parsed["reason"].as_str().unwrap_or_default().to_string(),
             }
         }
@@ -1219,6 +1279,73 @@ mod tests {
             db.schema_version().expect("read schema version"),
             Some(CURRENT_SCHEMA_VERSION)
         );
+    }
+
+    #[test]
+    fn migration_renames_legacy_btw_queue_rows_to_steer() {
+        let dir = TempDir::new().expect("create temp dir");
+        let db_path = dir.path().join("legacy.db");
+        let session_id = SessionId::new();
+        {
+            let conn = Connection::open(&db_path).expect("open legacy database");
+            conn.execute_batch(
+                "
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    cwd TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE pending_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    queue_type TEXT NOT NULL CHECK(queue_type IN ('turn', 'btw')),
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    pending_input_id TEXT,
+                    metadata TEXT,
+                    created_at INTEGER NOT NULL,
+                    position INTEGER
+                );
+                CREATE INDEX idx_pending_session
+                    ON pending_messages(session_id, queue_type);
+                ",
+            )
+            .expect("create legacy queue tables");
+            conn.execute(
+                "INSERT INTO sessions (id, cwd, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                params![session_id.to_string(), ".", 0, 0],
+            )
+            .expect("insert legacy session");
+            conn.execute(
+                "INSERT INTO pending_messages
+                    (session_id, queue_type, kind, content, pending_input_id, created_at, position)
+                 VALUES (?1, 'btw', 'user_text', 'keep steering', ?2, 0, 1)",
+                params![session_id.to_string(), PendingInputId::new().to_string()],
+            )
+            .expect("insert legacy steer row");
+        }
+
+        let db = Database::open(db_path).expect("migrate legacy database");
+        assert_eq!(
+            db.count_pending(&session_id, QueueType::Steer)
+                .expect("count migrated steer row"),
+            1
+        );
+        let conn = db.conn.lock().expect("database mutex poisoned");
+        let queue_type: String = conn
+            .query_row("SELECT queue_type FROM pending_messages", [], |row| {
+                row.get(0)
+            })
+            .expect("read migrated queue type");
+        assert_eq!(queue_type, "steer");
+        let old_value = conn.execute(
+            "INSERT INTO pending_messages
+                (session_id, queue_type, kind, content, created_at, position)
+             VALUES (?1, 'btw', 'user_text', 'obsolete', 0, 2)",
+            params![session_id.to_string()],
+        );
+        assert!(old_value.is_err(), "legacy queue type must be rejected");
     }
 
     #[test]
@@ -1455,9 +1582,9 @@ mod tests {
             None,
             Utc::now(),
         );
-        let btw_item = PendingInputItem::new(
+        let steer_item = PendingInputItem::new(
             PendingInputKind::UserText {
-                text: "btw msg".into(),
+                text: "steer msg".into(),
             },
             None,
             Utc::now(),
@@ -1465,24 +1592,24 @@ mod tests {
 
         db.push_pending(&meta.session_id, QueueType::Turn, &turn_item)
             .expect("push");
-        db.push_pending(&meta.session_id, QueueType::Btw, &btw_item)
+        db.push_pending(&meta.session_id, QueueType::Steer, &steer_item)
             .expect("push");
 
         let turn_count = db
             .count_pending(&meta.session_id, QueueType::Turn)
             .expect("count");
-        let btw_count = db
-            .count_pending(&meta.session_id, QueueType::Btw)
+        let steer_count = db
+            .count_pending(&meta.session_id, QueueType::Steer)
             .expect("count");
         assert_eq!(turn_count, 1);
-        assert_eq!(btw_count, 1);
+        assert_eq!(steer_count, 1);
 
-        db.clear_pending(&meta.session_id, QueueType::Btw)
+        db.clear_pending(&meta.session_id, QueueType::Steer)
             .expect("clear");
-        let btw_count = db
-            .count_pending(&meta.session_id, QueueType::Btw)
+        let steer_count = db
+            .count_pending(&meta.session_id, QueueType::Steer)
             .expect("count");
-        assert_eq!(btw_count, 0);
+        assert_eq!(steer_count, 0);
 
         let turn_count = db
             .count_pending(&meta.session_id, QueueType::Turn)

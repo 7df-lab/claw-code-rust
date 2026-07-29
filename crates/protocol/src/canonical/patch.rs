@@ -46,8 +46,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for PatchField<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // A present field is either `null` or a value; absence is handled by
         // `#[serde(default)]` on the containing struct field.
-        Ok(Option::<T>::deserialize(deserializer)?
-            .map_or(Self::Null, Self::Value))
+        Ok(Option::<T>::deserialize(deserializer)?.map_or(Self::Null, Self::Value))
     }
 }
 

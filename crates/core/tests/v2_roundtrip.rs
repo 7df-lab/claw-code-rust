@@ -38,10 +38,12 @@ fn fixture_lines(name: &str) -> Vec<RolloutLine> {
     std::fs::read_to_string(&path)
         .expect("read fixture")
         .lines()
-        .map(|line| match parse_rollout_line(line).expect("fixture line parses") {
-            ParsedRolloutLine::Legacy(line) => *line,
-            ParsedRolloutLine::V2(_) => panic!("fixture {name} must contain only legacy lines"),
-        })
+        .map(
+            |line| match parse_rollout_line(line).expect("fixture line parses") {
+                ParsedRolloutLine::Legacy(line) => *line,
+                ParsedRolloutLine::V2(_) => panic!("fixture {name} must contain only legacy lines"),
+            },
+        )
         .collect()
 }
 
@@ -535,7 +537,10 @@ fn mixed_v1_v2_file_dispatches_per_line() {
         })
         .collect();
     // Two legacy lines, then the two item records expand to 3 + 2 v2 lines.
-    assert_eq!(kinds, vec!["legacy", "legacy", "v2", "v2", "v2", "v2", "v2"]);
+    assert_eq!(
+        kinds,
+        vec!["legacy", "legacy", "v2", "v2", "v2", "v2", "v2"]
+    );
 }
 
 #[test]
@@ -581,7 +586,9 @@ fn inverse_rejects_prefixed_canonical_ids() {
         extras: None,
     };
     let inverse = V2InverseProjector::new();
-    let error = inverse.project_line(&line).expect_err("prefixed id must fail");
+    let error = inverse
+        .project_line(&line)
+        .expect_err("prefixed id must fail");
     assert!(matches!(error, V2InverseError::NonLegacyId(_)));
 }
 
@@ -594,9 +601,7 @@ fn inverse_rejects_turn_scoped_internal_line_without_turn_id() {
         turn_id: None,
         seq: 1,
         entry: devo_core::InternalRecordV2::Entry {
-            entry: devo_protocol::canonical::item::InternalEntry::TurnSummary {
-                text: "1".into(),
-            },
+            entry: devo_protocol::canonical::item::InternalEntry::TurnSummary { text: "1".into() },
         },
     };
     let inverse = V2InverseProjector::new();

@@ -39,10 +39,11 @@ pub struct TurnStartResult {
 
 // ── turn/steer ──
 
-/// Injects into the running turn: the item is persisted immediately
+/// Injects input into the running main turn: the item is persisted immediately
 /// (`entry = steer`) and takes effect at the next injection boundary. If the
 /// turn ended before injection, the input degrades back into the queue
-/// (message is never lost) — the result says which happened.
+/// (message is never lost) — the result says which happened. This is distinct
+/// from the TUI `/btw` side question, which does not modify the main turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnSteerParams {
@@ -56,11 +57,19 @@ pub struct TurnSteerParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(tag = "outcome", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum TurnSteerResult {
-    Injected { item_id: ItemId },
+    Injected {
+        item_id: ItemId,
+    },
     /// Turn ended before the injection boundary; input was queued instead.
-    DegradedToQueue { entry: QueueEntry },
+    DegradedToQueue {
+        entry: QueueEntry,
+    },
 }
 
 // ── turn/interrupt / turn/read ──
@@ -107,7 +116,11 @@ pub struct SessionQueuePushParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(tag = "outcome", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SessionQueuePushResult {
     Started { turn: Box<Turn> },
     Queued { entry: Box<QueueEntry> },

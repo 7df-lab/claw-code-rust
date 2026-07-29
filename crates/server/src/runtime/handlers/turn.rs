@@ -698,10 +698,10 @@ impl ServerRuntime {
                 .expect("pending turn queue mutex should not be poisoned")
                 .push_back(item.clone());
             if !reservation.ephemeral
-                && let Err(err) = self
-                    .deps
-                    .db
-                    .push_pending(&params.session_id, QueueType::Turn, &item)
+                && let Err(err) =
+                    self.deps
+                        .db
+                        .push_pending(&params.session_id, QueueType::Turn, &item)
             {
                 tracing::warn!(
                     session_id = %params.session_id,
@@ -766,21 +766,21 @@ impl ServerRuntime {
             chrono::Utc::now(),
         );
         reservation
-            .btw_input_queue
+            .steer_input_queue
             .lock()
-            .expect("btw input queue mutex should not be poisoned")
+            .expect("steer input queue mutex should not be poisoned")
             .push_back(item.clone());
 
         if !reservation.ephemeral
             && let Err(err) = self
                 .deps
                 .db
-                .push_pending(&params.session_id, QueueType::Btw, &item)
+                .push_pending(&params.session_id, QueueType::Steer, &item)
         {
             tracing::warn!(
                 session_id = %params.session_id,
                 error = %err,
-                "failed to persist btw input to database"
+                "failed to persist steer input to database"
             );
         }
 
@@ -968,9 +968,9 @@ impl ServerRuntime {
         let (display_input, item) = queued;
 
         reservation
-            .btw_input_queue
+            .steer_input_queue
             .lock()
-            .expect("btw input queue mutex should not be poisoned")
+            .expect("steer input queue mutex should not be poisoned")
             .push_back(item.clone());
 
         if !is_ephemeral {
@@ -986,10 +986,10 @@ impl ServerRuntime {
                     "failed to remove steered queued message from database"
                 );
             }
-            if let Err(error) = self
-                .deps
-                .db
-                .push_pending(&params.session_id, QueueType::Btw, &item)
+            if let Err(error) =
+                self.deps
+                    .db
+                    .push_pending(&params.session_id, QueueType::Steer, &item)
             {
                 tracing::warn!(
                     session_id = %params.session_id,

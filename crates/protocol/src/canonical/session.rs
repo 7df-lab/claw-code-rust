@@ -86,7 +86,9 @@ pub enum SessionStatus {
 
 /// Blocking reasons, stackable on top of `status`. "Waiting" is a flag, not a
 /// status: clients can tell "working" apart from "blocked on you".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema, TS,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionFlag {
     /// A pending approval request.
@@ -103,7 +105,11 @@ pub enum SessionFlag {
 /// subagent is a spawned executor; permissions, visibility and presentation
 /// all differ.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SessionParent {
     Fork {
         session_id: SessionId,

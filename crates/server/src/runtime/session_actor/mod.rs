@@ -4,10 +4,10 @@
 // turn is in flight, transient execution state lives in ActiveTurnRegistry and
 // merges back through actor commands when the turn completes.
 
+mod actor_loop;
 pub(crate) mod approval_scope;
 mod commands;
 mod handle;
-mod loop_;
 pub(crate) mod registry;
 pub(crate) mod snapshots;
 pub(crate) mod state;

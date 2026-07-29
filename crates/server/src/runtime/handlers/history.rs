@@ -44,8 +44,9 @@ impl ServerRuntime {
             Ok(history) => history,
             Err(response) => return response,
         };
-        let page = match paginate(&history.turns, &params.page, |turn| u64::from(turn.sequence))
-        {
+        let page = match paginate(&history.turns, &params.page, |turn| {
+            u64::from(turn.sequence)
+        }) {
             Ok(page) => page,
             Err(message) => {
                 return self.error_response(request_id, ProtocolErrorCode::InvalidParams, message);

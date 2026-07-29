@@ -129,7 +129,10 @@ pub enum ServerNotification {
         active_turn_id: Option<TurnId>,
     },
     #[serde(rename = "session/archived")]
-    SessionArchived { session_id: SessionId, archived: bool },
+    SessionArchived {
+        session_id: SessionId,
+        archived: bool,
+    },
     #[serde(rename = "session/deleted")]
     SessionDeleted { session_id: SessionId },
     #[serde(rename = "workspace/restoreStarted")]
@@ -149,10 +152,7 @@ pub enum ServerNotification {
     #[serde(rename = "turn/started")]
     TurnStarted { turn: Box<Turn> },
     #[serde(rename = "turn/statusChanged")]
-    TurnStatusChanged {
-        turn_id: TurnId,
-        status: TurnStatus,
-    },
+    TurnStatusChanged { turn_id: TurnId, status: TurnStatus },
     #[serde(rename = "turn/completed")]
     TurnCompleted { turn: Box<Turn> },
     /// Item birth; carries the revision=1 full snapshot (delta baseline).
@@ -310,7 +310,11 @@ pub struct EventCursor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum StreamSelector {
     SessionsByCwd { cwd: PathBuf },
     Session { session_id: SessionId },
@@ -329,16 +333,24 @@ pub struct StreamSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SnapshotData {
-    SessionsList { sessions: Vec<Session> },
+    SessionsList {
+        sessions: Vec<Session>,
+    },
     Session {
         session: Box<Session>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         active_turn: Option<Box<Turn>>,
         queue: Vec<QueueEntry>,
     },
-    BackgroundTask { item: Box<ItemEnvelope> },
+    BackgroundTask {
+        item: Box<ItemEnvelope>,
+    },
 }
 
 /// Forced full content of an active item on resubscription, so transient

@@ -19,12 +19,12 @@ use super::item::{
     ContextUsage, ExecOrigin, ExecutionMode, FileChangeEntry, FileChangeKind, Item, ItemEnvelope,
     ItemState, PlanEntry, PlanStepStatus, ToolSource, UserInput, UserMessageEntry,
 };
+use crate::protocol::ExecCommandSource;
 use crate::{
     ApprovalDecisionPayload, ApprovalRequestPayload, CommandExecutionPayload, EventContext,
     FileChangePayload, ItemKind, ServerEvent, ToolCallPayload, ToolResultPayload,
     TypedItemEventPayload,
 };
-use crate::protocol::ExecCommandSource;
 
 /// Projects one legacy wire payload into the canonical `Item` for its kind.
 ///
@@ -108,7 +108,8 @@ pub fn project_wire_item(
             })
         }
         ItemKind::CommandExecution => {
-            let command = serde_json::from_value::<CommandExecutionPayload>(payload.clone()).ok()?;
+            let command =
+                serde_json::from_value::<CommandExecutionPayload>(payload.clone()).ok()?;
             let origin = match command.source {
                 ExecCommandSource::Agent
                 | ExecCommandSource::UnifiedExecStartup
@@ -193,7 +194,10 @@ pub fn project_wire_item(
                 ..ContextUsage::default()
             },
             after: None,
-            summary: payload.get("text").and_then(serde_json::Value::as_str).map(str::to_owned),
+            summary: payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
         }),
         ItemKind::ApprovalRequest => {
             let request = serde_json::from_value::<ApprovalRequestPayload>(payload.clone()).ok()?;
@@ -209,8 +213,8 @@ pub fn project_wire_item(
             })
         }
         ItemKind::ApprovalDecision => {
-            let decision = serde_json::from_value::<ApprovalDecisionPayload>(payload.clone())
-                .ok()?;
+            let decision =
+                serde_json::from_value::<ApprovalDecisionPayload>(payload.clone()).ok()?;
             // The wire decision event carries only the id + decision/scope
             // strings; the request fields are not repeated, so they stay
             // empty here (clients fold by `approval_id`).
@@ -535,9 +539,13 @@ mod tests {
             "source": "user_shell",
         });
         let item = project(ItemKind::CommandExecution, payload);
-        assert!(
-            matches!(item, Some(Item::CommandExecution { origin: ExecOrigin::UserShell, .. }))
-        );
+        assert!(matches!(
+            item,
+            Some(Item::CommandExecution {
+                origin: ExecOrigin::UserShell,
+                ..
+            })
+        ));
     }
 
     #[test]

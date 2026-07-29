@@ -17,7 +17,9 @@ use devo_protocol::canonical::session::Session;
 use devo_protocol::canonical::turn::Turn;
 
 use super::legacy_projector::{LegacyProjectError, LegacyProjector};
-use super::rollout_v2::{ParsedRolloutLine, RolloutLineReadError, RolloutLineV2, parse_rollout_line};
+use super::rollout_v2::{
+    ParsedRolloutLine, RolloutLineReadError, RolloutLineV2, parse_rollout_line,
+};
 
 /// A session's effective canonical history, in file order.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -101,11 +103,10 @@ fn apply_v2_line(history: &mut CanonicalHistory, line: RolloutLineV2) {
         RolloutLineV2::SessionRollback {
             retained_turn_ids, ..
         } => {
-            let retained: HashSet<&str> = retained_turn_ids
-                .iter()
-                .map(|id| id.as_str())
-                .collect();
-            history.turns.retain(|turn| retained.contains(turn.id.as_str()));
+            let retained: HashSet<&str> = retained_turn_ids.iter().map(|id| id.as_str()).collect();
+            history
+                .turns
+                .retain(|turn| retained.contains(turn.id.as_str()));
             history
                 .items
                 .retain(|item| retained.contains(item.turn_id.as_str()));

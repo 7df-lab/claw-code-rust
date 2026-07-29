@@ -24,8 +24,9 @@ use devo_protocol::canonical::rpc_turn::{
     SessionQueueRemoveResult, SessionQueueSteerParams, SessionQueueSteerResult,
     SessionQueueUpdateParams, SessionQueueUpdateResult,
 };
-use devo_protocol::canonical::turn::{Turn as CanonicalTurn, TurnKind as CanonicalTurnKind,
-    TurnStatus as CanonicalTurnStatus};
+use devo_protocol::canonical::turn::{
+    Turn as CanonicalTurn, TurnKind as CanonicalTurnKind, TurnStatus as CanonicalTurnStatus,
+};
 use uuid::Uuid;
 
 use super::super::*;
@@ -153,7 +154,12 @@ impl ServerRuntime {
                         .iter()
                         .find_map(|part| match part {
                             UserInput::Text { text } => Some(
-                                text.lines().next().unwrap_or_default().chars().take(80).collect(),
+                                text.lines()
+                                    .next()
+                                    .unwrap_or_default()
+                                    .chars()
+                                    .take(80)
+                                    .collect(),
                             ),
                             _ => None,
                         })
@@ -295,7 +301,7 @@ impl ServerRuntime {
                     );
                 }
                 let workspace_root = reservation.summary.cwd.clone();
-                        let resolved = match reservation
+                let resolved = match reservation
                     .runtime_context
                     .resolve_input_items(&input_items, Some(workspace_root.as_path()))
                 {
@@ -315,8 +321,8 @@ impl ServerRuntime {
                         );
                     }
                 };
-                let display_text = super::super::items::render_input_items(&input_items)
-                    .unwrap_or_default();
+                let display_text =
+                    super::super::items::render_input_items(&input_items).unwrap_or_default();
                 Some(PendingInputKind::UserInput {
                     input: input_items,
                     display_text,
@@ -379,8 +385,7 @@ impl ServerRuntime {
                 );
             }
             if params.position.is_some() {
-                let ordered_ids: Vec<PendingInputId> =
-                    ordered.iter().map(|item| item.id).collect();
+                let ordered_ids: Vec<PendingInputId> = ordered.iter().map(|item| item.id).collect();
                 if let Err(error) = self.deps.db.set_pending_positions(
                     &legacy_session_id,
                     QueueType::Turn,
@@ -489,11 +494,10 @@ impl ServerRuntime {
             );
         }
         if !reservation.ephemeral
-            && let Err(error) = self.deps.db.remove_pending_by_id(
-                &legacy_session_id,
-                QueueType::Turn,
-                &pending_id,
-            )
+            && let Err(error) =
+                self.deps
+                    .db
+                    .remove_pending_by_id(&legacy_session_id, QueueType::Turn, &pending_id)
         {
             tracing::warn!(
                 session_id = %legacy_session_id,
@@ -621,16 +625,16 @@ impl ServerRuntime {
         };
 
         reservation
-            .btw_input_queue
+            .steer_input_queue
             .lock()
-            .expect("btw input queue mutex should not be poisoned")
+            .expect("steer input queue mutex should not be poisoned")
             .push_back(item.clone());
         if !reservation.ephemeral {
-            if let Err(error) = self.deps.db.remove_pending_by_id(
-                &legacy_session_id,
-                QueueType::Turn,
-                &pending_id,
-            ) {
+            if let Err(error) =
+                self.deps
+                    .db
+                    .remove_pending_by_id(&legacy_session_id, QueueType::Turn, &pending_id)
+            {
                 tracing::warn!(
                     session_id = %legacy_session_id,
                     error = %error,
@@ -640,7 +644,7 @@ impl ServerRuntime {
             if let Err(error) =
                 self.deps
                     .db
-                    .push_pending(&legacy_session_id, QueueType::Btw, &item)
+                    .push_pending(&legacy_session_id, QueueType::Steer, &item)
             {
                 tracing::warn!(
                     session_id = %legacy_session_id,
@@ -861,9 +865,10 @@ pub(crate) fn canonical_queue_entries(queue: &VecDeque<PendingInputItem>) -> Vec
         .map(|(index, item)| {
             let input: Vec<UserInput> = match &item.kind {
                 PendingInputKind::UserText { text } => vec![UserInput::Text { text: text.clone() }],
-                PendingInputKind::UserInput { input, .. } => {
-                    input.iter().map(canonical_user_input_from_input_item).collect()
-                }
+                PendingInputKind::UserInput { input, .. } => input
+                    .iter()
+                    .map(canonical_user_input_from_input_item)
+                    .collect(),
                 _ => Vec::new(),
             };
             let display_text = match &item.kind {
@@ -892,9 +897,9 @@ pub(crate) fn canonical_queue_entries(queue: &VecDeque<PendingInputItem>) -> Vec
 /// by `session/queue/push`'s `Started` outcome.
 pub(crate) fn canonical_turn_from_metadata(turn: &crate::turn::TurnMetadata) -> CanonicalTurn {
     let kind = match &turn.kind {
-        devo_core::TurnKind::Regular | devo_core::TurnKind::Review | devo_core::TurnKind::Other(_) => {
-            CanonicalTurnKind::Regular
-        }
+        devo_core::TurnKind::Regular
+        | devo_core::TurnKind::Review
+        | devo_core::TurnKind::Other(_) => CanonicalTurnKind::Regular,
         devo_core::TurnKind::ManualCompaction => CanonicalTurnKind::Compaction,
     };
     let status = match turn.status {

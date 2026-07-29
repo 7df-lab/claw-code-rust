@@ -115,12 +115,11 @@ impl ServerRuntime {
                 "connection is not registered",
             );
         };
-        let mut result = match self
-            .prepare_subscription(&request_id, &params.selectors, &params.after)
-        {
-            Ok(result) => result,
-            Err(response) => return response,
-        };
+        let mut result =
+            match self.prepare_subscription(&request_id, &params.selectors, &params.after) {
+                Ok(result) => result,
+                Err(response) => return response,
+            };
         if params.include_snapshot {
             for selector in &params.selectors {
                 let barrier = result
@@ -142,9 +141,7 @@ impl ServerRuntime {
                 }
             }
         }
-        result.pending_control_requests = self
-            .pending_control_requests(&params.selectors)
-            .await;
+        result.pending_control_requests = self.pending_control_requests(&params.selectors).await;
         // TODO(P4-followup): recovery_snapshots for in-flight items. The
         // runtime tracks accumulated stream text (deferred_assistant /
         // deferred_reasoning) but not per-channel chunk indices, so an
@@ -208,9 +205,7 @@ impl ServerRuntime {
                 "unknown subscription id",
             );
         }
-        let mut result = match self
-            .prepare_subscription(&request_id, &params.selectors, &[])
-        {
+        let mut result = match self.prepare_subscription(&request_id, &params.selectors, &[]) {
             Ok(result) => result,
             Err(response) => return response,
         };
@@ -270,7 +265,10 @@ impl ServerRuntime {
             if !selector_streams.contains(&cursor.stream_id) {
                 return self.cursor_expired_response(
                     request_id,
-                    format!("stream {} is not part of the subscription", cursor.stream_id),
+                    format!(
+                        "stream {} is not part of the subscription",
+                        cursor.stream_id
+                    ),
                 );
             }
             let barrier = match self.deps.db.event_log_max_seq(&cursor.stream_id) {
@@ -283,7 +281,11 @@ impl ServerRuntime {
                     );
                 }
             };
-            let acked = subscription.acked.get(&cursor.stream_id).copied().unwrap_or(0);
+            let acked = subscription
+                .acked
+                .get(&cursor.stream_id)
+                .copied()
+                .unwrap_or(0);
             if cursor.seq < acked || cursor.seq > barrier {
                 return self.cursor_expired_response(
                     request_id,
@@ -293,7 +295,9 @@ impl ServerRuntime {
                     ),
                 );
             }
-            subscription.acked.insert(cursor.stream_id.clone(), cursor.seq);
+            subscription
+                .acked
+                .insert(cursor.stream_id.clone(), cursor.seq);
         }
         subscription.last_ack_at = Some(Utc::now());
         drop(subscriptions);
@@ -534,10 +538,7 @@ impl ServerRuntime {
         Ok(sessions)
     }
 
-    fn queue_entries(
-        &self,
-        session_id: &CanonicalSessionId,
-    ) -> anyhow::Result<Vec<QueueEntry>> {
+    fn queue_entries(&self, session_id: &CanonicalSessionId) -> anyhow::Result<Vec<QueueEntry>> {
         let legacy_id = SessionId::try_from(session_id.as_str())
             .map_err(|error| anyhow::anyhow!("invalid session id: {error}"))?;
         let pending = self.deps.db.list_pending(&legacy_id, QueueType::Turn)?;
@@ -586,9 +587,7 @@ impl ServerRuntime {
                 let target = if let Some(path) = &approval.path {
                     Some(ApprovalTarget::Path { path: path.clone() })
                 } else if let Some(host) = &approval.host {
-                    Some(ApprovalTarget::Host {
-                        host: host.clone(),
-                    })
+                    Some(ApprovalTarget::Host { host: host.clone() })
                 } else {
                     approval
                         .command
@@ -630,25 +629,23 @@ impl ServerRuntime {
                             questions: user_input
                                 .questions
                                 .into_iter()
-                                .map(|question| {
-                                    devo_protocol::canonical::item::UserQuestion {
-                                        id: question.id,
-                                        header: question.header,
-                                        question: question.question,
-                                        is_other: question.is_other,
-                                        is_secret: question.is_secret,
-                                        options: question.options.map(|options| {
-                                            options
-                                                .into_iter()
-                                                .map(|option| {
-                                                    devo_protocol::canonical::item::UserQuestionOption {
-                                                        label: option.label,
-                                                        description: option.description,
-                                                    }
-                                                })
-                                                .collect()
-                                        }),
-                                    }
+                                .map(|question| devo_protocol::canonical::item::UserQuestion {
+                                    id: question.id,
+                                    header: question.header,
+                                    question: question.question,
+                                    is_other: question.is_other,
+                                    is_secret: question.is_secret,
+                                    options: question.options.map(|options| {
+                                        options
+                                            .into_iter()
+                                            .map(|option| {
+                                                devo_protocol::canonical::item::UserQuestionOption {
+                                                    label: option.label,
+                                                    description: option.description,
+                                                }
+                                            })
+                                            .collect()
+                                    }),
                                 })
                                 .collect(),
                             answers: None,

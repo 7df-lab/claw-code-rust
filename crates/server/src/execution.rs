@@ -245,8 +245,8 @@ pub(crate) struct RuntimeSession {
     pub(crate) latest_compaction_snapshot: Option<devo_core::CompactionSnapshotLine>,
     /// Shared handle to the pending-turn queue owned by `core_session`.
     pub(crate) pending_turn_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
-    /// Shared handle to the `/btw` queue owned by `core_session`.
-    pub(crate) btw_input_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
+    /// Shared handle to the active-turn steer queue owned by `core_session`.
+    pub(crate) steer_input_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
     /// Tool exposure policy for turns run in this session.
     pub(crate) agent_tool_policy: devo_protocol::AgentToolPolicy,
     /// Optional maximum number of turns allowed in this session.

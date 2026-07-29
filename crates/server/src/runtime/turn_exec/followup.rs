@@ -43,9 +43,9 @@ impl ServerRuntime {
             session_id,
             devo_protocol::canonical::queue::QueueChange::Drained,
             queued.queued_item_id,
-            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(uuid::Uuid::from(
-                turn.turn_id,
-            ))),
+            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(
+                uuid::Uuid::from(turn.turn_id),
+            )),
         )
         .await;
         let runtime = Arc::clone(self);
@@ -97,9 +97,9 @@ impl ServerRuntime {
             session_id,
             devo_protocol::canonical::queue::QueueChange::Drained,
             queued.queued_item_id.clone(),
-            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(uuid::Uuid::from(
-                turn.turn_id,
-            ))),
+            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(
+                uuid::Uuid::from(turn.turn_id),
+            )),
         )
         .await;
         Box::pin(Arc::clone(self).execute_turn(ExecuteTurnRequest {

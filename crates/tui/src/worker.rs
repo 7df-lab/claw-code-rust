@@ -2006,16 +2006,8 @@ async fn run_worker_inner(
                             });
                             continue;
                         };
-                        let prompt = btw_agent_prompt(&question);
                         match client
-                            .agent_spawn(SpawnAgentParams {
-                                session_id: active_session_id,
-                                message: prompt,
-                                fork_turns: Some("all".to_string()),
-                                max_turns: Some(1),
-                                tool_policy: AgentToolPolicy::DenyAll,
-                                ephemeral: true,
-                            })
+                            .agent_spawn(btw_spawn_params(active_session_id, &question))
                             .await
                         {
                             Ok(result) => {
@@ -3250,6 +3242,23 @@ fn btw_agent_prompt(question: &str) -> String {
          Produce one concise answer and stop.\n\n\
          Side question:\n{question}"
     )
+}
+
+/// Builds the isolated child-session request for the TUI `/btw` command.
+///
+/// `/btw` is a side question, not a `turn/steer` input: it must not alter the
+/// parent's turn, history, or queues. `ephemeral`, `DenyAll`, and the one-turn
+/// limit make that boundary enforceable by the runtime rather than relying
+/// only on the model prompt.
+fn btw_spawn_params(session_id: SessionId, question: &str) -> SpawnAgentParams {
+    SpawnAgentParams {
+        session_id,
+        message: btw_agent_prompt(question),
+        fork_turns: Some("all".to_string()),
+        max_turns: Some(1),
+        tool_policy: AgentToolPolicy::DenyAll,
+        ephemeral: true,
+    }
 }
 
 async fn handle_btw_agent_event(
@@ -4618,6 +4627,8 @@ mod tests {
     use super::ShellCommandExecStart;
     use super::acp_terminal_output_event;
     use super::acp_terminal_snapshot_delta;
+    use super::btw_agent_prompt;
+    use super::btw_spawn_params;
     use super::handle_completed_item;
     use super::is_stale_turn_interrupt_error;
     use super::last_query_tokens_from_resume;
@@ -4644,10 +4655,12 @@ mod tests {
     use crate::events::WorkerEvent;
     use devo_core::ItemId;
     use devo_core::TurnId;
+    use devo_protocol::AgentToolPolicy;
     use devo_protocol::DEVO_SESSION_META;
     use devo_protocol::DEVO_TURN_USAGE_META;
     use devo_protocol::SessionHistoryMetadata;
     use devo_protocol::SessionPlanStepStatus;
+    use devo_protocol::SpawnAgentParams;
     use devo_protocol::ThreadGoal;
     use devo_protocol::ThreadGoalStatus;
     use devo_server::ItemEnvelope;
@@ -4657,6 +4670,24 @@ mod tests {
     use devo_server::SessionHistoryItemKind;
     use devo_server::ToolCallPayload;
     use devo_server::ToolResultPayload;
+
+    #[test]
+    fn btw_spawns_an_ephemeral_tool_free_one_turn_side_question() {
+        let session_id = SessionId::new();
+        let question = "what changed in the parser?";
+
+        assert_eq!(
+            btw_spawn_params(session_id, question),
+            SpawnAgentParams {
+                session_id,
+                message: btw_agent_prompt(question),
+                fork_turns: Some("all".to_string()),
+                max_turns: Some(1),
+                tool_policy: AgentToolPolicy::DenyAll,
+                ephemeral: true,
+            }
+        );
+    }
 
     #[tokio::test]
     async fn worker_shutdown_aborts_unresponsive_task() {

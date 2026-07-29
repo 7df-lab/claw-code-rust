@@ -31,7 +31,9 @@ use devo_protocol::canonical::item::{
 };
 use devo_protocol::canonical::model::PermissionProfile;
 use devo_protocol::canonical::session::SessionParent;
-use devo_protocol::canonical::turn::{TurnKind as CanonicalTurnKind, TurnStatus as CanonicalTurnStatus};
+use devo_protocol::canonical::turn::{
+    TurnKind as CanonicalTurnKind, TurnStatus as CanonicalTurnStatus,
+};
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
@@ -187,7 +189,9 @@ fn basic_session_lines() -> Vec<RolloutLine> {
         text: "Fix the flaky test".into(),
     })];
     conversation.output_items = vec![
-        TurnItem::AgentMessage(TextItem { text: "On it.".into() }),
+        TurnItem::AgentMessage(TextItem {
+            text: "On it.".into(),
+        }),
         TurnItem::Plan(TextItem {
             text: "1. reproduce\n2. fix".into(),
         }),
@@ -541,11 +545,9 @@ fn basic_session_projects_all_lines_in_order() {
         matches!(&projected[0], RolloutLineV2::SessionMeta { session, .. }
             if session.cwd.as_os_str() == "/tmp/legacy-project")
     );
-    assert!(
-        matches!(&projected[1], RolloutLineV2::Turn { turn, .. }
+    assert!(matches!(&projected[1], RolloutLineV2::Turn { turn, .. }
             if turn.kind == CanonicalTurnKind::Regular
-                && turn.status == CanonicalTurnStatus::Completed)
-    );
+                && turn.status == CanonicalTurnStatus::Completed));
 
     let envelopes = item_envelopes(&projected);
     assert_eq!(envelopes.len(), 12);
@@ -581,9 +583,13 @@ fn basic_session_projects_all_lines_in_order() {
         matches!(&envelopes[5].item, Item::CommandExecution { command, cwd, execution_mode: ExecutionMode::Foreground, origin: ExecOrigin::AgentTool, .. }
             if command == "cargo test" && cwd.as_os_str() == "/tmp/legacy-project")
     );
-    assert!(
-        matches!(&envelopes[8].item, Item::UserMessage { entry: UserMessageEntry::Steer, .. })
-    );
+    assert!(matches!(
+        &envelopes[8].item,
+        Item::UserMessage {
+            entry: UserMessageEntry::Steer,
+            ..
+        }
+    ));
     assert!(
         matches!(&envelopes[9].item, Item::HostedToolCall { tool_name, .. } if tool_name == "web_search")
     );

@@ -58,8 +58,8 @@ use devo_core::TurnWorkspaceRestoreStartedLine;
 use devo_core::TurnWorkspaceRestoreStartedRecord;
 use devo_core::V2InverseProjector;
 use devo_core::Worklog;
-use devo_core::parse_rollout_line;
 use devo_core::legacy_projector::LegacyProjector;
+use devo_core::parse_rollout_line;
 use devo_core::rollout_v2::RolloutLineV2;
 use devo_core::{EVENT_SCHEMA_VERSION, events_from_v2_line, source_fact_id};
 use devo_protocol::canonical::event::{EventEnvelope, EventMeta};
@@ -587,10 +587,9 @@ impl RolloutStore {
             match parsed {
                 ParsedRolloutLine::Legacy(legacy) => replay.apply_line(*legacy)?,
                 ParsedRolloutLine::V2(v2) => {
-                    for legacy_line in inverse
-                        .project_line(&v2)
-                        .with_context(|| format!("project v2 line from {}", rollout_path.display()))?
-                    {
+                    for legacy_line in inverse.project_line(&v2).with_context(|| {
+                        format!("project v2 line from {}", rollout_path.display())
+                    })? {
                         replay.apply_line(legacy_line)?;
                     }
                 }
@@ -666,7 +665,9 @@ impl RolloutStore {
             Some(state) => state,
             None => {
                 let state = hydrate_write_state(rollout_path)?;
-                write_states.entry(rollout_path.to_path_buf()).or_insert(state)
+                write_states
+                    .entry(rollout_path.to_path_buf())
+                    .or_insert(state)
             }
         };
         let v2_lines = state
@@ -828,7 +829,8 @@ fn hydrate_write_state(rollout_path: &Path) -> Result<WritePathState> {
             });
         }
         Err(error) => {
-            return Err(error).with_context(|| format!("open rollout file {}", rollout_path.display()));
+            return Err(error)
+                .with_context(|| format!("open rollout file {}", rollout_path.display()));
         }
     };
     let reader = BufReader::new(file);
@@ -840,9 +842,9 @@ fn hydrate_write_state(rollout_path: &Path) -> Result<WritePathState> {
         }
         match parse_rollout_line(&line) {
             Ok(ParsedRolloutLine::Legacy(legacy)) => {
-                projector
-                    .project_line(&legacy)
-                    .with_context(|| format!("hydrate projector from {}", rollout_path.display()))?;
+                projector.project_line(&legacy).with_context(|| {
+                    format!("hydrate projector from {}", rollout_path.display())
+                })?;
             }
             Ok(ParsedRolloutLine::V2(v2)) => projector.observe_v2_line(&v2),
             Err(RolloutLineReadError::TruncatedTail) if lines.peek().is_none() => break,
@@ -1177,7 +1179,7 @@ impl ReplayState {
             .map(devo_protocol::TurnUsage::display_total_tokens)
             .unwrap_or(core_session.prompt_token_estimate);
         let pending_turn_queue = std::sync::Arc::clone(&core_session.pending_turn_queue);
-        let btw_input_queue = std::sync::Arc::clone(&core_session.btw_input_queue);
+        let steer_input_queue = std::sync::Arc::clone(&core_session.steer_input_queue);
         let summary_model_selection = self
             .latest_turn_metadata
             .as_ref()
@@ -1275,7 +1277,7 @@ impl ReplayState {
             persisted_turn_items: replayed_persisted_turn_items,
             latest_compaction_snapshot: self.latest_compaction_snapshot,
             pending_turn_queue,
-            btw_input_queue,
+            steer_input_queue,
             agent_tool_policy: Default::default(),
             max_turns: None,
             deferred_assistant: None,
@@ -3519,7 +3521,9 @@ mod tests {
             .expect("append session meta");
         let metadata = test_turn_metadata(record.id, TurnId::new());
         let turn = super::build_turn_record(&metadata, None, None, None);
-        rollout_store.append_turn(&record, turn).expect("append turn");
+        rollout_store
+            .append_turn(&record, turn)
+            .expect("append turn");
         let item = super::build_item_record(
             record.id,
             metadata.turn_id,
@@ -3529,7 +3533,9 @@ mod tests {
             Some(TurnStatus::Running),
             None,
         );
-        rollout_store.append_item(&record, item).expect("append item");
+        rollout_store
+            .append_item(&record, item)
+            .expect("append item");
 
         let raw_lines = raw_rollout_lines(&record.rollout_path);
         assert_eq!(raw_lines.len(), 3);
@@ -3567,7 +3573,9 @@ mod tests {
             .expect("append session meta");
         let metadata = test_turn_metadata(record.id, TurnId::new());
         let turn = super::build_turn_record(&metadata, None, None, None);
-        rollout_store.append_turn(&record, turn).expect("append turn");
+        rollout_store
+            .append_turn(&record, turn)
+            .expect("append turn");
         let request_record_id = ItemId::new();
         rollout_store
             .append_item(
@@ -3674,7 +3682,10 @@ mod tests {
         rollout_store
             .append_session_meta(&record)
             .expect("append session meta");
-        write_raw_lines(&record.rollout_path, &[r#"{"v":2,"kind":"nope"}"#.to_string()]);
+        write_raw_lines(
+            &record.rollout_path,
+            &[r#"{"v":2,"kind":"nope"}"#.to_string()],
+        );
 
         let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let metadata = test_turn_metadata(record.id, TurnId::new());
@@ -3745,10 +3756,15 @@ mod tests {
             .append_session_meta(&record)
             .expect("append session meta");
         // Damaged middle line, then a valid line after it.
-        write_raw_lines(&record.rollout_path, &[r#"{"v":2,"kind":"nope"}"#.to_string()]);
+        write_raw_lines(
+            &record.rollout_path,
+            &[r#"{"v":2,"kind":"nope"}"#.to_string()],
+        );
         let metadata = test_turn_metadata(record.id, TurnId::new());
         let turn = super::build_turn_record(&metadata, None, None, None);
-        rollout_store.append_turn(&record, turn).expect("append turn");
+        rollout_store
+            .append_turn(&record, turn)
+            .expect("append turn");
 
         let error = rollout_store
             .load_session_from_rollout(&record.rollout_path, &deps)
@@ -3871,7 +3887,10 @@ mod tests {
                     "line {index} must be legacy"
                 );
             } else {
-                assert!(matches!(parsed, ParsedRolloutLine::V2(_)), "line {index} must be v2");
+                assert!(
+                    matches!(parsed, ParsedRolloutLine::V2(_)),
+                    "line {index} must be v2"
+                );
             }
         }
 
@@ -3916,7 +3935,9 @@ mod tests {
             .expect("append session meta");
         let metadata = test_turn_metadata(record.id, TurnId::new());
         let turn = super::build_turn_record(&metadata, None, None, None);
-        rollout_store.append_turn(&record, turn).expect("append turn");
+        rollout_store
+            .append_turn(&record, turn)
+            .expect("append turn");
         let item = super::build_item_record(
             record.id,
             metadata.turn_id,
@@ -3926,7 +3947,9 @@ mod tests {
             Some(TurnStatus::Running),
             None,
         );
-        rollout_store.append_item(&record, item).expect("append item");
+        rollout_store
+            .append_item(&record, item)
+            .expect("append item");
         record
     }
 
@@ -3946,18 +3969,23 @@ mod tests {
         // session/created lands on both the session stream and the per-cwd
         // sessions stream; turn and item facts land on the session stream.
         assert_eq!(db.event_log_len().expect("count"), 4);
-        let session_stream =
-            devo_core::session_stream_id(&devo_protocol::canonical::ids::SessionId::from_string(
-                record.id.to_string(),
-            ));
-        let rows = db.event_log_rows(&session_stream, 0).expect("session stream");
+        let session_stream = devo_core::session_stream_id(
+            &devo_protocol::canonical::ids::SessionId::from_string(record.id.to_string()),
+        );
+        let rows = db
+            .event_log_rows(&session_stream, 0)
+            .expect("session stream");
         let kinds: Vec<&str> = rows.iter().map(|row| row.event_kind.as_str()).collect();
-        assert_eq!(kinds, vec!["session/created", "turn/completed", "item/completed"]);
+        assert_eq!(
+            kinds,
+            vec!["session/created", "turn/completed", "item/completed"]
+        );
         let seqs: Vec<u64> = rows.iter().map(|row| row.seq).collect();
         assert_eq!(seqs, vec![1, 2, 3]);
         // Three physical rows written; watermark is the last line index.
         assert_eq!(
-            db.projection_watermark(&record.rollout_path).expect("watermark"),
+            db.projection_watermark(&record.rollout_path)
+                .expect("watermark"),
             Some(2)
         );
 

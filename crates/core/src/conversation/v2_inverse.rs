@@ -109,16 +109,18 @@ impl V2InverseProjector {
                 title,
                 previous_title,
                 ..
-            } => Ok(vec![RolloutLine::SessionTitleUpdated(SessionTitleUpdatedLine {
-                timestamp: *timestamp,
-                session_id: legacy_session_id(session_id)?,
-                title: title.clone(),
-                // The title lifecycle is a derived cache in the canonical
-                // model; any Final variant is honest here because it only
-                // suppresses later regeneration of a recorded title.
-                title_state: SessionTitleState::Final(SessionTitleFinalSource::ExplicitCreate),
-                previous_title: previous_title.clone(),
-            })]),
+            } => Ok(vec![RolloutLine::SessionTitleUpdated(
+                SessionTitleUpdatedLine {
+                    timestamp: *timestamp,
+                    session_id: legacy_session_id(session_id)?,
+                    title: title.clone(),
+                    // The title lifecycle is a derived cache in the canonical
+                    // model; any Final variant is honest here because it only
+                    // suppresses later regeneration of a recorded title.
+                    title_state: SessionTitleState::Final(SessionTitleFinalSource::ExplicitCreate),
+                    previous_title: previous_title.clone(),
+                },
+            )]),
             RolloutLineV2::CompactionSnapshot {
                 timestamp,
                 session_id,
@@ -163,12 +165,12 @@ impl V2InverseProjector {
             ))]),
             RolloutLineV2::WorkspaceCheckpoint {
                 timestamp, record, ..
-            } => Ok(vec![RolloutLine::TurnWorkspaceCheckpointRecorded(Box::new(
-                crate::conversation::TurnWorkspaceCheckpointRecordedLine {
+            } => Ok(vec![RolloutLine::TurnWorkspaceCheckpointRecorded(
+                Box::new(crate::conversation::TurnWorkspaceCheckpointRecordedLine {
                     timestamp: *timestamp,
                     record: record.clone(),
-                },
-            ))]),
+                }),
+            )]),
             RolloutLineV2::WorkspaceChange {
                 timestamp, record, ..
             } => Ok(vec![RolloutLine::TurnWorkspaceChangeRecorded(Box::new(
@@ -223,10 +225,10 @@ impl V2InverseProjector {
             PermissionProfile::FullAccess => "full-access",
         };
 
-        let (git_sha, git_branch, git_origin_url) = session.git_info.as_ref().map_or(
-            (None, None, None),
-            |git| (git.sha.clone(), git.branch.clone(), git.origin_url.clone()),
-        );
+        let (git_sha, git_branch, git_origin_url) =
+            session.git_info.as_ref().map_or((None, None, None), |git| {
+                (git.sha.clone(), git.branch.clone(), git.origin_url.clone())
+            });
 
         let record = SessionRecord {
             id,
@@ -238,7 +240,9 @@ impl V2InverseProjector {
             // for the metadata update time as well.
             updated_at: session.last_activity_at,
             last_activity_at: Some(session.last_activity_at),
-            source: extras.map(|extras| extras.source.clone()).unwrap_or_default(),
+            source: extras
+                .map(|extras| extras.source.clone())
+                .unwrap_or_default(),
             // Nickname/path are not modeled on canonical `SessionParent`.
             agent_nickname: None,
             agent_role,
@@ -262,11 +266,7 @@ impl V2InverseProjector {
             } else {
                 SessionTitleState::Unset
             },
-            sandbox_policy: session
-                .settings
-                .sandbox_profile
-                .clone()
-                .unwrap_or_default(),
+            sandbox_policy: session.settings.sandbox_profile.clone().unwrap_or_default(),
             approval_mode: approval_mode.into(),
             tokens_used: session
                 .usage
@@ -399,12 +399,10 @@ impl V2InverseProjector {
                     UserMessageEntry::Steer => TurnItem::SteerInput(TextItem { text }),
                 }
             }
-            Item::AssistantMessage { text, .. } => TurnItem::AgentMessage(TextItem {
-                text: text.clone(),
-            }),
-            Item::Reasoning { text, .. } => TurnItem::Reasoning(TextItem {
-                text: text.clone(),
-            }),
+            Item::AssistantMessage { text, .. } => {
+                TurnItem::AgentMessage(TextItem { text: text.clone() })
+            }
+            Item::Reasoning { text, .. } => TurnItem::Reasoning(TextItem { text: text.clone() }),
             Item::Plan { entries } => TurnItem::Plan(TextItem {
                 // The v2 writer produces exactly one entry (the legacy
                 // rendered text); multiple entries join lossily with
@@ -507,13 +505,14 @@ impl V2InverseProjector {
                     )?;
                     return Ok(Some(RolloutLine::Item(record)));
                 }
-                let (path, host, target) = target.as_ref().map_or((None, None, None), |t| match t {
-                    ApprovalTarget::Path { path } => {
-                        (Some(path.display().to_string()), None, None)
-                    }
-                    ApprovalTarget::Host { host } => (None, Some(host.clone()), None),
-                    ApprovalTarget::Command { command } => (None, None, Some(command.clone())),
-                });
+                let (path, host, target) =
+                    target.as_ref().map_or((None, None, None), |t| match t {
+                        ApprovalTarget::Path { path } => {
+                            (Some(path.display().to_string()), None, None)
+                        }
+                        ApprovalTarget::Host { host } => (None, Some(host.clone()), None),
+                        ApprovalTarget::Command { command } => (None, None, Some(command.clone())),
+                    });
                 TurnItem::ApprovalRequest(ApprovalRequestItem {
                     approval_id: approval_id.clone(),
                     action_summary: action_summary.clone(),
@@ -581,18 +580,18 @@ impl V2InverseProjector {
         match entry {
             InternalRecordV2::Entry { entry } => {
                 let payload = match entry {
-                    InternalEntry::TurnSummary { text } => TurnItem::TurnSummary(TextItem {
-                        text: text.clone(),
-                    }),
+                    InternalEntry::TurnSummary { text } => {
+                        TurnItem::TurnSummary(TextItem { text: text.clone() })
+                    }
                     InternalEntry::ToolProgress { call_id, message } => {
                         TurnItem::ToolProgress(ToolProgressItem {
                             tool_call_id: call_id.clone(),
                             message: message.clone(),
                         })
                     }
-                    InternalEntry::HookPrompt { text } => TurnItem::HookPrompt(TextItem {
-                        text: text.clone(),
-                    }),
+                    InternalEntry::HookPrompt { text } => {
+                        TurnItem::HookPrompt(TextItem { text: text.clone() })
+                    }
                 };
                 // Identity and position travel on the line (exact); only the
                 // record id is synthesized, since internal entries have no
@@ -626,22 +625,18 @@ impl V2InverseProjector {
                     },
                 ))])
             }
-            InternalRecordV2::MessageEdit(record) => {
-                Ok(vec![RolloutLine::MessageEditRecorded(Box::new(
-                    crate::conversation::MessageEditRecordedLine {
-                        timestamp,
-                        record: record.clone(),
-                    },
-                ))])
-            }
-            InternalRecordV2::TurnSuperseded(record) => {
-                Ok(vec![RolloutLine::TurnSuperseded(Box::new(
-                    crate::conversation::TurnSupersededLine {
-                        timestamp,
-                        record: record.clone(),
-                    },
-                ))])
-            }
+            InternalRecordV2::MessageEdit(record) => Ok(vec![RolloutLine::MessageEditRecorded(
+                Box::new(crate::conversation::MessageEditRecordedLine {
+                    timestamp,
+                    record: record.clone(),
+                }),
+            )]),
+            InternalRecordV2::TurnSuperseded(record) => Ok(vec![RolloutLine::TurnSuperseded(
+                Box::new(crate::conversation::TurnSupersededLine {
+                    timestamp,
+                    record: record.clone(),
+                }),
+            )]),
         }
     }
 }

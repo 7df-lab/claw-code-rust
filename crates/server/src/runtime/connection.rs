@@ -462,22 +462,27 @@ impl ServerRuntime {
                 Some(self.handle_session_items_list(id?, params).await)
             }
             // Durable event subscriptions (08 §4).
-            Some(ClientMethod::SubscriptionCreate) => {
-                Some(self.handle_subscription_create(connection_id, id?, params).await)
-            }
-            Some(ClientMethod::SubscriptionUpdate) => {
-                Some(self.handle_subscription_update(connection_id, id?, params).await)
-            }
-            Some(ClientMethod::SubscriptionAck) => {
-                Some(self.handle_subscription_ack(connection_id, id?, params).await)
-            }
-            Some(ClientMethod::SubscriptionUnsubscribe) => {
-                Some(self.handle_subscription_unsubscribe(connection_id, id?, params).await)
-            }
+            Some(ClientMethod::SubscriptionCreate) => Some(
+                self.handle_subscription_create(connection_id, id?, params)
+                    .await,
+            ),
+            Some(ClientMethod::SubscriptionUpdate) => Some(
+                self.handle_subscription_update(connection_id, id?, params)
+                    .await,
+            ),
+            Some(ClientMethod::SubscriptionAck) => Some(
+                self.handle_subscription_ack(connection_id, id?, params)
+                    .await,
+            ),
+            Some(ClientMethod::SubscriptionUnsubscribe) => Some(
+                self.handle_subscription_unsubscribe(connection_id, id?, params)
+                    .await,
+            ),
             // Session input queue of the new Native API (01 §4.3).
-            Some(ClientMethod::SessionQueuePush) => {
-                Some(self.handle_session_queue_push(connection_id, id?, params).await)
-            }
+            Some(ClientMethod::SessionQueuePush) => Some(
+                self.handle_session_queue_push(connection_id, id?, params)
+                    .await,
+            ),
             Some(ClientMethod::SessionQueueList) => {
                 Some(self.handle_session_queue_list(id?, params).await)
             }
@@ -487,9 +492,10 @@ impl ServerRuntime {
             Some(ClientMethod::SessionQueueRemove) => {
                 Some(self.handle_session_queue_remove(id?, params).await)
             }
-            Some(ClientMethod::SessionQueueSteer) => {
-                Some(self.handle_session_queue_steer(connection_id, id?, params).await)
-            }
+            Some(ClientMethod::SessionQueueSteer) => Some(
+                self.handle_session_queue_steer(connection_id, id?, params)
+                    .await,
+            ),
             // TODO: add endpoint to kill background process opened by unified exec command.
             // TODO: add endpoint to list current background processes.
             None => Some(self.error_response(
@@ -1297,7 +1303,11 @@ impl ConnectionRuntime {
     /// Routes one server event to its wire notification for this connection:
     /// native typed `item/*` when the connection opted in and the payload
     /// projects, otherwise the legacy ACP-wrapped shape (P2 fallback).
-    pub(super) fn notification_for(&self, method: &str, event: &ServerEvent) -> (String, serde_json::Value) {
+    pub(super) fn notification_for(
+        &self,
+        method: &str,
+        event: &ServerEvent,
+    ) -> (String, serde_json::Value) {
         if self.typed_items
             && let Some(typed) = typed_item_notification_from_server_event(event)
         {
@@ -2178,7 +2188,9 @@ mod tests {
                 failure_reason: None,
             };
             let turn = crate::persistence::build_turn_record(&metadata, None, None, None);
-            rollout_store.append_turn(&record, turn).expect("append turn");
+            rollout_store
+                .append_turn(&record, turn)
+                .expect("append turn");
             // Turns 1 and 2 get two items each, turn 3 gets one.
             for text in match turn_index {
                 1 | 2 => vec!["first", "second"],
@@ -2195,7 +2207,9 @@ mod tests {
                     Some(TurnStatus::Running),
                     None,
                 );
-                rollout_store.append_item(&record, item).expect("append item");
+                rollout_store
+                    .append_item(&record, item)
+                    .expect("append item");
                 item_seq += 1;
             }
         }
@@ -2258,7 +2272,11 @@ mod tests {
             serde_json::from_value(first["result"].clone()).expect("page 1 result");
         assert_eq!(first.data.len(), 2);
         assert_eq!(
-            first.data.iter().map(|turn| turn.sequence).collect::<Vec<_>>(),
+            first
+                .data
+                .iter()
+                .map(|turn| turn.sequence)
+                .collect::<Vec<_>>(),
             vec![1, 2]
         );
         assert_eq!(first.next_cursor.as_deref(), Some("2"));
@@ -2383,12 +2401,7 @@ mod tests {
             devo_protocol::canonical::item::ItemEnvelope,
         > = serde_json::from_value(items["result"].clone()).expect("items result");
         assert_eq!(items.data.len(), 2);
-        assert!(
-            items
-                .data
-                .iter()
-                .all(|item| item.turn_id == turn_two.id)
-        );
+        assert!(items.data.iter().all(|item| item.turn_id == turn_two.id));
         assert!(
             matches!(&items.data[0].item, devo_protocol::canonical::item::Item::AssistantMessage { text, .. } if text == "first-t2")
         );
@@ -2430,7 +2443,8 @@ mod tests {
         let data_root = TempDir::new()?;
         let runtime = build_runtime(data_root.path());
         // A session with only its meta line (no turns, no items).
-        let rollout_store = crate::persistence::RolloutStore::new(data_root.path().to_path_buf(), None);
+        let rollout_store =
+            crate::persistence::RolloutStore::new(data_root.path().to_path_buf(), None);
         let record = rollout_store.create_session_record(
             SessionId::new(),
             Utc::now(),
@@ -2590,12 +2604,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
         );
-        assert!(
-            matches!(
-                &result.replay[0].notification,
-                devo_protocol::canonical::event::ServerNotification::SessionCreated { .. }
-            )
-        );
+        assert!(matches!(
+            &result.replay[0].notification,
+            devo_protocol::canonical::event::ServerNotification::SessionCreated { .. }
+        ));
         assert!(result.replay.iter().all(|event| event.meta.persisted));
 
         // Snapshot: the session from the rollout history, no active turn.
@@ -2763,9 +2775,11 @@ mod tests {
         let second = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
             .await?
             .expect("second live event");
-        assert!(second["params"]["_meta"]["devo/originalEvent"]
-            .to_string()
-            .contains("second"));
+        assert!(
+            second["params"]["_meta"]["devo/originalEvent"]
+                .to_string()
+                .contains("second")
+        );
 
         Ok(())
     }
@@ -2977,12 +2991,12 @@ mod tests {
             )
             .await
             .expect("session/start response");
-        Ok(serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(
-            response,
-        )?
-        .result
-        .session
-        .session_id)
+        Ok(
+            serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(response)?
+                .result
+                .session
+                .session_id,
+        )
     }
 
     async fn start_turn(
@@ -3053,7 +3067,9 @@ mod tests {
 
     #[tokio::test]
     async fn queue_push_idle_starts_turn_and_busy_queues_then_update_remove() -> Result<()> {
-        use devo_protocol::canonical::rpc_turn::{SessionQueuePushResult, SessionQueueUpdateResult};
+        use devo_protocol::canonical::rpc_turn::{
+            SessionQueuePushResult, SessionQueueUpdateResult,
+        };
         use devo_protocol::canonical::turn::TurnStatus as CanonicalTurnStatus;
 
         let data_root = TempDir::new()?;
@@ -3209,7 +3225,10 @@ mod tests {
             .db
             .list_pending(&session_id, crate::db::QueueType::Turn)?;
         assert_eq!(db_entries.len(), 2);
-        assert_eq!(db_entries[0].id.to_string(), third_entry.queue_item_id.as_str());
+        assert_eq!(
+            db_entries[0].id.to_string(),
+            third_entry.queue_item_id.as_str()
+        );
 
         // Remove works; removing again reports the entry is gone.
         let removed = history_request(
@@ -3323,7 +3342,11 @@ mod tests {
         let steered: SessionQueueSteerResult =
             serde_json::from_value(steered["result"].clone()).expect("steer result");
         assert!(!steered.item_id.as_str().is_empty());
-        assert!(queue_list(&runtime, connection_id, session_id).await.is_empty());
+        assert!(
+            queue_list(&runtime, connection_id, session_id)
+                .await
+                .is_empty()
+        );
 
         // Interrupt the turn before the next injection boundary: the
         // promoted steer is never consumed; it degrades back into the
@@ -3340,7 +3363,10 @@ mod tests {
             }),
         )
         .await;
-        assert!(interrupted.get("error").is_none(), "interrupt: {interrupted}");
+        assert!(
+            interrupted.get("error").is_none(),
+            "interrupt: {interrupted}"
+        );
         // Open the gate: turn 1 settles as interrupted; the follow-up turn
         // started by the queue drain runs to completion immediately.
         open.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -3405,13 +3431,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queue_survives_restart_and_btw_restores_into_turn_queue() -> Result<()> {
+    async fn queue_survives_restart_and_steer_restores_into_turn_queue() -> Result<()> {
         let data_root = TempDir::new()?;
         let runtime = build_runtime(data_root.path());
         let connection_id = initialized_connection(&runtime).await;
         let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
 
-        // Seed one queued and one stale-btw row directly in SQLite.
+        // Seed one queued and one stale-steer row directly in SQLite.
         let queued_item = devo_core::PendingInputItem::new(
             devo_core::PendingInputKind::UserText {
                 text: "queued text".into(),
@@ -3419,7 +3445,7 @@ mod tests {
             None,
             chrono::Utc::now(),
         );
-        let btw_item = devo_core::PendingInputItem::new(
+        let steer_item = devo_core::PendingInputItem::new(
             devo_core::PendingInputKind::UserText {
                 text: "stale steer".into(),
             },
@@ -3433,7 +3459,7 @@ mod tests {
         runtime
             .deps
             .db
-            .push_pending(&session_id, crate::db::QueueType::Btw, &btw_item)?;
+            .push_pending(&session_id, crate::db::QueueType::Steer, &steer_item)?;
         drop(runtime);
 
         let rebuilt = build_runtime(data_root.path());
@@ -3443,13 +3469,13 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].preview, "queued text");
         assert_eq!(entries[1].preview, "stale steer");
-        // The btw row moved into the turn queue table (the original queued
+        // The steer row moved into the turn queue table (the original queued
         // row is consumed by the resume drain and lives in memory only).
         assert!(
             rebuilt
                 .deps
                 .db
-                .list_pending(&session_id, crate::db::QueueType::Btw)?
+                .list_pending(&session_id, crate::db::QueueType::Steer)?
                 .is_empty()
         );
         let turn_rows = rebuilt
@@ -3457,7 +3483,7 @@ mod tests {
             .db
             .list_pending(&session_id, crate::db::QueueType::Turn)?;
         assert_eq!(turn_rows.len(), 1);
-        assert_eq!(turn_rows[0].id, btw_item.id);
+        assert_eq!(turn_rows[0].id, steer_item.id);
 
         Ok(())
     }

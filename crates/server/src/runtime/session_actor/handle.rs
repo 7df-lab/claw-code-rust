@@ -66,7 +66,7 @@ impl SessionHandle {
             tx,
             max_turns,
         };
-        tokio::spawn(super::loop_::run_session_actor(state, rx, runtime));
+        tokio::spawn(super::actor_loop::run_session_actor(state, rx, runtime));
         handle
     }
 

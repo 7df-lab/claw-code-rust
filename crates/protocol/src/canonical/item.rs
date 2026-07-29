@@ -69,7 +69,11 @@ pub enum ItemState {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Item {
     // ── Conversation ──
     UserMessage {
@@ -279,7 +283,11 @@ impl ItemOrUnknown {
 /// appear in `item/*` events or the public schema, and the rollout reader
 /// hands them straight to the recovery pipeline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum InternalEntry {
     TurnSummary { text: String },
     ToolProgress { call_id: String, message: String },
@@ -292,7 +300,11 @@ pub enum InternalEntry {
 
 /// One submission = one `UserMessage` item whose content is a list of parts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum UserInput {
     Text {
         text: String,
@@ -414,10 +426,18 @@ pub struct FileChangeEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum FileChangeKind {
-    Add { content: String },
-    Delete { content: String },
+    Add {
+        content: String,
+    },
+    Delete {
+        content: String,
+    },
     Update {
         unified_diff: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -459,7 +479,11 @@ pub enum ApprovalScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ApprovalTarget {
     Path { path: PathBuf },
     Host { host: String },

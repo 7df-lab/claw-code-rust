@@ -34,8 +34,8 @@ use crate::conversation::{
 };
 
 use super::rollout_v2::{
-    InternalRecordV2, RolloutLineV2, SessionPersistenceExtras, TurnPersistenceExtras,
-    ROLLOUT_FORMAT_VERSION,
+    InternalRecordV2, ROLLOUT_FORMAT_VERSION, RolloutLineV2, SessionPersistenceExtras,
+    TurnPersistenceExtras,
 };
 
 /// Errors from projecting a legacy rollout line. Every known legacy shape
@@ -201,32 +201,26 @@ impl LegacyProjector {
                     previous_title: line.previous_title.clone(),
                 }])
             }
-            RolloutLine::SessionContextUpdated(line) => {
-                Ok(vec![RolloutLineV2::Internal {
-                    v: ROLLOUT_FORMAT_VERSION,
-                    timestamp: line.timestamp,
-                    session_id: SessionId::from_legacy_uuid(legacy_uuid(line.session_id)?),
-                    turn_id: None,
-                    seq: 0,
-                    entry: InternalRecordV2::SessionContext(Box::new(
-                        line.session_context.clone(),
-                    )),
-                }])
-            }
-            RolloutLine::CompactionSnapshot(line) => {
-                Ok(vec![RolloutLineV2::CompactionSnapshot {
-                    v: ROLLOUT_FORMAT_VERSION,
-                    timestamp: line.timestamp,
-                    session_id: SessionId::from_legacy_uuid(legacy_uuid(line.session_id)?),
-                    turn_id: TurnId::from_legacy_uuid(legacy_uuid(line.turn_id)?),
-                    summary_item_id: ItemId::from_legacy_uuid(legacy_uuid(line.summary_item_id)?),
-                    preserved_item_ids: line
-                        .preserved_item_ids
-                        .iter()
-                        .map(|id| legacy_uuid(id).map(ItemId::from_legacy_uuid))
-                        .collect::<Result<_, _>>()?,
-                }])
-            }
+            RolloutLine::SessionContextUpdated(line) => Ok(vec![RolloutLineV2::Internal {
+                v: ROLLOUT_FORMAT_VERSION,
+                timestamp: line.timestamp,
+                session_id: SessionId::from_legacy_uuid(legacy_uuid(line.session_id)?),
+                turn_id: None,
+                seq: 0,
+                entry: InternalRecordV2::SessionContext(Box::new(line.session_context.clone())),
+            }]),
+            RolloutLine::CompactionSnapshot(line) => Ok(vec![RolloutLineV2::CompactionSnapshot {
+                v: ROLLOUT_FORMAT_VERSION,
+                timestamp: line.timestamp,
+                session_id: SessionId::from_legacy_uuid(legacy_uuid(line.session_id)?),
+                turn_id: TurnId::from_legacy_uuid(legacy_uuid(line.turn_id)?),
+                summary_item_id: ItemId::from_legacy_uuid(legacy_uuid(line.summary_item_id)?),
+                preserved_item_ids: line
+                    .preserved_item_ids
+                    .iter()
+                    .map(|id| legacy_uuid(id).map(ItemId::from_legacy_uuid))
+                    .collect::<Result<_, _>>()?,
+            }]),
             RolloutLine::MessageEditRecorded(line) => {
                 let record = &line.record;
                 Ok(vec![RolloutLineV2::Internal {
@@ -461,36 +455,31 @@ impl LegacyProjector {
             } else {
                 ItemId::from_legacy_uuid(Uuid::now_v7())
             };
-            let (id, seq, revision, state, item) = match self.project_payload(
-                record,
-                &item_id,
-                payload,
-            )? {
-                Projected::Item { item, state } => {
-                    (item_id, self.next_seq(), 1, state, item)
-                }
-                Projected::FoldedItem {
-                    id,
-                    seq,
-                    revision,
-                    item,
-                    state,
-                } => (id, seq, revision, state, item),
-                Projected::Internal(entry) => {
-                    // Internal entries consume one sequence position, shared
-                    // with the item stream, so their order among items is
-                    // exactly recoverable by the inverse projector.
-                    out.push(RolloutLineV2::Internal {
-                        v: ROLLOUT_FORMAT_VERSION,
-                        timestamp: line.timestamp,
-                        session_id: session_id.clone(),
-                        turn_id: Some(turn_id.clone()),
-                        seq: self.next_seq(),
-                        entry: *entry,
-                    });
-                    continue;
-                }
-            };
+            let (id, seq, revision, state, item) =
+                match self.project_payload(record, &item_id, payload)? {
+                    Projected::Item { item, state } => (item_id, self.next_seq(), 1, state, item),
+                    Projected::FoldedItem {
+                        id,
+                        seq,
+                        revision,
+                        item,
+                        state,
+                    } => (id, seq, revision, state, item),
+                    Projected::Internal(entry) => {
+                        // Internal entries consume one sequence position, shared
+                        // with the item stream, so their order among items is
+                        // exactly recoverable by the inverse projector.
+                        out.push(RolloutLineV2::Internal {
+                            v: ROLLOUT_FORMAT_VERSION,
+                            timestamp: line.timestamp,
+                            session_id: session_id.clone(),
+                            turn_id: Some(turn_id.clone()),
+                            seq: self.next_seq(),
+                            entry: *entry,
+                        });
+                        continue;
+                    }
+                };
             out.push(RolloutLineV2::Item {
                 v: ROLLOUT_FORMAT_VERSION,
                 timestamp: line.timestamp,
@@ -580,12 +569,14 @@ impl LegacyProjector {
                     input: Some(call.input.clone()),
                 },
             },
-            TurnItem::ToolProgress(progress) => Projected::Internal(Box::new(InternalRecordV2::Entry {
-                entry: InternalEntry::ToolProgress {
-                    call_id: progress.tool_call_id.clone(),
-                    message: progress.message.clone(),
-                },
-            })),
+            TurnItem::ToolProgress(progress) => {
+                Projected::Internal(Box::new(InternalRecordV2::Entry {
+                    entry: InternalEntry::ToolProgress {
+                        call_id: progress.tool_call_id.clone(),
+                        message: progress.message.clone(),
+                    },
+                }))
+            }
             TurnItem::ToolResult(result) => Projected::Item {
                 state: ItemState::Completed,
                 item: Item::ToolResult {
@@ -761,9 +752,9 @@ pub fn canonical_turn_from_record(record: &TurnRecord) -> Result<Turn, LegacyPro
     let status = match record.status {
         // Waiting on an approval is still part of the turn, not a
         // separate state (07 §4.3).
-        LegacyTurnStatus::Pending | LegacyTurnStatus::Running | LegacyTurnStatus::WaitingApproval => {
-            TurnStatus::InProgress
-        }
+        LegacyTurnStatus::Pending
+        | LegacyTurnStatus::Running
+        | LegacyTurnStatus::WaitingApproval => TurnStatus::InProgress,
         LegacyTurnStatus::Completed => TurnStatus::Completed,
         LegacyTurnStatus::Interrupted => TurnStatus::Interrupted,
         LegacyTurnStatus::Failed => TurnStatus::Failed,
@@ -845,11 +836,13 @@ fn approval_request_from_parts(
     available_scopes: &[String],
     target: &Option<ApprovalTarget>,
 ) -> ApprovalRequestItem {
-    let (path, host, target) = target.as_ref().map_or((None, None, None), |target| match target {
-        ApprovalTarget::Path { path } => (Some(path.display().to_string()), None, None),
-        ApprovalTarget::Host { host } => (None, Some(host.clone()), None),
-        ApprovalTarget::Command { command } => (None, None, Some(command.clone())),
-    });
+    let (path, host, target) = target
+        .as_ref()
+        .map_or((None, None, None), |target| match target {
+            ApprovalTarget::Path { path } => (Some(path.display().to_string()), None, None),
+            ApprovalTarget::Host { host } => (None, Some(host.clone()), None),
+            ApprovalTarget::Command { command } => (None, None, Some(command.clone())),
+        });
     ApprovalRequestItem {
         approval_id: approval_id.into(),
         action_summary: action_summary.into(),

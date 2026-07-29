@@ -130,12 +130,12 @@ impl ServerRuntime {
             }
         }
 
-        // Stale btw (steer) inputs are no longer discarded (01 §4.3): they
+        // Stale steer inputs are no longer discarded (01 §4.3): they
         // degrade into the session turn queue like any other queued input.
         match self
             .deps
             .db
-            .drain_pending(&session_id, crate::db::QueueType::Btw)
+            .drain_pending(&session_id, crate::db::QueueType::Steer)
         {
             Ok(items) => {
                 if !items.is_empty() {
@@ -154,14 +154,14 @@ impl ServerRuntime {
                             tracing::warn!(
                                 session_id = %session_id,
                                 error = %error,
-                                "failed to restore btw input into the turn queue"
+                                "failed to restore steer input into the turn queue"
                             );
                         }
                     }
                     tracing::debug!(
                         session_id = %session_id,
-                        restored_btw_count = items.len(),
-                        "degraded stale btw inputs into the pending turn queue"
+                        restored_steer_count = items.len(),
+                        "degraded stale steer inputs into the pending turn queue"
                     );
                 }
             }
@@ -169,7 +169,7 @@ impl ServerRuntime {
                 tracing::warn!(
                     session_id = %session_id,
                     error = %err,
-                    "failed to restore stale btw inputs from database"
+                    "failed to restore stale steer inputs from database"
                 );
             }
         }

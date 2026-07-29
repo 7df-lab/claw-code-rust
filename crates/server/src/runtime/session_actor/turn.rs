@@ -10,6 +10,12 @@ use crate::runtime::turn_exec::{
     spawn_turn_event_stream,
 };
 
+/// Executes a turn inline on the session actor.
+///
+/// The actor does not poll its mailbox until this function returns. Code that
+/// must remain responsive while a turn runs (for example queue operations,
+/// steering, or future rollback preview) must not wait for an actor command.
+/// It must use the runtime reservation fast path and its shared queues instead.
 pub(super) async fn execute_turn_in_actor(
     state: &mut SessionActorState,
     runtime: Arc<ServerRuntime>,

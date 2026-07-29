@@ -132,7 +132,7 @@ impl ServerRuntime {
             .filter(|item| matches!(item.turn_item, TurnItem::UserMessage(_)))
             .count();
         let pending_turn_queue = Arc::clone(&core_session.pending_turn_queue);
-        let btw_input_queue = Arc::clone(&core_session.btw_input_queue);
+        let steer_input_queue = Arc::clone(&core_session.steer_input_queue);
         let latest_turn = if stable_items.is_empty() {
             None
         } else {
@@ -182,7 +182,7 @@ impl ServerRuntime {
             persisted_turn_items: stable_items,
             latest_compaction_snapshot: None,
             pending_turn_queue,
-            btw_input_queue,
+            steer_input_queue,
             agent_tool_policy: effective_tool_policy,
             max_turns: params.max_turns,
             deferred_assistant: None,

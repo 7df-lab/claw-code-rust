@@ -72,7 +72,11 @@ pub struct TurnPersistenceExtras {
 /// version, a wall-clock timestamp, and its payload in a stable flat shape,
 /// e.g. `{"v":2,"kind":"item","timestamp":"...","item":{...}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RolloutLineV2 {
     /// Canonical session metadata. Session and extras are boxed to keep the
     /// enum small (serde-transparent).
@@ -176,7 +180,11 @@ pub enum RolloutLineV2 {
 /// `item/*` events or the public schema; the rollout reader hands them
 /// straight to the recovery pipeline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum InternalRecordV2 {
     /// A canonical internal replay entry. Kept as a nested payload rather than
     /// a flattened newtype variant: both enums use the `type` tag, so
@@ -274,8 +282,8 @@ mod tests {
 
     use super::*;
     use crate::conversation::{SessionTitleState, SessionTitleUpdatedLine};
-    use devo_protocol::canonical::item::{Item, ItemState, UserInput, UserMessageEntry};
     use devo_protocol::canonical::ids::ItemId as CanonicalItemId;
+    use devo_protocol::canonical::item::{Item, ItemState, UserInput, UserMessageEntry};
 
     fn fixed_ts() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap()

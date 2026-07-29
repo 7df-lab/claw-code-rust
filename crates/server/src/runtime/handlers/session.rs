@@ -106,7 +106,7 @@ impl ServerRuntime {
         );
         let config = core_session.config.clone();
         let pending_turn_queue = Arc::clone(&core_session.pending_turn_queue);
-        let btw_input_queue = Arc::clone(&core_session.btw_input_queue);
+        let steer_input_queue = Arc::clone(&core_session.steer_input_queue);
         let rollout_path_for_db = record.as_ref().map(|entry| entry.rollout_path.clone());
         let actor_state = SessionActorState {
             runtime_context,
@@ -124,7 +124,7 @@ impl ServerRuntime {
             persisted_turn_items: Vec::new(),
             latest_compaction_snapshot: None,
             pending_turn_queue,
-            btw_input_queue,
+            steer_input_queue,
             agent_tool_policy: Default::default(),
             max_turns: None,
             next_item_seq: 1,
@@ -977,7 +977,7 @@ impl ServerRuntime {
 
         let config = core_session.config.clone();
         let pending_turn_queue = Arc::clone(&core_session.pending_turn_queue);
-        let btw_input_queue = Arc::clone(&core_session.btw_input_queue);
+        let steer_input_queue = Arc::clone(&core_session.steer_input_queue);
         Ok(RuntimeSession {
             runtime_context,
             record: None,
@@ -991,7 +991,7 @@ impl ServerRuntime {
             persisted_turn_items: kept_items,
             latest_compaction_snapshot: None,
             pending_turn_queue,
-            btw_input_queue,
+            steer_input_queue,
             agent_tool_policy: Default::default(),
             max_turns: None,
             deferred_assistant: None,

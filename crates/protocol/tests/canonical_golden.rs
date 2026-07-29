@@ -68,17 +68,15 @@ fn known_item_does_not_fall_into_unknown() {
 #[test]
 fn patch_field_null_is_explicit_clear() {
     let golden = read_golden("patch_title_null.json");
-    let params: SessionMetadataUpdateParams =
-        serde_json::from_value(golden).expect("params parse");
+    let params: SessionMetadataUpdateParams = serde_json::from_value(golden).expect("params parse");
     assert_eq!(params.title, PatchField::Null);
 }
 
 #[test]
 fn legacy_bare_uuid_id_round_trips() {
-    let id: SessionId = serde_json::from_value(serde_json::json!(
-        "019b1c2d-3e4f-7890-abcd-ef1234567890"
-    ))
-    .expect("legacy id parses");
+    let id: SessionId =
+        serde_json::from_value(serde_json::json!("019b1c2d-3e4f-7890-abcd-ef1234567890"))
+            .expect("legacy id parses");
     assert_eq!(id.as_str(), "019b1c2d-3e4f-7890-abcd-ef1234567890");
     assert_eq!(
         serde_json::to_value(&id).expect("serialize"),

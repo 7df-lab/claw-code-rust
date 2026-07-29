@@ -216,12 +216,15 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
     wait_for_original_event(&mut notifications_rx, "turn/completed").await?;
     let rollout = std::fs::read_to_string(rollout_path(data_root.path(), &session))?;
     assert!(rollout.contains(PROVIDER_ERROR_TEXT));
-    let persisted_error = support::read_rollout_lines_dual(&rollout_path(data_root.path(), &session))?
-        .into_iter()
-        .find_map(|line| match line {
-            devo_core::RolloutLine::Turn(line) if line.turn.id == failed_turn_id => line.turn.error,
-            _ => None,
-        });
+    let persisted_error =
+        support::read_rollout_lines_dual(&rollout_path(data_root.path(), &session))?
+            .into_iter()
+            .find_map(|line| match line {
+                devo_core::RolloutLine::Turn(line) if line.turn.id == failed_turn_id => {
+                    line.turn.error
+                }
+                _ => None,
+            });
     assert_eq!(
         persisted_error,
         Some(devo_core::TurnError {

@@ -43,7 +43,10 @@ pub fn source_fact_id(rollout_path: &std::path::Path, line_index: u64, sub_index
     if sub_index == 0 {
         format!("{}#{line_index}", rollout_path.to_string_lossy())
     } else {
-        format!("{}#{line_index}.{sub_index}", rollout_path.to_string_lossy())
+        format!(
+            "{}#{line_index}.{sub_index}",
+            rollout_path.to_string_lossy()
+        )
     }
 }
 
@@ -61,7 +64,10 @@ pub fn sessions_stream_id(cwd: &str) -> String {
 }
 
 fn hex_prefix(bytes: &[u8], len: usize) -> String {
-    bytes[..len].iter().map(|byte| format!("{byte:02x}")).collect()
+    bytes[..len]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn is_terminal_item_state(state: ItemState) -> bool {
@@ -81,11 +87,20 @@ pub fn events_from_v2_line(line: &RolloutLineV2) -> Vec<DerivedEvent> {
             let envelope = Box::new(item.clone());
             let (event_kind, notification) = if is_terminal_item_state(item.state) {
                 // All terminal states share `item/completed` (08 §3).
-                ("item/completed", ServerNotification::ItemCompleted { item: envelope })
+                (
+                    "item/completed",
+                    ServerNotification::ItemCompleted { item: envelope },
+                )
             } else if item.revision > 1 {
-                ("item/updated", ServerNotification::ItemUpdated { item: envelope })
+                (
+                    "item/updated",
+                    ServerNotification::ItemUpdated { item: envelope },
+                )
             } else {
-                ("item/started", ServerNotification::ItemStarted { item: envelope })
+                (
+                    "item/started",
+                    ServerNotification::ItemStarted { item: envelope },
+                )
             };
             vec![DerivedEvent {
                 event_kind,
@@ -148,16 +163,13 @@ pub fn events_from_v2_line(line: &RolloutLineV2) -> Vec<DerivedEvent> {
             }]
         }
         RolloutLineV2::WorkspaceRestoreCompleted { record, .. } => {
-            let succeeded = record
-                .outcomes
-                .iter()
-                .all(|outcome| {
-                    matches!(
-                        outcome.status,
-                        crate::durable_record::RestoreFileStatus::Restored
-                            | crate::durable_record::RestoreFileStatus::Skipped
-                    )
-                });
+            let succeeded = record.outcomes.iter().all(|outcome| {
+                matches!(
+                    outcome.status,
+                    crate::durable_record::RestoreFileStatus::Restored
+                        | crate::durable_record::RestoreFileStatus::Skipped
+                )
+            });
             vec![DerivedEvent {
                 event_kind: "workspace/restoreCompleted",
                 stream_id: session_stream_id(&SessionId::from_string(

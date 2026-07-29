@@ -308,8 +308,7 @@ pub(super) fn subagent_usage_owner_pending_metadata(
 
 impl ServerRuntime {
     pub fn new(server_home: PathBuf, deps: ServerRuntimeDependencies) -> Arc<Self> {
-        let rollout_store =
-            RolloutStore::new(server_home.clone(), Some(Arc::clone(&deps.db)));
+        let rollout_store = RolloutStore::new(server_home.clone(), Some(Arc::clone(&deps.db)));
         let goal_durable_store = GoalDurableStore::new(server_home.clone());
         let sandbox_network_proxy = std::sync::Arc::new(std::sync::Mutex::new(None));
         // Proxy startup is async; ports are published via the thread-safe

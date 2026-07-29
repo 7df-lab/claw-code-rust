@@ -88,7 +88,11 @@ impl ServerRuntime {
             .register_pending_user_input(
                 session_id,
                 request_id.clone(),
-                PendingUserInput { turn_id, tx },
+                PendingUserInput {
+                    turn_id,
+                    questions: args.questions.clone(),
+                    tx,
+                },
             )
             .await;
 

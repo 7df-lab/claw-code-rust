@@ -405,6 +405,20 @@ impl Database {
         Ok(count as u64)
     }
 
+    /// The highest stored seq of one stream — the subscription barrier seq
+    /// (08 §4). `None` when the stream has no rows yet.
+    pub fn event_log_max_seq(&self, stream_id: &str) -> Result<Option<u64>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let value: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(seq) FROM event_log WHERE stream_id = ?1",
+                params![stream_id],
+                |row| row.get(0),
+            )
+            .context("failed to read stream barrier seq")?;
+        Ok(value.map(|value| value as u64))
+    }
+
     /// The last rollout line index projected into `event_log` for a file.
     pub fn projection_watermark(&self, rollout_path: &Path) -> Result<Option<u64>> {
         let conn = self.conn.lock().expect("database mutex poisoned");
@@ -765,6 +779,43 @@ impl Database {
         Ok(())
     }
 
+    /// Lists pending messages of one queue without draining them
+    /// (subscription snapshots, 08 §4).
+    pub fn list_pending(
+        &self,
+        session_id: &SessionId,
+        queue: QueueType,
+    ) -> Result<Vec<PendingInputItem>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let mut stmt = conn
+            .prepare(
+                "SELECT kind, content, pending_input_id, metadata, created_at
+                 FROM pending_messages
+                 WHERE session_id = ?1 AND queue_type = ?2
+                 ORDER BY id ASC",
+            )
+            .context("failed to prepare list_pending statement")?;
+        let items = stmt
+            .query_map(params![session_id.to_string(), queue.as_str()], |row| {
+                let kind_str: String = row.get(0)?;
+                let content: String = row.get(1)?;
+                let pending_input_id: Option<String> = row.get(2)?;
+                let metadata_str: Option<String> = row.get(3)?;
+                let created_at: i64 = row.get(4)?;
+                Ok(pending_input_from_row(
+                    &kind_str,
+                    &content,
+                    pending_input_id,
+                    metadata_str,
+                    created_at,
+                ))
+            })
+            .context("failed to query pending messages")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to decode pending messages")?;
+        Ok(items)
+    }
+
     /// Drains all pending messages from the specified queue, deleting them in the process.
     pub fn drain_pending(
         &self,
@@ -794,61 +845,13 @@ impl Database {
                     let metadata_str: Option<String> = row.get(3)?;
                     let created_at: i64 = row.get(4)?;
 
-                    let kind = match kind_str.as_str() {
-                        "user_text" => PendingInputKind::UserText { text: content },
-                        "user_input" => serde_json::from_str::<serde_json::Value>(&content)
-                            .ok()
-                            .and_then(|value| {
-                                Some(PendingInputKind::UserInput {
-                                    input: serde_json::from_value(value.get("input")?.clone())
-                                        .ok()?,
-                                    display_text: value
-                                        .get("display_text")?
-                                        .as_str()
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                    prompt_text: value
-                                        .get("prompt_text")?
-                                        .as_str()
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                    prompt_messages: value
-                                        .get("prompt_messages")
-                                        .and_then(|messages| {
-                                            serde_json::from_value(messages.clone()).ok()
-                                        })
-                                        .unwrap_or_default(),
-                                })
-                            })
-                            .unwrap_or(PendingInputKind::UserText { text: content }),
-                        "tool_call_blocked" => {
-                            let parsed: serde_json::Value =
-                                serde_json::from_str(&content).unwrap_or_default();
-                            PendingInputKind::ToolCallBlockedByHook {
-                                tool_use_id: parsed["tool_use_id"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                reason: parsed["reason"].as_str().unwrap_or_default().to_string(),
-                            }
-                        }
-                        "budget_limit" => PendingInputKind::BudgetLimitSteering,
-                        _ => PendingInputKind::UserText { text: content },
-                    };
-
-                    let metadata = metadata_str.and_then(|s| serde_json::from_str(&s).ok());
-
-                    Ok(PendingInputItem {
-                        id: pending_input_id
-                            .and_then(|id| PendingInputId::try_from(id).ok())
-                            .unwrap_or_default(),
-                        kind,
-                        metadata,
-                        created_at: Utc
-                            .timestamp_opt(created_at, 0)
-                            .single()
-                            .unwrap_or_else(Utc::now),
-                    })
+                    Ok(pending_input_from_row(
+                        &kind_str,
+                        &content,
+                        pending_input_id,
+                        metadata_str,
+                        created_at,
+                    ))
                 })
                 .context("failed to query pending messages")?;
 
@@ -1016,6 +1019,68 @@ fn parse_additional_directories_column(
     serde_json::from_str(&value).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
     })
+}
+
+/// Maps one `pending_messages` row to its `PendingInputItem` (shared by
+/// `drain_pending` and `list_pending`).
+fn pending_input_from_row(
+    kind_str: &str,
+    content: &str,
+    pending_input_id: Option<String>,
+    metadata_str: Option<String>,
+    created_at: i64,
+) -> PendingInputItem {
+    let kind = match kind_str {
+        "user_text" => PendingInputKind::UserText {
+            text: content.to_string(),
+        },
+        "user_input" => serde_json::from_str::<serde_json::Value>(content)
+            .ok()
+            .and_then(|value| {
+                Some(PendingInputKind::UserInput {
+                    input: serde_json::from_value(value.get("input")?.clone()).ok()?,
+                    display_text: value
+                        .get("display_text")?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    prompt_text: value
+                        .get("prompt_text")?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    prompt_messages: value
+                        .get("prompt_messages")
+                        .and_then(|messages| serde_json::from_value(messages.clone()).ok())
+                        .unwrap_or_default(),
+                })
+            })
+            .unwrap_or(PendingInputKind::UserText {
+                text: content.to_string(),
+            }),
+        "tool_call_blocked" => {
+            let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
+            PendingInputKind::ToolCallBlockedByHook {
+                tool_use_id: parsed["tool_use_id"].as_str().unwrap_or_default().to_string(),
+                reason: parsed["reason"].as_str().unwrap_or_default().to_string(),
+            }
+        }
+        "budget_limit" => PendingInputKind::BudgetLimitSteering,
+        _ => PendingInputKind::UserText {
+            text: content.to_string(),
+        },
+    };
+    PendingInputItem {
+        id: pending_input_id
+            .and_then(|id| PendingInputId::try_from(id).ok())
+            .unwrap_or_default(),
+        kind,
+        metadata: metadata_str.and_then(|s| serde_json::from_str(&s).ok()),
+        created_at: Utc
+            .timestamp_opt(created_at, 0)
+            .single()
+            .unwrap_or_else(Utc::now),
+    }
 }
 
 #[cfg(test)]

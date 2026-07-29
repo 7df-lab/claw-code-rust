@@ -144,6 +144,62 @@ impl SessionInteractiveLanes {
     pub(crate) async fn clear_session(&self, session_id: SessionId) {
         self.inner.lock().await.remove(&session_id);
     }
+
+    /// Clones the pending approval/user-input state of one session for
+    /// subscription snapshots (08 §4 `pending_control_requests`). The wait
+    /// channels stay in the lanes; only the descriptive fields are copied.
+    pub(crate) async fn pending_snapshot(&self, session_id: SessionId) -> PendingSnapshot {
+        let lanes = self.inner.lock().await;
+        let Some(state) = lanes.get(&session_id) else {
+            return PendingSnapshot::default();
+        };
+        PendingSnapshot {
+            approvals: state
+                .pending_approvals
+                .iter()
+                .map(|(approval_id, pending)| PendingApprovalSnapshot {
+                    approval_id: approval_id.clone(),
+                    turn_id: pending.turn_id,
+                    tool_name: pending.tool_name.clone(),
+                    resource: pending.resource.clone(),
+                    path: pending.path.clone(),
+                    host: pending.host.clone(),
+                    command: pending.command.clone(),
+                })
+                .collect(),
+            user_inputs: state
+                .pending_user_inputs
+                .iter()
+                .map(|(request_id, pending)| PendingUserInputSnapshot {
+                    request_id: request_id.clone(),
+                    turn_id: pending.turn_id,
+                    questions: pending.questions.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct PendingSnapshot {
+    pub(crate) approvals: Vec<PendingApprovalSnapshot>,
+    pub(crate) user_inputs: Vec<PendingUserInputSnapshot>,
+}
+
+pub(crate) struct PendingApprovalSnapshot {
+    pub(crate) approval_id: String,
+    pub(crate) turn_id: devo_core::TurnId,
+    pub(crate) tool_name: String,
+    pub(crate) resource: Option<devo_safety::ResourceKind>,
+    pub(crate) path: Option<std::path::PathBuf>,
+    pub(crate) host: Option<String>,
+    pub(crate) command: Option<String>,
+}
+
+pub(crate) struct PendingUserInputSnapshot {
+    pub(crate) request_id: String,
+    pub(crate) turn_id: devo_core::TurnId,
+    pub(crate) questions: Vec<devo_protocol::RequestUserInputQuestion>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +237,7 @@ mod tests {
                 "approval-1".to_string(),
                 PendingApproval {
                     owner_session_id: child_session_id,
+                    turn_id: TurnId::new(),
                     tool_name: "exec_command".to_string(),
                     resource: Some(devo_safety::ResourceKind::ShellExec),
                     path: None,

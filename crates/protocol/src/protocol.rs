@@ -109,6 +109,10 @@ pub enum ClientMethod {
     // `_devo/*` alias surface).
     SessionTurnsList,
     SessionItemsList,
+    SubscriptionCreate,
+    SubscriptionUpdate,
+    SubscriptionAck,
+    SubscriptionUnsubscribe,
 }
 
 impl ClientMethod {
@@ -165,6 +169,10 @@ impl ClientMethod {
             Self::ProviderVendorUpsert => "provider/upsert",
             Self::SessionTurnsList => "session/turns/list",
             Self::SessionItemsList => "session/items/list",
+            Self::SubscriptionCreate => "subscription/create",
+            Self::SubscriptionUpdate => "subscription/update",
+            Self::SubscriptionAck => "subscription/ack",
+            Self::SubscriptionUnsubscribe => "subscription/unsubscribe",
         }
     }
 
@@ -221,6 +229,10 @@ impl ClientMethod {
             "provider/upsert" => Self::ProviderVendorUpsert,
             "session/turns/list" => Self::SessionTurnsList,
             "session/items/list" => Self::SessionItemsList,
+            "subscription/create" => Self::SubscriptionCreate,
+            "subscription/update" => Self::SubscriptionUpdate,
+            "subscription/ack" => Self::SubscriptionAck,
+            "subscription/unsubscribe" => Self::SubscriptionUnsubscribe,
             _ => return None,
         })
     }
@@ -262,6 +274,10 @@ pub enum ProtocolErrorCode {
     ForkTurnNotStable,
     #[error("PermissionDenied")]
     PermissionDenied,
+    /// The ack/replay cursor is outside the stored log (regression, future
+    /// value, or unknown stream); the client must re-snapshot (08 §4).
+    #[error("CursorExpired")]
+    CursorExpired,
     #[error("WorkspaceUnavailable")]
     WorkspaceUnavailable,
     #[error("InheritedSegmentWriteFailed")]

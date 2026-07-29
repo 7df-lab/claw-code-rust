@@ -66,6 +66,7 @@ pub(crate) fn sandbox_bypass_key_from_pending(
 
 pub(crate) struct PendingApproval {
     pub(crate) owner_session_id: devo_protocol::SessionId,
+    pub(crate) turn_id: TurnId,
     pub(crate) tool_name: String,
     pub(crate) resource: Option<devo_safety::ResourceKind>,
     pub(crate) path: Option<PathBuf>,
@@ -81,6 +82,9 @@ pub(crate) struct PendingApproval {
 
 pub(crate) struct PendingUserInput {
     pub(crate) turn_id: TurnId,
+    /// The questions the tool asked; kept so subscription snapshots can
+    /// rebuild the waiting `UserInputRequest` item (08 §4).
+    pub(crate) questions: Vec<devo_protocol::RequestUserInputQuestion>,
     pub(crate) tx: oneshot::Sender<RequestUserInputResponse>,
 }
 

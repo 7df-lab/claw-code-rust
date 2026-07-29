@@ -144,6 +144,7 @@ impl ServerRuntime {
                 acp_authenticated: false,
                 acp_client_capabilities: crate::AcpClientCapabilities::default(),
                 typed_items: false,
+                event_selectors: Vec::new(),
                 outbound_tx,
                 opt_out_notification_methods: HashSet::new(),
                 subscriptions: Vec::new(),
@@ -174,6 +175,8 @@ impl ServerRuntime {
             }
         }
         self.active_turns.drop_connection_id(connection_id).await;
+        self.drop_event_subscriptions_for_connection(connection_id)
+            .await;
         self.reference_searches
             .lock()
             .await
@@ -457,6 +460,19 @@ impl ServerRuntime {
             }
             Some(ClientMethod::SessionItemsList) => {
                 Some(self.handle_session_items_list(id?, params).await)
+            }
+            // Durable event subscriptions (08 §4).
+            Some(ClientMethod::SubscriptionCreate) => {
+                Some(self.handle_subscription_create(connection_id, id?, params).await)
+            }
+            Some(ClientMethod::SubscriptionUpdate) => {
+                Some(self.handle_subscription_update(connection_id, id?, params).await)
+            }
+            Some(ClientMethod::SubscriptionAck) => {
+                Some(self.handle_subscription_ack(connection_id, id?, params).await)
+            }
+            Some(ClientMethod::SubscriptionUnsubscribe) => {
+                Some(self.handle_subscription_unsubscribe(connection_id, id?, params).await)
             }
             // TODO: add endpoint to kill background process opened by unified exec command.
             // TODO: add endpoint to list current background processes.
@@ -756,6 +772,21 @@ impl ServerRuntime {
         let delivery_policy = outbound_delivery_policy(&event);
         let child_parent_by_session = self.child_parent_by_session().await;
         let active_turn_connections = self.active_turns.connection_map().await;
+        // New-style SessionsByCwd selectors match on the event session's cwd;
+        // resolve it once per event, and only when such a selector exists.
+        let event_cwd = if self
+            .sessions_by_cwd_subscriptions
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+            && let Some(session_id) = session_id
+        {
+            match self.session(session_id).await {
+                Some(handle) => handle.summary().await.map(|summary| summary.cwd),
+                None => None,
+            }
+        } else {
+            None
+        };
         let notifications = {
             let mut connections = self.connections.lock().await;
             connections
@@ -769,7 +800,15 @@ impl ServerRuntime {
                     ) {
                         return None;
                     }
-                    if !connection.should_deliver(method, session_id, &child_parent_by_session) {
+                    // Union of the legacy events/subscribe filter and the new
+                    // subscription/* selectors (legacy clients unaffected).
+                    if !connection.should_deliver(method, session_id, &child_parent_by_session)
+                        && !crate::runtime::handlers::subscription::event_matches_selectors(
+                            &connection.event_selectors,
+                            &event,
+                            event_cwd.as_deref(),
+                        )
+                    {
                         return None;
                     }
                     let event_seq = connection.next_seq();
@@ -1210,6 +1249,10 @@ pub(crate) struct ConnectionRuntime {
     /// Whether the client opted in to native typed `item/*` notifications
     /// via `_meta.devo.typedItems` on ACP initialize (P2).
     pub(crate) typed_items: bool,
+    /// Cached union of this connection's new-style (`subscription/*`)
+    /// selector sets; rebuilt on every create/update/unsubscribe. Delivery
+    /// reads only this cache (the registry is authoritative for ack state).
+    pub(crate) event_selectors: Vec<devo_protocol::canonical::event::StreamSelector>,
     pub(crate) outbound_tx: mpsc::Sender<OutboundFrame>,
     pub(crate) opt_out_notification_methods: HashSet<String>,
     pub(crate) subscriptions: Vec<SubscriptionFilter>,
@@ -2422,6 +2465,393 @@ mod tests {
         )
         .await;
         assert!(unknown.get("error").is_some(), "unknown session must error");
+
+        Ok(())
+    }
+
+    // ── Durable event subscriptions (P4b: subscription/*) ─────────────
+
+    /// Writes a session rollout (meta + one completed turn + two agent
+    /// items) through the runtime's own store, so the outbox projects the
+    /// derived events into `event_log`. Expected stream rows on
+    /// `session:<id>`: session/created seq 1, turn/completed seq 2,
+    /// item/completed seq 3..4.
+    async fn write_subscribed_rollout(runtime: &Arc<ServerRuntime>) -> SessionId {
+        use devo_core::{TextItem, TurnItem};
+
+        let store = &runtime.rollout_store;
+        let record = store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            std::path::PathBuf::from("/tmp/subscription-test"),
+            Vec::new(),
+            Some("subscribed session".into()),
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        store.append_session_meta(&record).expect("append meta");
+        let metadata = crate::turn::TurnMetadata {
+            turn_id: TurnId::new(),
+            session_id: record.id,
+            sequence: 1,
+            status: TurnStatus::Completed,
+            kind: devo_core::TurnKind::Regular,
+            model: "test-model".into(),
+            model_binding_id: None,
+            reasoning_effort_selection: None,
+            reasoning_effort: None,
+            request_model: "test-model".into(),
+            request_thinking: None,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            usage: None,
+            stop_reason: None,
+            failure_reason: None,
+        };
+        let turn = crate::persistence::build_turn_record(&metadata, None, None, None);
+        store.append_turn(&record, turn).expect("append turn");
+        for (seq, text) in [(1u64, "one"), (2, "two")] {
+            let item = crate::persistence::build_item_record(
+                record.id,
+                metadata.turn_id,
+                ItemId::new(),
+                seq,
+                TurnItem::AgentMessage(TextItem { text: text.into() }),
+                Some(TurnStatus::Running),
+                None,
+            );
+            store.append_item(&record, item).expect("append item");
+        }
+        record.id
+    }
+
+    #[tokio::test]
+    async fn subscription_create_returns_barrier_consistent_replay_and_snapshot() -> Result<()> {
+        use devo_protocol::canonical::event::{SnapshotData, SubscriptionCreateResult};
+
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = write_subscribed_rollout(&runtime).await;
+        let stream_id = devo_core::session_stream_id(
+            &devo_protocol::canonical::ids::SessionId::from_string(session_id.to_string()),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+
+        let response = history_request(
+            &runtime,
+            connection_id,
+            1,
+            "subscription/create",
+            serde_json::json!({
+                "selectors": [{ "kind": "session", "sessionId": session_id.to_string() }],
+                "includeSnapshot": true,
+            }),
+        )
+        .await;
+        let result: SubscriptionCreateResult =
+            serde_json::from_value(response["result"].clone()).expect("create result");
+
+        // Barrier = 4 (created/completed/completed/completed); cursors are
+        // barrier-consistent and replay rows carry hydrated log seqs.
+        assert_eq!(result.cursors.len(), 1);
+        assert_eq!(result.cursors[0].stream_id, stream_id);
+        assert_eq!(result.cursors[0].seq, 4);
+        assert_eq!(result.replay.len(), 4);
+        assert_eq!(
+            result
+                .replay
+                .iter()
+                .map(|event| event.meta.seq.expect("hydrated seq"))
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert!(
+            matches!(
+                &result.replay[0].notification,
+                devo_protocol::canonical::event::ServerNotification::SessionCreated { .. }
+            )
+        );
+        assert!(result.replay.iter().all(|event| event.meta.persisted));
+
+        // Snapshot: the session from the rollout history, no active turn.
+        assert_eq!(result.snapshots.len(), 1);
+        let SnapshotData::Session {
+            session,
+            active_turn,
+            queue,
+        } = &result.snapshots[0].data
+        else {
+            panic!("expected session snapshot");
+        };
+        assert_eq!(session.id.as_str(), session_id.to_string());
+        assert_eq!(active_turn, &None);
+        assert!(queue.is_empty());
+        assert_eq!(result.snapshots[0].barrier_seq, 4);
+        assert!(result.pending_control_requests.is_empty());
+        assert!(result.recovery_snapshots.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subscription_create_future_cursor_is_expired() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = write_subscribed_rollout(&runtime).await;
+        let stream_id = devo_core::session_stream_id(
+            &devo_protocol::canonical::ids::SessionId::from_string(session_id.to_string()),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+
+        let response = history_request(
+            &runtime,
+            connection_id,
+            1,
+            "subscription/create",
+            serde_json::json!({
+                "selectors": [{ "kind": "session", "sessionId": session_id.to_string() }],
+                "includeSnapshot": false,
+                "after": [{ "streamId": stream_id, "seq": 999 }],
+            }),
+        )
+        .await;
+        assert_eq!(
+            response["error"]["code"],
+            serde_json::json!("CursorExpired")
+        );
+        assert_eq!(
+            response["error"]["data"]["errorCode"],
+            serde_json::json!("CURSOR_EXPIRED")
+        );
+        assert_eq!(
+            response["error"]["data"]["requiresSnapshot"],
+            serde_json::json!(true)
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subscription_live_delivery_reaches_new_style_subscriber() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = write_subscribed_rollout(&runtime).await;
+        let (outbound, mut receiver) = super::outbound::test_outbound_channel(4);
+        let connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, outbound)
+            .await;
+        runtime
+            .handle_acp_initialize(
+                connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                }),
+            )
+            .await;
+        // The connection has NO legacy events/subscribe filter; only the
+        // new-style selector can deliver.
+        let created = history_request(
+            &runtime,
+            connection_id,
+            2,
+            "subscription/create",
+            serde_json::json!({
+                "selectors": [{ "kind": "session", "sessionId": session_id.to_string() }],
+                "includeSnapshot": false,
+            }),
+        )
+        .await;
+        assert!(created.get("error").is_none(), "create failed: {created}");
+
+        let turn_id = TurnId::new();
+        runtime
+            .broadcast_event(ServerEvent::ItemCompleted(ItemEventPayload {
+                context: EventContext {
+                    session_id,
+                    turn_id: Some(turn_id),
+                    item_id: Some(ItemId::new()),
+                    seq: 0,
+                    item_seq: Some(5),
+                },
+                item: ItemEnvelope {
+                    item_id: ItemId::new(),
+                    item_kind: ItemKind::AgentMessage,
+                    payload: serde_json::json!({ "title": "Assistant", "text": "live" }),
+                },
+            }))
+            .await;
+
+        let frame = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await?
+            .expect("new-style subscriber receives live event");
+        assert_eq!(
+            frame["method"],
+            serde_json::json!(crate::ACP_SESSION_UPDATE_METHOD)
+        );
+        assert!(
+            frame["params"]["_meta"]["devo/originalEvent"]
+                .to_string()
+                .contains("live"),
+            "frame carries the original item event: {frame}"
+        );
+
+        // A connection without any selector sees nothing.
+        let (other_outbound, mut other_receiver) = super::outbound::test_outbound_channel(4);
+        let other_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, other_outbound)
+            .await;
+        runtime
+            .handle_acp_initialize(
+                other_connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                }),
+            )
+            .await;
+        runtime
+            .broadcast_event(ServerEvent::ItemCompleted(ItemEventPayload {
+                context: EventContext {
+                    session_id,
+                    turn_id: Some(turn_id),
+                    item_id: Some(ItemId::new()),
+                    seq: 0,
+                    item_seq: Some(6),
+                },
+                item: ItemEnvelope {
+                    item_id: ItemId::new(),
+                    item_kind: ItemKind::AgentMessage,
+                    payload: serde_json::json!({ "title": "Assistant", "text": "second" }),
+                },
+            }))
+            .await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), other_receiver.recv())
+                .await
+                .is_err(),
+            "connection without selectors must not receive the event"
+        );
+        // The subscribed connection gets the second event too.
+        let second = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await?
+            .expect("second live event");
+        assert!(second["params"]["_meta"]["devo/originalEvent"]
+            .to_string()
+            .contains("second"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subscription_ack_is_monotonic_and_unsubscribe_removes() -> Result<()> {
+        use devo_protocol::canonical::event::SubscriptionCreateResult;
+
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = write_subscribed_rollout(&runtime).await;
+        let stream_id = devo_core::session_stream_id(
+            &devo_protocol::canonical::ids::SessionId::from_string(session_id.to_string()),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+
+        let created = history_request(
+            &runtime,
+            connection_id,
+            1,
+            "subscription/create",
+            serde_json::json!({
+                "selectors": [{ "kind": "session", "sessionId": session_id.to_string() }],
+                "includeSnapshot": false,
+            }),
+        )
+        .await;
+        let created: SubscriptionCreateResult =
+            serde_json::from_value(created["result"].clone()).expect("create result");
+        let subscription_id = created.subscription_id.as_str().to_owned();
+
+        // Future ack → expired.
+        let future = history_request(
+            &runtime,
+            connection_id,
+            2,
+            "subscription/ack",
+            serde_json::json!({
+                "subscriptionId": subscription_id,
+                "cursors": [{ "streamId": stream_id, "seq": 99 }],
+            }),
+        )
+        .await;
+        assert_eq!(future["error"]["code"], serde_json::json!("CursorExpired"));
+        // Barrier ack → ok.
+        let ok = history_request(
+            &runtime,
+            connection_id,
+            3,
+            "subscription/ack",
+            serde_json::json!({
+                "subscriptionId": subscription_id,
+                "cursors": [{ "streamId": stream_id, "seq": 4 }],
+            }),
+        )
+        .await;
+        assert!(ok.get("error").is_none(), "barrier ack must succeed: {ok}");
+        // Regression → expired.
+        let regression = history_request(
+            &runtime,
+            connection_id,
+            4,
+            "subscription/ack",
+            serde_json::json!({
+                "subscriptionId": subscription_id,
+                "cursors": [{ "streamId": stream_id, "seq": 2 }],
+            }),
+        )
+        .await;
+        assert_eq!(
+            regression["error"]["code"],
+            serde_json::json!("CursorExpired")
+        );
+        // Unknown stream → expired.
+        let unknown_stream = history_request(
+            &runtime,
+            connection_id,
+            5,
+            "subscription/ack",
+            serde_json::json!({
+                "subscriptionId": subscription_id,
+                "cursors": [{ "streamId": "session:00000000-0000-0000-0000-000000000000", "seq": 1 }],
+            }),
+        )
+        .await;
+        assert_eq!(
+            unknown_stream["error"]["code"],
+            serde_json::json!("CursorExpired")
+        );
+
+        let removed = history_request(
+            &runtime,
+            connection_id,
+            6,
+            "subscription/unsubscribe",
+            serde_json::json!({ "subscriptionId": subscription_id }),
+        )
+        .await;
+        assert!(removed.get("error").is_none(), "unsubscribe must succeed");
+        let removed_again = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "subscription/unsubscribe",
+            serde_json::json!({ "subscriptionId": subscription_id }),
+        )
+        .await;
+        assert!(removed_again.get("error").is_some());
 
         Ok(())
     }

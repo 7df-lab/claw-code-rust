@@ -145,7 +145,7 @@ impl ServerRuntime {
                     }
                 }
                 let result = self
-                    .request_tool_approval(session_id, request.clone())
+                    .request_tool_approval(session_id, turn_id, request.clone())
                     .await;
                 if let Err(reason) = &result {
                     self.run_permission_denied_hook(session_id, &request, reason)
@@ -560,6 +560,7 @@ impl ServerRuntime {
     async fn request_tool_approval(
         &self,
         session_id: SessionId,
+        turn_id: TurnId,
         request: ToolPermissionRequest,
     ) -> Result<PermissionGrant, String> {
         let host_session_id = self.permission_host_session_id(session_id).await;
@@ -586,6 +587,7 @@ impl ServerRuntime {
         let (tx, rx) = oneshot::channel();
         let pending = PendingApproval {
             owner_session_id: session_id,
+            turn_id,
             tool_name: request.tool_name.clone(),
             resource: Some(request.resource.clone()),
             path: request.path.clone(),
@@ -658,6 +660,7 @@ impl ServerRuntime {
                 let (scope_tx, _) = oneshot::channel();
                 let pending_for_scope = PendingApproval {
                     owner_session_id: pending.owner_session_id,
+                    turn_id: pending.turn_id,
                     tool_name: pending.tool_name,
                     resource: pending.resource,
                     path: pending.path,

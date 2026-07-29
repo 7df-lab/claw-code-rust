@@ -166,6 +166,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let pending = crate::execution::PendingApproval {
             owner_session_id: devo_protocol::SessionId::new(),
+            turn_id: devo_core::TurnId::new(),
             tool_name: "fetch".to_string(),
             resource: Some(devo_safety::ResourceKind::Network),
             path: None,
@@ -206,6 +207,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         crate::execution::PendingApproval {
             owner_session_id: devo_protocol::SessionId::new(),
+            turn_id: devo_core::TurnId::new(),
             tool_name: "shell_command".to_string(),
             resource: Some(devo_safety::ResourceKind::ShellExec),
             path: None,
@@ -232,6 +234,7 @@ mod tests {
         let file_path = PathBuf::from("/workspace/src/main.rs");
         let pending = crate::execution::PendingApproval {
             owner_session_id: devo_protocol::SessionId::new(),
+            turn_id: devo_core::TurnId::new(),
             tool_name: "write".to_string(),
             resource: Some(devo_safety::ResourceKind::FileWrite),
             path: Some(file_path.clone()),
@@ -268,6 +271,7 @@ mod tests {
         let file_path = PathBuf::from("/workspace/src/main.rs");
         let pending = crate::execution::PendingApproval {
             owner_session_id: devo_protocol::SessionId::new(),
+            turn_id: devo_core::TurnId::new(),
             tool_name: "read".to_string(),
             resource: Some(devo_safety::ResourceKind::FileRead),
             path: Some(file_path),
@@ -416,6 +420,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let pending = crate::execution::PendingApproval {
             owner_session_id: devo_protocol::SessionId::new(),
+            turn_id: devo_core::TurnId::new(),
             tool_name: "read".to_string(),
             resource: Some(devo_safety::ResourceKind::FileRead),
             path: Some(dir.clone()),

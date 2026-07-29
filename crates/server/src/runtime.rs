@@ -189,6 +189,12 @@ pub struct ServerRuntime {
     sessions: Mutex<HashMap<SessionId, SessionHandle>>,
     /// Interactive approval and user-input waits outside session actors.
     session_interactive: SessionInteractiveLanes,
+    /// New-style (`subscription/*`) subscriptions keyed by subscription id
+    /// (08 §4). Lock order: `connections` → `event_subscriptions`.
+    event_subscriptions: Mutex<HashMap<String, handlers::subscription::EventSubscription>>,
+    /// Count of active `SessionsByCwd` selectors; gates per-event cwd
+    /// resolution during broadcast (0 = skip the lookup entirely).
+    sessions_by_cwd_subscriptions: std::sync::atomic::AtomicUsize,
     /// In-flight turn execution handles keyed by session id.
     active_turns: active_turn::ActiveTurnRegistry,
     connections: Arc<Mutex<HashMap<u64, ConnectionRuntime>>>,
@@ -346,6 +352,8 @@ impl ServerRuntime {
             goal_durable_store,
             sessions: Mutex::new(HashMap::new()),
             session_interactive: SessionInteractiveLanes::default(),
+            event_subscriptions: Mutex::new(HashMap::new()),
+            sessions_by_cwd_subscriptions: std::sync::atomic::AtomicUsize::new(0),
             active_turns: active_turn::ActiveTurnRegistry::default(),
             connections: Arc::new(Mutex::new(HashMap::new())),
             terminal_turn_statuses: Mutex::new(VecDeque::new()),

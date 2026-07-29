@@ -8,6 +8,7 @@ mod history;
 mod message_edit;
 mod message_edit_restore;
 mod session;
+pub(crate) mod subscription;
 mod turn;
 mod turn_interrupt;
 mod workspace_changes;

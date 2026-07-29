@@ -130,7 +130,7 @@ impl ServerRuntime {
     /// file-name scan. Ephemeral sessions have no persisted history and
     /// resolve to `None` (reported as not found — they have no history to
     /// page).
-    async fn resolve_rollout_path(
+    pub(crate) async fn resolve_rollout_path(
         &self,
         session_id: &devo_protocol::canonical::ids::SessionId,
     ) -> Option<PathBuf> {

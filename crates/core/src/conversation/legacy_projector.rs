@@ -30,7 +30,7 @@ use uuid::Uuid;
 use crate::TurnKind as LegacyTurnKind;
 use crate::conversation::{
     ApprovalRequestItem, ItemLine, ItemRecord, RolloutLine, SessionMetaLine, TurnItem, TurnLine,
-    TurnStatus as LegacyTurnStatus,
+    TurnRecord, TurnStatus as LegacyTurnStatus,
 };
 
 use super::rollout_v2::{
@@ -420,89 +420,10 @@ impl LegacyProjector {
 
     fn project_turn(&mut self, line: &TurnLine) -> Result<Vec<RolloutLineV2>, LegacyProjectError> {
         let record = &line.turn;
-
-        let kind = match &record.kind {
-            // `Review` was dead code with no production data and `Other(_)`
-            // was an open string; both collapse to Regular. Goal continuations
-            // are never back-filled from content (05 §2.2): they stay Regular.
-            LegacyTurnKind::Regular | LegacyTurnKind::Review | LegacyTurnKind::Other(_) => {
-                TurnKind::Regular
-            }
-            LegacyTurnKind::ManualCompaction => TurnKind::Compaction,
-        };
-
-        let status = match record.status {
-            // Waiting on an approval is still part of the turn, not a
-            // separate state (07 §4.3).
-            LegacyTurnStatus::Pending
-            | LegacyTurnStatus::Running
-            | LegacyTurnStatus::WaitingApproval => TurnStatus::InProgress,
-            LegacyTurnStatus::Completed => TurnStatus::Completed,
-            LegacyTurnStatus::Interrupted => TurnStatus::Interrupted,
-            LegacyTurnStatus::Failed => TurnStatus::Failed,
-        };
-
-        let error = record.error.as_ref().map(|error| {
-            let mut projected = AgentError::new(error.code.clone(), error.message.clone());
-            if let Some(hint) = &error.recovery_hint {
-                projected.details = Some(serde_json::json!({ "recoveryHint": hint }));
-            }
-            projected
-        });
-
-        let usage = record.usage.as_ref().map(|usage| CanonicalTurnUsage {
-            query: UsageTotals {
-                total_tokens: u64::from(
-                    usage
-                        .total_tokens
-                        .unwrap_or(usage.input_tokens + usage.output_tokens),
-                ),
-                input_tokens: u64::from(usage.input_tokens),
-                output_tokens: u64::from(usage.output_tokens),
-                reasoning_tokens: u64::from(usage.reasoning_output_tokens.unwrap_or(0)),
-                cache_read_input_tokens: u64::from(usage.cache_read_input_tokens.unwrap_or(0)),
-                cache_creation_input_tokens: u64::from(
-                    usage.cache_creation_input_tokens.unwrap_or(0),
-                ),
-                call_count: 0,
-                // The provider reported usage, so the turn had at least one
-                // metered call.
-                metered_call_count: 1,
-                ..UsageTotals::default()
-            },
-            overhead: UsageTotals::default(),
-        });
-
-        let turn = Turn {
-            id: TurnId::from_legacy_uuid(legacy_uuid(record.id)?),
-            session_id: SessionId::from_legacy_uuid(legacy_uuid(record.session_id)?),
-            sequence: record.sequence,
-            kind,
-            status,
-            model: ModelBinding {
-                provider: record
-                    .model_binding_id
-                    .clone()
-                    .unwrap_or_else(|| "unknown".into()),
-                model: if record.request_model.is_empty() {
-                    record.model.clone()
-                } else {
-                    record.request_model.clone()
-                },
-                reasoning_effort: record
-                    .reasoning_effort_selection
-                    .as_deref()
-                    .and_then(|selection| selection.parse().ok()),
-            },
-            started_at: record.started_at,
-            completed_at: record.completed_at,
-            error,
-            usage,
-        };
         Ok(vec![RolloutLineV2::Turn {
             v: ROLLOUT_FORMAT_VERSION,
             timestamp: line.timestamp,
-            turn,
+            turn: canonical_turn_from_record(record)?,
             extras: Some(Box::new(TurnPersistenceExtras {
                 session_context: record.session_context.clone(),
                 turn_context: record.turn_context.clone(),
@@ -821,6 +742,88 @@ impl LegacyProjector {
         };
         Ok(projected)
     }
+}
+
+/// Converts a legacy `TurnRecord` into the canonical `Turn`. This is the
+/// exact mapping the rollout forward projector uses for Turn lines, shared
+/// with the history read API (`session/turns/list`).
+pub fn canonical_turn_from_record(record: &TurnRecord) -> Result<Turn, LegacyProjectError> {
+    let kind = match &record.kind {
+        // `Review` was dead code with no production data and `Other(_)`
+        // was an open string; both collapse to Regular. Goal continuations
+        // are never back-filled from content (05 §2.2): they stay Regular.
+        LegacyTurnKind::Regular | LegacyTurnKind::Review | LegacyTurnKind::Other(_) => {
+            TurnKind::Regular
+        }
+        LegacyTurnKind::ManualCompaction => TurnKind::Compaction,
+    };
+
+    let status = match record.status {
+        // Waiting on an approval is still part of the turn, not a
+        // separate state (07 §4.3).
+        LegacyTurnStatus::Pending | LegacyTurnStatus::Running | LegacyTurnStatus::WaitingApproval => {
+            TurnStatus::InProgress
+        }
+        LegacyTurnStatus::Completed => TurnStatus::Completed,
+        LegacyTurnStatus::Interrupted => TurnStatus::Interrupted,
+        LegacyTurnStatus::Failed => TurnStatus::Failed,
+    };
+
+    let error = record.error.as_ref().map(|error| {
+        let mut projected = AgentError::new(error.code.clone(), error.message.clone());
+        if let Some(hint) = &error.recovery_hint {
+            projected.details = Some(serde_json::json!({ "recoveryHint": hint }));
+        }
+        projected
+    });
+
+    let usage = record.usage.as_ref().map(|usage| CanonicalTurnUsage {
+        query: UsageTotals {
+            total_tokens: u64::from(
+                usage
+                    .total_tokens
+                    .unwrap_or(usage.input_tokens + usage.output_tokens),
+            ),
+            input_tokens: u64::from(usage.input_tokens),
+            output_tokens: u64::from(usage.output_tokens),
+            reasoning_tokens: u64::from(usage.reasoning_output_tokens.unwrap_or(0)),
+            cache_read_input_tokens: u64::from(usage.cache_read_input_tokens.unwrap_or(0)),
+            cache_creation_input_tokens: u64::from(usage.cache_creation_input_tokens.unwrap_or(0)),
+            call_count: 0,
+            // The provider reported usage, so the turn had at least one
+            // metered call.
+            metered_call_count: 1,
+            ..UsageTotals::default()
+        },
+        overhead: UsageTotals::default(),
+    });
+
+    Ok(Turn {
+        id: TurnId::from_legacy_uuid(legacy_uuid(record.id)?),
+        session_id: SessionId::from_legacy_uuid(legacy_uuid(record.session_id)?),
+        sequence: record.sequence,
+        kind,
+        status,
+        model: ModelBinding {
+            provider: record
+                .model_binding_id
+                .clone()
+                .unwrap_or_else(|| "unknown".into()),
+            model: if record.request_model.is_empty() {
+                record.model.clone()
+            } else {
+                record.request_model.clone()
+            },
+            reasoning_effort: record
+                .reasoning_effort_selection
+                .as_deref()
+                .and_then(|selection| selection.parse().ok()),
+        },
+        started_at: record.started_at,
+        completed_at: record.completed_at,
+        error,
+        usage,
+    })
 }
 
 /// Legacy identifiers are `Display`-formatted UUIDs; converting back through

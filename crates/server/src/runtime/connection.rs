@@ -451,6 +451,13 @@ impl ServerRuntime {
             Some(ClientMethod::ProviderVendorUpsert) => {
                 Some(self.handle_provider_vendor_upsert(id?, params).await)
             }
+            // Paged history reads of the new Native API (canonical types).
+            Some(ClientMethod::SessionTurnsList) => {
+                Some(self.handle_session_turns_list(id?, params).await)
+            }
+            Some(ClientMethod::SessionItemsList) => {
+                Some(self.handle_session_items_list(id?, params).await)
+            }
             // TODO: add endpoint to kill background process opened by unified exec command.
             // TODO: add endpoint to list current background processes.
             None => Some(self.error_response(
@@ -2058,6 +2065,363 @@ mod tests {
                 .expect("plain connection")
                 .typed_items
         );
+
+        Ok(())
+    }
+
+    // ── Paged history reads (P4a: session/turns/list, session/items/list) ──
+
+    /// Writes a session rollout (3 turns, 5 agent-message items across two
+    /// turns) through the real v2 write path and returns its session id.
+    async fn write_history_rollout(data_root: &std::path::Path) -> SessionId {
+        use devo_core::{TextItem, TurnItem};
+
+        let rollout_store = crate::persistence::RolloutStore::new(data_root.to_path_buf(), None);
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            data_root.to_path_buf(),
+            Vec::new(),
+            Some("history session".into()),
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let mut item_seq = 1u64;
+        for turn_index in 1..=3u32 {
+            let metadata = crate::turn::TurnMetadata {
+                turn_id: TurnId::new(),
+                session_id: record.id,
+                sequence: turn_index,
+                status: TurnStatus::Completed,
+                kind: devo_core::TurnKind::Regular,
+                model: "test-model".into(),
+                model_binding_id: None,
+                reasoning_effort_selection: None,
+                reasoning_effort: None,
+                request_model: "test-model".into(),
+                request_thinking: None,
+                started_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                usage: None,
+                stop_reason: None,
+                failure_reason: None,
+            };
+            let turn = crate::persistence::build_turn_record(&metadata, None, None, None);
+            rollout_store.append_turn(&record, turn).expect("append turn");
+            // Turns 1 and 2 get two items each, turn 3 gets one.
+            for text in match turn_index {
+                1 | 2 => vec!["first", "second"],
+                _ => vec!["third"],
+            } {
+                let item = crate::persistence::build_item_record(
+                    record.id,
+                    metadata.turn_id,
+                    ItemId::new(),
+                    item_seq,
+                    TurnItem::AgentMessage(TextItem {
+                        text: format!("{text}-t{turn_index}"),
+                    }),
+                    Some(TurnStatus::Running),
+                    None,
+                );
+                rollout_store.append_item(&record, item).expect("append item");
+                item_seq += 1;
+            }
+        }
+        record.id
+    }
+
+    async fn initialized_connection(runtime: &Arc<ServerRuntime>) -> u64 {
+        let (outbound, _rx) = super::outbound::test_outbound_channel(16);
+        let connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, outbound)
+            .await;
+        runtime
+            .handle_acp_initialize(
+                connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                }),
+            )
+            .await;
+        connection_id
+    }
+
+    async fn history_request(
+        runtime: &Arc<ServerRuntime>,
+        connection_id: u64,
+        id: u64,
+        method: &str,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({ "id": id, "method": method, "params": params }),
+            )
+            .await
+            .expect("history response")
+    }
+
+    #[tokio::test]
+    async fn turns_and_items_list_paginate_without_gaps_or_duplicates() -> Result<()> {
+        use devo_protocol::canonical::page::Page;
+        use devo_protocol::canonical::turn::Turn;
+
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = write_history_rollout(data_root.path()).await;
+        let connection_id = initialized_connection(&runtime).await;
+
+        let first = history_request(
+            &runtime,
+            connection_id,
+            1,
+            "session/turns/list",
+            serde_json::json!({ "sessionId": session_id.to_string(), "limit": 2 }),
+        )
+        .await;
+        let first: Page<Turn> =
+            serde_json::from_value(first["result"].clone()).expect("page 1 result");
+        assert_eq!(first.data.len(), 2);
+        assert_eq!(
+            first.data.iter().map(|turn| turn.sequence).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(first.next_cursor.as_deref(), Some("2"));
+        let first_turn = &first.data[0];
+        assert_eq!(first_turn.session_id.as_str(), session_id.to_string());
+        assert_eq!(
+            first_turn.status,
+            devo_protocol::canonical::turn::TurnStatus::Completed
+        );
+        assert_eq!(
+            first_turn.kind,
+            devo_protocol::canonical::turn::TurnKind::Regular
+        );
+
+        let second = history_request(
+            &runtime,
+            connection_id,
+            2,
+            "session/turns/list",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "limit": 2,
+                "cursor": first.next_cursor.expect("cursor"),
+            }),
+        )
+        .await;
+        let second: Page<Turn> =
+            serde_json::from_value(second["result"].clone()).expect("page 2 result");
+        assert_eq!(second.data.len(), 1);
+        assert_eq!(second.data[0].sequence, 3);
+        assert_eq!(second.next_cursor, None);
+
+        let first_items = history_request(
+            &runtime,
+            connection_id,
+            3,
+            "session/items/list",
+            serde_json::json!({ "sessionId": session_id.to_string(), "limit": 3 }),
+        )
+        .await;
+        let first_items: Page<devo_protocol::canonical::item::ItemEnvelope> =
+            serde_json::from_value(first_items["result"].clone()).expect("items page 1");
+        assert_eq!(first_items.data.len(), 3);
+        assert_eq!(
+            first_items
+                .data
+                .iter()
+                .map(|item| item.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(first_items.next_cursor.as_deref(), Some("3"));
+        let envelope = &first_items.data[0];
+        assert_eq!(envelope.session_id.as_str(), session_id.to_string());
+        assert_eq!(envelope.revision, 1);
+        assert_eq!(
+            envelope.state,
+            devo_protocol::canonical::item::ItemState::Completed
+        );
+        assert!(
+            matches!(&envelope.item, devo_protocol::canonical::item::Item::AssistantMessage { text, .. } if text == "first-t1")
+        );
+
+        let second_items = history_request(
+            &runtime,
+            connection_id,
+            4,
+            "session/items/list",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "limit": 3,
+                "cursor": first_items.next_cursor.expect("cursor"),
+            }),
+        )
+        .await;
+        let second_items: Page<devo_protocol::canonical::item::ItemEnvelope> =
+            serde_json::from_value(second_items["result"].clone()).expect("items page 2");
+        assert_eq!(
+            second_items
+                .data
+                .iter()
+                .map(|item| item.seq)
+                .collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+        assert_eq!(second_items.next_cursor, None);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn items_list_filters_by_turn_id() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = write_history_rollout(data_root.path()).await;
+        let connection_id = initialized_connection(&runtime).await;
+
+        let turns = history_request(
+            &runtime,
+            connection_id,
+            1,
+            "session/turns/list",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let turns: devo_protocol::canonical::page::Page<devo_protocol::canonical::turn::Turn> =
+            serde_json::from_value(turns["result"].clone()).expect("turns result");
+        let turn_two = &turns.data[1];
+
+        let items = history_request(
+            &runtime,
+            connection_id,
+            2,
+            "session/items/list",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "turnId": turn_two.id.as_str(),
+            }),
+        )
+        .await;
+        let items: devo_protocol::canonical::page::Page<
+            devo_protocol::canonical::item::ItemEnvelope,
+        > = serde_json::from_value(items["result"].clone()).expect("items result");
+        assert_eq!(items.data.len(), 2);
+        assert!(
+            items
+                .data
+                .iter()
+                .all(|item| item.turn_id == turn_two.id)
+        );
+        assert!(
+            matches!(&items.data[0].item, devo_protocol::canonical::item::Item::AssistantMessage { text, .. } if text == "first-t2")
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn items_list_reads_cold_session_without_resume() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let session_id = write_history_rollout(data_root.path()).await;
+        // A brand-new runtime that never loaded the session: the read must
+        // resolve the rollout from disk, not from the session map or index.
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+
+        let items = history_request(
+            &runtime,
+            connection_id,
+            1,
+            "session/items/list",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let items: devo_protocol::canonical::page::Page<
+            devo_protocol::canonical::item::ItemEnvelope,
+        > = serde_json::from_value(items["result"].clone()).expect("items result");
+        assert_eq!(items.data.len(), 5);
+        assert_eq!(items.next_cursor, None);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn history_lists_handle_empty_session_bad_cursor_and_unknown_session() -> Result<()> {
+        use devo_protocol::canonical::page::Page;
+        use devo_protocol::canonical::turn::Turn;
+
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        // A session with only its meta line (no turns, no items).
+        let rollout_store = crate::persistence::RolloutStore::new(data_root.path().to_path_buf(), None);
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            data_root.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let connection_id = initialized_connection(&runtime).await;
+
+        let empty = history_request(
+            &runtime,
+            connection_id,
+            1,
+            "session/turns/list",
+            serde_json::json!({ "sessionId": record.id.to_string() }),
+        )
+        .await;
+        let empty: Page<Turn> = serde_json::from_value(empty["result"].clone()).expect("empty");
+        assert_eq!(
+            empty,
+            Page {
+                data: Vec::new(),
+                next_cursor: None,
+            }
+        );
+
+        let bad_cursor = history_request(
+            &runtime,
+            connection_id,
+            2,
+            "session/items/list",
+            serde_json::json!({ "sessionId": record.id.to_string(), "cursor": "not-a-cursor" }),
+        )
+        .await;
+        assert!(
+            bad_cursor.get("error").is_some(),
+            "malformed cursor must error: {bad_cursor}"
+        );
+
+        let unknown = history_request(
+            &runtime,
+            connection_id,
+            3,
+            "session/turns/list",
+            serde_json::json!({ "sessionId": SessionId::new().to_string() }),
+        )
+        .await;
+        assert!(unknown.get("error").is_some(), "unknown session must error");
 
         Ok(())
     }

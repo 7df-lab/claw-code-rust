@@ -105,6 +105,10 @@ pub enum ClientMethod {
     ProviderVendorList,
     ProviderValidate,
     ProviderVendorUpsert,
+    // New Native API methods (canonical types; not part of the legacy
+    // `_devo/*` alias surface).
+    SessionTurnsList,
+    SessionItemsList,
 }
 
 impl ClientMethod {
@@ -159,6 +163,8 @@ impl ClientMethod {
             Self::ProviderVendorList => "provider/list",
             Self::ProviderValidate => "provider/validate",
             Self::ProviderVendorUpsert => "provider/upsert",
+            Self::SessionTurnsList => "session/turns/list",
+            Self::SessionItemsList => "session/items/list",
         }
     }
 
@@ -213,6 +219,8 @@ impl ClientMethod {
             "provider/list" => Self::ProviderVendorList,
             "provider/validate" => Self::ProviderValidate,
             "provider/upsert" => Self::ProviderVendorUpsert,
+            "session/turns/list" => Self::SessionTurnsList,
+            "session/items/list" => Self::SessionItemsList,
             _ => return None,
         })
     }

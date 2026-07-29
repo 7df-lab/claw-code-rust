@@ -4,6 +4,7 @@ pub(crate) mod acp_config_options;
 mod acp_slash_commands;
 mod compaction;
 pub mod goal;
+mod history;
 mod message_edit;
 mod message_edit_restore;
 mod session;

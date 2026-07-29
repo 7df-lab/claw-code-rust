@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -60,10 +61,37 @@ pub struct SessionStats {
     pub prompt_token_estimate: usize,
 }
 
+/// One derived event row before per-stream sequencing (08 §5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewEventLogRow {
+    /// Stable identity of the rollout fact: `<rollout_path>#<line_index>`.
+    pub source_fact_id: String,
+    /// Notification method, e.g. `item/started`.
+    pub event_kind: String,
+    pub stream_id: String,
+    pub event_id: String,
+    /// `EventEnvelope` JSON (meta + notification).
+    pub payload: String,
+    pub created_at: String,
+}
+
+/// A stored event row including its per-stream sequence number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventLogRow {
+    pub source_fact_id: String,
+    pub event_kind: String,
+    pub stream_id: String,
+    pub event_id: String,
+    pub seq: u64,
+    pub payload: String,
+    pub created_at: String,
+}
+
 /// Current index schema version recorded in `schema_meta` (05 §2.3).
 /// Bump when a migration changes the index layout; the rollout files are
 /// the rebuildable source of truth on any mismatch.
-const CURRENT_SCHEMA_VERSION: u32 = 1;
+/// v2: adds `event_log` + `projection_watermark` (08 §5/§7).
+const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// SQLite database for session metadata, token stats, and pending queues.
 pub struct Database {
@@ -256,10 +284,35 @@ impl Database {
         .context("failed to create schema_meta table")?;
         conn.execute(
             "INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?1)
-             ON CONFLICT(key) DO NOTHING",
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             [CURRENT_SCHEMA_VERSION.to_string()],
         )
         .context("failed to record schema version")?;
+        // Persisted event log (08 §5/§7): the rollout JSONL is the canonical
+        // recovery log; this table is the delivery log used for cursor replay.
+        // Rows are idempotent by (source_fact_id, event_kind, stream_id);
+        // `seq` is strictly increasing per stream. A database rebuild expires
+        // all cursors and forces re-snapshot — rows are never modified.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS event_log (
+                source_fact_id TEXT NOT NULL,
+                event_kind TEXT NOT NULL,
+                stream_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (source_fact_id, event_kind, stream_id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS event_log_stream_seq
+                ON event_log(stream_id, seq);
+
+            CREATE TABLE IF NOT EXISTS projection_watermark (
+                rollout_path TEXT PRIMARY KEY,
+                last_line_index INTEGER NOT NULL
+            );",
+        )
+        .context("failed to create event_log tables")?;
         Ok(())
     }
 
@@ -281,6 +334,100 @@ impl Database {
                     .context("invalid schema_version in schema_meta")
             })
             .transpose()
+    }
+
+    // === Event log (08 §5/§7) ===
+
+    /// Idempotently inserts derived event rows. `seq` is allocated per stream
+    /// inside the same statement, and the `(source_fact_id, event_kind,
+    /// stream_id)` primary key makes re-projection of the same rollout fact a
+    /// no-op — reconciliation never duplicates, only backfills. Returns the
+    /// number of rows actually inserted.
+    pub fn insert_event_log_rows(&self, rows: &[NewEventLogRow]) -> Result<usize> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let mut inserted = 0usize;
+        for row in rows {
+            let changes = conn
+                .execute(
+                    "INSERT OR IGNORE INTO event_log
+                        (source_fact_id, event_kind, stream_id, event_id, seq, payload, created_at)
+                     SELECT ?1, ?2, ?3, ?4,
+                        (SELECT COALESCE(MAX(seq), 0) + 1 FROM event_log WHERE stream_id = ?3),
+                        ?5, ?6",
+                    params![
+                        row.source_fact_id,
+                        row.event_kind,
+                        row.stream_id,
+                        row.event_id,
+                        row.payload,
+                        row.created_at,
+                    ],
+                )
+                .context("failed to insert event_log row")?;
+            inserted += changes;
+        }
+        Ok(inserted)
+    }
+
+    /// Reads stored events of one stream after `after_seq`, ordered by seq
+    /// (cursor replay, 08 §4).
+    pub fn event_log_rows(&self, stream_id: &str, after_seq: u64) -> Result<Vec<EventLogRow>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let mut stmt = conn
+            .prepare(
+                "SELECT source_fact_id, event_kind, stream_id, event_id, seq, payload, created_at
+                 FROM event_log WHERE stream_id = ?1 AND seq > ?2 ORDER BY seq",
+            )
+            .context("failed to prepare event_log read")?;
+        let rows = stmt
+            .query_map(params![stream_id, after_seq as i64], |row| {
+                Ok(EventLogRow {
+                    source_fact_id: row.get(0)?,
+                    event_kind: row.get(1)?,
+                    stream_id: row.get(2)?,
+                    event_id: row.get(3)?,
+                    seq: row.get::<_, i64>(4)? as u64,
+                    payload: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })
+            .context("failed to read event_log rows")?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to decode event_log rows")
+    }
+
+    /// Total number of stored event rows (reconciliation tests).
+    pub fn event_log_len(&self) -> Result<u64> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event_log", [], |row| row.get(0))
+            .context("failed to count event_log rows")?;
+        Ok(count as u64)
+    }
+
+    /// The last rollout line index projected into `event_log` for a file.
+    pub fn projection_watermark(&self, rollout_path: &Path) -> Result<Option<u64>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let value: Option<i64> = conn
+            .query_row(
+                "SELECT last_line_index FROM projection_watermark WHERE rollout_path = ?1",
+                params![rollout_path.to_string_lossy().as_ref()],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(value.map(|value| value as u64))
+    }
+
+    /// Advances the projection watermark for a rollout file.
+    pub fn set_projection_watermark(&self, rollout_path: &Path, last_line_index: u64) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute(
+            "INSERT INTO projection_watermark (rollout_path, last_line_index) VALUES (?1, ?2)
+             ON CONFLICT(rollout_path) DO UPDATE SET last_line_index = excluded.last_line_index",
+            params![rollout_path.to_string_lossy().as_ref(), last_line_index as i64],
+        )
+        .context("failed to update projection watermark")?;
+        Ok(())
     }
 
     // === Session CRUD ===

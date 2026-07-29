@@ -1,3 +1,4 @@
+pub mod event_projection;
 pub mod legacy_projector;
 pub mod rollout_v2;
 pub mod v2_inverse;
@@ -5,6 +6,10 @@ pub mod v2_inverse;
 mod records;
 
 pub use devo_protocol::{ItemId, SessionId, SessionTitleState, TurnId, TurnStatus, TurnUsage};
+pub use event_projection::{
+    DerivedEvent, EVENT_SCHEMA_VERSION, events_from_v2_line, session_stream_id,
+    sessions_stream_id, source_fact_id,
+};
 pub use legacy_projector::{LegacyProjectError, LegacyProjector};
 pub use rollout_v2::{
     InternalRecordV2, ParsedRolloutLine, ROLLOUT_FORMAT_VERSION, RolloutLineReadError,

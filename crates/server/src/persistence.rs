@@ -60,7 +60,12 @@ use devo_core::V2InverseProjector;
 use devo_core::Worklog;
 use devo_core::parse_rollout_line;
 use devo_core::legacy_projector::LegacyProjector;
+use devo_core::rollout_v2::RolloutLineV2;
+use devo_core::{EVENT_SCHEMA_VERSION, events_from_v2_line, source_fact_id};
+use devo_protocol::canonical::event::{EventEnvelope, EventMeta};
+use devo_protocol::canonical::ids::EventId;
 
+use crate::db::{Database, NewEventLogRow};
 use crate::execution::PersistedTurnItem;
 use crate::execution::RuntimeSession;
 use crate::execution::ServerRuntimeDependencies;
@@ -76,10 +81,22 @@ pub(crate) struct RolloutStore {
     /// Per-file locks that serialise concurrent writes to the same rollout file,
     /// preventing interleaved JSON lines.
     file_locks: Arc<StdMutex<HashMap<PathBuf, Arc<StdMutex<()>>>>>,
-    /// Per-file write-path projectors (v2 single-write, 05 §2.2). One
-    /// instance per rollout path, hydrated from the on-disk history on first
-    /// append so item seqs and approval folds never collide with it.
-    projectors: Arc<StdMutex<HashMap<PathBuf, LegacyProjector>>>,
+    /// Per-file write-path state (v2 single-write, 05 §2.2). One instance per
+    /// rollout path, hydrated from the on-disk history on first append so
+    /// item seqs and approval folds never collide with it.
+    write_states: Arc<StdMutex<HashMap<PathBuf, WritePathState>>>,
+    /// Delivery-log sink (08 §5/§7): after each fsynced append, derived
+    /// events are projected into the SQLite `event_log` (best effort; the
+    /// startup reconciler backfills anything missed). `None` in tests that
+    /// do not exercise the event log.
+    event_log: Option<Arc<Database>>,
+}
+
+/// Per-file write-path state: the forward projector plus the index of the
+/// next JSONL row to be written (used as the `source_fact_id` line index).
+pub(crate) struct WritePathState {
+    projector: LegacyProjector,
+    next_line_index: u64,
 }
 
 impl std::fmt::Debug for RolloutStore {
@@ -95,18 +112,20 @@ impl Clone for RolloutStore {
         Self {
             data_root: self.data_root.clone(),
             file_locks: Arc::clone(&self.file_locks),
-            projectors: Arc::clone(&self.projectors),
+            write_states: Arc::clone(&self.write_states),
+            event_log: self.event_log.as_ref().map(Arc::clone),
         }
     }
 }
 
 impl RolloutStore {
     /// Creates a rollout store rooted at the supplied server home directory.
-    pub(crate) fn new(data_root: PathBuf) -> Self {
+    pub(crate) fn new(data_root: PathBuf, event_log: Option<Arc<Database>>) -> Self {
         Self {
             data_root,
             file_locks: Arc::new(StdMutex::new(HashMap::new())),
-            projectors: Arc::new(StdMutex::new(HashMap::new())),
+            write_states: Arc::new(StdMutex::new(HashMap::new())),
+            event_log,
         }
     }
 
@@ -639,18 +658,19 @@ impl RolloutStore {
         };
         let _guard = file_lock.lock().expect("rollout per-file lock poisoned");
 
-        let mut projectors = self
-            .projectors
+        let mut write_states = self
+            .write_states
             .lock()
-            .expect("rollout projector table poisoned");
-        let projector = match projectors.get_mut(rollout_path) {
-            Some(projector) => projector,
+            .expect("rollout write-state table poisoned");
+        let state = match write_states.get_mut(rollout_path) {
+            Some(state) => state,
             None => {
-                let projector = hydrate_projector(rollout_path)?;
-                projectors.entry(rollout_path.to_path_buf()).or_insert(projector)
+                let state = hydrate_write_state(rollout_path)?;
+                write_states.entry(rollout_path.to_path_buf()).or_insert(state)
             }
         };
-        let v2_lines = projector
+        let v2_lines = state
+            .projector
             .project_line(line)
             .with_context(|| format!("project rollout line for {}", rollout_path.display()))?;
 
@@ -659,6 +679,7 @@ impl RolloutStore {
             .append(true)
             .open(rollout_path)
             .with_context(|| format!("open rollout file {}", rollout_path.display()))?;
+        let first_line_index = state.next_line_index;
         for v2_line in &v2_lines {
             serde_json::to_writer(&mut file, v2_line)
                 .with_context(|| format!("serialize rollout line {}", rollout_path.display()))?;
@@ -673,7 +694,105 @@ impl RolloutStore {
         // event-log requirement).
         file.sync_data()
             .with_context(|| format!("fsync rollout file {}", rollout_path.display()))?;
+        state.next_line_index += v2_lines.len() as u64;
+
+        // Outbox projection (08 §5/§7): derive delivery-log events from the
+        // fsynced facts. Best effort — a failure here is backfilled by the
+        // startup reconciler, so a crash may delay an event but never lose
+        // or duplicate it.
+        if let Some(db) = &self.event_log
+            && let Err(error) =
+                project_events_into_log(db, rollout_path, first_line_index, &v2_lines)
+        {
+            tracing::warn!(
+                rollout = %rollout_path.display(),
+                %error,
+                "failed to project events into event_log; reconciliation will backfill"
+            );
+        }
         Ok(())
+    }
+}
+
+/// Derives delivery-log rows from freshly written v2 lines and inserts them
+/// idempotently, then advances the projection watermark.
+fn project_events_into_log(
+    db: &Database,
+    rollout_path: &Path,
+    first_line_index: u64,
+    v2_lines: &[RolloutLineV2],
+) -> Result<()> {
+    let mut rows = Vec::new();
+    let mut last_line_index = first_line_index;
+    for (offset, v2_line) in v2_lines.iter().enumerate() {
+        let line_index = first_line_index + offset as u64;
+        last_line_index = line_index;
+        rows.extend(event_log_rows_for_v2_line(
+            rollout_path,
+            line_index,
+            0,
+            v2_line,
+        )?);
+    }
+    db.insert_event_log_rows(&rows)?;
+    if !v2_lines.is_empty() {
+        db.set_projection_watermark(rollout_path, last_line_index)?;
+    }
+    Ok(())
+}
+
+/// Builds the delivery-log rows derived from one v2 rollout fact (also used
+/// by the startup reconciler, which passes a nonzero `sub_index` for v2
+/// lines expanded from a packed legacy row).
+pub(crate) fn event_log_rows_for_v2_line(
+    rollout_path: &Path,
+    line_index: u64,
+    sub_index: u64,
+    v2_line: &RolloutLineV2,
+) -> Result<Vec<NewEventLogRow>> {
+    let timestamp = v2_line_timestamp(v2_line);
+    let mut rows = Vec::new();
+    for derived in events_from_v2_line(v2_line) {
+        let envelope = EventEnvelope {
+            meta: EventMeta {
+                event_id: EventId::new(),
+                stream_id: derived.stream_id.clone(),
+                // Allocated by the event_log insert (per-stream monotonic);
+                // replay hydrates meta.seq from the stored row.
+                seq: None,
+                emitted_at: timestamp,
+                persisted: true,
+                schema_version: EVENT_SCHEMA_VERSION,
+                actor_client_id: None,
+            },
+            notification: derived.notification,
+        };
+        rows.push(NewEventLogRow {
+            source_fact_id: source_fact_id(rollout_path, line_index, sub_index),
+            event_kind: derived.event_kind.to_owned(),
+            stream_id: derived.stream_id,
+            event_id: envelope.meta.event_id.to_string(),
+            payload: serde_json::to_string(&envelope).context("serialize event envelope")?,
+            created_at: timestamp.to_rfc3339(),
+        });
+    }
+    Ok(rows)
+}
+
+/// The wall-clock timestamp carried by any v2 line variant.
+fn v2_line_timestamp(line: &RolloutLineV2) -> chrono::DateTime<Utc> {
+    match line {
+        RolloutLineV2::SessionMeta { timestamp, .. }
+        | RolloutLineV2::Turn { timestamp, .. }
+        | RolloutLineV2::Item { timestamp, .. }
+        | RolloutLineV2::Internal { timestamp, .. }
+        | RolloutLineV2::SessionTitleUpdated { timestamp, .. }
+        | RolloutLineV2::CompactionSnapshot { timestamp, .. }
+        | RolloutLineV2::SessionRollback { timestamp, .. }
+        | RolloutLineV2::WorkspaceCheckpoint { timestamp, .. }
+        | RolloutLineV2::WorkspaceChange { timestamp, .. }
+        | RolloutLineV2::WorkspaceRestoreStarted { timestamp, .. }
+        | RolloutLineV2::WorkspaceRestoreCompleted { timestamp, .. } => *timestamp,
     }
 }
 
@@ -686,11 +805,28 @@ impl RolloutStore {
 ///
 /// Fails closed on any damaged or unsupported line: appending onto history
 /// the projector could not fully read would fork the session's history.
-fn hydrate_projector(rollout_path: &Path) -> Result<LegacyProjector> {
+/// Builds the write-path state for an existing rollout file by replaying its
+/// current contents: legacy lines go through the forward projector (so the
+/// seq counter and approval folds advance exactly as if the file had been
+/// written through the v2 path), v2 lines re-sync that state via
+/// [`LegacyProjector::observe_v2_line`]. Bounded per path: runs once, on the
+/// first append, and the result is cached in the store. Also returns the next
+/// JSONL row index, which becomes the `source_fact_id` line index of every
+/// subsequent append.
+///
+/// Fails closed on any damaged or unsupported line: appending onto history
+/// the projector could not fully read would fork the session's history.
+fn hydrate_write_state(rollout_path: &Path) -> Result<WritePathState> {
     let mut projector = LegacyProjector::new();
+    let mut next_line_index = 0u64;
     let file = match File::open(rollout_path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(projector),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(WritePathState {
+                projector,
+                next_line_index,
+            });
+        }
         Err(error) => {
             return Err(error).with_context(|| format!("open rollout file {}", rollout_path.display()));
         }
@@ -720,8 +856,13 @@ fn hydrate_projector(rollout_path: &Path) -> Result<LegacyProjector> {
                 });
             }
         }
+        // The line index counts physical JSONL rows regardless of format.
+        next_line_index += 1;
     }
-    Ok(projector)
+    Ok(WritePathState {
+        projector,
+        next_line_index,
+    })
 }
 
 #[derive(Default)]
@@ -2448,7 +2589,7 @@ mod tests {
         let data_root = dir.path().to_path_buf();
         let session_id = SessionId::new();
         let now = Utc::now();
-        let rollout_store = super::RolloutStore::new(data_root.clone());
+        let rollout_store = super::RolloutStore::new(data_root.clone(), None);
         let record = rollout_store.create_session_record(
             session_id,
             now,
@@ -2502,7 +2643,7 @@ mod tests {
         let data_root = dir.path().to_path_buf();
         let session_id = SessionId::new();
         let now = Utc::now();
-        let rollout_store = super::RolloutStore::new(data_root.clone());
+        let rollout_store = super::RolloutStore::new(data_root.clone(), None);
         let record = rollout_store.create_session_record(
             session_id,
             now,
@@ -2589,7 +2730,7 @@ mod tests {
         let data_root = dir.path().to_path_buf();
         let session_id = SessionId::new();
         let now = Utc::now();
-        let rollout_store = super::RolloutStore::new(data_root.clone());
+        let rollout_store = super::RolloutStore::new(data_root.clone(), None);
         let record = rollout_store.create_session_record(
             session_id,
             now,
@@ -3197,7 +3338,7 @@ mod tests {
         let data_root = dir.path().to_path_buf();
         let session_id = SessionId::new();
         let now = Utc::now();
-        let rollout_store = super::RolloutStore::new(data_root.clone());
+        let rollout_store = super::RolloutStore::new(data_root.clone(), None);
         let record = rollout_store.create_session_record(
             session_id,
             now,
@@ -3360,7 +3501,7 @@ mod tests {
         use tempfile::TempDir;
 
         let dir = TempDir::new().expect("temp dir");
-        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let record = rollout_store.create_session_record(
             SessionId::new(),
             Utc::now(),
@@ -3408,7 +3549,7 @@ mod tests {
         use tempfile::TempDir;
 
         let dir = TempDir::new().expect("temp dir");
-        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let record = rollout_store.create_session_record(
             SessionId::new(),
             Utc::now(),
@@ -3454,7 +3595,7 @@ mod tests {
 
         // "Restart": a brand-new store must hydrate its projector from the
         // on-disk v2 history before appending.
-        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         restarted_store
             .append_item(
                 &record,
@@ -3517,7 +3658,7 @@ mod tests {
         use tempfile::TempDir;
 
         let dir = TempDir::new().expect("temp dir");
-        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let record = rollout_store.create_session_record(
             SessionId::new(),
             Utc::now(),
@@ -3535,7 +3676,7 @@ mod tests {
             .expect("append session meta");
         write_raw_lines(&record.rollout_path, &[r#"{"v":2,"kind":"nope"}"#.to_string()]);
 
-        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let metadata = test_turn_metadata(record.id, TurnId::new());
         let turn = super::build_turn_record(&metadata, None, None, None);
         let error = restarted_store
@@ -3552,7 +3693,7 @@ mod tests {
         use tempfile::TempDir;
 
         let dir = TempDir::new().expect("temp dir");
-        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let record = rollout_store.create_session_record(
             SessionId::new(),
             Utc::now(),
@@ -3573,7 +3714,7 @@ mod tests {
             &[r#"{"v":2,"kind":"item","timestamp":"2026"#.to_string()],
         );
 
-        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let metadata = test_turn_metadata(record.id, TurnId::new());
         let turn = super::build_turn_record(&metadata, None, None, None);
         restarted_store
@@ -3587,7 +3728,7 @@ mod tests {
 
         let dir = TempDir::new().expect("temp dir");
         let deps = test_deps(dir.path());
-        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let record = rollout_store.create_session_record(
             SessionId::new(),
             Utc::now(),
@@ -3652,7 +3793,7 @@ mod tests {
 
         let dir = TempDir::new().expect("temp dir");
         let deps = test_deps(dir.path());
-        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf());
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let record = rollout_store.create_session_record(
             SessionId::new(),
             Utc::now(),
@@ -3752,5 +3893,111 @@ mod tests {
             .collect();
         assert!(texts.contains(&"legacy hello"), "history: {texts:?}");
         assert!(texts.contains(&"v2 reply"), "history: {texts:?}");
+    }
+
+    fn append_basic_session_lines(
+        rollout_store: &super::RolloutStore,
+        data_root: &std::path::Path,
+    ) -> devo_core::SessionRecord {
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            data_root.to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None);
+        rollout_store.append_turn(&record, turn).expect("append turn");
+        let item = super::build_item_record(
+            record.id,
+            metadata.turn_id,
+            ItemId::new(),
+            1,
+            TurnItem::AgentMessage(TextItem { text: "hi".into() }),
+            Some(TurnStatus::Running),
+            None,
+        );
+        rollout_store.append_item(&record, item).expect("append item");
+        record
+    }
+
+    #[test]
+    fn append_projects_events_into_event_log() {
+        use pretty_assertions::assert_eq;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let db = std::sync::Arc::new(
+            crate::db::Database::open(dir.path().join("devo.db")).expect("open db"),
+        );
+        let rollout_store =
+            super::RolloutStore::new(dir.path().to_path_buf(), Some(std::sync::Arc::clone(&db)));
+        let record = append_basic_session_lines(&rollout_store, dir.path());
+
+        // session/created lands on both the session stream and the per-cwd
+        // sessions stream; turn and item facts land on the session stream.
+        assert_eq!(db.event_log_len().expect("count"), 4);
+        let session_stream =
+            devo_core::session_stream_id(&devo_protocol::canonical::ids::SessionId::from_string(
+                record.id.to_string(),
+            ));
+        let rows = db.event_log_rows(&session_stream, 0).expect("session stream");
+        let kinds: Vec<&str> = rows.iter().map(|row| row.event_kind.as_str()).collect();
+        assert_eq!(kinds, vec!["session/created", "turn/completed", "item/completed"]);
+        let seqs: Vec<u64> = rows.iter().map(|row| row.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3]);
+        // Three physical rows written; watermark is the last line index.
+        assert_eq!(
+            db.projection_watermark(&record.rollout_path).expect("watermark"),
+            Some(2)
+        );
+
+        // The stored envelope payload parses as a typed EventEnvelope whose
+        // meta.seq is hydrated from the row at replay time.
+        let envelope: devo_protocol::canonical::event::EventEnvelope =
+            serde_json::from_str(&rows[2].payload).expect("envelope payload parses");
+        assert_eq!(envelope.meta.seq, None);
+        assert!(envelope.meta.persisted);
+    }
+
+    #[test]
+    fn event_log_insert_is_idempotent_by_source_fact() {
+        use pretty_assertions::assert_eq;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let db = std::sync::Arc::new(
+            crate::db::Database::open(dir.path().join("devo.db")).expect("open db"),
+        );
+        let rollout_store =
+            super::RolloutStore::new(dir.path().to_path_buf(), Some(std::sync::Arc::clone(&db)));
+        let record = append_basic_session_lines(&rollout_store, dir.path());
+        assert_eq!(db.event_log_len().expect("count"), 4);
+
+        // Re-deriving the same facts (simulated crash recovery) inserts nothing.
+        let raw_lines = raw_rollout_lines(&record.rollout_path);
+        let mut rows = Vec::new();
+        for (index, raw) in raw_lines.iter().enumerate() {
+            let ParsedRolloutLine::V2(v2) = parse_rollout_line(raw).expect("parse") else {
+                panic!("v2 line expected");
+            };
+            rows.extend(
+                super::event_log_rows_for_v2_line(&record.rollout_path, index as u64, 0, &v2)
+                    .expect("derive rows"),
+            );
+        }
+        assert_eq!(rows.len(), 4);
+        let inserted = db.insert_event_log_rows(&rows).expect("re-insert");
+        assert_eq!(inserted, 0);
+        assert_eq!(db.event_log_len().expect("count"), 4);
     }
 }

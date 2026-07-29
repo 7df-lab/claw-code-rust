@@ -16,18 +16,13 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 
-#[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[serde(untagged)]
 pub enum PatchField<T> {
+    #[default]
     Missing,
     Null,
     Value(T),
-}
-
-impl<T> Default for PatchField<T> {
-    fn default() -> Self {
-        Self::Missing
-    }
 }
 
 impl<T> PatchField<T> {

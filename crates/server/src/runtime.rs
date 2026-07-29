@@ -302,7 +302,8 @@ pub(super) fn subagent_usage_owner_pending_metadata(
 
 impl ServerRuntime {
     pub fn new(server_home: PathBuf, deps: ServerRuntimeDependencies) -> Arc<Self> {
-        let rollout_store = RolloutStore::new(server_home.clone());
+        let rollout_store =
+            RolloutStore::new(server_home.clone(), Some(Arc::clone(&deps.db)));
         let goal_durable_store = GoalDurableStore::new(server_home.clone());
         let sandbox_network_proxy = std::sync::Arc::new(std::sync::Mutex::new(None));
         // Proxy startup is async; ports are published via the thread-safe
@@ -382,6 +383,16 @@ impl ServerRuntime {
             .lock()
             .ok()
             .and_then(|slot| slot.clone())
+    }
+
+    /// The rollout store, for the startup event-log reconciler (08 §7).
+    pub(crate) fn rollout_store(&self) -> RolloutStore {
+        self.rollout_store.clone()
+    }
+
+    /// The shared SQLite handle (session index, queues, event log).
+    pub(crate) fn deps_db(&self) -> Arc<crate::db::Database> {
+        Arc::clone(&self.deps.db)
     }
 }
 

@@ -5,6 +5,7 @@ mod client;
 mod connection;
 pub mod db;
 mod event;
+mod event_reconcile;
 mod exec_policy_store;
 mod execution;
 pub mod goal;

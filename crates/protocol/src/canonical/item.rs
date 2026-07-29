@@ -260,7 +260,7 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ItemOrUnknown {
-    Known(Item),
+    Known(Box<Item>),
     Unknown(JsonValue),
 }
 

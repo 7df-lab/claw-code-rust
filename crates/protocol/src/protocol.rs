@@ -109,6 +109,8 @@ pub enum ClientMethod {
     // `_devo/*` alias surface).
     SessionTurnsList,
     SessionItemsList,
+    SessionRollbackPreview,
+    SessionRollbackCommit,
     SubscriptionCreate,
     SubscriptionUpdate,
     SubscriptionAck,
@@ -174,6 +176,8 @@ impl ClientMethod {
             Self::ProviderVendorUpsert => "provider/upsert",
             Self::SessionTurnsList => "session/turns/list",
             Self::SessionItemsList => "session/items/list",
+            Self::SessionRollbackPreview => "session/rollback/preview",
+            Self::SessionRollbackCommit => "session/rollback/commit",
             Self::SubscriptionCreate => "subscription/create",
             Self::SubscriptionUpdate => "subscription/update",
             Self::SubscriptionAck => "subscription/ack",
@@ -239,6 +243,8 @@ impl ClientMethod {
             "provider/upsert" => Self::ProviderVendorUpsert,
             "session/turns/list" => Self::SessionTurnsList,
             "session/items/list" => Self::SessionItemsList,
+            "session/rollback/preview" => Self::SessionRollbackPreview,
+            "session/rollback/commit" => Self::SessionRollbackCommit,
             "subscription/create" => Self::SubscriptionCreate,
             "subscription/update" => Self::SubscriptionUpdate,
             "subscription/ack" => Self::SubscriptionAck,
@@ -321,6 +327,15 @@ pub enum ProtocolErrorCode {
     InvalidMentions,
     #[error("WorkspaceRestoreFailedToStart")]
     WorkspaceRestoreFailedToStart,
+    #[serde(rename = "RESTORE_PLAN_NOT_FOUND")]
+    #[error("RESTORE_PLAN_NOT_FOUND")]
+    RestorePlanNotFound,
+    #[serde(rename = "RESTORE_PLAN_EXPIRED")]
+    #[error("RESTORE_PLAN_EXPIRED")]
+    RestorePlanExpired,
+    #[serde(rename = "WORKSPACE_VERSION_CONFLICT")]
+    #[error("WORKSPACE_VERSION_CONFLICT")]
+    WorkspaceVersionConflict,
     #[error("InternalError")]
     InternalError,
 }
@@ -550,6 +565,8 @@ impl fmt::Display for McpAuthStatus {
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
@@ -608,6 +625,18 @@ mod tests {
                 ProtocolErrorCode::WorkspaceRestoreFailedToStart,
                 "WorkspaceRestoreFailedToStart",
             ),
+            (
+                ProtocolErrorCode::RestorePlanNotFound,
+                "RESTORE_PLAN_NOT_FOUND",
+            ),
+            (
+                ProtocolErrorCode::RestorePlanExpired,
+                "RESTORE_PLAN_EXPIRED",
+            ),
+            (
+                ProtocolErrorCode::WorkspaceVersionConflict,
+                "WORKSPACE_VERSION_CONFLICT",
+            ),
         ];
 
         for (code, expected_str) in &codes {
@@ -664,6 +693,27 @@ mod tests {
         assert_eq!(
             ClientMethod::WorkspaceChangesRead.as_str(),
             "workspace/changes/read"
+        );
+    }
+
+    #[test]
+    fn client_method_recognizes_two_phase_session_rollback() {
+        assert_eq!(
+            [
+                ClientMethod::parse("session/rollback/preview"),
+                ClientMethod::parse("session/rollback/commit"),
+            ],
+            [
+                Some(ClientMethod::SessionRollbackPreview),
+                Some(ClientMethod::SessionRollbackCommit),
+            ]
+        );
+        assert_eq!(
+            [
+                ClientMethod::SessionRollbackPreview.as_str(),
+                ClientMethod::SessionRollbackCommit.as_str(),
+            ],
+            ["session/rollback/preview", "session/rollback/commit"]
         );
     }
 

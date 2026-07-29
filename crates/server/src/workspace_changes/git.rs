@@ -3,6 +3,7 @@ use std::process::Output;
 
 use anyhow::{Context, Result};
 use devo_core::ChangeSetCoverage;
+use devo_core::TurnWorkspaceCheckpointRecordedRecord;
 use devo_protocol::{
     SessionId, TurnId, WorkspaceChangeAttribution, WorkspaceChangeBase, WorkspaceChangeCoverage,
     WorkspaceChangeScope, WorkspaceChangeSetStatus, WorkspaceChangeView,
@@ -10,7 +11,8 @@ use devo_protocol::{
 };
 use devo_util_git::{
     CreateGhostCommitOptions, GhostCommit, GhostSnapshotReport, create_ghost_commit_with_report,
-    default_branch_name, diff_ghost_commits, get_git_repo_root, merge_base_with_head,
+    default_branch_name, diff_ghost_commits, extract_paths_from_patch, get_git_repo_root,
+    merge_base_with_head, restore_ghost_commit, restore_to_commit,
 };
 use tokio::process::Command;
 
@@ -26,6 +28,122 @@ pub(crate) struct GitWorkspaceBaseline {
     pub checkpoint_id: String,
     ghost: GhostCommit,
     warnings: Vec<String>,
+}
+
+/// Rebuilds the restore-capable ghost snapshot from a durable checkpoint.
+///
+/// Checkpoints written before P4d have no untracked-path manifest. Returning
+/// `None` for them makes callers use tracked-file-only restore rather than
+/// guessing which user files may safely be deleted.
+pub(crate) fn ghost_commit_from_checkpoint(
+    checkpoint: &TurnWorkspaceCheckpointRecordedRecord,
+) -> Option<GhostCommit> {
+    let files = checkpoint.preexisting_untracked_files.as_ref()?;
+    let dirs = checkpoint.preexisting_untracked_dirs.as_ref()?;
+    Some(GhostCommit::new(
+        checkpoint.checkpoint_id.clone(),
+        /*parent*/ None,
+        files.iter().map(PathBuf::from).collect(),
+        dirs.iter().map(PathBuf::from).collect(),
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GitRollbackPreview {
+    pub workspace_version: String,
+    pub affected_files: Vec<PathBuf>,
+}
+
+pub(crate) fn preview_git_rollback(
+    workspace_root: &Path,
+    checkpoint_id: &str,
+) -> Result<GitRollbackPreview> {
+    let (current, _) = create_ghost_commit_with_report(
+        &CreateGhostCommitOptions::new(workspace_root)
+            .message("devo rollback preview")
+            .ignore_large_untracked_files(10 * 1024 * 1024),
+    )
+    .with_context(|| {
+        format!(
+            "capture rollback workspace version at {}",
+            workspace_root.display()
+        )
+    })?;
+    let checkpoint = GhostCommit::new(
+        checkpoint_id.to_string(),
+        /*parent*/ None,
+        Vec::new(),
+        Vec::new(),
+    );
+    let diff = diff_ghost_commits(workspace_root, &checkpoint, &current)
+        .with_context(|| format!("diff rollback checkpoint {checkpoint_id}"))?;
+    Ok(GitRollbackPreview {
+        workspace_version: current.id().to_string(),
+        affected_files: extract_paths_from_patch(&diff)
+            .into_iter()
+            .map(PathBuf::from)
+            .collect(),
+    })
+}
+
+pub(crate) fn git_workspace_matches_version(
+    workspace_root: &Path,
+    workspace_version: &str,
+) -> Result<bool> {
+    let (current, _) = create_ghost_commit_with_report(
+        &CreateGhostCommitOptions::new(workspace_root)
+            .message("devo rollback commit validation")
+            .ignore_large_untracked_files(10 * 1024 * 1024),
+    )
+    .with_context(|| {
+        format!(
+            "capture rollback workspace version at {}",
+            workspace_root.display()
+        )
+    })?;
+    let preview = GhostCommit::new(
+        workspace_version.to_string(),
+        /*parent*/ None,
+        Vec::new(),
+        Vec::new(),
+    );
+    diff_ghost_commits(workspace_root, &preview, &current)
+        .map(|diff| diff.is_empty())
+        .with_context(|| format!("compare rollback workspace version {workspace_version}"))
+}
+
+pub(crate) fn current_git_workspace_version(workspace_root: &Path) -> Result<String> {
+    create_ghost_commit_with_report(
+        &CreateGhostCommitOptions::new(workspace_root)
+            .message("devo rollback recovery checkpoint")
+            .ignore_large_untracked_files(10 * 1024 * 1024),
+    )
+    .map(|(current, _)| current.id().to_string())
+    .with_context(|| {
+        format!(
+            "capture rollback recovery version at {}",
+            workspace_root.display()
+        )
+    })
+}
+
+pub(crate) fn restore_git_checkpoint(
+    workspace_root: &Path,
+    checkpoint: &TurnWorkspaceCheckpointRecordedRecord,
+) -> Result<()> {
+    if let Some(ghost) = ghost_commit_from_checkpoint(checkpoint) {
+        restore_ghost_commit(workspace_root, &ghost)
+            .with_context(|| format!("restore git checkpoint {}", checkpoint.checkpoint_id))
+    } else {
+        // Checkpoints written before P4d lack the original untracked manifest.
+        // Restoring tracked files is safe; deleting untracked files by guess is not.
+        restore_to_commit(workspace_root, &checkpoint.checkpoint_id).with_context(|| {
+            format!(
+                "restore legacy git checkpoint {} (tracked files only)",
+                checkpoint.checkpoint_id
+            )
+        })
+    }
 }
 
 pub(crate) fn capture_git_baseline(
@@ -71,6 +189,22 @@ pub(crate) fn capture_git_baseline(
             coverage: ChangeSetCoverage::Full,
             warnings: baseline.warnings.clone(),
             artifact_ref: Some(artifact_ref),
+            preexisting_untracked_files: Some(
+                baseline
+                    .ghost
+                    .preexisting_untracked_files()
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+            ),
+            preexisting_untracked_dirs: Some(
+                baseline
+                    .ghost
+                    .preexisting_untracked_dirs()
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+            ),
         }),
         baseline: ActiveWorkspaceBaseline::Git(baseline),
     })

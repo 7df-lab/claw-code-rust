@@ -83,6 +83,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let state_change_guard = session_handle.lock_state_change().await;
         let Some(reservation) = self
             .session_turn_reservation_snapshot(params.session_id)
             .await
@@ -320,6 +321,7 @@ impl ServerRuntime {
         session_handle
             .begin_active_turn(turn.clone(), turn_config.clone())
             .await;
+        drop(state_change_guard);
         if let Some((old_cwd, new_cwd)) = cwd_change {
             self.run_session_hook(
                 params.session_id,
@@ -450,6 +452,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
 
         let requested_runtime_context = match params.cwd.as_ref() {
             Some(cwd) => match self.deps.context_for_workspace(cwd).await {

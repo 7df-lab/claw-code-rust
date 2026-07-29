@@ -965,6 +965,9 @@ fn format_protocol_error_code(code: &ProtocolErrorCode) -> &'static str {
         ProtocolErrorCode::InvalidContentParts => "invalid_content_parts",
         ProtocolErrorCode::InvalidMentions => "invalid_mentions",
         ProtocolErrorCode::WorkspaceRestoreFailedToStart => "workspace_restore_failed_to_start",
+        ProtocolErrorCode::RestorePlanNotFound => "restore_plan_not_found",
+        ProtocolErrorCode::RestorePlanExpired => "restore_plan_expired",
+        ProtocolErrorCode::WorkspaceVersionConflict => "workspace_version_conflict",
         ProtocolErrorCode::InternalError => "internal_error",
     }
 }

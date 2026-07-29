@@ -99,6 +99,8 @@ pub(crate) fn capture_file_baseline(
             coverage,
             warnings: baseline.warnings.clone(),
             artifact_ref: Some(artifact_ref),
+            preexisting_untracked_files: None,
+            preexisting_untracked_dirs: None,
         }),
         baseline: ActiveWorkspaceBaseline::File(baseline),
     })

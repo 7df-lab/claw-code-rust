@@ -14,6 +14,10 @@ impl ServerRuntime {
         self: &Arc<Self>,
         session_id: SessionId,
     ) -> bool {
+        let Some(session_handle) = self.session(session_id).await else {
+            return false;
+        };
+        let state_change_guard = session_handle.lock_state_change().await;
         let Some(queued) = self
             .pop_next_queued_turn_input(session_id, /*require_idle_session*/ false)
             .await
@@ -31,6 +35,7 @@ impl ServerRuntime {
         }
         self.activate_queued_turn(session_id, &turn, &turn_config)
             .await;
+        drop(state_change_guard);
         self.broadcast_event(crate::ServerEvent::TurnStarted(TurnEventPayload {
             session_id,
             turn: turn.clone(),
@@ -71,6 +76,10 @@ impl ServerRuntime {
         self: &Arc<Self>,
         session_id: SessionId,
     ) -> bool {
+        let Some(session_handle) = self.session(session_id).await else {
+            return false;
+        };
+        let state_change_guard = session_handle.lock_state_change().await;
         let Some(queued) = self
             .pop_next_queued_turn_input(session_id, /*require_idle_session*/ false)
             .await
@@ -88,6 +97,7 @@ impl ServerRuntime {
         }
         self.activate_queued_turn(session_id, &turn, &turn_config)
             .await;
+        drop(state_change_guard);
         self.broadcast_event(crate::ServerEvent::TurnStarted(TurnEventPayload {
             session_id,
             turn: turn.clone(),

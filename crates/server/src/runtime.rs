@@ -223,6 +223,8 @@ pub struct ServerRuntime {
     code_index_warmup: code_index_warmup::CodeIndexWarmup,
     /// Turn-scoped workspace baselines captured at actual execution start.
     active_workspace_baselines: Mutex<HashMap<TurnId, ActiveWorkspaceBaseline>>,
+    /// Short-lived, connection-bound P4d rollback plans.
+    restore_plans: Mutex<handlers::rollback_plan::RestorePlanStore>,
     /// Sessions with an in-flight model title-generation task.
     title_generation_in_flight: Mutex<HashSet<SessionId>>,
     /// Weak back-reference used when session actors need the owning runtime `Arc`.
@@ -370,6 +372,7 @@ impl ServerRuntime {
             command_exec_manager: command_exec::CommandExecManager::new(),
             code_index_warmup: code_index_warmup::CodeIndexWarmup::new(),
             active_workspace_baselines: Mutex::new(HashMap::new()),
+            restore_plans: Mutex::new(HashMap::new()),
             title_generation_in_flight: Mutex::new(HashSet::new()),
             self_weak: self_weak.clone(),
             session_lru: Mutex::new(session_cache::ParentSessionLru::new(

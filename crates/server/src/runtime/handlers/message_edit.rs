@@ -51,6 +51,29 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        if self
+            .runtime_active_turn_id(params.session_id)
+            .await
+            .is_some()
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::ActiveTurnEditRejected,
+                "cannot edit the previous message while a turn is active",
+            );
+        }
+        let _state_change_guard = session_handle.lock_state_change().await;
+        if self
+            .runtime_active_turn_id(params.session_id)
+            .await
+            .is_some()
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::ActiveTurnEditRejected,
+                "cannot edit the previous message while a turn is active",
+            );
+        }
         let Some(hook_context) = session_handle.hook_context_snapshot().await else {
             return self.error_response(
                 request_id,

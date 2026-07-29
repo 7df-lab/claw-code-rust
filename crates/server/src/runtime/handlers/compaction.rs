@@ -82,6 +82,11 @@ impl ServerRuntime {
         )
         .await;
 
+        // Compaction computes a replacement from a history snapshot. Keep the
+        // session mutation gate for the whole summarize-and-apply operation so
+        // rollback, turn admission, and metadata edits cannot make that
+        // replacement stale while the model call is in flight.
+        let state_change_guard = session_handle.lock_state_change().await;
         let result = {
             let Some(runtime_session) = session_handle.export_runtime_session().await else {
                 tracing::warn!(session_id = %session_id, "session compaction failed: session unavailable");
@@ -316,6 +321,7 @@ impl ServerRuntime {
                             ),
                         )
                         .await;
+                    drop(state_change_guard);
                     self.run_session_hook(
                         session_id,
                         devo_core::HookEvent::PostCompact,
@@ -344,6 +350,7 @@ impl ServerRuntime {
                         ),
                     )
                     .await;
+                drop(state_change_guard);
                 tracing::info!(session_id = %session_id, "session compaction completed with replacement");
                 self.broadcast_event(ServerEvent::SessionCompactionCompleted(
                     SessionEventPayload { session: summary },
@@ -354,6 +361,7 @@ impl ServerRuntime {
                 let Some(summary) = session_handle.summary().await else {
                     return;
                 };
+                drop(state_change_guard);
                 tracing::info!(session_id = %session_id, "session compaction completed without replacement");
                 self.broadcast_event(ServerEvent::SessionCompactionCompleted(
                     SessionEventPayload { session: summary },
@@ -361,6 +369,7 @@ impl ServerRuntime {
                 .await;
             }
             Err(error) => {
+                drop(state_change_guard);
                 tracing::warn!(session_id = %session_id, error = %error, "session compaction failed");
                 self.broadcast_event(ServerEvent::SessionCompactionFailed(
                     SessionCompactionFailedPayload {

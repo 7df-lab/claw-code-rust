@@ -174,6 +174,7 @@ impl ServerRuntime {
                 let _ = pending.send(Err("client connection closed".to_string()));
             }
         }
+        self.drop_restore_plans_for_connection(connection_id).await;
         self.active_turns.drop_connection_id(connection_id).await;
         self.drop_event_subscriptions_for_connection(connection_id)
             .await;
@@ -339,6 +340,14 @@ impl ServerRuntime {
             // rollback session at given point
             Some(ClientMethod::SessionRollback) => Some(
                 self.handle_session_rollback(connection_id, id?, params)
+                    .await,
+            ),
+            Some(ClientMethod::SessionRollbackPreview) => Some(
+                self.handle_session_rollback_preview(connection_id, id?, params)
+                    .await,
+            ),
+            Some(ClientMethod::SessionRollbackCommit) => Some(
+                self.handle_session_rollback_commit(connection_id, id?, params)
                     .await,
             ),
             // compact session context history
@@ -3026,6 +3035,481 @@ mod tests {
         let result: crate::SuccessResponse<crate::TurnStartResult> =
             serde_json::from_value(response)?;
         Ok(result.result.turn_id().expect("turn started"))
+    }
+
+    #[tokio::test]
+    async fn rollback_preview_commit_restores_git_and_is_idempotent() -> Result<()> {
+        use devo_protocol::canonical::rpc_session::{RestorePlan, SessionRollbackCommitResult};
+
+        let data_root = TempDir::new()?;
+        let repo = TempDir::new()?;
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "rollback@example.com"],
+            vec!["config", "user.name", "Rollback Test"],
+        ] {
+            let status = std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(args)
+                .status()?;
+            assert!(status.success());
+        }
+        std::fs::write(repo.path().join("tracked.txt"), "initial\n")?;
+        for args in [vec!["add", "tracked.txt"], vec!["commit", "-m", "initial"]] {
+            let status = std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(args)
+                .status()?;
+            assert!(status.success());
+        }
+
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, repo.path()).await?;
+        start_turn(&runtime, connection_id, session_id, "first").await?;
+        for _ in 0..200 {
+            if runtime.runtime_active_turn_id(session_id).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(runtime.runtime_active_turn_id(session_id).await.is_none());
+
+        std::fs::write(repo.path().join("tracked.txt"), "before second\n")?;
+        start_turn(&runtime, connection_id, session_id, "second").await?;
+        for _ in 0..200 {
+            if runtime.runtime_active_turn_id(session_id).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(runtime.runtime_active_turn_id(session_id).await.is_none());
+        std::fs::write(repo.path().join("tracked.txt"), "after second\n")?;
+        std::fs::write(repo.path().join("new.txt"), "new\n")?;
+        let turns_before_preview = session_turns_json(&runtime, connection_id, session_id).await;
+
+        let preview = history_request(
+            &runtime,
+            connection_id,
+            200,
+            "session/rollback/preview",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "userTurnIndex": 1,
+                "mode": "beforeUserTurn",
+            }),
+        )
+        .await;
+        let plan: RestorePlan =
+            serde_json::from_value(preview["result"].clone()).expect("rollback preview result");
+        assert_eq!(
+            plan.affected_files,
+            vec![PathBuf::from("new.txt"), PathBuf::from("tracked.txt")]
+        );
+        assert_eq!(plan.dropped_turn_count, 1);
+        assert_eq!(
+            session_turns_json(&runtime, connection_id, session_id).await,
+            turns_before_preview
+        );
+        let turn_ids_before: HashSet<String> = turns_before_preview
+            .iter()
+            .filter_map(|turn| turn["id"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(turn_ids_before.len(), 2);
+        let index_before = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["show", ":tracked.txt"])
+            .output()?;
+        assert!(index_before.status.success());
+
+        let commit_params = serde_json::json!({
+            "restorePlanId": plan.restore_plan_id.as_str(),
+            "expectedWorkspaceVersion": plan.workspace_version,
+        });
+        let other_connection_id = initialized_connection(&runtime).await;
+        let wrong_connection = history_request(
+            &runtime,
+            other_connection_id,
+            201,
+            "session/rollback/commit",
+            commit_params.clone(),
+        )
+        .await;
+        assert_eq!(
+            wrong_connection["error"]["code"],
+            serde_json::json!("RESTORE_PLAN_NOT_FOUND")
+        );
+        std::fs::write(repo.path().join("drift.txt"), "drift\n")?;
+        let conflicted = history_request(
+            &runtime,
+            connection_id,
+            202,
+            "session/rollback/commit",
+            commit_params.clone(),
+        )
+        .await;
+        assert_eq!(
+            conflicted["error"]["code"],
+            serde_json::json!("WORKSPACE_VERSION_CONFLICT")
+        );
+        std::fs::remove_file(repo.path().join("drift.txt"))?;
+        let title_update = history_request(
+            &runtime,
+            connection_id,
+            206,
+            "session/title/update",
+            serde_json::json!({
+                "session_id": session_id,
+                "title": "Preserved rollback title",
+            }),
+        )
+        .await;
+        assert!(title_update.get("error").is_none(), "{title_update}");
+        let queued_input = devo_protocol::PendingInputItem::new(
+            devo_protocol::PendingInputKind::UserText {
+                text: "preserve queued input".to_string(),
+            },
+            None,
+            Utc::now(),
+        );
+        let queued_input_id = queued_input.id;
+        runtime
+            .session_turn_reservation_snapshot(session_id)
+            .await
+            .expect("turn reservation")
+            .pending_turn_queue
+            .lock()
+            .expect("pending queue")
+            .push_back(queued_input);
+        let (committed, concurrent_retry) = tokio::join!(
+            history_request(
+                &runtime,
+                connection_id,
+                203,
+                "session/rollback/commit",
+                commit_params.clone(),
+            ),
+            history_request(
+                &runtime,
+                connection_id,
+                204,
+                "session/rollback/commit",
+                commit_params.clone(),
+            )
+        );
+        assert_eq!(concurrent_retry["result"], committed["result"]);
+        let result: SessionRollbackCommitResult =
+            serde_json::from_value(committed["result"].clone()).expect("rollback commit result");
+        assert_eq!(
+            result,
+            SessionRollbackCommitResult {
+                restored_turn_count: 1,
+                restored_file_count: 2,
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("tracked.txt"))?,
+            "before second\n"
+        );
+        assert!(!repo.path().join("new.txt").exists());
+        assert_eq!(
+            std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(["show", ":tracked.txt"])
+                .output()?
+                .stdout,
+            index_before.stdout
+        );
+        let turn_ids_after: HashSet<String> =
+            session_turns_json(&runtime, connection_id, session_id)
+                .await
+                .iter()
+                .filter_map(|turn| turn["id"].as_str().map(str::to_string))
+                .collect();
+        assert_eq!(turn_ids_after.len(), 1);
+        assert!(turn_ids_after.is_subset(&turn_ids_before));
+        assert_eq!(
+            runtime
+                .session(session_id)
+                .await
+                .expect("session")
+                .summary()
+                .await
+                .expect("summary")
+                .title,
+            Some("Preserved rollback title".to_string())
+        );
+        let pending_after = runtime
+            .session_turn_reservation_snapshot(session_id)
+            .await
+            .expect("turn reservation")
+            .pending_turn_queue
+            .lock()
+            .expect("pending queue")
+            .front()
+            .map(|item| item.id);
+        assert_eq!(pending_after, Some(queued_input_id));
+
+        let retried = history_request(
+            &runtime,
+            connection_id,
+            205,
+            "session/rollback/commit",
+            commit_params,
+        )
+        .await;
+        assert_eq!(retried["result"], committed["result"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn turn_start_waits_for_session_state_change_gate() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        let session_handle = runtime.session(session_id).await.expect("session");
+        let state_change_guard = session_handle.lock_state_change().await;
+        let runtime_for_turn = Arc::clone(&runtime);
+        let turn_start = tokio::spawn(async move {
+            runtime_for_turn
+                .handle_incoming(
+                    connection_id,
+                    serde_json::json!({
+                        "id": 300,
+                        "method": "_devo/turn/start",
+                        "params": {
+                            "session_id": session_id,
+                            "input": [{ "type": "text", "text": "wait" }],
+                            "model": null,
+                            "sandbox": null,
+                            "approval_policy": null,
+                            "cwd": null
+                        }
+                    }),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!turn_start.is_finished());
+        drop(state_change_guard);
+        let response = turn_start.await?.expect("turn/start response");
+        assert!(response.get("error").is_none(), "turn/start: {response}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_waits_for_session_state_change_gate() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        let session_handle = runtime.session(session_id).await.expect("session");
+        let state_change_guard = session_handle.lock_state_change().await;
+        let compaction =
+            tokio::spawn(Arc::clone(&runtime).run_session_compaction(session_id, session_handle));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!compaction.is_finished());
+        drop(state_change_guard);
+        tokio::time::timeout(Duration::from_secs(5), compaction).await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn disconnect_wakes_concurrent_rollback_commit_waiter() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let workspace = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, workspace.path()).await?;
+        start_turn(&runtime, connection_id, session_id, "first").await?;
+        for _ in 0..200 {
+            if runtime.runtime_active_turn_id(session_id).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let preview = history_request(
+            &runtime,
+            connection_id,
+            350,
+            "session/rollback/preview",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "userTurnIndex": 0,
+                "mode": "beforeUserTurn",
+            }),
+        )
+        .await;
+        let plan: devo_protocol::canonical::rpc_session::RestorePlan =
+            serde_json::from_value(preview["result"].clone())?;
+        let params = serde_json::json!({
+            "restorePlanId": plan.restore_plan_id.as_str(),
+            "expectedWorkspaceVersion": plan.workspace_version,
+        });
+        let session_handle = runtime.session(session_id).await.expect("session");
+        let state_change_guard = session_handle.lock_state_change().await;
+        let first_runtime = Arc::clone(&runtime);
+        let first_params = params.clone();
+        let first = tokio::spawn(async move {
+            first_runtime
+                .handle_session_rollback_commit(connection_id, serde_json::json!(351), first_params)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let second_runtime = Arc::clone(&runtime);
+        let second = tokio::spawn(async move {
+            second_runtime
+                .handle_session_rollback_commit(connection_id, serde_json::json!(352), params)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        runtime.unregister_connection(connection_id).await;
+        drop(state_change_guard);
+
+        let first_response = tokio::time::timeout(Duration::from_secs(5), first).await??;
+        let second_response = tokio::time::timeout(Duration::from_secs(5), second).await??;
+        assert!(first_response.get("error").is_none(), "{first_response}");
+        assert_eq!(
+            second_response["error"]["code"],
+            serde_json::json!("RESTORE_PLAN_NOT_FOUND")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rollback_in_non_git_workspace_is_history_only() -> Result<()> {
+        use devo_protocol::canonical::rpc_session::{RestorePlan, SessionRollbackCommitResult};
+
+        let data_root = TempDir::new()?;
+        let workspace = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, workspace.path()).await?;
+        for text in ["first", "second"] {
+            start_turn(&runtime, connection_id, session_id, text).await?;
+            for _ in 0..200 {
+                if runtime.runtime_active_turn_id(session_id).await.is_none() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(runtime.runtime_active_turn_id(session_id).await.is_none());
+        }
+
+        let preview = history_request(
+            &runtime,
+            connection_id,
+            400,
+            "session/rollback/preview",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "userTurnIndex": 1,
+                "mode": "beforeUserTurn",
+            }),
+        )
+        .await;
+        let plan: RestorePlan =
+            serde_json::from_value(preview["result"].clone()).expect("rollback preview result");
+        assert_eq!(plan.affected_files, Vec::<PathBuf>::new());
+        assert_eq!(plan.workspace_version, "history-only");
+
+        start_turn(&runtime, connection_id, session_id, "third").await?;
+        for _ in 0..200 {
+            if runtime.runtime_active_turn_id(session_id).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(runtime.runtime_active_turn_id(session_id).await.is_none());
+        let stale_commit = history_request(
+            &runtime,
+            connection_id,
+            401,
+            "session/rollback/commit",
+            serde_json::json!({
+                "restorePlanId": plan.restore_plan_id.as_str(),
+                "expectedWorkspaceVersion": plan.workspace_version,
+            }),
+        )
+        .await;
+        assert_eq!(
+            stale_commit["error"]["code"],
+            serde_json::json!("WORKSPACE_VERSION_CONFLICT")
+        );
+
+        let preview = history_request(
+            &runtime,
+            connection_id,
+            402,
+            "session/rollback/preview",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "userTurnIndex": 1,
+                "mode": "beforeUserTurn",
+            }),
+        )
+        .await;
+        let plan: RestorePlan =
+            serde_json::from_value(preview["result"].clone()).expect("rollback preview result");
+        let committed = history_request(
+            &runtime,
+            connection_id,
+            403,
+            "session/rollback/commit",
+            serde_json::json!({
+                "restorePlanId": plan.restore_plan_id.as_str(),
+                "expectedWorkspaceVersion": plan.workspace_version,
+            }),
+        )
+        .await;
+        assert_eq!(
+            serde_json::from_value::<SessionRollbackCommitResult>(committed["result"].clone())?,
+            SessionRollbackCommitResult {
+                restored_turn_count: 2,
+                restored_file_count: 0,
+            }
+        );
+        let turn_ids: HashSet<String> = session_turns_json(&runtime, connection_id, session_id)
+            .await
+            .iter()
+            .filter_map(|turn| turn["id"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(turn_ids.len(), 1);
+
+        let disconnecting_connection_id = initialized_connection(&runtime).await;
+        let disconnect_preview = history_request(
+            &runtime,
+            disconnecting_connection_id,
+            404,
+            "session/rollback/preview",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "userTurnIndex": 0,
+                "mode": "beforeUserTurn",
+            }),
+        )
+        .await;
+        let disconnect_plan: RestorePlan =
+            serde_json::from_value(disconnect_preview["result"].clone())?;
+        runtime
+            .unregister_connection(disconnecting_connection_id)
+            .await;
+        let disconnected_commit = runtime
+            .handle_session_rollback_commit(
+                disconnecting_connection_id,
+                serde_json::json!(405),
+                serde_json::json!({
+                    "restorePlanId": disconnect_plan.restore_plan_id.as_str(),
+                    "expectedWorkspaceVersion": disconnect_plan.workspace_version,
+                }),
+            )
+            .await;
+        assert_eq!(
+            disconnected_commit["error"]["code"],
+            serde_json::json!("RESTORE_PLAN_NOT_FOUND")
+        );
+        Ok(())
     }
 
     async fn queue_list(

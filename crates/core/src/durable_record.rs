@@ -790,6 +790,15 @@ pub struct TurnWorkspaceCheckpointRecordedRecord {
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_ref: Option<String>,
+    /// Untracked paths that existed at checkpoint creation. Git rollback uses
+    /// this manifest to delete only paths created after the checkpoint.
+    /// Legacy checkpoints omit it and therefore restore tracked files only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preexisting_untracked_files: Option<Vec<String>>,
+    /// Pre-existing untracked directories paired with
+    /// `preexisting_untracked_files`; see that field for legacy semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preexisting_untracked_dirs: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
 }
 

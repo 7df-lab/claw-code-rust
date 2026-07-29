@@ -610,6 +610,58 @@ impl RolloutStore {
         Ok(recovered)
     }
 
+    /// Reads durable workspace checkpoints without reconstructing runtime state.
+    ///
+    /// P4d rollback plans need the pre-turn ghost commit plus its untracked
+    /// manifest. This follows the same dual-read and fail-closed rules as
+    /// `load_session_from_rollout`.
+    pub(crate) fn workspace_checkpoints(
+        &self,
+        record: &SessionRecord,
+    ) -> Result<Vec<TurnWorkspaceCheckpointRecordedRecord>> {
+        let file = File::open(&record.rollout_path)
+            .with_context(|| format!("open rollout file {}", record.rollout_path.display()))?;
+        let reader = BufReader::new(file);
+        let inverse = V2InverseProjector::new();
+        let mut checkpoints = Vec::new();
+        let mut lines = reader.lines().enumerate().peekable();
+        while let Some((line_index, line)) = lines.next() {
+            let line =
+                line.with_context(|| format!("read line from {}", record.rollout_path.display()))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let parsed = match parse_rollout_line(&line) {
+                Ok(parsed) => parsed,
+                Err(RolloutLineReadError::TruncatedTail) if lines.peek().is_none() => break,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "rollout {} is damaged at line {}; refusing checkpoint read",
+                            record.rollout_path.display(),
+                            line_index + 1
+                        )
+                    });
+                }
+            };
+            let legacy_lines = match parsed {
+                ParsedRolloutLine::Legacy(legacy) => vec![*legacy],
+                ParsedRolloutLine::V2(v2) => inverse.project_line(&v2).with_context(|| {
+                    format!(
+                        "project v2 checkpoint line from {}",
+                        record.rollout_path.display()
+                    )
+                })?,
+            };
+            for legacy in legacy_lines {
+                if let RolloutLine::TurnWorkspaceCheckpointRecorded(line) = legacy {
+                    checkpoints.push(line.record);
+                }
+            }
+        }
+        Ok(checkpoints)
+    }
+
     pub(crate) fn rollout_paths(&self) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         let root = self.data_root.join("sessions");

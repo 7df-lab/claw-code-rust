@@ -40,6 +40,7 @@ impl ServerRuntime {
         let Some(session_handle) = self.session(session_id).await else {
             return;
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
         let _ = session_handle
             .set_first_user_input_if_unset(user_input.to_string())
             .await;
@@ -131,6 +132,7 @@ impl ServerRuntime {
         let Some(session_handle) = self.session(session_id).await else {
             return;
         };
+        let state_change_guard = session_handle.lock_state_change().await;
         let Some(title_context) = session_handle.title_generation_context().await else {
             return;
         };
@@ -165,6 +167,7 @@ impl ServerRuntime {
 
         self.persist_session_summary_if_persistent(session_id, &updated_summary)
             .await;
+        drop(state_change_guard);
 
         self.broadcast_event(ServerEvent::SessionTitleUpdated(SessionEventPayload {
             session: updated_summary,
@@ -263,6 +266,7 @@ impl ServerRuntime {
             let Some(session_handle) = self.session(session_id).await else {
                 return;
             };
+            let state_change_guard = session_handle.lock_state_change().await;
             let Some(updated_summary) = session_handle
                 .update_title(
                     generated_title.clone(),
@@ -286,6 +290,7 @@ impl ServerRuntime {
 
             self.persist_session_summary_if_persistent(session_id, &updated_summary)
                 .await;
+            drop(state_change_guard);
 
             self.broadcast_event(ServerEvent::SessionTitleUpdated(SessionEventPayload {
                 session: updated_summary,

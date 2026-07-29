@@ -399,9 +399,10 @@ impl ServerRuntime {
         let session_handle = self.session(session_id).await.ok_or_else(|| {
             ToolCallError::InvalidInput(format!("session not found: {session_id}"))
         })?;
+        let _state_change_guard = session_handle.lock_state_change().await;
 
-        let reservation = session_handle
-            .turn_reservation_snapshot()
+        let reservation = self
+            .session_turn_reservation_snapshot(session_id)
             .await
             .ok_or_else(|| {
                 ToolCallError::InvalidInput(format!(

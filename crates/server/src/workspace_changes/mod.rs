@@ -42,6 +42,41 @@ pub(crate) struct FinalizedWorkspaceChanges {
     pub record: TurnWorkspaceChangeRecordedRecord,
 }
 
+pub(crate) async fn preview_git_rollback(
+    workspace_root: PathBuf,
+    checkpoint_id: String,
+) -> Result<git::GitRollbackPreview> {
+    tokio::task::spawn_blocking(move || git::preview_git_rollback(&workspace_root, &checkpoint_id))
+        .await
+        .context("preview Git rollback task failed")?
+}
+
+pub(crate) async fn git_workspace_matches_version(
+    workspace_root: PathBuf,
+    workspace_version: String,
+) -> Result<bool> {
+    tokio::task::spawn_blocking(move || {
+        git::git_workspace_matches_version(&workspace_root, &workspace_version)
+    })
+    .await
+    .context("validate Git rollback workspace task failed")?
+}
+
+pub(crate) async fn current_git_workspace_version(workspace_root: PathBuf) -> Result<String> {
+    tokio::task::spawn_blocking(move || git::current_git_workspace_version(&workspace_root))
+        .await
+        .context("capture Git rollback recovery version task failed")?
+}
+
+pub(crate) async fn restore_git_checkpoint(
+    workspace_root: PathBuf,
+    checkpoint: TurnWorkspaceCheckpointRecordedRecord,
+) -> Result<()> {
+    tokio::task::spawn_blocking(move || git::restore_git_checkpoint(&workspace_root, &checkpoint))
+        .await
+        .context("restore Git checkpoint task failed")?
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FinalizedWorkspaceChangeArtifact {
     schema_version: u32,
@@ -208,6 +243,8 @@ pub(super) struct CheckpointRecordInput<'a> {
     pub coverage: ChangeSetCoverage,
     pub warnings: Vec<String>,
     pub artifact_ref: Option<String>,
+    pub preexisting_untracked_files: Option<Vec<String>>,
+    pub preexisting_untracked_dirs: Option<Vec<String>>,
 }
 
 fn checkpoint_record(input: CheckpointRecordInput<'_>) -> TurnWorkspaceCheckpointRecordedRecord {
@@ -223,6 +260,8 @@ fn checkpoint_record(input: CheckpointRecordInput<'_>) -> TurnWorkspaceCheckpoin
         coverage: Some(input.coverage),
         warnings: input.warnings,
         artifact_ref: input.artifact_ref,
+        preexisting_untracked_files: input.preexisting_untracked_files,
+        preexisting_untracked_dirs: input.preexisting_untracked_dirs,
         created_at: Utc::now(),
     }
 }
@@ -387,6 +426,84 @@ mod tests {
         assert!(diff.contains("tracked.txt"));
         assert!(diff.contains("note.txt"));
         assert!(diff.contains("later.txt"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn git_rollback_deletes_only_new_untracked_paths_with_manifest() -> Result<()> {
+        let data_root = tempdir()?;
+        let repo = tempdir()?;
+        run_git(repo.path(), &["init"]);
+        run_git(
+            repo.path(),
+            &["config", "user.email", "rollback@example.com"],
+        );
+        run_git(repo.path(), &["config", "user.name", "Rollback Test"]);
+        fs::write(repo.path().join("tracked.txt"), "before\n")?;
+        run_git(repo.path(), &["add", "tracked.txt"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+        fs::write(repo.path().join("preexisting.txt"), "keep\n")?;
+
+        let captured = capture_baseline(
+            data_root.path().to_path_buf(),
+            SessionId::new(),
+            TurnId::new(),
+            repo.path().to_path_buf(),
+        )
+        .await?;
+        assert_eq!(
+            captured.record.preexisting_untracked_files,
+            Some(vec!["preexisting.txt".to_string()])
+        );
+        assert_eq!(captured.record.preexisting_untracked_dirs, Some(Vec::new()));
+
+        fs::write(repo.path().join("tracked.txt"), "after\n")?;
+        fs::write(repo.path().join("created-after.txt"), "remove\n")?;
+        let preview = git::preview_git_rollback(repo.path(), &captured.record.checkpoint_id)?;
+        assert_eq!(
+            preview.affected_files,
+            vec![
+                PathBuf::from("created-after.txt"),
+                PathBuf::from("tracked.txt"),
+            ]
+        );
+        assert!(git::git_workspace_matches_version(
+            repo.path(),
+            &preview.workspace_version
+        )?);
+        fs::write(repo.path().join("drift.txt"), "drift\n")?;
+        assert!(!git::git_workspace_matches_version(
+            repo.path(),
+            &preview.workspace_version
+        )?);
+        fs::remove_file(repo.path().join("drift.txt"))?;
+        git::restore_git_checkpoint(repo.path(), &captured.record)?;
+        assert_eq!(
+            fs::read_to_string(repo.path().join("tracked.txt"))?,
+            "before\n"
+        );
+        assert!(repo.path().join("preexisting.txt").exists());
+        assert!(!repo.path().join("created-after.txt").exists());
+
+        let mut legacy_checkpoint = captured.record;
+        legacy_checkpoint.preexisting_untracked_files = None;
+        legacy_checkpoint.preexisting_untracked_dirs = None;
+        fs::write(repo.path().join("tracked.txt"), "changed-again\n")?;
+        fs::write(repo.path().join("legacy-new.txt"), "must survive\n")?;
+        git::restore_git_checkpoint(repo.path(), &legacy_checkpoint)?;
+        assert_eq!(
+            fs::read_to_string(repo.path().join("tracked.txt"))?,
+            "before\n"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.path().join("legacy-new.txt"))?,
+            "must survive\n"
+        );
+        assert_eq!(
+            git::preview_git_rollback(repo.path(), &legacy_checkpoint.checkpoint_id)?
+                .affected_files,
+            vec![PathBuf::from("legacy-new.txt")]
+        );
         Ok(())
     }
 

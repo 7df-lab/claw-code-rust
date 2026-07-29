@@ -215,17 +215,48 @@ pub fn project_wire_item(
         ItemKind::ApprovalDecision => {
             let decision =
                 serde_json::from_value::<ApprovalDecisionPayload>(payload.clone()).ok()?;
-            // The wire decision event carries only the id + decision/scope
-            // strings; the request fields are not repeated, so they stay
-            // empty here (clients fold by `approval_id`).
             Some(Item::Approval {
                 approval_id: decision.approval_id.to_string(),
                 target_item_id: None,
-                action_summary: String::new(),
-                justification: String::new(),
-                resource: None,
-                available_scopes: Vec::new(),
-                target: None,
+                action_summary: payload
+                    .get("action_summary")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                justification: payload
+                    .get("justification")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                resource: payload
+                    .get("resource")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                available_scopes: payload
+                    .get("available_scopes")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|scopes| {
+                        scopes
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                target: approval_target(
+                    payload
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    payload
+                        .get("host")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    payload
+                        .get("target")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                ),
                 decision: Some(ApprovalDecision {
                     // Same string mapping as the rollout projector: legacy
                     // decisions were free-form ("Allow" appears in
@@ -236,19 +267,10 @@ pub fn project_wire_item(
                         "deny" | "denied" => ApprovalDecisionKind::Denied,
                         _ => ApprovalDecisionKind::Cancelled,
                     },
+                    decision_source: decision.decision_source.unwrap_or_default(),
                     // Unknown legacy scope strings fall back to the
                     // narrowest scope.
-                    scope: match decision.scope.to_ascii_lowercase().as_str() {
-                        "once" => ApprovalScope::Once,
-                        "turn" => ApprovalScope::Turn,
-                        "session" => ApprovalScope::Session,
-                        "path_prefix" => ApprovalScope::PathPrefix,
-                        "host" => ApprovalScope::Host,
-                        "tool" => ApprovalScope::Tool,
-                        "command_prefix" => ApprovalScope::CommandPrefix,
-                        "command_prefix_persist" => ApprovalScope::CommandPrefixPersist,
-                        _ => ApprovalScope::Once,
-                    },
+                    scope: approval_scope_from_str(&decision.scope),
                     decided_at,
                 }),
             })
@@ -294,13 +316,27 @@ pub fn typed_item_notification_from_server_event(
     event: &ServerEvent,
 ) -> Option<(String, serde_json::Value)> {
     let (payload, state) = match event {
-        ServerEvent::ItemStarted(payload) => (payload, ItemState::Running),
+        ServerEvent::ItemStarted(payload) => (
+            payload,
+            if payload.item.item_kind == ItemKind::ApprovalRequest {
+                ItemState::Waiting
+            } else {
+                ItemState::Running
+            },
+        ),
         ServerEvent::ItemCompleted(payload) => (payload, ItemState::Completed),
         _ => return None,
     };
     // No timestamp travels with legacy item events; the envelope is stamped
     // with the fan-out time (see `typed_item_envelope`).
-    let envelope = typed_item_envelope(&payload.context, &payload.item, state, Utc::now())?;
+    let mut envelope = typed_item_envelope(&payload.context, &payload.item, state, Utc::now())?;
+    envelope.revision = payload
+        .item
+        .payload
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|revision| u32::try_from(revision).ok())
+        .unwrap_or(1);
     let value = serde_json::to_value(TypedItemEventPayload {
         context: payload.context.clone(),
         item: envelope,
@@ -345,6 +381,20 @@ fn approval_target(
     }
 }
 
+fn approval_scope_from_str(scope: &str) -> ApprovalScope {
+    match scope.to_ascii_lowercase().as_str() {
+        "once" => ApprovalScope::Once,
+        "turn" => ApprovalScope::Turn,
+        "session" => ApprovalScope::Session,
+        "path_prefix" => ApprovalScope::PathPrefix,
+        "host" => ApprovalScope::Host,
+        "tool" => ApprovalScope::Tool,
+        "command_prefix" => ApprovalScope::CommandPrefix,
+        "command_prefix_persist" => ApprovalScope::CommandPrefixPersist,
+        _ => ApprovalScope::Once,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -352,6 +402,7 @@ mod tests {
     use smol_str::SmolStr;
 
     use super::*;
+    use crate::canonical::item::ApprovalDecisionSource;
     use crate::parse_command::ParsedCommand;
     use crate::{ApprovalRequestPayload, PendingServerRequestContext, ServerRequestKind};
 
@@ -708,6 +759,7 @@ mod tests {
             approval_id: SmolStr::new("appr-1"),
             decision: "Allow".into(),
             scope: "Session".into(),
+            decision_source: Some(ApprovalDecisionSource::User),
         })
         .expect("serialize payload");
         let item = project(ItemKind::ApprovalDecision, payload);
@@ -724,6 +776,7 @@ mod tests {
                 decision: Some(ApprovalDecision {
                     decision: ApprovalDecisionKind::Approved,
                     scope: ApprovalScope::Session,
+                    decision_source: ApprovalDecisionSource::User,
                     decided_at: decided_at(),
                 }),
             })

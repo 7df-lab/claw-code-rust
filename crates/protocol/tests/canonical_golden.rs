@@ -6,6 +6,9 @@ use devo_protocol::canonical::ids::SessionId;
 use devo_protocol::canonical::item::Item;
 use devo_protocol::canonical::item::ItemEnvelope;
 use devo_protocol::canonical::item::ItemOrUnknown;
+use devo_protocol::canonical::item::{
+    ApprovalDecision, ApprovalDecisionKind, ApprovalDecisionSource, ApprovalScope,
+};
 use devo_protocol::canonical::patch::PatchField;
 use devo_protocol::canonical::rpc_session::SessionMetadataUpdateParams;
 use pretty_assertions::assert_eq;
@@ -43,6 +46,26 @@ fn approval_waiting_state_matches_golden_and_round_trips() {
     };
     assert_eq!(*decision, None, "waiting state has no decision");
     assert_eq!(serde_json::to_value(&envelope).expect("serialize"), golden);
+}
+
+#[test]
+fn approval_decision_serializes_decision_source() {
+    let decision = ApprovalDecision {
+        decision: ApprovalDecisionKind::Approved,
+        scope: ApprovalScope::Once,
+        decision_source: ApprovalDecisionSource::AutoReview,
+        decided_at: chrono::DateTime::UNIX_EPOCH,
+    };
+
+    assert_eq!(
+        serde_json::to_value(decision).expect("serialize approval decision"),
+        serde_json::json!({
+            "decision": "approved",
+            "scope": "once",
+            "decisionSource": "autoReview",
+            "decidedAt": "1970-01-01T00:00:00Z"
+        })
+    );
 }
 
 #[test]

@@ -242,6 +242,7 @@ fn basic_session_lines() -> Vec<RolloutLine> {
         // tests); it must still map to Approved.
         decision: "Allow".into(),
         scope: "Once".into(),
+        decision_source: None,
     })];
 
     let mut steer = item_record(0xb8, session, turn, 6);
@@ -427,6 +428,7 @@ fn orphan_decision_lines() -> Vec<RolloutLine> {
         approval_id: "appr-orphan".into(),
         decision: "approve".into(),
         scope: "session".into(),
+        decision_source: None,
     })];
 
     let mut image = item_record(0xd4, 0xd1, 0xd2, 2);

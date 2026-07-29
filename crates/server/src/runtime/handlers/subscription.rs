@@ -600,6 +600,7 @@ impl ServerRuntime {
                     item: waiting_item_envelope(
                         session_id,
                         approval.turn_id,
+                        approval.persisted.as_ref(),
                         Item::Approval {
                             approval_id: approval.approval_id.clone(),
                             target_item_id: None,
@@ -623,6 +624,7 @@ impl ServerRuntime {
                     item: waiting_item_envelope(
                         session_id,
                         user_input.turn_id,
+                        user_input.persisted.as_ref(),
                         Item::UserInputRequest {
                             request_id: user_input.request_id.clone(),
                             target_item_id: None,
@@ -653,6 +655,11 @@ impl ServerRuntime {
                     ),
                 });
             }
+
+            // Only live lanes are actionable. Canonical waiting revisions stay
+            // in history for audit after a crash, but are not advertised as
+            // pending because the interrupted tool continuation and its reply
+            // channel cannot be reconstructed honestly yet.
         }
         out
     }
@@ -693,22 +700,22 @@ impl ServerRuntime {
 }
 
 /// Builds the waiting-state envelope for a pending control request. The
-/// approval/question is not a persisted item, so the envelope id is a fresh
-/// bare UUID (the fold id is only needed once it materializes as an item);
-/// seq 0 marks it as not part of the item stream.
 fn waiting_item_envelope(
     session_id: &CanonicalSessionId,
     turn_id: devo_core::TurnId,
+    persisted: Option<&crate::execution::PersistedLivingItem>,
     item: Item,
 ) -> ItemEnvelope {
     let now = Utc::now();
     ItemEnvelope {
-        id: CanonicalItemId::from_legacy_uuid(Uuid::now_v7()),
+        id: persisted
+            .map(|persisted| persisted.item_id.clone())
+            .unwrap_or_else(|| CanonicalItemId::from_legacy_uuid(Uuid::now_v7())),
         session_id: session_id.clone(),
         turn_id: CanonicalTurnId::from_legacy_uuid(Uuid::from(turn_id)),
-        seq: 0,
+        seq: persisted.map_or(0, |persisted| persisted.seq),
         revision: 1,
-        created_at: now,
+        created_at: persisted.map_or(now, |persisted| persisted.created_at),
         updated_at: now,
         state: ItemState::Waiting,
         item,

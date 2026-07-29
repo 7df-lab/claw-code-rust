@@ -14,6 +14,7 @@ use devo_protocol::canonical::ids::{ItemId, SessionId, TurnId};
 use devo_protocol::canonical::item::{InternalEntry, ItemEnvelope};
 use devo_protocol::canonical::session::Session;
 use devo_protocol::canonical::turn::Turn;
+use devo_protocol::canonical::usage::UsageRecord;
 
 use crate::{
     MessageEditRecordedRecord, SessionContext, TurnContext, TurnSupersededRecord,
@@ -197,6 +198,16 @@ pub enum InternalRecordV2 {
     MessageEdit(MessageEditRecordedRecord),
     /// A superseded-turn marker, payload unchanged from the legacy record.
     TurnSuperseded(TurnSupersededRecord),
+    /// Latest server-owned Goal snapshot for the session. `None` means the
+    /// current Goal was cleared. Core replay deliberately treats the payload
+    /// as opaque because Goal orchestration is server-owned.
+    GoalState {
+        schema_version: u32,
+        goal: Option<serde_json::Value>,
+    },
+    /// One append-only model-call accounting entry. Unlike turn summary usage,
+    /// this preserves failed attempts and non-turn overhead calls.
+    UsageRecord { record: UsageRecord },
 }
 
 /// A rollout line parsed from disk in either supported format.

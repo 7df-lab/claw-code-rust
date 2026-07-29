@@ -24,6 +24,7 @@ mod titles;
 mod tool_actions;
 mod transport;
 mod turn;
+mod usage_ledger;
 mod workspace_changes;
 
 pub use approval::*;

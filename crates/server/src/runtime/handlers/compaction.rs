@@ -139,10 +139,16 @@ impl ServerRuntime {
                 output_tokens = token_info.output_tokens,
                 "starting compaction summarization"
             );
-            let summarizer = DefaultHistorySummarizer::with_models(
+            let provider = self.usage_ledger.instrumented_provider(
                 runtime_session
                     .runtime_context
                     .provider_for_route(turn_config.provider_route.clone()),
+                session_id,
+                None,
+                devo_protocol::canonical::usage::UsagePurpose::Compaction,
+            );
+            let summarizer = DefaultHistorySummarizer::with_models(
+                provider,
                 model_slug,
                 request_model,
                 max_tokens,

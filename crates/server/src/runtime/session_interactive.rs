@@ -165,6 +165,7 @@ impl SessionInteractiveLanes {
                     path: pending.path.clone(),
                     host: pending.host.clone(),
                     command: pending.command.clone(),
+                    persisted: pending.persisted.clone(),
                 })
                 .collect(),
             user_inputs: state
@@ -174,6 +175,7 @@ impl SessionInteractiveLanes {
                     request_id: request_id.clone(),
                     turn_id: pending.turn_id,
                     questions: pending.questions.clone(),
+                    persisted: pending.persisted.clone(),
                 })
                 .collect(),
         }
@@ -194,12 +196,14 @@ pub(crate) struct PendingApprovalSnapshot {
     pub(crate) path: Option<std::path::PathBuf>,
     pub(crate) host: Option<String>,
     pub(crate) command: Option<String>,
+    pub(crate) persisted: Option<crate::execution::PersistedLivingItem>,
 }
 
 pub(crate) struct PendingUserInputSnapshot {
     pub(crate) request_id: String,
     pub(crate) turn_id: devo_core::TurnId,
     pub(crate) questions: Vec<devo_protocol::RequestUserInputQuestion>,
+    pub(crate) persisted: Option<crate::execution::PersistedLivingItem>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +252,7 @@ mod tests {
                     command: None,
                     cwd: std::path::PathBuf::new(),
                     sandbox_permissions: String::new(),
+                    persisted: None,
                     tx,
                 },
             )

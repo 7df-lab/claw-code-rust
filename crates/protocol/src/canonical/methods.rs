@@ -55,7 +55,8 @@ fn schema_of<T: JsonSchema>() -> RootSchema {
 
 /// Interactions needing one unique verifiable answer use JSON-RPC requests,
 /// not notifications. Each corresponds to a `waiting`-state item; the first
-/// valid response wins, the rest get `CONTROL_REQUEST_ALREADY_RESOLVED`.
+/// valid response wins. Late JSON-RPC responses are ignored because a response
+/// cannot itself receive another JSON-RPC error response.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalRespondParams {
@@ -559,7 +560,7 @@ pub static REVERSE_METHODS: &[MethodSpec] = &[
         name: "approval/command/request",
         params_schema: schema_of::<ApprovalRespondParams>,
         result_schema: schema_of::<ApprovalRespondParams>,
-        error_codes: &[codes::CONTROL_REQUEST_ALREADY_RESOLVED],
+        error_codes: &[],
         required_capability: None,
         idempotency: Idempotency::None,
     },
@@ -567,7 +568,7 @@ pub static REVERSE_METHODS: &[MethodSpec] = &[
         name: "approval/fileChange/request",
         params_schema: schema_of::<ApprovalRespondParams>,
         result_schema: schema_of::<ApprovalRespondParams>,
-        error_codes: &[codes::CONTROL_REQUEST_ALREADY_RESOLVED],
+        error_codes: &[],
         required_capability: None,
         idempotency: Idempotency::None,
     },
@@ -575,7 +576,7 @@ pub static REVERSE_METHODS: &[MethodSpec] = &[
         name: "approval/permission/request",
         params_schema: schema_of::<ApprovalRespondParams>,
         result_schema: schema_of::<ApprovalRespondParams>,
-        error_codes: &[codes::CONTROL_REQUEST_ALREADY_RESOLVED],
+        error_codes: &[],
         required_capability: None,
         idempotency: Idempotency::None,
     },
@@ -583,7 +584,7 @@ pub static REVERSE_METHODS: &[MethodSpec] = &[
         name: "userInput/request",
         params_schema: schema_of::<UserInputRespondParams>,
         result_schema: schema_of::<UserInputRespondParams>,
-        error_codes: &[codes::CONTROL_REQUEST_ALREADY_RESOLVED],
+        error_codes: &[],
         required_capability: None,
         idempotency: Idempotency::None,
     },
@@ -591,7 +592,7 @@ pub static REVERSE_METHODS: &[MethodSpec] = &[
         name: "session/goal/completionApproval/request",
         params_schema: schema_of::<ApprovalRespondParams>,
         result_schema: schema_of::<ApprovalRespondParams>,
-        error_codes: &[codes::CONTROL_REQUEST_ALREADY_RESOLVED],
+        error_codes: &[],
         required_capability: None,
         idempotency: Idempotency::None,
     },

@@ -177,6 +177,7 @@ mod tests {
             command: None,
             cwd: PathBuf::from("/workspace"),
             sandbox_permissions: String::new(),
+            persisted: None,
             tx,
         };
 
@@ -222,6 +223,7 @@ mod tests {
             } else {
                 String::new()
             },
+            persisted: None,
             tx,
         }
     }
@@ -245,6 +247,7 @@ mod tests {
             command: None,
             cwd: PathBuf::from("/workspace"),
             sandbox_permissions: String::new(),
+            persisted: None,
             tx,
         };
 
@@ -282,6 +285,7 @@ mod tests {
             command: None,
             cwd: PathBuf::from("/workspace"),
             sandbox_permissions: String::new(),
+            persisted: None,
             tx,
         };
 
@@ -431,6 +435,7 @@ mod tests {
             command: None,
             cwd: temp.path().to_path_buf(),
             sandbox_permissions: String::new(),
+            persisted: None,
             tx,
         };
 

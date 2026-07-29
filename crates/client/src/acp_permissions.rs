@@ -237,6 +237,7 @@ fn acp_approval_decision_notification(
         approval_id: params.approval_id.clone(),
         decision: acp_approval_decision_label(&params.decision).to_string(),
         scope: acp_approval_scope_label(&params.scope).to_string(),
+        decision_source: Some(devo_protocol::canonical::item::ApprovalDecisionSource::User),
     };
     acp_item_notification(
         "item/completed",
@@ -572,6 +573,7 @@ mod tests {
                 approval_id: request_payload.approval_id,
                 decision: "approve".to_string(),
                 scope: "once".to_string(),
+                decision_source: Some(devo_protocol::canonical::item::ApprovalDecisionSource::User,),
             }
         );
     }

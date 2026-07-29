@@ -263,6 +263,9 @@ pub struct ApprovalDecisionItem {
     pub decision: String,
     /// The scope attached to the decision.
     pub scope: String,
+    /// Authority that produced the decision. Absent on legacy records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_source: Option<devo_protocol::canonical::item::ApprovalDecisionSource>,
 }
 
 /// Enumerates the canonical persisted item kinds used by the conversation model.
@@ -815,6 +818,7 @@ mod tests {
                 approval_id: "a1".into(),
                 decision: "Allow".into(),
                 scope: "Once".into(),
+                decision_source: None,
             }),
             TurnItem::Plan(TextItem { text: "[]".into() }),
             TurnItem::ContextCompaction(TextItem {
@@ -1017,6 +1021,7 @@ mod tests {
                 approval_id: "apr-1".into(),
                 decision: decision.into(),
                 scope: scope.into(),
+                decision_source: None,
             };
             assert_eq!(dec.decision, decision);
             assert_eq!(dec.scope, scope);

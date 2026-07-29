@@ -371,6 +371,9 @@ pub struct ApprovalDecisionPayload {
     pub approval_id: SmolStr,
     pub decision: String,
     pub scope: String,
+    /// Authority that produced the decision. Missing on legacy events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_source: Option<crate::canonical::item::ApprovalDecisionSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -77,6 +77,7 @@ pub(crate) struct PendingApproval {
     pub(crate) command: Option<String>,
     pub(crate) cwd: PathBuf,
     pub(crate) sandbox_permissions: String,
+    pub(crate) persisted: Option<PersistedLivingItem>,
     pub(crate) tx: oneshot::Sender<ApprovalDecisionValue>,
 }
 
@@ -85,7 +86,15 @@ pub(crate) struct PendingUserInput {
     /// The questions the tool asked; kept so subscription snapshots can
     /// rebuild the waiting `UserInputRequest` item (08 §4).
     pub(crate) questions: Vec<devo_protocol::RequestUserInputQuestion>,
+    pub(crate) persisted: Option<PersistedLivingItem>,
     pub(crate) tx: oneshot::Sender<RequestUserInputResponse>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PersistedLivingItem {
+    pub(crate) item_id: devo_protocol::canonical::ids::ItemId,
+    pub(crate) seq: u64,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

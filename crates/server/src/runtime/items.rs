@@ -212,18 +212,18 @@ impl ServerRuntime {
             let catalog_request_model = resolved_request.request_model.clone();
             let request_model = turn_config.provider_request_model(&catalog_request_model);
 
-            let response = match runtime_context
-                .provider_router
-                .complete(
-                    turn_config.provider_route.clone(),
-                    build_title_generation_request(
-                        catalog_request_model,
-                        request_model.clone(),
-                        &first_user_input,
-                    ),
-                )
-                .await
-            {
+            let provider = self.usage_ledger.instrumented_provider(
+                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                session_id,
+                None,
+                devo_protocol::canonical::usage::UsagePurpose::TitleGeneration,
+            );
+            let model_request = build_title_generation_request(
+                catalog_request_model,
+                request_model.clone(),
+                &first_user_input,
+            );
+            let response = match provider.completion(model_request).await {
                 Ok(response) => response,
                 Err(error) => {
                     tracing::warn!(

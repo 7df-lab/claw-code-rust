@@ -196,10 +196,20 @@ async fn complete_file_change_tool_call(
                 tool_call_id: tool_use_id.to_string(),
                 tool_name: Some(tool_name.to_string()),
                 input: Some(pending.input.clone()),
-                changes,
+                changes: changes.clone(),
                 is_error,
             })
             .expect("serialize file change payload"),
+        )
+        .await;
+    runtime
+        .persist_file_change_item(
+            session_id,
+            turn_id,
+            pending_item_id,
+            pending_item_seq,
+            tool_use_id.to_string(),
+            &changes,
         )
         .await;
 }

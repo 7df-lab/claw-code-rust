@@ -501,6 +501,9 @@ impl V2InverseProjector {
                             approval_id: approval_id.clone(),
                             decision: legacy_decision_string(decision.decision).into(),
                             scope: legacy_scope_string(decision.scope).into(),
+                            decision_source: (decision.decision_source
+                                != devo_protocol::canonical::item::ApprovalDecisionSource::User)
+                                .then_some(decision.decision_source),
                         }),
                     )?;
                     return Ok(Some(RolloutLine::Item(record)));
@@ -637,6 +640,12 @@ impl V2InverseProjector {
                     record: record.clone(),
                 }),
             )]),
+            // There is no legacy session-rollout representation for Goal
+            // snapshots; old builds continue to use the read-only
+            // goal-records compatibility store.
+            InternalRecordV2::GoalState { .. } | InternalRecordV2::UsageRecord { .. } => {
+                Ok(Vec::new())
+            }
         }
     }
 }

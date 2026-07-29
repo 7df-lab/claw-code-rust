@@ -180,6 +180,7 @@ impl Normalizer {
                             approval_id: decision.approval_id.clone(),
                             decision: normalize_decision_string(&decision.decision),
                             scope: normalize_scope_string(&decision.scope),
+                            decision_source: decision.decision_source,
                         }),
                     ));
                 }
@@ -497,6 +498,7 @@ fn live_write_lines() -> Vec<RolloutLine> {
                 approval_id: "appr-1".into(),
                 decision: "approve".into(),
                 scope: "once".into(),
+                decision_source: None,
             }),
         ),
         item(

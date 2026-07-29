@@ -210,9 +210,29 @@ pub enum QueryProviderRetryPhase {
     Resumed,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct QueryOptions {
     pub cancel_token: Option<CancellationToken>,
+    /// Optional provider used only for compaction summaries. Servers use this
+    /// seam to attach Compaction metering without misclassifying the main
+    /// streaming query as compaction overhead.
+    pub compaction_provider: Option<Arc<dyn ModelProviderSDK>>,
+}
+
+impl std::fmt::Debug for QueryOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QueryOptions")
+            .field("cancel_token", &self.cancel_token)
+            .field(
+                "compaction_provider",
+                &self
+                    .compaction_provider
+                    .as_ref()
+                    .map(|provider| provider.name()),
+            )
+            .finish()
+    }
 }
 
 async fn emit_query_event(on_event: &Option<EventCallback>, event: QueryEvent) {
@@ -904,6 +924,11 @@ pub async fn query_with_options(
     on_event: Option<EventCallback>,
     options: QueryOptions,
 ) -> Result<(), AgentError> {
+    let compaction_provider = options
+        .compaction_provider
+        .as_ref()
+        .unwrap_or(&provider)
+        .clone();
     let agents_md_manager = AgentsMdManager::new(session.config.agents_md.clone());
     let current_agents_snapshot = load_workspace_instructions(&session.cwd, &agents_md_manager);
     let agent_scope = runtime.agent_scope();
@@ -1041,7 +1066,7 @@ pub async fn query_with_options(
             summarize_and_compact(
                 session,
                 &on_event,
-                &provider,
+                &compaction_provider,
                 &compaction_model_slug,
                 &compaction_request_model,
                 turn_config.model.max_tokens.unwrap_or(4096) as usize,
@@ -1180,7 +1205,7 @@ pub async fn query_with_options(
                         summarize_and_compact(
                             session,
                             &on_event,
-                            &provider,
+                            &compaction_provider,
                             &compaction_model_slug,
                             &compaction_request_model,
                             turn_config.model.max_tokens.unwrap_or(4096) as usize,
@@ -1385,7 +1410,7 @@ pub async fn query_with_options(
                                     summarize_and_compact(
                                         session,
                                         &on_event,
-                                        &provider,
+                                        &compaction_provider,
                                         &compaction_model_slug,
                                         &compaction_request_model,
                                         turn_config.model.max_tokens.unwrap_or(4096) as usize,
@@ -3596,6 +3621,7 @@ mod tests {
             None,
             QueryOptions {
                 cancel_token: Some(cancel_token),
+                ..QueryOptions::default()
             },
         )
         .await;
@@ -3626,6 +3652,7 @@ mod tests {
             None,
             QueryOptions {
                 cancel_token: Some(cancel_token),
+                ..QueryOptions::default()
             },
         )
         .await;
@@ -5031,6 +5058,7 @@ mod tests {
                 None,
                 QueryOptions {
                     cancel_token: Some(cancel_token),
+                    ..QueryOptions::default()
                 },
             ));
             tokio::select! {

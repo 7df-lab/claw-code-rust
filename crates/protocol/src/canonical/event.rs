@@ -371,8 +371,9 @@ pub struct ChannelAccumulation {
 }
 
 /// An unanswered server->client control request (approval / structured
-/// question). The first valid response wins; others get
-/// `CONTROL_REQUEST_ALREADY_RESOLVED`.
+/// question). The first valid response wins. A persisted waiting item left by
+/// a process crash remains audit history, but is not advertised here unless
+/// the runtime still owns a live response channel for it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingControlRequest {

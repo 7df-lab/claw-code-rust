@@ -1,6 +1,7 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use devo_core::DurableRecord;
 use devo_core::GoalBudgetAccountedRecord;
@@ -16,27 +17,46 @@ use devo_core::StoreErrorCode;
 use devo_protocol::SessionId;
 use devo_protocol::TurnId;
 
+use crate::db::Database;
 use crate::goal::Goal;
 use crate::goal::GoalBudget;
 use crate::goal::GoalId;
 use crate::goal::GoalStatus;
 use crate::goal::GoalUsage;
 use crate::goal::TurnRef;
+use crate::persistence::RolloutStore;
 use crate::runtime::GoalStore;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct GoalDurableStore {
     store: JsonlSessionStore,
+    primary: Option<(RolloutStore, Arc<Database>)>,
 }
 
 impl GoalDurableStore {
+    #[cfg(test)]
     pub(crate) fn new(server_home: PathBuf) -> Self {
         Self {
             store: JsonlSessionStore::new(server_home.join("goal-records")),
+            primary: None,
+        }
+    }
+
+    pub(crate) fn with_primary(
+        server_home: PathBuf,
+        rollout_store: RolloutStore,
+        db: Arc<Database>,
+    ) -> Self {
+        Self {
+            store: JsonlSessionStore::new(server_home.join("goal-records")),
+            primary: Some((rollout_store, db)),
         }
     }
 
     pub(crate) async fn append_goal_created(&self, goal: &Goal) -> Result<()> {
+        if self.append_primary_goal(goal.session_id, Some(goal))? {
+            return Ok(());
+        }
         let record = DurableRecord::GoalCreated(GoalCreatedRecord {
             schema_version: 1,
             goal_id: goal.durable_goal_id,
@@ -61,6 +81,9 @@ impl GoalDurableStore {
         previous_status: GoalStatus,
         reason: Option<String>,
     ) -> Result<()> {
+        if self.append_primary_goal(goal.session_id, Some(goal))? {
+            return Ok(());
+        }
         let record = DurableRecord::GoalStatusChanged(GoalStatusChangedRecord {
             schema_version: 1,
             goal_id: goal.durable_goal_id,
@@ -82,6 +105,9 @@ impl GoalDurableStore {
         turn_delta: u32,
         duration_delta_seconds: u64,
     ) -> Result<()> {
+        if self.append_primary_goal(goal.session_id, Some(goal))? {
+            return Ok(());
+        }
         let record = DurableRecord::GoalBudgetAccounted(GoalBudgetAccountedRecord {
             schema_version: 1,
             goal_id: goal.durable_goal_id,
@@ -106,6 +132,9 @@ impl GoalDurableStore {
         snapshot_id: String,
         summary: String,
     ) -> Result<()> {
+        if self.append_primary_goal(goal.session_id, Some(goal))? {
+            return Ok(());
+        }
         let record =
             DurableRecord::GoalContextSnapshotRecorded(GoalContextSnapshotRecordedRecord {
                 schema_version: 1,
@@ -125,6 +154,9 @@ impl GoalDurableStore {
         goal_id: devo_core::GoalId,
         reason: Option<String>,
     ) -> Result<()> {
+        if self.append_primary_goal(session_id, None)? {
+            return Ok(());
+        }
         let record = DurableRecord::GoalCleared(GoalClearedRecord {
             schema_version: 1,
             goal_id,
@@ -140,6 +172,11 @@ impl GoalDurableStore {
         &self,
         session_id: SessionId,
     ) -> Result<Option<GoalStore>> {
+        if let Some(goal) = self.replay_primary_goal(session_id)? {
+            return Ok(goal.map(|goal| GoalStore {
+                active_goal: Some(goal),
+            }));
+        }
         let mut replay = match self.store.replay(session_id, /*from_offset*/ 0).await {
             Ok(replay) => replay,
             Err(error) if error.code == StoreErrorCode::SessionNotFound => return Ok(None),
@@ -268,6 +305,76 @@ impl GoalDurableStore {
             active_goal: Some(goal),
         }))
     }
+
+    /// Returns `Some(snapshot)` when the main rollout contains any GoalState
+    /// record. The nested option distinguishes an explicit clear from no
+    /// primary record (which must fall back to legacy goal-records).
+    fn replay_primary_goal(&self, session_id: SessionId) -> Result<Option<Option<Goal>>> {
+        let Some((_, db)) = &self.primary else {
+            return Ok(None);
+        };
+        let Some(index) = db.get_session_index(&session_id)? else {
+            return Ok(None);
+        };
+        let Some(rollout_path) = index.rollout_path else {
+            return Ok(None);
+        };
+        let text = std::fs::read_to_string(&rollout_path)
+            .with_context(|| format!("read goal state from {}", rollout_path.display()))?;
+        let mut found = false;
+        let mut current = None;
+        let lines = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        for (index, raw) in lines.iter().enumerate() {
+            let parsed = match devo_core::parse_rollout_line(raw) {
+                Ok(parsed) => parsed,
+                Err(devo_core::RolloutLineReadError::TruncatedTail) if index + 1 == lines.len() => {
+                    break;
+                }
+                Err(error) => return Err(anyhow::anyhow!("parse goal rollout: {error}")),
+            };
+            let devo_core::ParsedRolloutLine::V2(line) = parsed else {
+                continue;
+            };
+            if let devo_core::RolloutLineV2::Internal {
+                entry:
+                    devo_core::InternalRecordV2::GoalState {
+                        schema_version,
+                        goal,
+                    },
+                ..
+            } = *line
+            {
+                anyhow::ensure!(
+                    schema_version == 1,
+                    "unsupported Goal snapshot schema version {schema_version}"
+                );
+                found = true;
+                current = goal
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .context("decode primary goal snapshot")?;
+            }
+        }
+        Ok(found.then_some(current))
+    }
+
+    fn append_primary_goal(&self, session_id: SessionId, goal: Option<&Goal>) -> Result<bool> {
+        let Some((rollout_store, db)) = &self.primary else {
+            return Ok(false);
+        };
+        let index = db
+            .get_session_index(&session_id)?
+            .context("session index missing while persisting goal")?;
+        let rollout_path = index
+            .rollout_path
+            .context("session rollout path missing while persisting goal")?;
+        let goal = goal.map(serde_json::to_value).transpose()?;
+        rollout_store.append_goal_state(&rollout_path, session_id, goal)?;
+        Ok(true)
+    }
 }
 
 fn durable_budget_from_goal(budget: &GoalBudget) -> Option<devo_core::GoalBudget> {
@@ -355,6 +462,7 @@ fn apply_progress_record(goal: &mut Goal, record: GoalProgressRecordedRecord) {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::io::Write;
     use tempfile::TempDir;
 
     fn active_goal(session_id: SessionId) -> Goal {
@@ -365,6 +473,71 @@ mod tests {
             replace_existing: false,
         })
         .expect("goal")
+    }
+
+    #[tokio::test]
+    async fn primary_goal_snapshot_round_trips_without_goal_records_writer() {
+        let temp = TempDir::new().expect("temp dir");
+        let db = Arc::new(Database::open(temp.path().join("devo.db")).expect("open database"));
+        let rollout_store = RolloutStore::new(temp.path().to_path_buf(), Some(Arc::clone(&db)));
+        let session_id = SessionId::new();
+        let record = rollout_store.create_session_record(
+            session_id,
+            Utc::now(),
+            temp.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let metadata = crate::persistence::session_metadata_from_record(&record, record.created_at);
+        db.upsert_session(&metadata, Some(record.rollout_path.as_path()))
+            .expect("index session");
+        let store = GoalDurableStore::with_primary(
+            temp.path().to_path_buf(),
+            rollout_store.clone(),
+            Arc::clone(&db),
+        );
+        let mut goal = active_goal(session_id);
+        store
+            .append_goal_created(&goal)
+            .await
+            .expect("append primary goal");
+        goal.status = GoalStatus::Paused;
+        goal.blocker_summary = Some("waiting".into());
+        goal.updated_at = Utc::now();
+        store
+            .append_status_changed(&goal, GoalStatus::Active, Some("waiting".into()))
+            .await
+            .expect("append primary status");
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&record.rollout_path)
+            .expect("open rollout crash tail")
+            .write_all(br#"{"v":2,"kind":"internal""#)
+            .expect("append truncated crash tail");
+
+        assert!(
+            !temp.path().join("goal-records").exists(),
+            "new Goal facts must not create the legacy store"
+        );
+        let restarted = GoalDurableStore::with_primary(
+            temp.path().to_path_buf(),
+            RolloutStore::new(temp.path().to_path_buf(), Some(Arc::clone(&db))),
+            db,
+        );
+        let replayed = restarted
+            .replay_goal_store(session_id)
+            .await
+            .expect("replay primary")
+            .expect("goal");
+        assert_eq!(replayed.get(), Some(&goal));
     }
 
     #[tokio::test]

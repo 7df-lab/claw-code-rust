@@ -14,6 +14,7 @@ use chrono::Datelike;
 use chrono::SecondsFormat;
 use chrono::Utc;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use devo_core::CommandExecutionItem;
 use devo_core::CompactionSnapshotLine;
@@ -690,6 +691,64 @@ impl RolloutStore {
     /// single-write v2 (05 §2.2): the line is projected through the per-file
     /// [`LegacyProjector`] and every resulting v2 line becomes its own JSONL
     /// row. Legacy callers (the typed wrappers above) are unchanged.
+    pub(crate) fn append_canonical_item(
+        &self,
+        record: &SessionRecord,
+        item: devo_protocol::canonical::item::ItemEnvelope,
+    ) -> Result<()> {
+        let line = RolloutLineV2::Item {
+            v: 2,
+            timestamp: Utc::now(),
+            item,
+        };
+        self.append_v2_lines(&record.rollout_path, vec![line])
+    }
+
+    pub(crate) fn append_goal_state(
+        &self,
+        rollout_path: &Path,
+        session_id: SessionId,
+        goal: Option<serde_json::Value>,
+    ) -> Result<()> {
+        self.append_v2_lines(
+            rollout_path,
+            vec![RolloutLineV2::Internal {
+                v: 2,
+                timestamp: Utc::now(),
+                session_id: devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::from(
+                    session_id,
+                )),
+                turn_id: None,
+                seq: 0,
+                entry: devo_core::InternalRecordV2::GoalState {
+                    schema_version: 1,
+                    goal,
+                },
+            }],
+        )
+    }
+
+    pub(crate) fn append_usage_record(
+        &self,
+        rollout_path: &Path,
+        session_id: SessionId,
+        record: devo_protocol::canonical::usage::UsageRecord,
+    ) -> Result<()> {
+        self.append_v2_lines(
+            rollout_path,
+            vec![RolloutLineV2::Internal {
+                v: 2,
+                timestamp: record.recorded_at,
+                session_id: devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::from(
+                    session_id,
+                )),
+                turn_id: record.turn_id.clone(),
+                seq: 0,
+                entry: devo_core::InternalRecordV2::UsageRecord { record },
+            }],
+        )
+    }
+
     fn append_line(&self, rollout_path: &Path, line: &RolloutLine) -> Result<()> {
         if let Some(parent) = rollout_path.parent() {
             std::fs::create_dir_all(parent)
@@ -726,14 +785,57 @@ impl RolloutStore {
             .projector
             .project_line(line)
             .with_context(|| format!("project rollout line for {}", rollout_path.display()))?;
+        self.write_v2_lines(rollout_path, state, &v2_lines)
+    }
 
+    fn append_v2_lines(&self, rollout_path: &Path, v2_lines: Vec<RolloutLineV2>) -> Result<()> {
+        if let Some(parent) = rollout_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create rollout directory {}", parent.display()))?;
+        }
+        let file_lock = {
+            let mut locks = self
+                .file_locks
+                .lock()
+                .expect("rollout file-locks table poisoned");
+            locks
+                .entry(rollout_path.to_path_buf())
+                .or_insert_with(|| Arc::new(StdMutex::new(())))
+                .clone()
+        };
+        let _guard = file_lock.lock().expect("rollout per-file lock poisoned");
+        let mut write_states = self
+            .write_states
+            .lock()
+            .expect("rollout write-state table poisoned");
+        let state = match write_states.get_mut(rollout_path) {
+            Some(state) => state,
+            None => {
+                let state = hydrate_write_state(rollout_path)?;
+                write_states
+                    .entry(rollout_path.to_path_buf())
+                    .or_insert(state)
+            }
+        };
+        for line in &v2_lines {
+            state.projector.observe_v2_line(line);
+        }
+        self.write_v2_lines(rollout_path, state, &v2_lines)
+    }
+
+    fn write_v2_lines(
+        &self,
+        rollout_path: &Path,
+        state: &mut WritePathState,
+        v2_lines: &[RolloutLineV2],
+    ) -> Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(rollout_path)
             .with_context(|| format!("open rollout file {}", rollout_path.display()))?;
         let first_line_index = state.next_line_index;
-        for v2_line in &v2_lines {
+        for v2_line in v2_lines {
             serde_json::to_writer(&mut file, v2_line)
                 .with_context(|| format!("serialize rollout line {}", rollout_path.display()))?;
             file.write_all(b"\n")
@@ -755,7 +857,7 @@ impl RolloutStore {
         // or duplicate it.
         if let Some(db) = &self.event_log
             && let Err(error) =
-                project_events_into_log(db, rollout_path, first_line_index, &v2_lines)
+                project_events_into_log(db, rollout_path, first_line_index, v2_lines)
         {
             tracing::warn!(
                 rollout = %rollout_path.display(),
@@ -2056,7 +2158,7 @@ fn read_rollout_index_fields(path: &Path) -> Result<(SessionRecord, chrono::Date
     Ok((session, last_activity_at))
 }
 
-fn session_metadata_from_record(
+pub(crate) fn session_metadata_from_record(
     record: &SessionRecord,
     last_activity_at: chrono::DateTime<Utc>,
 ) -> SessionMetadata {
@@ -3668,6 +3770,7 @@ mod tests {
                         approval_id: "appr-1".into(),
                         decision: "approve".into(),
                         scope: "once".into(),
+                        decision_source: None,
                     }),
                     Some(TurnStatus::Running),
                     None,
@@ -3711,6 +3814,95 @@ mod tests {
                 if d.decision == devo_protocol::canonical::item::ApprovalDecisionKind::Approved
                     && d.scope == devo_protocol::canonical::item::ApprovalScope::Once)
         );
+    }
+
+    #[test]
+    fn canonical_only_interaction_and_file_change_items_round_trip() {
+        use devo_protocol::canonical::ids::{
+            ItemId as CanonicalItemId, SessionId as CanonicalSessionId, TurnId as CanonicalTurnId,
+        };
+        use devo_protocol::canonical::item::{
+            FileChangeEntry, FileChangeKind, Item, ItemEnvelope, ItemState,
+        };
+        use tempfile::TempDir;
+        use uuid::Uuid;
+
+        let dir = TempDir::new().expect("temp dir");
+        let store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let record = store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let turn_id = TurnId::new();
+        let metadata = test_turn_metadata(record.id, turn_id);
+        store
+            .append_turn(
+                &record,
+                super::build_turn_record(&metadata, None, None, None),
+            )
+            .expect("append turn");
+        let now = Utc::now();
+        let session_id = CanonicalSessionId::from_legacy_uuid(Uuid::from(record.id));
+        let turn_id = CanonicalTurnId::from_legacy_uuid(Uuid::from(turn_id));
+        let question_item_id = CanonicalItemId::from_legacy_uuid(Uuid::now_v7());
+        let waiting = ItemEnvelope {
+            id: question_item_id.clone(),
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            seq: 1,
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            state: ItemState::Waiting,
+            item: Item::UserInputRequest {
+                request_id: "question-1".into(),
+                target_item_id: None,
+                questions: Vec::new(),
+                answers: None,
+            },
+        };
+        let file_change = ItemEnvelope {
+            id: CanonicalItemId::from_legacy_uuid(Uuid::now_v7()),
+            session_id,
+            turn_id,
+            seq: 2,
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            state: ItemState::Completed,
+            item: Item::FileChange {
+                call_id: "edit-1".into(),
+                changes: vec![FileChangeEntry {
+                    path: PathBuf::from("src/lib.rs"),
+                    change: FileChangeKind::Update {
+                        unified_diff: "@@ -1 +1 @@".into(),
+                        move_path: None,
+                    },
+                }],
+                sandbox: None,
+            },
+        };
+        store
+            .append_canonical_item(&record, waiting.clone())
+            .expect("append waiting item");
+        store
+            .append_canonical_item(&record, file_change.clone())
+            .expect("append file change");
+
+        let history =
+            devo_core::read_canonical_history(&record.rollout_path).expect("read history");
+        assert_eq!(history.items, vec![waiting, file_change]);
     }
 
     #[test]

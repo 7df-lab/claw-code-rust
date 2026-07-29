@@ -702,6 +702,7 @@ impl LegacyProjector {
                                 Some(ApprovalDecision {
                                     decision: decision_kind,
                                     scope,
+                                    decision_source: decision.decision_source.unwrap_or_default(),
                                     decided_at: record.timestamp,
                                 }),
                             ),

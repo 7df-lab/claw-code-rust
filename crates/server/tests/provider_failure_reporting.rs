@@ -315,7 +315,7 @@ fn expected_retry_statuses(
             turn_id,
             attempt,
             backoff_ms,
-            provider: "exhausting-router".to_string(),
+            provider: "openai".to_string(),
             model: "default-model".to_string(),
             phase: ProviderRetryPhase::Scheduled,
             message: format!(
@@ -328,7 +328,7 @@ fn expected_retry_statuses(
             turn_id,
             attempt,
             backoff_ms: 0,
-            provider: "exhausting-router".to_string(),
+            provider: "openai".to_string(),
             model: "default-model".to_string(),
             phase: ProviderRetryPhase::Resumed,
             message: "Retrying provider request now".to_string(),

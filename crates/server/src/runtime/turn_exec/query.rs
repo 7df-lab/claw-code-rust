@@ -161,15 +161,28 @@ impl ServerRuntime {
         // turn cleanly.  The tool-execution cancel guard already handles the
         // "cancel during tools" case (line ~1827).
         let result = {
+            let provider = self.usage_ledger.instrumented_provider(
+                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                session_id,
+                Some(turn_id),
+                devo_protocol::canonical::usage::UsagePurpose::TurnQuery,
+            );
+            let compaction_provider = self.usage_ledger.instrumented_provider(
+                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                session_id,
+                Some(turn_id),
+                devo_protocol::canonical::usage::UsagePurpose::Compaction,
+            );
             let mut query_future = std::pin::pin!(query_with_options(
                 &mut state.core,
                 turn_config,
-                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                provider,
                 registry,
                 &runtime,
                 Some(callback),
                 QueryOptions {
                     cancel_token: Some(query_cancel_token.clone()),
+                    compaction_provider: Some(compaction_provider),
                 },
             ));
             tokio::select! {

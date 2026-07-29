@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
-use devo_core::DurableRecord;
+use devo_core::InternalRecordV2;
+use devo_core::ParsedRolloutLine;
+use devo_core::RolloutLineV2;
+use devo_core::parse_rollout_line;
 use devo_protocol::Usage;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -337,16 +340,45 @@ fn persisted_goal_id(
     data_root: &std::path::Path,
     session_id: devo_protocol::SessionId,
 ) -> Result<String> {
-    let path = data_root
-        .join("goal-records")
-        .join("sessions")
-        .join(format!("{session_id}.jsonl"));
-    let contents = std::fs::read_to_string(path).context("read durable goal records")?;
-    for line in contents.lines().rev() {
-        let record: DurableRecord = serde_json::from_str(line).context("parse durable record")?;
-        if let DurableRecord::GoalCreated(record) = record {
-            return Ok(format!("goal-{}", record.goal_id.0));
+    let mut directories = vec![data_root.join("sessions")];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(&directory)
+            .with_context(|| format!("read rollout directory {}", directory.display()))?
+        {
+            let path = entry?.path();
+            if path.is_dir() {
+                directories.push(path);
+                continue;
+            }
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&format!("-{session_id}.jsonl")))
+            {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&path).context("read session rollout")?;
+            for line in contents.lines().rev() {
+                let ParsedRolloutLine::V2(line) =
+                    parse_rollout_line(line).context("parse rollout line")?
+                else {
+                    continue;
+                };
+                let RolloutLineV2::Internal {
+                    entry:
+                        InternalRecordV2::GoalState {
+                            goal: Some(goal), ..
+                        },
+                    ..
+                } = *line
+                else {
+                    continue;
+                };
+                let goal: devo_server::goal::Goal =
+                    serde_json::from_value(goal).context("parse goal snapshot")?;
+                return Ok(goal.goal_id.to_string());
+            }
         }
     }
-    anyhow::bail!("goal id not found in durable records")
+    anyhow::bail!("goal id not found in session rollout")
 }

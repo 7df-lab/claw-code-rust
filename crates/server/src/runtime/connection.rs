@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::ACP_AUTHENTICATE_METHOD;
 use crate::ACP_INITIALIZE_METHOD;
@@ -1092,6 +1093,33 @@ impl ServerRuntime {
 }
 
 impl ServerRuntime {
+    pub(super) async fn controlling_connection_ids(
+        &self,
+        session_id: SessionId,
+        owner_connection_id: Option<u64>,
+    ) -> Vec<u64> {
+        let canonical_session_id =
+            devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::from(session_id));
+        let connections = self.connections.lock().await;
+        let mut connection_ids = connections
+            .iter()
+            .filter_map(|(connection_id, connection)| {
+                let subscribed = connection.event_selectors.iter().any(|selector| {
+                    matches!(
+                        selector,
+                        devo_protocol::canonical::event::StreamSelector::Session {
+                            session_id
+                        } if session_id == &canonical_session_id
+                    )
+                });
+                (subscribed || Some(*connection_id) == owner_connection_id)
+                    .then_some(*connection_id)
+            })
+            .collect::<Vec<_>>();
+        connection_ids.sort_unstable();
+        connection_ids
+    }
+
     async fn child_parent_by_session(&self) -> HashMap<SessionId, SessionId> {
         self.agent_registries
             .lock()
@@ -2241,6 +2269,40 @@ mod tests {
             )
             .await;
         connection_id
+    }
+
+    #[tokio::test]
+    async fn controlling_connections_union_owner_and_session_subscribers() {
+        let temp = TempDir::new().expect("temp dir");
+        let runtime = build_runtime(temp.path());
+        let owner_id = initialized_connection(&runtime).await;
+        let subscriber_id = initialized_connection(&runtime).await;
+        let unrelated_id = initialized_connection(&runtime).await;
+        let session_id = SessionId::new();
+        let canonical_session_id =
+            devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::from(session_id));
+        {
+            let mut connections = runtime.connections.lock().await;
+            connections
+                .get_mut(&subscriber_id)
+                .expect("subscriber connection")
+                .event_selectors = vec![devo_protocol::canonical::event::StreamSelector::Session {
+                session_id: canonical_session_id,
+            }];
+        }
+
+        assert_eq!(
+            runtime
+                .controlling_connection_ids(session_id, Some(owner_id))
+                .await,
+            vec![owner_id, subscriber_id]
+        );
+        assert!(
+            !runtime
+                .controlling_connection_ids(session_id, Some(owner_id))
+                .await
+                .contains(&unrelated_id)
+        );
     }
 
     async fn history_request(

@@ -454,7 +454,24 @@ pub enum FileChangeKind {
 pub struct ApprovalDecision {
     pub decision: ApprovalDecisionKind,
     pub scope: ApprovalScope,
+    /// The authority that produced this decision. Legacy records predate this
+    /// field and deserialize as `user`, which is the only decision source they
+    /// could persist.
+    #[serde(default)]
+    pub decision_source: ApprovalDecisionSource,
     pub decided_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ApprovalDecisionSource {
+    StaticPolicy,
+    ExecPolicy,
+    #[default]
+    User,
+    AutoReview,
+    Hook,
+    ExternalPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

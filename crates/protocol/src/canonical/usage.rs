@@ -40,10 +40,6 @@ pub enum UsagePurpose {
     Compaction,
     /// Session title generation.
     TitleGeneration,
-    /// Goal classification/orchestration (reserved).
-    GoalClassification,
-    /// Memory extraction/merge (reserved).
-    MemoryExtraction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

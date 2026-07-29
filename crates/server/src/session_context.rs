@@ -68,11 +68,16 @@ pub(crate) struct SessionRuntimeContext {
 struct RoutedModelProvider {
     router: Arc<dyn ProviderRouter>,
     route: ProviderRoute,
+    provider_name: String,
 }
 
 impl RoutedModelProvider {
-    fn new(router: Arc<dyn ProviderRouter>, route: ProviderRoute) -> Self {
-        Self { router, route }
+    fn new(router: Arc<dyn ProviderRouter>, route: ProviderRoute, provider_name: String) -> Self {
+        Self {
+            router,
+            route,
+            provider_name,
+        }
     }
 }
 
@@ -96,7 +101,7 @@ impl ModelProviderSDK for RoutedModelProvider {
     }
 
     fn name(&self) -> &str {
-        self.router.name()
+        &self.provider_name
     }
 }
 
@@ -214,9 +219,14 @@ impl SessionRuntimeContext {
     }
 
     pub(crate) fn provider_for_route(&self, route: ProviderRoute) -> Arc<dyn ModelProviderSDK> {
+        let provider_name = match &route {
+            ProviderRoute::Default => self.provider.name().to_owned(),
+            ProviderRoute::Binding { provider_id, .. } => provider_id.clone(),
+        };
         Arc::new(RoutedModelProvider::new(
             Arc::clone(&self.provider_router),
             route,
+            provider_name,
         ))
     }
 

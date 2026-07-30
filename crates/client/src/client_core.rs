@@ -459,6 +459,13 @@ impl ServerClientCore {
         self.request_devo("session/title/update", params).await
     }
 
+    pub(crate) async fn session_delete(
+        &mut self,
+        params: AcpDeleteSessionParams,
+    ) -> Result<AcpDeleteSessionResult> {
+        self.request(ACP_SESSION_DELETE_METHOD, params).await
+    }
+
     pub(crate) async fn session_metadata_update(
         &mut self,
         params: SessionMetadataUpdateParams,

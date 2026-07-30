@@ -171,6 +171,13 @@ impl StdioServerClient {
         self.core.session_title_update(params).await
     }
 
+    pub async fn session_delete(
+        &mut self,
+        params: AcpDeleteSessionParams,
+    ) -> Result<AcpDeleteSessionResult> {
+        self.core.session_delete(params).await
+    }
+
     pub async fn session_metadata_update(
         &mut self,
         params: SessionMetadataUpdateParams,

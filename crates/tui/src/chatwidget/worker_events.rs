@@ -1370,6 +1370,13 @@ impl ChatWidget {
                 ));
                 self.set_status_message("Session renamed");
             }
+            WorkerEvent::SessionDeleted { session_id } => {
+                self.add_to_history(history_cell::new_info_event(
+                    format!("deleted session {session_id}"),
+                    None,
+                ));
+                self.set_status_message("Session deleted");
+            }
             WorkerEvent::SessionCompactionStarted => {
                 if self.status_message != "Session compaction in progress" {
                     self.add_to_history(history_cell::new_live_aligned_info_event(

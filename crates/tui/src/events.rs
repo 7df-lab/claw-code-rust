@@ -595,6 +595,11 @@ pub(crate) enum WorkerEvent {
         /// The new session title.
         title: String,
     },
+    /// The current session was deleted.
+    SessionDeleted {
+        /// The deleted session identifier.
+        session_id: String,
+    },
     /// The active session or its context-compaction transcript item started compaction.
     SessionCompactionStarted,
     /// The active session completed a proactive compaction request.

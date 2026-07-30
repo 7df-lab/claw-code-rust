@@ -365,6 +365,11 @@ pub async fn query(
     if !turn_config.web_fetch.is_local() {
         request_tools.retain(|tool| tool.name != "webfetch");
     }
+    // Non-OpenAI models often emit malformed apply_patch input, so only expose
+    // the tool to OpenAI-channel models (see Model::supports_apply_patch).
+    if !turn_config.model.supports_apply_patch() {
+        request_tools.retain(|tool| tool.name != "apply_patch");
+    }
 
     if session.session_context.is_none() {
         session.session_context = Some(SessionContext::capture(

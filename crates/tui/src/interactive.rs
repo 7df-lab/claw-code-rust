@@ -959,6 +959,7 @@ fn handle_worker_event(
         | WorkerEvent::ReferenceSearchUpdated { .. }
         | WorkerEvent::NewSessionPrepared { .. }
         | WorkerEvent::SessionRenamed { .. }
+        | WorkerEvent::SessionDeleted { .. }
         | WorkerEvent::SessionTitleUpdated { .. }
         | WorkerEvent::ContextCompactionCompleted { .. }
         | WorkerEvent::InputHistoryLoaded { .. }
@@ -1211,6 +1212,12 @@ fn handle_app_command(
         }
         AppCommand::Compact => {
             worker.compact_session()?;
+        }
+        AppCommand::RenameSession { title } => {
+            worker.rename_session(title.clone())?;
+        }
+        AppCommand::DeleteSession => {
+            worker.delete_session()?;
         }
         AppCommand::ShowGoal => {
             worker.show_goal()?;

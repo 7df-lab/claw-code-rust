@@ -235,10 +235,6 @@ impl ChatWidget {
         match event {
             AppEvent::Redraw => self.frame_requester.schedule_frame(),
             AppEvent::SubmitUserInput { text } => self.submit_text(text),
-            AppEvent::PreparePlanSuggestionInput => {
-                self.bottom_pane.set_input_mode(InputMode::Plan);
-                self.set_status_message("Type plan feedback");
-            }
             AppEvent::ModelSelected { model } => {
                 self.handle_model_picker_selection(model);
             }

@@ -146,6 +146,15 @@ impl WebSocketServerClient {
         self.core.request_devo("session/title/update", params).await
     }
 
+    pub async fn session_delete(
+        &mut self,
+        params: AcpDeleteSessionParams,
+    ) -> Result<AcpDeleteSessionResult> {
+        self.core
+            .request(devo_protocol::ACP_SESSION_DELETE_METHOD, params)
+            .await
+    }
+
     pub async fn session_metadata_update(
         &mut self,
         params: SessionMetadataUpdateParams,

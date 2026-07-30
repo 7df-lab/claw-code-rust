@@ -48,6 +48,7 @@ use devo_protocol::SpawnAgentParams;
 use devo_protocol::ThreadGoalStatus;
 use devo_protocol::TurnFailedPayload;
 use devo_server::ACP_TERMINAL_OUTPUT_NOTIFICATION_METHOD;
+use devo_server::AcpDeleteSessionParams;
 use devo_server::ApprovalDecisionPayload;
 use devo_server::ApprovalRequestPayload;
 use devo_server::ApprovalResponseParams;
@@ -331,6 +332,8 @@ enum OperationCommand {
     SwitchSession(SessionId),
     /// Rename the current active session.
     RenameSession(String),
+    /// Delete the current active session and prepare a fresh local session.
+    DeleteSession,
     /// Roll back the active session using the server-selected user-turn cut mode.
     RollbackUserTurn {
         user_turn_index: u32,
@@ -667,6 +670,13 @@ impl QueryWorkerHandle {
     pub(crate) fn rename_session(&self, title: String) -> Result<()> {
         self.command_tx
             .send(OperationCommand::RenameSession(title))
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Deletes the current active session and prepares a fresh local session.
+    pub(crate) fn delete_session(&self) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::DeleteSession)
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -1754,6 +1764,88 @@ async fn run_worker_inner(
                                         .title
                                         .unwrap_or(title),
                                 });
+                            }
+                            Err(error) => {
+                                let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                    message: error.to_string(),
+                                    hint: None,
+                                    turn_count,
+                                    total_input_tokens,
+                                    total_output_tokens,
+                                    total_tokens,
+                                    total_cache_read_tokens,
+                                    prompt_token_estimate: total_input_tokens,
+                                    last_query_input_tokens,
+                                });
+                            }
+                        }
+                    }
+                    Some(OperationCommand::DeleteSession) => {
+                        let Some(active_session_id) = session_id else {
+                            let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                hint: None,
+                                turn_count,
+                                total_input_tokens,
+                                total_output_tokens,
+                                total_tokens,
+                                total_cache_read_tokens,
+                                prompt_token_estimate: total_input_tokens,
+                                last_query_input_tokens,
+                            });
+                            continue;
+                        };
+                        match pause_active_goal_before_session_leave(
+                            &mut client,
+                            active_session_id,
+                            active_turn_id,
+                        )
+                        .await
+                        {
+                            Ok(()) => {}
+                            Err(error) => {
+                                emit_goal_leave_failure(event_tx, error);
+                                continue;
+                            }
+                        }
+                        match client
+                            .session_delete(AcpDeleteSessionParams {
+                                session_id: active_session_id,
+                                meta: None,
+                            })
+                            .await
+                        {
+                            Ok(_) => {
+                                let _ = event_tx.send(WorkerEvent::SessionDeleted {
+                                    session_id: active_session_id.to_string(),
+                                });
+                                active_turn_id = None;
+                                session_id = None;
+                                active_reference_search_id = None;
+                                session_cwd = config.cwd.clone();
+                                input_history_cursor = None;
+                                turn_count = 0;
+                                total_input_tokens = 0;
+                                total_output_tokens = 0;
+                                total_tokens = 0;
+                                total_cache_read_tokens = 0;
+                                last_query_total_tokens = 0;
+                                last_query_input_tokens = 0;
+                                has_authoritative_usage_totals = true;
+                                let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
+                                    cwd: session_cwd.clone(),
+                                    model: model.clone(),
+                                    model_binding_id: model_binding_id.clone(),
+                                    reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                    reasoning_effort: None,
+                                    active_agent_label: None,
+                                    last_query_total_tokens,
+                                    last_query_input_tokens,
+                                    total_cache_read_tokens,
+                                });
+                                let _ =
+                                    emit_skills_list(&mut client, &session_cwd, event_tx, false)
+                                        .await;
                             }
                             Err(error) => {
                                 let _ = event_tx.send(WorkerEvent::TurnFailed {

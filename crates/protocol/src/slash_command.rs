@@ -13,6 +13,8 @@ pub enum SlashCommand {
     Compact,
     Resume,
     New,
+    Rename,
+    Delete,
     Status,
     Permissions,
     ShowReasoning,
@@ -33,6 +35,8 @@ impl SlashCommand {
             SlashCommand::Compact => "compact the current session context",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::New => "start a new chat",
+            SlashCommand::Rename => "rename the current session",
+            SlashCommand::Delete => "delete the current session and start a new one",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Permissions => {
                 "choose what Devo is allowed to do (also sets the OS sandbox)"
@@ -59,6 +63,8 @@ impl SlashCommand {
             SlashCommand::Compact => "compact",
             SlashCommand::Resume => "resume",
             SlashCommand::New => "new",
+            SlashCommand::Rename => "rename",
+            SlashCommand::Delete => "delete",
             SlashCommand::Status => "status",
             SlashCommand::Permissions => "permissions",
             SlashCommand::ShowReasoning => "show-reasoning",
@@ -73,7 +79,7 @@ impl SlashCommand {
     pub fn supports_inline_args(self) -> bool {
         matches!(
             self,
-            SlashCommand::Model | SlashCommand::Btw | SlashCommand::Goal
+            SlashCommand::Model | SlashCommand::Btw | SlashCommand::Goal | SlashCommand::Rename
         )
     }
 
@@ -81,6 +87,7 @@ impl SlashCommand {
         match self {
             SlashCommand::Btw => Some("<side conversation message>"),
             SlashCommand::Goal => Some("<objective for autonomous work>"),
+            SlashCommand::Rename => Some("<new title>"),
             SlashCommand::Theme
             | SlashCommand::Model
             | SlashCommand::Skills
@@ -88,6 +95,7 @@ impl SlashCommand {
             | SlashCommand::Compact
             | SlashCommand::Resume
             | SlashCommand::New
+            | SlashCommand::Delete
             | SlashCommand::Status
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning
@@ -105,6 +113,7 @@ impl SlashCommand {
                 | SlashCommand::Compact
                 | SlashCommand::Diff
                 | SlashCommand::New
+                | SlashCommand::Delete
                 | SlashCommand::Resume
                 | SlashCommand::Permissions
         )
@@ -124,6 +133,8 @@ impl SlashCommand {
             | SlashCommand::Compact
             | SlashCommand::Resume
             | SlashCommand::New
+            | SlashCommand::Rename
+            | SlashCommand::Delete
             | SlashCommand::Status
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning
@@ -147,6 +158,8 @@ impl FromStr for SlashCommand {
             "compact" => Ok(Self::Compact),
             "resume" => Ok(Self::Resume),
             "new" => Ok(Self::New),
+            "rename" => Ok(Self::Rename),
+            "delete" => Ok(Self::Delete),
             "status" => Ok(Self::Status),
             "permissions" | "approvals" => Ok(Self::Permissions),
             "show-reasoning" | "reasoning-view" => Ok(Self::ShowReasoning),
@@ -169,6 +182,8 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         ("compact", SlashCommand::Compact),
         ("resume", SlashCommand::Resume),
         ("new", SlashCommand::New),
+        ("rename", SlashCommand::Rename),
+        ("delete", SlashCommand::Delete),
         ("status", SlashCommand::Status),
         ("permissions", SlashCommand::Permissions),
         ("show-reasoning", SlashCommand::ShowReasoning),
@@ -241,6 +256,8 @@ mod tests {
         assert!(!SlashCommand::Model.available_over_acp());
         assert!(!SlashCommand::Btw.available_over_acp());
         assert!(!SlashCommand::Exit.available_over_acp());
+        assert!(!SlashCommand::Rename.available_over_acp());
+        assert!(!SlashCommand::Delete.available_over_acp());
     }
 
     #[test]
@@ -248,7 +265,19 @@ mod tests {
         assert!(!SlashCommand::Model.available_during_task());
         assert!(!SlashCommand::Permissions.available_during_task());
         assert!(!SlashCommand::Theme.available_during_task());
+        assert!(!SlashCommand::Delete.available_during_task());
         assert!(SlashCommand::Status.available_during_task());
         assert!(SlashCommand::Goal.available_during_task());
+        assert!(SlashCommand::Rename.available_during_task());
+    }
+
+    #[test]
+    fn rename_and_delete_slash_commands_parse_and_describe() {
+        assert_eq!("rename".parse::<SlashCommand>(), Ok(SlashCommand::Rename));
+        assert_eq!("delete".parse::<SlashCommand>(), Ok(SlashCommand::Delete));
+        assert!(SlashCommand::Rename.supports_inline_args());
+        assert!(!SlashCommand::Delete.supports_inline_args());
+        assert_eq!(SlashCommand::Rename.parameter_hint(), Some("<new title>"));
+        assert_eq!(SlashCommand::Delete.parameter_hint(), None);
     }
 }

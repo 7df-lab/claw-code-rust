@@ -80,9 +80,6 @@ pub(crate) enum AppEvent {
     /// Submit the current composer text.
     SubmitUserInput { text: String },
 
-    /// Focus the composer for feedback on a proposed plan.
-    PreparePlanSuggestionInput,
-
     /// Send a command request to the host/worker adapter.
     Command(AppCommand),
 

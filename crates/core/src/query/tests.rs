@@ -2216,6 +2216,78 @@ async fn provider_hosted_web_fetch_emits_tool_events_without_local_execution() {
     ));
 }
 
+#[tokio::test]
+async fn query_exposes_apply_patch_only_for_openai_channel() {
+    // Non-OpenAI models often produce malformed apply_patch input, so the tool
+    // is gated to the OpenAI channel only.
+    async fn tool_names_for_channel(channel: Option<&str>) -> Vec<String> {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn ModelProviderSDK> = Arc::new(CapturingProvider {
+            requests: Arc::clone(&requests),
+        });
+        let mut builder = ToolRegistryBuilder::new();
+        builder.push_spec_with_exposure(
+            ToolSpec::new(
+                "apply_patch",
+                "Apply a patch.",
+                JsonSchema::object(Default::default(), None, None),
+            ),
+            ToolExposure::Direct,
+        );
+        builder.push_spec_with_exposure(
+            ToolSpec::new(
+                "write",
+                "Write a file.",
+                JsonSchema::object(Default::default(), None, None),
+            ),
+            ToolExposure::Direct,
+        );
+        let registry = Arc::new(builder.build());
+        let runtime = ToolRuntime::new_without_permissions(Arc::clone(&registry));
+        let model = Model {
+            channel: channel.map(str::to_string),
+            ..Model::default()
+        };
+        let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+        session.push_message(Message::user("hello"));
+
+        query(
+            &mut session,
+            &TurnConfig::new(model, None),
+            provider,
+            registry,
+            &runtime,
+            None,
+            QueryOptions::default(),
+        )
+        .await
+        .expect("query should succeed");
+
+        let captured = requests.lock().expect("lock requests");
+        assert_eq!(captured.len(), 1);
+        captured[0]
+            .tools
+            .as_ref()
+            .expect("tools should be present")
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect()
+    }
+
+    assert_eq!(
+        tool_names_for_channel(Some("OpenAI")).await,
+        vec!["apply_patch".to_string(), "write".to_string()]
+    );
+    assert_eq!(
+        tool_names_for_channel(Some("Poolside")).await,
+        vec!["write".to_string()]
+    );
+    assert_eq!(
+        tool_names_for_channel(/*channel*/ None).await,
+        vec!["write".to_string()]
+    );
+}
+
 #[test]
 fn subagent_reminder_insertion_preserves_tool_result_adjacency() {
     let mut messages = vec![

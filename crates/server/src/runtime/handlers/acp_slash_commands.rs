@@ -105,6 +105,8 @@ impl ServerRuntime {
             | SlashCommand::Mcp
             | SlashCommand::Resume
             | SlashCommand::New
+            | SlashCommand::Rename
+            | SlashCommand::Delete
             | SlashCommand::Status
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning

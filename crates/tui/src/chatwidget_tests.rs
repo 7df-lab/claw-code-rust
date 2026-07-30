@@ -2011,6 +2011,69 @@ fn goal_slash_command_emits_set_goal_objective() {
 }
 
 #[test]
+fn rename_slash_command_emits_rename_session() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_paste("/rename My New Title".to_string());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app_event_rx.try_recv().expect("rename command event"),
+        AppEvent::Command(AppCommand::RenameSession {
+            title: "My New Title".to_string(),
+        })
+    );
+}
+
+#[test]
+fn rename_slash_command_without_title_shows_usage() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_paste("/rename".to_string());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app_event_rx.try_recv().is_err());
+    let rendered = widget
+        .transcript_overlay_lines(100)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Usage: /rename <new title>"),
+        "expected rename usage hint:\n{rendered}"
+    );
+}
+
+#[test]
+fn delete_slash_command_emits_delete_session() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_paste("/delete".to_string());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app_event_rx.try_recv().expect("delete command event"),
+        AppEvent::Command(AppCommand::DeleteSession)
+    );
+}
+
+#[test]
 fn goal_control_slash_commands_emit_goal_app_commands() {
     fn event_for_slash(input: &str) -> AppEvent {
         let model = Model {
@@ -2604,7 +2667,7 @@ fn proposed_plan_cell_header_has_actions_without_bullet() {
     assert!(lines.first().is_some_and(|line| line == "Proposed Plan"));
     assert!(!rendered.contains("• Proposed Plan"));
     assert!(rendered.contains("Implement Plan"));
-    assert!(rendered.contains("修改建议"));
+    assert!(rendered.contains("Revise Plan"));
 }
 
 #[test]
@@ -2624,11 +2687,6 @@ fn proposed_plan_implement_action_sends_build_turn() {
         item_id: plan_id,
         final_text: "## Summary\n\nBuild the feature.".to_string(),
     });
-    widget.handle_app_event(AppEvent::PreparePlanSuggestionInput);
-    assert_eq!(
-        widget.input_mode_for_test(),
-        crate::bottom_pane::InputMode::Plan
-    );
     widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     let event = app_event_rx.try_recv().expect("implement event is emitted");
@@ -2657,14 +2715,14 @@ fn proposed_plan_implement_action_sends_build_turn() {
 }
 
 #[test]
-fn proposed_plan_revise_action_switches_composer_to_plan_mode() {
+fn proposed_plan_revise_action_submits_plan_turn_with_feedback() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
         ..Model::default()
     };
-    let (mut widget, mut app_event_rx) = widget_with_model(model, cwd);
+    let (mut widget, mut app_event_rx) = widget_with_model(model, cwd.clone());
     let plan_id = ItemId::new();
 
     widget
@@ -2674,14 +2732,33 @@ fn proposed_plan_revise_action_switches_composer_to_plan_mode() {
         final_text: "## Summary\n\nBuild the feature.".to_string(),
     });
     widget.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    for ch in "Skip migrations".chars() {
+        widget.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
     widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     let event = app_event_rx.try_recv().expect("revise event is emitted");
-    assert_eq!(event, AppEvent::PreparePlanSuggestionInput);
-    widget.handle_app_event(event);
+    widget.handle_app_event(event.clone());
     assert_eq!(
         widget.input_mode_for_test(),
         crate::bottom_pane::InputMode::Plan
+    );
+    let AppEvent::Command(AppCommand::UserTurn {
+        input,
+        cwd: event_cwd,
+        collaboration_mode,
+        ..
+    }) = event
+    else {
+        panic!("expected plan user turn");
+    };
+    assert_eq!(event_cwd, Some(cwd));
+    assert_eq!(collaboration_mode, devo_protocol::CollaborationMode::Plan);
+    assert_eq!(
+        input,
+        vec![InputItem::Text {
+            text: "Skip migrations".to_string(),
+        }]
     );
     assert!(app_event_rx.try_recv().is_err());
 }

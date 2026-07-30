@@ -655,7 +655,7 @@ impl HistoryCell for ProposedPlanCell {
                 Span::styled("  ", style),
                 Span::styled("Implement Plan", style).bold(),
                 Span::styled("  |  ", style.dim()),
-                Span::styled("修改建议", style).bold(),
+                Span::styled("Revise Plan", style).bold(),
             ])
             .style(style),
         );

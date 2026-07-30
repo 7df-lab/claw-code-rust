@@ -16,6 +16,7 @@ use crate::TurnId;
 use crate::TurnUsage;
 use crate::parse_command::ParsedCommand;
 use crate::protocol::FileChange;
+use crate::turn::CollaborationMode;
 use crate::turn::TurnMetadata;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -86,6 +87,13 @@ pub struct SessionMetadata {
     /// instead.
     pub last_query_total_tokens: usize,
     pub status: SessionRuntimeStatus,
+    /// Collaboration mode restored from the latest completed turn context.
+    ///
+    /// Defaults to [`CollaborationMode::Build`] for older payloads that omit
+    /// the field. Resume and session-switch clients use this to rehydrate the
+    /// composer (Plan vs Build) without waiting for the next turn start.
+    #[serde(default)]
+    pub collaboration_mode: CollaborationMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -160,6 +168,19 @@ pub enum SessionHistoryMetadata {
     PlanUpdate {
         explanation: Option<String>,
         steps: Vec<SessionPlanStep>,
+    },
+    /// Markdown Proposed Plan from Plan mode (not the `update_plan` checklist).
+    ///
+    /// Body text lives on [`SessionHistoryItem::body`]. Resume uses this to
+    /// rebuild the Proposed Plan cell and reopen Implement/Revise actions.
+    ProposedPlan,
+    /// Collaboration mode for a restored turn-summary row (`▣ PLAN · …`).
+    ///
+    /// Defaults to [`CollaborationMode::Build`] when older payloads omit the
+    /// field. Resume uses this so Plan turns do not render as Build.
+    TurnSummary {
+        #[serde(default)]
+        collaboration_mode: CollaborationMode,
     },
 }
 
@@ -406,6 +427,7 @@ mod tests {
             }),
             last_query_total_tokens: 21,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: CollaborationMode::Plan,
         };
 
         let json = serde_json::to_string(&metadata).expect("serialize");
@@ -443,6 +465,7 @@ mod tests {
         assert_eq!(restored.last_query_usage, None);
         assert_eq!(restored.last_query_total_tokens, 30);
         assert_eq!(restored.total_input_tokens, 100);
+        assert_eq!(restored.collaboration_mode, CollaborationMode::Build);
     }
 
     #[test]

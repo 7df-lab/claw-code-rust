@@ -6,6 +6,7 @@ use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use devo_protocol::ApprovalDecisionValue;
 use devo_protocol::ApprovalScopeValue;
+use devo_protocol::CollaborationMode;
 use devo_protocol::InputItem;
 use devo_protocol::ItemId;
 use devo_protocol::Model;
@@ -714,6 +715,7 @@ fn session_switched_clears_resume_blocking_state() {
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
     });
 
     assert!(!widget.is_resuming_session_for_test());
@@ -2608,7 +2610,7 @@ fn proposed_plan_keeps_assistant_preamble_before_plan() {
         .expect("assistant preamble is rendered");
     let plan_index = lines
         .iter()
-        .position(|line| line.contains("Proposed Plan"))
+        .position(|line| line.contains("Build the feature"))
         .expect("proposed plan is rendered");
     assert!(
         preamble_index < plan_index,
@@ -2655,7 +2657,7 @@ fn proposed_plan_completion_does_not_duplicate_boundary_preamble() {
 }
 
 #[test]
-fn proposed_plan_cell_header_has_actions_without_bullet() {
+fn proposed_plan_cell_renders_markdown_body_only() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let cell = crate::history_cell::new_proposed_plan(
         "## Summary\n\nBuild the feature.".to_string(),
@@ -2664,10 +2666,195 @@ fn proposed_plan_cell_header_has_actions_without_bullet() {
     let lines = line_texts(cell.display_lines(100));
     let rendered = lines.join("\n");
 
-    assert!(lines.first().is_some_and(|line| line == "Proposed Plan"));
-    assert!(!rendered.contains("• Proposed Plan"));
-    assert!(rendered.contains("Implement Plan"));
-    assert!(rendered.contains("Revise Plan"));
+    assert!(rendered.contains("Summary"));
+    assert!(rendered.contains("Build the feature."));
+    assert!(!rendered.contains("Proposed Plan"));
+    assert!(!rendered.contains("Implement Plan"));
+    assert!(!rendered.contains("Revise Plan"));
+}
+
+#[test]
+fn session_switch_restores_plan_mode_and_proposed_plan_actions() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-plan".to_string(),
+        cwd,
+        title: Some("Plan session".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: Vec::new(),
+        rich_history_items: vec![devo_protocol::SessionHistoryItem {
+            tool_call_id: None,
+            kind: devo_protocol::SessionHistoryItemKind::Assistant,
+            title: String::new(),
+            body: "## Approach\n\n1. Inspect\n2. Patch\n".to_string(),
+            tool_io: None,
+            metadata: Some(devo_protocol::SessionHistoryMetadata::ProposedPlan),
+            duration_ms: None,
+        }],
+        loaded_item_count: 1,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Plan,
+    });
+
+    assert_eq!(
+        widget.input_mode_for_test(),
+        crate::bottom_pane::InputMode::Plan
+    );
+    assert!(widget.has_bottom_pane_view_for_test());
+    assert_eq!(widget.status_message_for_test(), "Choose plan action");
+
+    let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        rendered.contains("Inspect") && rendered.contains("Patch"),
+        "expected Proposed Plan body after resume:\n{rendered}"
+    );
+}
+
+#[test]
+fn session_switch_restores_plan_turn_summary_label() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-plan-summary".to_string(),
+        cwd,
+        title: Some("Plan session".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: Vec::new(),
+        rich_history_items: vec![
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::Assistant,
+                title: String::new(),
+                body: "## Approach\n\n1. Inspect\n2. Patch\n".to_string(),
+                tool_io: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::ProposedPlan),
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::TurnSummary,
+                title: "Test Model".to_string(),
+                body: String::new(),
+                tool_io: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
+                    collaboration_mode: CollaborationMode::Plan,
+                }),
+                duration_ms: Some(5),
+            },
+        ],
+        loaded_item_count: 2,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Plan,
+    });
+
+    assert_eq!(
+        widget.input_mode_for_test(),
+        crate::bottom_pane::InputMode::Plan
+    );
+    let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        rendered.contains("▣ PLAN · Test Model"),
+        "expected Plan mode in restored turn summary:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("▣ BUILD · Test Model"),
+        "did not expect Build mode in restored plan turn summary:\n{rendered}"
+    );
+}
+
+#[test]
+fn session_switch_after_implement_stays_in_build_without_plan_actions() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-build".to_string(),
+        cwd,
+        title: Some("Build session".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: Vec::new(),
+        rich_history_items: vec![
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::Assistant,
+                title: String::new(),
+                body: "## Approach\n\n1. Inspect\n2. Patch\n".to_string(),
+                tool_io: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::ProposedPlan),
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::User,
+                title: String::new(),
+                body: "Implement Plan".to_string(),
+                tool_io: None,
+                metadata: None,
+                duration_ms: None,
+            },
+        ],
+        loaded_item_count: 2,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
+    });
+
+    assert_eq!(
+        widget.input_mode_for_test(),
+        crate::bottom_pane::InputMode::Build
+    );
+    assert!(!widget.has_bottom_pane_view_for_test());
+    assert_eq!(widget.status_message_for_test(), "Session switched");
 }
 
 #[test]
@@ -2814,6 +3001,7 @@ fn session_switch_restores_plan_metadata_into_progress() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     assert_eq!(widget.last_plan_progress_for_test(), Some((1, 2)));
@@ -2864,6 +3052,7 @@ fn session_switch_restores_explored_metadata_into_history() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -2927,6 +3116,7 @@ fn session_switch_restores_edited_metadata_into_history() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -2998,6 +3188,7 @@ fn session_switch_merges_consecutive_explored_items() {
         ],
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -3055,6 +3246,7 @@ fn session_switch_restores_error_via_tool_result_cell_style() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -3136,6 +3328,7 @@ fn rich_session_restore_orders_terminal_error_before_single_failed_footer() {
         ],
         loaded_item_count: 4,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -3213,6 +3406,7 @@ fn live_and_resume_error_share_same_rendering_chain() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
     let resume_blob = scrollback_plain_lines(&resume_widget.drain_scrollback_lines(80))
         .into_iter()
@@ -3885,6 +4079,7 @@ fn session_switch_restores_header_and_spacing_before_user_input() {
         rich_history_items: Vec::new(),
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let committed_lines = widget.drain_scrollback_lines(80);
@@ -3974,6 +4169,7 @@ fn restored_user_spacing_matches_live_turn_batch_spacing() {
         ],
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
     let restored_rows = scrollback_plain_lines(&restored_widget.drain_scrollback_lines(80));
 
@@ -4047,6 +4243,7 @@ fn rich_session_switch_restores_user_spacing_before_assistant_response() {
         ],
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let committed_rows = scrollback_plain_lines(&widget.drain_scrollback_lines(80));
@@ -5467,6 +5664,7 @@ fn restored_reasoning_text_is_visible_in_transcript() {
         rich_history_items: Vec::new(),
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let scrollback = widget.drain_scrollback_lines(80);
@@ -5958,6 +6156,7 @@ fn session_switch_updates_session_identity_projection() {
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     assert_eq!(widget.current_cwd(), resumed_cwd.as_path());
@@ -6001,6 +6200,7 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let idle_summary = widget.status_summary_text();
@@ -6079,6 +6279,7 @@ fn session_compacted_updates_context_bar_to_compacted_prompt_estimate() {
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     widget.handle_worker_event(crate::events::WorkerEvent::SessionCompacted {
@@ -6127,6 +6328,7 @@ fn usage_updated_keeps_context_bar_on_last_query_not_cumulative_totals() {
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let idle_summary = widget.status_summary_text();
@@ -7235,6 +7437,7 @@ fn session_switch_sets_active_agent_footer_label() {
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let rows = rendered_rows(&widget, 160, 16);
@@ -7277,6 +7480,7 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
     widget.add_to_history(crate::history_cell::new_info_event(
         "old session line".to_string(),
@@ -8362,6 +8566,7 @@ fn restored_session_transcript_overlay_preserves_paired_tool_io() {
         ],
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
@@ -8428,6 +8633,7 @@ fn legacy_restored_session_without_tool_io_keeps_existing_tool_result_rendering(
         ],
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
@@ -9694,6 +9900,7 @@ fn session_switch_without_rich_edited_metadata_degrades_to_tool_result_path() {
         rich_history_items: Vec::new(),
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -9749,6 +9956,7 @@ fn session_switch_restores_added_file_content_in_edited_block() {
         }],
         loaded_item_count: 1,
         pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -9804,6 +10012,7 @@ fn session_switch_without_rich_edited_metadata_still_restores_edited_block() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");

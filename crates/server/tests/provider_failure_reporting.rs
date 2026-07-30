@@ -285,7 +285,9 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
                 title: failed_turn.model,
                 body: "failed".to_string(),
                 tool_io: None,
-                metadata: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
+                    collaboration_mode: devo_protocol::CollaborationMode::Build,
+                }),
                 duration_ms: duration_secs,
             },
         ]

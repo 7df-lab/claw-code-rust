@@ -89,6 +89,7 @@ impl ServerRuntime {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
         };
         if let Some(record) = &record
             && let Err(error) = self.rollout_store.append_session_meta(record)
@@ -1002,6 +1003,7 @@ impl ServerRuntime {
                 .map(devo_protocol::TurnUsage::display_total_tokens)
                 .unwrap_or(0),
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: core_session.collaboration_mode,
         };
         drop(source_core_session);
 

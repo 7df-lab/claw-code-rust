@@ -1307,6 +1307,9 @@ impl ReplayState {
         core_session.latest_turn_context = self
             .latest_turn_context
             .or_else(|| record.latest_turn_context.clone());
+        if let Some(latest_turn_context) = core_session.latest_turn_context.as_ref() {
+            core_session.collaboration_mode = latest_turn_context.collaboration_mode;
+        }
         core_session.turn_count = self.turns_seen as usize;
         core_session.total_input_tokens = self.total_input_tokens;
         core_session.total_output_tokens = self.total_output_tokens;
@@ -1415,6 +1418,7 @@ impl ReplayState {
                 .map(devo_protocol::TurnUsage::display_total_tokens)
                 .unwrap_or(0),
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: core_session.collaboration_mode,
         };
 
         let config = core_session.config.clone();
@@ -1748,6 +1752,11 @@ impl ReplayState {
             intra_record_order += 1;
         }
 
+        let collaboration_mode = turn
+            .turn_context
+            .as_ref()
+            .map(|context| context.collaboration_mode)
+            .unwrap_or_default();
         self.pending_items.push(ReplayHistoryItem {
             turn_id: turn.id,
             turn_kind: turn.kind.clone(),
@@ -1764,7 +1773,7 @@ impl ReplayState {
                 title: turn.model.clone(),
                 body: outcome.to_string(),
                 tool_io: None,
-                metadata: None,
+                metadata: Some(crate::SessionHistoryMetadata::TurnSummary { collaboration_mode }),
                 duration_ms: duration_secs,
             }),
         });
@@ -2189,6 +2198,11 @@ pub(crate) fn session_metadata_from_record(
         last_query_usage: None,
         last_query_total_tokens: 0,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: record
+            .latest_turn_context
+            .as_ref()
+            .map(|context| context.collaboration_mode)
+            .unwrap_or_default(),
     }
 }
 
@@ -2855,6 +2869,7 @@ mod tests {
                 last_query_usage: None,
                 last_query_total_tokens: 0,
                 status: SessionRuntimeStatus::Idle,
+                collaboration_mode: Default::default(),
             },
             None,
         )

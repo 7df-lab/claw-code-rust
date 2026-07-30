@@ -365,6 +365,7 @@ fn session_title_updated_event_serializes_expected_kind() {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
         },
     });
 
@@ -401,6 +402,7 @@ fn session_compaction_events_serialize_expected_kinds() {
         last_query_usage: None,
         last_query_total_tokens: 0,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
     };
 
     let started = ServerEvent::SessionCompactionStarted(devo_server::SessionEventPayload {

@@ -62,6 +62,7 @@ impl ServerRuntime {
         };
         state.core.config.token_budget = turn_config.token_budget();
         state.core.collaboration_mode = collaboration_mode;
+        state.summary.collaboration_mode = collaboration_mode;
         if let Some(goal) = turn_goal {
             state.core.set_active_goal(goal);
         } else {

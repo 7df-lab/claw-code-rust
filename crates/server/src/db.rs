@@ -1131,6 +1131,7 @@ fn parse_session_metadata_row(
         last_query_usage: None,
         last_query_total_tokens: 0,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
     })
 }
 
@@ -1415,6 +1416,7 @@ mod tests {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
         }
     }
 

@@ -478,6 +478,11 @@ impl BottomPane {
         self.push_view(view);
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_view_for_test(&self) -> bool {
+        !self.view_stack.is_empty()
+    }
+
     pub(crate) fn open_request_user_input(
         &mut self,
         session_id: SessionId,

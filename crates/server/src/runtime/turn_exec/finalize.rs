@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use devo_core::{SessionId, TurnError, TurnStatus, TurnUsage};
-use devo_protocol::{SessionHistoryItem, SessionHistoryItemKind, TurnFailedPayload};
+use devo_protocol::{
+    SessionHistoryItem, SessionHistoryItemKind, SessionHistoryMetadata, TurnFailedPayload,
+};
 
 use super::super::ServerRuntime;
 use super::super::subagent_usage::ParentUsageSnapshot;
@@ -473,7 +475,9 @@ fn append_terminal_history_items(
         title: final_turn.model.clone(),
         body: outcome.to_string(),
         tool_io: None,
-        metadata: None,
+        metadata: Some(SessionHistoryMetadata::TurnSummary {
+            collaboration_mode: state.core.collaboration_mode,
+        }),
         duration_ms: duration_secs,
     });
 }

@@ -415,6 +415,100 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
 }
 
 #[tokio::test]
+async fn resume_restores_plan_collaboration_mode_from_latest_turn() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let runtime = build_runtime(data_root.path())?;
+    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
+
+    let start_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 1,
+                "method": "session/start",
+                "params": {
+                    "cwd": data_root.path(),
+                    "ephemeral": false,
+                    "title": "Plan mode session",
+                    "model": "test-model"
+                }
+            }),
+        )
+        .await
+        .context("session/start response")?;
+    let session_id = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionStartResult>,
+    >(start_response)?
+    .result
+    .session
+    .session_id;
+
+    let turn_start_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 2,
+                "method": "_devo/turn/start",
+                "params": {
+                    "session_id": session_id,
+                    "input": [{ "type": "text", "text": "draft a plan" }],
+                    "sandbox": null,
+                    "approval_policy": null,
+                    "cwd": null,
+                    "collaboration_mode": "plan"
+                }
+            }),
+        )
+        .await
+        .context("turn/start response")?;
+    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+        serde_json::from_value(turn_start_response)?;
+
+    wait_for_turn_completed(&mut notifications_rx).await?;
+
+    let rebuilt_runtime = build_runtime(data_root.path())?;
+    rebuilt_runtime.load_persisted_sessions().await?;
+    let (rebuilt_connection_id, _rebuilt_notifications_rx) =
+        initialize_connection(&rebuilt_runtime).await?;
+
+    let resume_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 3,
+                "method": "_devo/session/resume",
+                "params": {
+                    "session_id": session_id
+                }
+            }),
+        )
+        .await
+        .context("session/resume response")?;
+    let resume_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    >(resume_response)?
+    .result;
+
+    assert_eq!(
+        resume_result.session.collaboration_mode,
+        devo_protocol::CollaborationMode::Plan
+    );
+    let turn_summary = resume_result
+        .history_items
+        .iter()
+        .rev()
+        .find(|item| item.kind == SessionHistoryItemKind::TurnSummary)
+        .expect("resumed plan turn should include a turn summary");
+    assert_eq!(
+        turn_summary.metadata,
+        Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
+            collaboration_mode: devo_protocol::CollaborationMode::Plan,
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
@@ -1066,7 +1160,9 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         title: "test-model".to_string(),
         body: "failed".to_string(),
         tool_io: None,
-        metadata: None,
+        metadata: Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
+            collaboration_mode: devo_protocol::CollaborationMode::Build,
+        }),
         duration_ms: Some(2),
     };
     let terminal_index = resume
@@ -2735,5 +2831,6 @@ fn sample_indexed_session(
         last_query_usage: None,
         last_query_total_tokens: 0,
         status: devo_protocol::SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
     }
 }

@@ -1046,6 +1046,7 @@ fn acp_session_metadata_from_start_params(
         last_query_usage: None,
         last_query_total_tokens: 0,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
     }
 }
 
@@ -1083,6 +1084,7 @@ fn acp_session_metadata_from_session_info(session_info: &AcpSessionInfo) -> Sess
         last_query_usage: None,
         last_query_total_tokens: 0,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
     }
 }
 

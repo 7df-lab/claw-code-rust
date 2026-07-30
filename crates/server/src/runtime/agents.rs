@@ -168,6 +168,7 @@ impl ServerRuntime {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
         };
         let child_session = RuntimeSession {
             runtime_context,

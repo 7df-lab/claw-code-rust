@@ -27,7 +27,6 @@ use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::startup_header::StartupHeaderData;
 use crate::startup_header::build_startup_header;
-use crate::style::proposed_plan_style;
 use crate::style::user_message_style;
 use crate::text_formatting::truncate_text;
 use crate::theme::ThemeSet;
@@ -630,7 +629,6 @@ impl ProposedPlanCell {
 
 impl HistoryCell for ProposedPlanCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let style = proposed_plan_style();
         let content_width = width.saturating_sub(4).max(1) as usize;
         let mut body = Vec::new();
         append_markdown(
@@ -643,24 +641,7 @@ impl HistoryCell for ProposedPlanCell {
             body.push(Line::from("(empty)").dim());
         }
 
-        let mut lines = vec![Line::from("Proposed Plan").bold(), Line::from("")];
-        lines.extend(
-            prefix_lines(body, Span::styled("  ", style), Span::styled("  ", style))
-                .into_iter()
-                .map(|line| line.style(style)),
-        );
-        lines.push(Line::from("").style(style));
-        lines.push(
-            Line::from(vec![
-                Span::styled("  ", style),
-                Span::styled("Implement Plan", style).bold(),
-                Span::styled("  |  ", style.dim()),
-                Span::styled("Revise Plan", style).bold(),
-            ])
-            .style(style),
-        );
-        lines.push(Line::from("").style(style));
-        lines
+        prefix_lines(body, Span::raw("  "), Span::raw("  "))
     }
 }
 

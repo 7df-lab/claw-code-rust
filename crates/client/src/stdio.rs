@@ -679,6 +679,7 @@ mod tests {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
         };
         assert_eq!(session, expected);
 
@@ -770,6 +771,7 @@ mod tests {
                 last_query_usage: None,
                 last_query_total_tokens: 0,
                 status: SessionRuntimeStatus::Idle,
+                collaboration_mode: Default::default(),
             }]
         );
 
@@ -819,6 +821,7 @@ mod tests {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
         };
         let mut stdout_lines = BufReader::new(stdout).lines();
 

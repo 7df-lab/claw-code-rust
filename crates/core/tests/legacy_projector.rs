@@ -76,7 +76,7 @@ fn session_record(n: u128) -> SessionRecord {
         reasoning_effort_selection: Some("high".into()),
         cwd: "/tmp/legacy-project".into(),
         additional_directories: vec!["/tmp/legacy-extra".into()],
-        cli_version: "0.1.31".into(),
+        cli_version: "0.1.32".into(),
         title: Some("Legacy Session".into()),
         title_state: SessionTitleState::Final(SessionTitleFinalSource::ModelGenerated),
         sandbox_policy: "workspace-write".into(),

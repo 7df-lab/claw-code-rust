@@ -4,7 +4,7 @@ use devo_core::tools::{
     AgentToolCoordinator, ClientFilesystem, ClientTerminal, ToolAgentScope, ToolCall,
     ToolExecutionOptions, ToolRuntime, ToolRuntimeContext,
 };
-use devo_core::{Message, QueryEvent, QueryOptions, TurnConfig, query_with_options};
+use devo_core::{Message, QueryEvent, QueryOptions, TurnConfig, query};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -173,7 +173,7 @@ impl ServerRuntime {
                 Some(turn_id),
                 devo_protocol::canonical::usage::UsagePurpose::Compaction,
             );
-            let mut query_future = std::pin::pin!(query_with_options(
+            let mut query_future = std::pin::pin!(query(
                 &mut state.core,
                 turn_config,
                 provider,

@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{ItemId, ResponseItem, SessionId, SummaryModelSelection, TurnId};
+use devo_protocol::approx_tokens_from_byte_count;
 use devo_protocol::{ContentBlock, Message, Model, Role};
 
 // ---------------------------------------------------------------------------
@@ -258,7 +259,9 @@ impl TokenEstimator for ByteTokenEstimator {
 }
 
 fn bytes_to_tokens(bytes: usize) -> u32 {
-    bytes.div_ceil(4).try_into().unwrap_or(u32::MAX)
+    approx_tokens_from_byte_count(bytes)
+        .try_into()
+        .unwrap_or(u32::MAX)
 }
 
 /// Stores the summary payload created during compaction.

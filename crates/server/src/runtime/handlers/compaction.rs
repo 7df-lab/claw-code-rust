@@ -1,4 +1,5 @@
 use super::super::*;
+use devo_protocol::approx_tokens_from_byte_count;
 
 impl ServerRuntime {
     pub(crate) async fn handle_session_compact(
@@ -193,14 +194,17 @@ impl ServerRuntime {
                     ) = {
                         let mut core_session = runtime_session.core_session.lock().await;
                         core_session.set_prompt_messages(new_messages);
-                        let compacted_prompt_token_estimate = core_session
+                        let prompt_bytes = core_session
                             .prompt_source_messages()
                             .iter()
                             .map(|message| {
                                 serde_json::to_string(message).map_or(0, |json| json.len())
                             })
-                            .sum::<usize>()
-                            .div_ceil(4);
+                            .sum::<usize>();
+                        let compacted_prompt_token_estimate =
+                            approx_tokens_from_byte_count(prompt_bytes)
+                                .try_into()
+                                .unwrap_or(usize::MAX);
                         core_session.prompt_token_estimate = compacted_prompt_token_estimate;
                         (
                             core_session.total_input_tokens,

@@ -152,6 +152,7 @@ pub(crate) async fn run_prompt(
         registry,
         &runtime,
         jsonl_event_callback(output_format, session_id_for_events),
+        devo_core::QueryOptions::default(),
     )
     .await;
 

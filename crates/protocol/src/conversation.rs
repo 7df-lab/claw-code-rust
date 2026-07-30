@@ -225,6 +225,14 @@ pub enum ContentBlock {
     },
 }
 
+/// One role-tagged turn in the conversation (session / protocol shape).
+///
+/// A single `Message` may bundle several [`ContentBlock`]s—text, reasoning,
+/// tool use, and tool results—because that matches how a model or user turn is
+/// stored and exchanged. History management in `devo-core` uses a flatter
+/// `ResponseItem` IR instead; see `message_to_response_items` there for why a
+/// mixed assistant message is split into adjacent atomic items and later merged
+/// again when building provider requests.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Message {
     pub role: Role,

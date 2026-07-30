@@ -11,6 +11,7 @@ use devo_core::Message;
 use devo_core::Model;
 use devo_core::ProviderWireApi;
 use devo_core::QueryEvent;
+use devo_core::QueryOptions;
 use devo_core::ReasoningCapability;
 use devo_core::SessionConfig;
 use devo_core::SessionState;
@@ -138,6 +139,7 @@ async fn run_query(
         registry,
         &runtime,
         Some(callback),
+        QueryOptions::default(),
     )
     .await
     .context("execute live query")?;

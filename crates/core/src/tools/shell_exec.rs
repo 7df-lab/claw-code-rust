@@ -1,3 +1,4 @@
+use devo_protocol::approx_bytes_for_tokens;
 use portable_pty::{Child, CommandBuilder, ExitStatus, PtySize, native_pty_system};
 use serde_json::json;
 use std::path::PathBuf;
@@ -472,7 +473,7 @@ pub(crate) fn truncate_output(text: &str, max_output_tokens: usize) -> String {
     if max_output_tokens == 0 {
         return String::new();
     }
-    let max_chars = max_output_tokens.saturating_mul(4);
+    let max_chars = approx_bytes_for_tokens(max_output_tokens);
     if text.len() <= max_chars {
         return text.to_string();
     }

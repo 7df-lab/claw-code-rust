@@ -92,7 +92,9 @@ impl ServerRuntime {
             ))
             .await;
             let retry_workspace_version =
-                crate::workspace_changes::current_git_workspace_version(workspace_root).await.ok();
+                crate::workspace_changes::current_git_workspace_version(workspace_root)
+                    .await
+                    .ok();
             return Err(WorkspaceRestoreFailure {
                 response: self.error_response(
                     request_id.clone(),
@@ -137,16 +139,15 @@ impl ServerRuntime {
                         ProtocolErrorCode::InternalError,
                         format!("failed to verify workspace restore: {error}"),
                     ),
-                    retry_workspace_version: crate::workspace_changes::current_git_workspace_version(
-                        PathBuf::from(
+                    retry_workspace_version:
+                        crate::workspace_changes::current_git_workspace_version(PathBuf::from(
                             checkpoint
                                 .workspace_root
                                 .as_deref()
                                 .expect("Git checkpoint has workspace root"),
-                        ),
-                    )
-                    .await
-                    .ok(),
+                        ))
+                        .await
+                        .ok(),
                     completion_pending: None,
                 });
             }

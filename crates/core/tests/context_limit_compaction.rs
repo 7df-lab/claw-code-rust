@@ -12,6 +12,7 @@ use devo_core::Model;
 use devo_core::ModelRequest;
 use devo_core::ModelResponse;
 use devo_core::QueryEvent;
+use devo_core::QueryOptions;
 use devo_core::ResponseContent;
 use devo_core::SessionConfig;
 use devo_core::SessionState;
@@ -113,6 +114,7 @@ async fn context_limit_error_compacts_and_retries_query() {
         registry,
         &runtime,
         Some(callback),
+        QueryOptions::default(),
     )
     .await
     .expect("query should compact and retry");

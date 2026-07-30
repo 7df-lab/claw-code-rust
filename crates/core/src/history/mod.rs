@@ -411,19 +411,23 @@ impl History {
     }
 }
 
-/// Converts locked prefix `UserInput`s into request messages and prepends them
-/// ahead of the existing prompt-visible history.
 /// Merges consecutive assistant `RequestMessage`s into a single message by
 /// concatenating their content arrays.
 ///
-/// This is necessary because `message_to_response_items` can split a single
-/// assistant `Message` (containing both text and `ToolUse` blocks) into
-/// separate `ResponseItem`s (one `Message` item for the text, plus one
-/// `ToolCall` per tool use). When these are converted to `RequestMessage`s,
-/// the result would be multiple consecutive assistant messages, which violates
-/// provider protocol requirements (e.g. OpenAI requires that an assistant
-/// message with `tool_calls` be immediately followed by tool-result messages,
-/// not by another assistant message).
+/// This is the inverse of the split performed by
+/// [`crate::response_item::message_to_response_items`]. For example, a mixed
+/// assistant turn that became:
+///
+/// ```text
+/// ResponseItem::Reason   { "hmm" }
+/// ResponseItem::Message  { Assistant, [Text("hello")] }
+/// ResponseItem::ToolCall { "tu-1", "bash", ... }
+/// ```
+///
+/// converts to three consecutive assistant `RequestMessage`s. Providers such as
+/// OpenAI require an assistant message that carries `tool_calls` to be followed
+/// immediately by tool-result messages, not by another assistant message. Merging
+/// restores a single assistant request message before the tool results are sent.
 fn merge_consecutive_assistant_messages(messages: &mut Vec<RequestMessage>) {
     let assistant_role = Role::Assistant.as_str();
     let capacity = messages.len();
@@ -438,6 +442,8 @@ fn merge_consecutive_assistant_messages(messages: &mut Vec<RequestMessage>) {
     }
 }
 
+/// Converts locked prefix `UserInput`s into request messages and prepends them
+/// ahead of the existing prompt-visible history.
 pub fn prepend_user_inputs(messages: &mut Vec<RequestMessage>, user_inputs: &[UserInput]) {
     messages.splice(
         0..0,

@@ -1,3 +1,4 @@
+use devo_protocol::approx_bytes_for_tokens;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -56,7 +57,7 @@ pub(crate) async fn execute_with_client_terminal(
                 args,
                 env,
                 cwd: Some(request.workdir.clone()),
-                output_byte_limit: Some(request.max_output_tokens.saturating_mul(4)),
+                output_byte_limit: Some(approx_bytes_for_tokens(request.max_output_tokens)),
             },
             ctx.cancel_token.clone(),
         )

@@ -99,7 +99,7 @@ pub(super) async fn run_session_actor(
                     summary: state.summary.clone(),
                     runtime_context: Arc::clone(&state.runtime_context),
                     pending_turn_queue: Arc::clone(&state.pending_turn_queue),
-                    btw_input_queue: Arc::clone(&state.btw_input_queue),
+                    steer_input_queue: Arc::clone(&state.steer_input_queue),
                 });
             }
             SessionCommand::GetHookContextSnapshot { reply } => {

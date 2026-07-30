@@ -77,6 +77,7 @@ impl ServerRuntime {
         let Some(session_arc) = self.sessions.lock().await.get(&session_id).cloned() else {
             return Err("session does not exist".to_string());
         };
+        let _state_change_guard = session_arc.lock_state_change().await;
         let snapshot = session_arc
             .hook_context_snapshot()
             .await

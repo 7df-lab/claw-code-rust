@@ -17,10 +17,7 @@ use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::InputMode;
-use crate::bottom_pane::list_selection_view::ListSelectionView;
-use crate::bottom_pane::list_selection_view::SelectionItem;
-use crate::bottom_pane::list_selection_view::SelectionViewParams;
-use crate::bottom_pane::popup_consts::standard_popup_hint_line;
+use crate::bottom_pane::ProposedPlanActionsView;
 use crate::events::PlanStep;
 use crate::events::PlanStepStatus;
 use crate::events::TranscriptItem;
@@ -169,53 +166,49 @@ impl ChatWidget {
         }
 
         self.pending_proposed_plan_actions = false;
-        let cwd = Some(self.session.cwd.clone());
-        let model = self.user_turn_model();
-        let model_binding_id = self.user_turn_model_binding_id();
-        let reasoning_effort_selection = self.reasoning_effort_selection.clone();
-        let implement_item = SelectionItem {
-            name: "Implement Plan".to_string(),
-            description: Some("Switch to Build mode and start implementing this plan.".to_string()),
-            actions: vec![Box::new(move |tx: &AppEventSender| {
-                tx.send(AppEvent::Command(
-                    AppCommand::user_turn_with_collaboration_mode(
-                        vec![InputItem::Text {
-                            text: "Implement Plan".to_string(),
-                        }],
-                        cwd.clone(),
-                        model.clone(),
-                        model_binding_id.clone(),
-                        reasoning_effort_selection.clone(),
-                        /*sandbox*/ None,
-                        Some("on-request".to_string()),
-                        CollaborationMode::Build,
-                    ),
-                ));
-            })],
-            dismiss_on_select: true,
-            ..SelectionItem::default()
-        };
-        let revise_item = SelectionItem {
-            name: "修改建议".to_string(),
-            description: Some("Keep Plan mode and type feedback in the input.".to_string()),
-            actions: vec![Box::new(|tx: &AppEventSender| {
-                tx.send(AppEvent::PreparePlanSuggestionInput);
-            })],
-            dismiss_on_select: true,
-            ..SelectionItem::default()
-        };
+        let implement_cwd = Some(self.session.cwd.clone());
+        let implement_model = self.user_turn_model();
+        let implement_model_binding_id = self.user_turn_model_binding_id();
+        let implement_reasoning = self.reasoning_effort_selection.clone();
+        let revise_cwd = Some(self.session.cwd.clone());
+        let revise_model = self.user_turn_model();
+        let revise_model_binding_id = self.user_turn_model_binding_id();
+        let revise_reasoning = self.reasoning_effort_selection.clone();
 
         self.bottom_pane
-            .open_popup_view(Box::new(ListSelectionView::new(
-                SelectionViewParams {
-                    title: Some("Proposed Plan".to_string()),
-                    subtitle: Some("Choose how to continue.".to_string()),
-                    footer_hint: Some(standard_popup_hint_line()),
-                    items: vec![implement_item, revise_item],
-                    ..SelectionViewParams::default()
-                },
+            .open_popup_view(Box::new(ProposedPlanActionsView::new(
                 self.app_event_tx.clone(),
                 self.active_accent_color(),
+                Box::new(move |tx: &AppEventSender| {
+                    tx.send(AppEvent::Command(
+                        AppCommand::user_turn_with_collaboration_mode(
+                            vec![InputItem::Text {
+                                text: "Implement Plan".to_string(),
+                            }],
+                            implement_cwd.clone(),
+                            implement_model.clone(),
+                            implement_model_binding_id.clone(),
+                            implement_reasoning.clone(),
+                            /*sandbox*/ None,
+                            Some("on-request".to_string()),
+                            CollaborationMode::Build,
+                        ),
+                    ));
+                }),
+                Box::new(move |tx: &AppEventSender, text: String| {
+                    tx.send(AppEvent::Command(
+                        AppCommand::user_turn_with_collaboration_mode(
+                            vec![InputItem::Text { text }],
+                            revise_cwd.clone(),
+                            revise_model.clone(),
+                            revise_model_binding_id.clone(),
+                            revise_reasoning.clone(),
+                            /*sandbox*/ None,
+                            Some("on-request".to_string()),
+                            CollaborationMode::Plan,
+                        ),
+                    ));
+                }),
             )));
         self.set_status_message("Choose plan action");
     }

@@ -437,6 +437,7 @@ async fn handle_reasoning_delta(
                     turn_id: Some(turn_id),
                     item_id: Some(item_id),
                     seq: 0,
+                    item_seq: None,
                 },
                 delta: text,
                 stream_index: None,
@@ -744,6 +745,7 @@ async fn handle_tool_progress(
                     turn_id: Some(turn_id),
                     item_id,
                     seq: 0,
+                    item_seq: None,
                 },
                 delta: serde_json::json!({
                     "tool_use_id": tool_use_id,

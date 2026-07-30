@@ -263,10 +263,10 @@ pub struct SessionState {
     /// - Lifecycle: preserved across turns; unconsumed items are pushed back
     ///   when the current turn ends and consumed when the next turn starts.
     pub pending_turn_queue: Arc<Mutex<VecDeque<PendingInputItem>>>,
-    /// Thread-safe queue for /btw steer inputs.
+    /// Thread-safe queue for inputs steering the active turn.
     /// - Source: user sends `turn/steer` while a turn is active.
     /// - Lifecycle: scoped to current turn only; cleared when the turn ends.
-    pub btw_input_queue: Arc<Mutex<VecDeque<PendingInputItem>>>,
+    pub steer_input_queue: Arc<Mutex<VecDeque<PendingInputItem>>>,
     /// Turn-scoped state (Some while a turn is active).
     pub(crate) turn_state: Option<TurnState>,
 }
@@ -294,7 +294,7 @@ impl SessionState {
             last_turn_tokens: 0,
             last_turn_interrupted: false,
             pending_turn_queue: Arc::new(Mutex::new(VecDeque::new())),
-            btw_input_queue: Arc::new(Mutex::new(VecDeque::new())),
+            steer_input_queue: Arc::new(Mutex::new(VecDeque::new())),
             turn_state: None,
         }
     }
@@ -322,7 +322,7 @@ impl SessionState {
             last_turn_tokens: self.last_turn_tokens,
             last_turn_interrupted: self.last_turn_interrupted,
             pending_turn_queue: Arc::clone(&self.pending_turn_queue),
-            btw_input_queue: Arc::clone(&self.btw_input_queue),
+            steer_input_queue: Arc::clone(&self.steer_input_queue),
             turn_state: None,
         }
     }
@@ -410,12 +410,12 @@ impl SessionState {
         pending.drain(..).collect()
     }
 
-    /// Drains all pending inputs from the /btw queue.
-    pub fn drain_btw_input_queue(&self) -> Vec<PendingInputItem> {
+    /// Drains all pending inputs from the active-turn steer queue.
+    pub fn drain_steer_input_queue(&self) -> Vec<PendingInputItem> {
         let mut guard = self
-            .btw_input_queue
+            .steer_input_queue
             .lock()
-            .expect("btw input queue mutex should not be poisoned");
+            .expect("steer input queue mutex should not be poisoned");
         guard.drain(..).collect()
     }
 
@@ -438,18 +438,33 @@ impl SessionState {
                 queue.push_front(item);
             }
         }
-        // /btw steer inputs are scoped to the current turn only; discard any
-        // that arrived too late to be consumed.
-        self.btw_input_queue
-            .lock()
-            .expect("btw input queue mutex should not be poisoned")
-            .clear();
+        // Steer inputs that arrived before the injection boundary but
+        // were not consumed before turn end degrade back into the session turn
+        // queue. This preserves the message; a later follow-up drain may start
+        // it as its own turn. They append behind already-queued inputs, while
+        // preserving arrival order among themselves.
+        let late_steer: Vec<PendingInputItem> = {
+            let mut steer = self
+                .steer_input_queue
+                .lock()
+                .expect("steer input queue mutex should not be poisoned");
+            steer.drain(..).collect()
+        };
+        if !late_steer.is_empty() {
+            let mut queue = self
+                .pending_turn_queue
+                .lock()
+                .expect("pending turn queue mutex should not be poisoned");
+            for item in late_steer {
+                queue.push_back(item);
+            }
+        }
     }
 
     /// Merge turn-scoped pending input with both cross-thread inboxes.
-    /// Order: btw inbox → turn-state pending → turn queue
+    /// Order: steer inbox → turn-state pending → turn queue
     pub fn take_turn_pending_input(&mut self) -> Vec<PendingInputItem> {
-        let mut result = self.drain_btw_input_queue();
+        let mut result = self.drain_steer_input_queue();
         if let Some(turn) = self.turn_state.as_mut() {
             result.extend(turn.take_pending_input());
         }
@@ -460,6 +475,7 @@ impl SessionState {
 
 #[cfg(test)]
 mod tests {
+    use devo_protocol::PendingInputKind;
     use devo_protocol::ReasoningCapability;
     use devo_protocol::ReasoningEffort;
     use devo_protocol::SessionId;
@@ -541,6 +557,40 @@ mod tests {
         assert_eq!(
             provider_bound.reasoning_effort_selection,
             Some("high".to_string())
+        );
+    }
+
+    #[test]
+    fn end_turn_degrades_unconsumed_steer_inputs_into_the_turn_queue() {
+        let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+        session.start_turn(TurnKind::Regular);
+        let steer = PendingInputItem::new(
+            PendingInputKind::UserText {
+                text: "late steer".to_string(),
+            },
+            None,
+            chrono::Utc::now(),
+        );
+        session
+            .steer_input_queue
+            .lock()
+            .expect("steer lock")
+            .push_back(steer.clone());
+
+        session.end_turn();
+
+        let queue = session.pending_turn_queue.lock().expect("queue lock");
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].id, steer.id);
+        assert!(
+            matches!(&queue[0].kind, PendingInputKind::UserText { text } if text == "late steer")
+        );
+        assert!(
+            session
+                .steer_input_queue
+                .lock()
+                .expect("steer lock")
+                .is_empty()
         );
     }
 

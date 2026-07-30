@@ -254,6 +254,29 @@ pub async fn run_server_process(
     if runtime.backfill_session_index_if_required()? {
         tracing::info!("rollout metadata index backfill completed");
     }
+    // Delivery-log reconciliation (08 §7): backfill event_log rows a crash
+    // prevented the append path from writing. Runs in the background;
+    // session/list correctness never depends on it.
+    {
+        let rollout_store = runtime.rollout_store();
+        let db = runtime.deps_db();
+        tokio::task::spawn_blocking(move || {
+            match crate::event_reconcile::reconcile_event_log(&rollout_store, &db) {
+                Ok(stats) => {
+                    if stats.rows_inserted > 0 || stats.files_damaged > 0 {
+                        tracing::info!(
+                            rows_inserted = stats.rows_inserted,
+                            files_damaged = stats.files_damaged,
+                            "event_log reconciliation completed"
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "event_log reconciliation failed");
+                }
+            }
+        });
+    }
 
     let shutdown_signal = tokio_util::sync::CancellationToken::new();
     let internal_proxy_control = InternalProxyControl::new(shutdown_signal.clone());

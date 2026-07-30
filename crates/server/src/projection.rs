@@ -164,17 +164,17 @@ pub(crate) fn history_item_from_turn_item(item: &TurnItem) -> Option<SessionHist
             text.clone(),
         )),
         TurnItem::Plan(TextItem { text }) => {
-            let metadata = parse_plan_history_metadata(text);
-            let mut item = SessionHistoryItem::new(
-                None,
-                SessionHistoryItemKind::Assistant,
-                String::new(),
-                text.clone(),
-            );
-            if let Some(metadata) = metadata {
-                item = item.with_metadata(metadata);
-            }
-            Some(item)
+            let metadata =
+                parse_plan_history_metadata(text).unwrap_or(SessionHistoryMetadata::ProposedPlan);
+            Some(
+                SessionHistoryItem::new(
+                    None,
+                    SessionHistoryItemKind::Assistant,
+                    String::new(),
+                    text.clone(),
+                )
+                .with_metadata(metadata),
+            )
         }
         TurnItem::ContextCompaction(TextItem { .. }) => None,
         TurnItem::Reasoning(TextItem { text }) => Some(SessionHistoryItem::new(
@@ -457,6 +457,11 @@ impl SessionProjector for DefaultProjection {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status,
+            collaboration_mode: session
+                .latest_turn_context
+                .as_ref()
+                .map(|context| context.collaboration_mode)
+                .unwrap_or_default(),
         }
     }
 }
@@ -662,6 +667,20 @@ mod tests {
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].status, SessionPlanStepStatus::Completed);
         assert_eq!(steps[1].status, SessionPlanStepStatus::InProgress);
+    }
+
+    #[test]
+    fn proposed_plan_markdown_emits_proposed_plan_metadata() {
+        let item = TurnItem::Plan(TextItem {
+            text: "## Approach\n\n1. Inspect\n2. Patch\n".to_string(),
+        });
+
+        let history_item = history_item_from_turn_item(&item).expect("history item");
+        assert_eq!(
+            history_item.metadata,
+            Some(SessionHistoryMetadata::ProposedPlan)
+        );
+        assert_eq!(history_item.body, "## Approach\n\n1. Inspect\n2. Patch\n");
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub(crate) struct SpawnSnapshot {
     pub(crate) parent_tool_registry: Option<Arc<ToolRegistry>>,
     pub(crate) runtime_context: Arc<SessionRuntimeContext>,
     pub(crate) pending_turn_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
-    pub(crate) btw_input_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
+    pub(crate) steer_input_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
 }
 
 /// Approval caches cloned at turn start for permission checks while the actor
@@ -80,7 +80,7 @@ pub(crate) struct SessionActorState {
     pub(crate) persisted_turn_items: Vec<PersistedTurnItem>,
     pub(crate) latest_compaction_snapshot: Option<devo_core::CompactionSnapshotLine>,
     pub(crate) pending_turn_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
-    pub(crate) btw_input_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
+    pub(crate) steer_input_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
     pub(crate) agent_tool_policy: devo_protocol::AgentToolPolicy,
     pub(crate) max_turns: Option<u32>,
     pub(crate) next_item_seq: u64,
@@ -134,7 +134,7 @@ impl SessionActorState {
             parent_tool_registry: self.tool_registry.clone(),
             runtime_context: Arc::clone(&self.runtime_context),
             pending_turn_queue: Arc::clone(&self.pending_turn_queue),
-            btw_input_queue: Arc::clone(&self.btw_input_queue),
+            steer_input_queue: Arc::clone(&self.steer_input_queue),
         }
     }
 
@@ -162,7 +162,7 @@ impl SessionActorState {
             persisted_turn_items: session.persisted_turn_items,
             latest_compaction_snapshot: session.latest_compaction_snapshot,
             pending_turn_queue: session.pending_turn_queue,
-            btw_input_queue: session.btw_input_queue,
+            steer_input_queue: session.steer_input_queue,
             agent_tool_policy: session.agent_tool_policy,
             max_turns: session.max_turns,
             next_item_seq: session.next_item_seq,
@@ -192,7 +192,7 @@ impl SessionActorState {
             persisted_turn_items: self.persisted_turn_items.clone(),
             latest_compaction_snapshot: self.latest_compaction_snapshot.clone(),
             pending_turn_queue: Arc::clone(&self.pending_turn_queue),
-            btw_input_queue: Arc::clone(&self.btw_input_queue),
+            steer_input_queue: Arc::clone(&self.steer_input_queue),
             agent_tool_policy: self.agent_tool_policy,
             max_turns: self.max_turns,
             deferred_assistant: stream.deferred_assistant.clone(),

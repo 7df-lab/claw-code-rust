@@ -83,6 +83,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let state_change_guard = session_handle.lock_state_change().await;
         let Some(reservation) = self
             .session_turn_reservation_snapshot(params.session_id)
             .await
@@ -225,9 +226,16 @@ impl ServerRuntime {
                 now,
             );
             let queued_input_id = item.id;
-            session_handle
-                .enqueue_pending_turn_input(item.clone())
-                .await;
+            // Push into the shared queue directly instead of the actor
+            // mailbox: a busy actor does not service its mailbox until the
+            // turn finishes, and callers must see their entry synchronously
+            // (01 §4.3 last-write-wins). The actor reads the same shared
+            // queue at drain time.
+            reservation
+                .pending_turn_queue
+                .lock()
+                .expect("pending turn queue mutex should not be poisoned")
+                .push_back(item.clone());
             if !reservation.ephemeral
                 && let Err(err) =
                     self.deps
@@ -313,6 +321,7 @@ impl ServerRuntime {
         session_handle
             .begin_active_turn(turn.clone(), turn_config.clone())
             .await;
+        drop(state_change_guard);
         if let Some((old_cwd, new_cwd)) = cwd_change {
             self.run_session_hook(
                 params.session_id,
@@ -443,6 +452,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
 
         let requested_runtime_context = match params.cwd.as_ref() {
             Some(cwd) => match self.deps.context_for_workspace(cwd).await {
@@ -636,28 +646,6 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
-        let Some(active_turn) = reservation.active_turn.as_ref() else {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::NoActiveTurn,
-                "no active turn exists",
-            );
-        };
-        let turn_id = active_turn.turn_id;
-        if turn_id != params.expected_turn_id {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::ExpectedTurnMismatch,
-                "active turn did not match expectedTurnId",
-            );
-        }
-        if active_turn.kind != devo_core::TurnKind::Regular {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::ActiveTurnNotSteerable,
-                "cannot steer a non-regular turn",
-            );
-        }
         let workspace_root = reservation.summary.cwd.clone();
         let runtime_context = reservation.runtime_context;
         let resolved_input = match runtime_context
@@ -692,6 +680,74 @@ impl ServerRuntime {
             }
         };
 
+        // The turn having just ended is the ONLY race that degrades (01
+        // §4.3): the input must not be lost, so it lands in the session
+        // queue instead of erroring. Genuine steerability violations
+        // (wrong turn, wrong kind) still error below.
+        if reservation.active_turn.is_none() {
+            let item = devo_core::PendingInputItem::new(
+                devo_core::PendingInputKind::UserInput {
+                    input: params.input.clone(),
+                    display_text: display_input.clone(),
+                    prompt_text: resolved_input.prompt_text,
+                    prompt_messages: resolved_input.prompt_messages,
+                },
+                None,
+                chrono::Utc::now(),
+            );
+            reservation
+                .pending_turn_queue
+                .lock()
+                .expect("pending turn queue mutex should not be poisoned")
+                .push_back(item.clone());
+            if !reservation.ephemeral
+                && let Err(err) =
+                    self.deps
+                        .db
+                        .push_pending(&params.session_id, QueueType::Turn, &item)
+            {
+                tracing::warn!(
+                    session_id = %params.session_id,
+                    error = %err,
+                    "failed to persist degraded steer input to database"
+                );
+            }
+            self.broadcast_queue_updated(
+                params.session_id,
+                devo_protocol::canonical::queue::QueueChange::Added,
+                devo_protocol::canonical::ids::QueueItemId::from_legacy_uuid(uuid::Uuid::from(
+                    item.id,
+                )),
+                None,
+            )
+            .await;
+            self.broadcast_updated_queue(params.session_id).await;
+            return serde_json::to_value(SuccessResponse {
+                id: request_id,
+                result: TurnSteerResult {
+                    turn_id: params.expected_turn_id,
+                    disposition: TurnInputDisposition::Queued,
+                },
+            })
+            .expect("serialize turn/steer degraded response");
+        }
+        let active_turn = reservation.active_turn.as_ref().expect("checked above");
+        let turn_id = active_turn.turn_id;
+        if turn_id != params.expected_turn_id {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::ExpectedTurnMismatch,
+                "active turn did not match expectedTurnId",
+            );
+        }
+        if active_turn.kind != devo_core::TurnKind::Regular {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::ActiveTurnNotSteerable,
+                "cannot steer a non-regular turn",
+            );
+        }
+
         self.emit_turn_item(
             params.session_id,
             turn_id,
@@ -713,21 +769,21 @@ impl ServerRuntime {
             chrono::Utc::now(),
         );
         reservation
-            .btw_input_queue
+            .steer_input_queue
             .lock()
-            .expect("btw input queue mutex should not be poisoned")
+            .expect("steer input queue mutex should not be poisoned")
             .push_back(item.clone());
 
         if !reservation.ephemeral
             && let Err(err) = self
                 .deps
                 .db
-                .push_pending(&params.session_id, QueueType::Btw, &item)
+                .push_pending(&params.session_id, QueueType::Steer, &item)
         {
             tracing::warn!(
                 session_id = %params.session_id,
                 error = %err,
-                "failed to persist btw input to database"
+                "failed to persist steer input to database"
             );
         }
 
@@ -854,11 +910,16 @@ impl ServerRuntime {
             );
         };
         let Some(active_turn) = reservation.active_turn.as_ref() else {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::NoActiveTurn,
-                "no active turn exists",
-            );
+            // The turn just ended (01 §4.3): the queued entry stays queued —
+            // the message is never lost.
+            return serde_json::to_value(SuccessResponse {
+                id: request_id,
+                result: TurnQueueSteerResult {
+                    turn_id: params.expected_turn_id,
+                    disposition: TurnInputDisposition::Queued,
+                },
+            })
+            .expect("serialize turn/queue/steer degraded response");
         };
         if active_turn.turn_id != params.expected_turn_id {
             return self.error_response(
@@ -910,9 +971,9 @@ impl ServerRuntime {
         let (display_input, item) = queued;
 
         reservation
-            .btw_input_queue
+            .steer_input_queue
             .lock()
-            .expect("btw input queue mutex should not be poisoned")
+            .expect("steer input queue mutex should not be poisoned")
             .push_back(item.clone());
 
         if !is_ephemeral {
@@ -928,10 +989,10 @@ impl ServerRuntime {
                     "failed to remove steered queued message from database"
                 );
             }
-            if let Err(error) = self
-                .deps
-                .db
-                .push_pending(&params.session_id, QueueType::Btw, &item)
+            if let Err(error) =
+                self.deps
+                    .db
+                    .push_pending(&params.session_id, QueueType::Steer, &item)
             {
                 tracing::warn!(
                     session_id = %params.session_id,

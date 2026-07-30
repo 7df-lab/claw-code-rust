@@ -37,6 +37,7 @@ pub(crate) struct SessionHandle {
     session_id: SessionId,
     tx: mpsc::Sender<SessionCommand>,
     max_turns: Option<u32>,
+    state_change_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SessionHandle {
@@ -65,13 +66,20 @@ impl SessionHandle {
             session_id,
             tx,
             max_turns,
+            state_change_gate: Arc::new(tokio::sync::Mutex::new(())),
         };
-        tokio::spawn(super::loop_::run_session_actor(state, rx, runtime));
+        tokio::spawn(super::actor_loop::run_session_actor(state, rx, runtime));
         handle
     }
 
     async fn send(&self, command: SessionCommand) -> bool {
         self.tx.send(command).await.is_ok()
+    }
+
+    /// Serializes idle-session state changes that must not overlap turn
+    /// admission, such as two-phase rollback commit and message edit.
+    pub(crate) async fn lock_state_change(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.state_change_gate).lock_owned().await
     }
 
     /// Non-blocking enqueue. Used by turn event streams so they never park on a

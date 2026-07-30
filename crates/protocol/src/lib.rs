@@ -19,6 +19,7 @@ mod acp_session_update;
 pub mod acp_ts;
 mod agent;
 mod approval;
+pub mod canonical;
 mod command_exec;
 mod connection;
 mod conversation;

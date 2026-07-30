@@ -26,6 +26,7 @@
 //! 6. If the summarizer LLM call fails with a context‑length error, move the
 //!    newest to‑compact item back into the preserve set and retry.
 
+use devo_protocol::approx_tokens_from_byte_count;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -423,8 +424,9 @@ fn estimate_item_tokens(item: &ResponseItem) -> usize {
         }
         ResponseItem::ToolCallOutput { content, .. } => content.len(),
     };
-    // Rough estimate: ~4 bytes per token.
-    bytes.div_ceil(4)
+    approx_tokens_from_byte_count(bytes)
+        .try_into()
+        .unwrap_or(usize::MAX)
 }
 
 #[cfg(test)]
@@ -745,7 +747,10 @@ mod tests {
         };
 
         let expected_bytes = "shell_command".len() + 2 + input.to_string().len();
-        assert_eq!(estimate_item_tokens(&item), expected_bytes.div_ceil(4));
+        assert_eq!(
+            estimate_item_tokens(&item),
+            approx_tokens_from_byte_count(expected_bytes) as usize
+        );
     }
 
     #[test]

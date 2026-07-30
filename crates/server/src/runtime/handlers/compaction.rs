@@ -1,4 +1,5 @@
 use super::super::*;
+use devo_protocol::approx_tokens_from_byte_count;
 
 impl ServerRuntime {
     pub(crate) async fn handle_session_compact(
@@ -82,6 +83,11 @@ impl ServerRuntime {
         )
         .await;
 
+        // Compaction computes a replacement from a history snapshot. Keep the
+        // session mutation gate for the whole summarize-and-apply operation so
+        // rollback, turn admission, and metadata edits cannot make that
+        // replacement stale while the model call is in flight.
+        let state_change_guard = session_handle.lock_state_change().await;
         let result = {
             let Some(runtime_session) = session_handle.export_runtime_session().await else {
                 tracing::warn!(session_id = %session_id, "session compaction failed: session unavailable");
@@ -134,10 +140,16 @@ impl ServerRuntime {
                 output_tokens = token_info.output_tokens,
                 "starting compaction summarization"
             );
-            let summarizer = DefaultHistorySummarizer::with_models(
+            let provider = self.usage_ledger.instrumented_provider(
                 runtime_session
                     .runtime_context
                     .provider_for_route(turn_config.provider_route.clone()),
+                session_id,
+                None,
+                devo_protocol::canonical::usage::UsagePurpose::Compaction,
+            );
+            let summarizer = DefaultHistorySummarizer::with_models(
+                provider,
                 model_slug,
                 request_model,
                 max_tokens,
@@ -182,14 +194,17 @@ impl ServerRuntime {
                     ) = {
                         let mut core_session = runtime_session.core_session.lock().await;
                         core_session.set_prompt_messages(new_messages);
-                        let compacted_prompt_token_estimate = core_session
+                        let prompt_bytes = core_session
                             .prompt_source_messages()
                             .iter()
                             .map(|message| {
                                 serde_json::to_string(message).map_or(0, |json| json.len())
                             })
-                            .sum::<usize>()
-                            .div_ceil(4);
+                            .sum::<usize>();
+                        let compacted_prompt_token_estimate =
+                            approx_tokens_from_byte_count(prompt_bytes)
+                                .try_into()
+                                .unwrap_or(usize::MAX);
                         core_session.prompt_token_estimate = compacted_prompt_token_estimate;
                         (
                             core_session.total_input_tokens,
@@ -228,6 +243,7 @@ impl ServerRuntime {
                             turn_id: Some(turn_id),
                             item_id: Some(item_id),
                             seq: item_seq,
+                            item_seq: Some(item_seq),
                         },
                         item: ItemEnvelope {
                             item_id,
@@ -243,6 +259,7 @@ impl ServerRuntime {
                             turn_id: Some(turn_id),
                             item_id: Some(item_id),
                             seq: item_seq,
+                            item_seq: Some(item_seq),
                         },
                         item: ItemEnvelope {
                             item_id,
@@ -314,6 +331,7 @@ impl ServerRuntime {
                             ),
                         )
                         .await;
+                    drop(state_change_guard);
                     self.run_session_hook(
                         session_id,
                         devo_core::HookEvent::PostCompact,
@@ -342,6 +360,7 @@ impl ServerRuntime {
                         ),
                     )
                     .await;
+                drop(state_change_guard);
                 tracing::info!(session_id = %session_id, "session compaction completed with replacement");
                 self.broadcast_event(ServerEvent::SessionCompactionCompleted(
                     SessionEventPayload { session: summary },
@@ -352,6 +371,7 @@ impl ServerRuntime {
                 let Some(summary) = session_handle.summary().await else {
                     return;
                 };
+                drop(state_change_guard);
                 tracing::info!(session_id = %session_id, "session compaction completed without replacement");
                 self.broadcast_event(ServerEvent::SessionCompactionCompleted(
                     SessionEventPayload { session: summary },
@@ -359,6 +379,7 @@ impl ServerRuntime {
                 .await;
             }
             Err(error) => {
+                drop(state_change_guard);
                 tracing::warn!(session_id = %session_id, error = %error, "session compaction failed");
                 self.broadcast_event(ServerEvent::SessionCompactionFailed(
                     SessionCompactionFailedPayload {

@@ -30,6 +30,7 @@ impl ChatWidget {
             SlashCommand::Theme => "theme",
             SlashCommand::Compact => "session",
             SlashCommand::New => "session",
+            SlashCommand::Delete => "session",
             SlashCommand::Resume => "session",
             SlashCommand::Permissions => "permissions",
             SlashCommand::Diff => "diff",
@@ -40,6 +41,7 @@ impl ChatWidget {
             | SlashCommand::Status
             | SlashCommand::Clear
             | SlashCommand::ShowReasoning
+            | SlashCommand::Rename
             | SlashCommand::Btw => {
                 return;
             }
@@ -153,6 +155,27 @@ impl ChatWidget {
                         command: "session new".to_string(),
                     }));
                 self.set_status_message("New session requested");
+            }
+            SlashCommand::Rename => {
+                let trimmed = argument.trim();
+                if trimmed.is_empty() {
+                    self.add_to_history(history_cell::new_info_event(
+                        "Usage: /rename <new title>".to_string(),
+                        None,
+                    ));
+                    self.set_status_message("Usage: /rename <new title>");
+                    return;
+                }
+                self.app_event_tx
+                    .send(AppEvent::Command(AppCommand::rename_session(
+                        trimmed.to_string(),
+                    )));
+                self.set_status_message("Renaming session");
+            }
+            SlashCommand::Delete => {
+                self.app_event_tx
+                    .send(AppEvent::Command(AppCommand::delete_session()));
+                self.set_status_message("Deleting session");
             }
             SlashCommand::Resume => {
                 self.resume_browser = None;

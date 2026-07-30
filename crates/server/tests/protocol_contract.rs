@@ -119,6 +119,7 @@ fn event_context_keeps_correlation_ids() {
         turn_id: Some(TurnId::new()),
         item_id: None,
         seq: 7,
+        item_seq: None,
     };
 
     assert_eq!(context.seq, 7);
@@ -297,6 +298,7 @@ fn event_enum_carries_delta_kind() {
                 turn_id: Some(TurnId::new()),
                 item_id: Some(ItemId::new()),
                 seq: 5,
+                item_seq: None,
             },
             delta: "hi".into(),
             stream_index: None,
@@ -363,6 +365,7 @@ fn session_title_updated_event_serializes_expected_kind() {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
         },
     });
 
@@ -399,6 +402,7 @@ fn session_compaction_events_serialize_expected_kinds() {
         last_query_usage: None,
         last_query_total_tokens: 0,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
     };
 
     let started = ServerEvent::SessionCompactionStarted(devo_server::SessionEventPayload {

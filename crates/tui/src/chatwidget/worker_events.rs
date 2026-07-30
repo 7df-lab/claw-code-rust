@@ -5,7 +5,11 @@
 
 use std::time::Instant;
 
+use devo_protocol::CollaborationMode;
 use devo_protocol::ProviderRetryPhase;
+use devo_protocol::SessionHistoryItem;
+use devo_protocol::SessionHistoryItemKind;
+use devo_protocol::SessionHistoryMetadata;
 use devo_protocol::parse_command::ParsedCommand;
 use devo_protocol::protocol::ExecCommandSource;
 use devo_protocol::protocol::FileChange;
@@ -1275,6 +1279,7 @@ impl ChatWidget {
                 rich_history_items,
                 loaded_item_count,
                 pending_texts,
+                collaboration_mode,
             } => {
                 self.resume_browser_loading = false;
                 self.finish_session_resume();
@@ -1291,7 +1296,11 @@ impl ChatWidget {
                 self.next_history_flush_index = 0;
                 self.active_text_items.clear();
                 self.committed_server_assistant_in_turn = false;
-                self.current_turn_mode = InputMode::Build;
+                self.active_proposed_plan = None;
+                self.pending_proposed_plan_actions = false;
+                let restored_mode = InputMode::from_collaboration_mode(collaboration_mode);
+                self.current_turn_mode = restored_mode;
+                self.bottom_pane.set_input_mode(restored_mode);
                 self.queued_input_modes.clear();
                 self.promoted_input_modes.clear();
                 self.stream_chunking_policy.reset();
@@ -1323,7 +1332,14 @@ impl ChatWidget {
                     self.queued_input_modes.push_back(InputMode::Build);
                 }
                 self.busy = false;
-                self.set_status_message("Session switched");
+                if collaboration_mode == CollaborationMode::Plan
+                    && history_awaits_proposed_plan_decision(&rich_history_items)
+                {
+                    self.pending_proposed_plan_actions = true;
+                    self.maybe_open_proposed_plan_actions();
+                } else {
+                    self.set_status_message("Session switched");
+                }
             }
             WorkerEvent::GoalStatusLoaded { goal } => {
                 self.show_goal_status(goal);
@@ -1369,6 +1385,13 @@ impl ChatWidget {
                     None,
                 ));
                 self.set_status_message("Session renamed");
+            }
+            WorkerEvent::SessionDeleted { session_id } => {
+                self.add_to_history(history_cell::new_info_event(
+                    format!("deleted session {session_id}"),
+                    None,
+                ));
+                self.set_status_message("Session deleted");
             }
             WorkerEvent::SessionCompactionStarted => {
                 if self.status_message != "Session compaction in progress" {
@@ -1466,4 +1489,17 @@ impl ChatWidget {
             }
         }
     }
+}
+
+fn history_awaits_proposed_plan_decision(items: &[SessionHistoryItem]) -> bool {
+    for item in items.iter().rev() {
+        if matches!(
+            item.kind,
+            SessionHistoryItemKind::TurnSummary | SessionHistoryItemKind::Error
+        ) {
+            continue;
+        }
+        return matches!(item.metadata, Some(SessionHistoryMetadata::ProposedPlan));
+    }
+    false
 }

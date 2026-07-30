@@ -1,12 +1,12 @@
 use super::super::*;
 
 pub(crate) struct RuntimeSessionTurnCutOptions {
-    session_id: SessionId,
-    user_turn_index: Option<u32>,
-    rollback_mode: SessionRollbackMode,
-    cwd_override: Option<PathBuf>,
-    title_override: Option<String>,
-    created_at: chrono::DateTime<Utc>,
+    pub(crate) session_id: SessionId,
+    pub(crate) user_turn_index: Option<u32>,
+    pub(crate) rollback_mode: SessionRollbackMode,
+    pub(crate) cwd_override: Option<PathBuf>,
+    pub(crate) title_override: Option<String>,
+    pub(crate) created_at: chrono::DateTime<Utc>,
 }
 
 pub(crate) enum RuntimeSessionToolRegistryUpdate {
@@ -89,6 +89,7 @@ impl ServerRuntime {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
         };
         if let Some(record) = &record
             && let Err(error) = self.rollout_store.append_session_meta(record)
@@ -106,7 +107,7 @@ impl ServerRuntime {
         );
         let config = core_session.config.clone();
         let pending_turn_queue = Arc::clone(&core_session.pending_turn_queue);
-        let btw_input_queue = Arc::clone(&core_session.btw_input_queue);
+        let steer_input_queue = Arc::clone(&core_session.steer_input_queue);
         let rollout_path_for_db = record.as_ref().map(|entry| entry.rollout_path.clone());
         let actor_state = SessionActorState {
             runtime_context,
@@ -124,7 +125,7 @@ impl ServerRuntime {
             persisted_turn_items: Vec::new(),
             latest_compaction_snapshot: None,
             pending_turn_queue,
-            btw_input_queue,
+            steer_input_queue,
             agent_tool_policy: Default::default(),
             max_turns: None,
             next_item_seq: 1,
@@ -240,6 +241,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
         let Some(mut updated_session) = session_handle
             .update_session_metadata(
                 params.model.clone(),
@@ -307,6 +309,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
         let Some(summary) = session_handle.summary().await else {
             return self.error_response(
                 request_id,
@@ -363,6 +366,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
         let applied = match session_handle
             .apply_sandbox_profile(params.profile.clone())
             .await
@@ -427,6 +431,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
 
         let previous_title = session_handle
             .summary()
@@ -545,6 +550,7 @@ impl ServerRuntime {
                 );
             }
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
         match tool_registry_update {
             RuntimeSessionToolRegistryUpdate::KeepCurrent => {}
             RuntimeSessionToolRegistryUpdate::ReplaceIfCwdMatches { cwd, tool_registry } => {
@@ -751,6 +757,29 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        if self
+            .runtime_active_turn_id(params.session_id)
+            .await
+            .is_some()
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::TurnAlreadyRunning,
+                "cannot rollback while a turn is active",
+            );
+        }
+        let _state_change_guard = session_handle.lock_state_change().await;
+        if self
+            .runtime_active_turn_id(params.session_id)
+            .await
+            .is_some()
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::TurnAlreadyRunning,
+                "cannot rollback while a turn is active",
+            );
+        }
         let Some(source) = session_handle.export_runtime_session().await else {
             return self.error_response(
                 request_id,
@@ -854,7 +883,9 @@ impl ServerRuntime {
             cwd.clone(),
             additional_directories.clone(),
         );
+        core_session.config = source_core_session.config.clone();
         core_session.session_context = source_core_session.session_context.clone();
+        core_session.collaboration_mode = source_core_session.collaboration_mode;
         core_session.latest_turn_context = None;
         core_session.total_input_tokens = source_core_session.total_input_tokens;
         core_session.total_output_tokens = source_core_session.total_output_tokens;
@@ -972,12 +1003,15 @@ impl ServerRuntime {
                 .map(devo_protocol::TurnUsage::display_total_tokens)
                 .unwrap_or(0),
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: core_session.collaboration_mode,
         };
         drop(source_core_session);
 
+        core_session.pending_turn_queue = Arc::clone(&source.pending_turn_queue);
+        core_session.steer_input_queue = Arc::clone(&source.steer_input_queue);
         let config = core_session.config.clone();
-        let pending_turn_queue = Arc::clone(&core_session.pending_turn_queue);
-        let btw_input_queue = Arc::clone(&core_session.btw_input_queue);
+        let pending_turn_queue = Arc::clone(&source.pending_turn_queue);
+        let steer_input_queue = Arc::clone(&source.steer_input_queue);
         Ok(RuntimeSession {
             runtime_context,
             record: None,
@@ -991,18 +1025,18 @@ impl ServerRuntime {
             persisted_turn_items: kept_items,
             latest_compaction_snapshot: None,
             pending_turn_queue,
-            btw_input_queue,
-            agent_tool_policy: Default::default(),
-            max_turns: None,
+            steer_input_queue,
+            agent_tool_policy: source.agent_tool_policy,
+            max_turns: source.max_turns,
             deferred_assistant: None,
             deferred_reasoning: None,
             next_item_seq: u64::try_from(source.persisted_turn_items.len().saturating_add(1))
                 .unwrap_or(u64::MAX),
             first_user_input: source.first_user_input.clone(),
             tool_registry: source.tool_registry.clone(),
-            file_read_ledger: std::sync::Arc::new(devo_core::tools::FileReadLedger::new()),
-            session_approval_cache: crate::execution::ApprovalGrantCache::default(),
-            turn_approval_cache: crate::execution::ApprovalGrantCache::default(),
+            file_read_ledger: Arc::clone(&source.file_read_ledger),
+            session_approval_cache: source.session_approval_cache.clone(),
+            turn_approval_cache: source.turn_approval_cache.clone(),
             session_context_recorded: source.session_context_recorded,
         })
     }

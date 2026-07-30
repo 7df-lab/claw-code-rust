@@ -237,8 +237,9 @@ async fn message_edit_previous_accepts_skip_restore_and_replaces_prompt_branch()
     );
 
     let rollout = std::fs::read_to_string(rollout_path_for_session(data_root.path(), &session))?;
-    assert!(rollout.contains("MessageEditRecorded"));
-    assert!(rollout.contains("TurnSuperseded"));
+    // v2 write path: edit markers travel as internal lines.
+    assert!(rollout.contains(r#""type":"messageEdit""#));
+    assert!(rollout.contains(r#""type":"turnSuperseded""#));
     assert!(rollout.contains(&edit_response.result.replacement_message_id.to_string()));
     assert!(rollout.contains(&replacement_turn_id.to_string()));
 
@@ -329,8 +330,9 @@ async fn message_edit_previous_default_safe_restore_records_and_broadcasts() -> 
     );
 
     let rollout = std::fs::read_to_string(rollout_path_for_session(data_root.path(), &session))?;
-    assert!(rollout.contains("TurnWorkspaceRestoreStarted"));
-    assert!(rollout.contains("TurnWorkspaceRestoreCompleted"));
+    // v2 write path: workspace restore lines carry camelCase kinds.
+    assert!(rollout.contains(r#""kind":"workspaceRestoreStarted""#));
+    assert!(rollout.contains(r#""kind":"workspaceRestoreCompleted""#));
     assert!(rollout.contains("\"policy\":\"safe\""));
 
     let methods = collect_notification_methods(&mut notifications_rx).await;

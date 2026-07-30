@@ -79,6 +79,9 @@ pub(crate) struct TurnQueryOutcome {
 }
 
 pub(super) struct QueuedTurnInput {
+    /// Canonical queue entry id of the drained entry (`queue/updated`
+    /// `drained` notification, 01 §4.3).
+    pub(super) queued_item_id: devo_protocol::canonical::ids::QueueItemId,
     pub(super) display_input: String,
     pub(super) input_text: String,
     pub(super) input_messages: Vec<String>,

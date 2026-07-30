@@ -14,7 +14,6 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use devo_core::ApprovalDecisionItem;
 use devo_core::CommandExecutionItem;
 use devo_core::ItemId;
 use devo_core::Message;
@@ -129,6 +128,7 @@ use crate::subagent::SubagentMailbox;
 use crate::subagent::SubagentMetadata;
 use crate::subagent::SubagentOutputBuffer;
 use crate::subagent::SubagentStatus;
+use crate::usage_ledger::UsageLedger;
 use crate::workspace_changes::ActiveWorkspaceBaseline;
 
 mod acp_fs;
@@ -139,15 +139,18 @@ mod approval;
 mod code_index_warmup;
 mod command_exec;
 mod connection;
+mod control_requests;
 mod goal_accounting;
 mod goal_continuation;
 mod goal_handlers;
 mod handlers;
 mod hooks;
+mod interaction_items;
 mod items;
 mod lifecycle;
 mod model_api;
 mod outbound;
+mod permission_decision;
 mod proposed_plan;
 mod provider_vendor_api;
 mod reference_search;
@@ -185,10 +188,17 @@ pub struct ServerRuntime {
     deps: ServerRuntimeDependencies,
     rollout_store: RolloutStore,
     goal_durable_store: GoalDurableStore,
+    usage_ledger: UsageLedger,
     /// Per-session actor handles; map lock must not be held across await.
     sessions: Mutex<HashMap<SessionId, SessionHandle>>,
     /// Interactive approval and user-input waits outside session actors.
     session_interactive: SessionInteractiveLanes,
+    /// New-style (`subscription/*`) subscriptions keyed by subscription id
+    /// (08 §4). Lock order: `connections` → `event_subscriptions`.
+    event_subscriptions: Mutex<HashMap<String, handlers::subscription::EventSubscription>>,
+    /// Count of active `SessionsByCwd` selectors; gates per-event cwd
+    /// resolution during broadcast (0 = skip the lookup entirely).
+    sessions_by_cwd_subscriptions: std::sync::atomic::AtomicUsize,
     /// In-flight turn execution handles keyed by session id.
     active_turns: active_turn::ActiveTurnRegistry,
     connections: Arc<Mutex<HashMap<u64, ConnectionRuntime>>>,
@@ -217,6 +227,8 @@ pub struct ServerRuntime {
     code_index_warmup: code_index_warmup::CodeIndexWarmup,
     /// Turn-scoped workspace baselines captured at actual execution start.
     active_workspace_baselines: Mutex<HashMap<TurnId, ActiveWorkspaceBaseline>>,
+    /// Short-lived, connection-bound P4d rollback plans.
+    restore_plans: Mutex<handlers::rollback_plan::RestorePlanStore>,
     /// Sessions with an in-flight model title-generation task.
     title_generation_in_flight: Mutex<HashSet<SessionId>>,
     /// Weak back-reference used when session actors need the owning runtime `Arc`.
@@ -302,8 +314,13 @@ pub(super) fn subagent_usage_owner_pending_metadata(
 
 impl ServerRuntime {
     pub fn new(server_home: PathBuf, deps: ServerRuntimeDependencies) -> Arc<Self> {
-        let rollout_store = RolloutStore::new(server_home.clone());
-        let goal_durable_store = GoalDurableStore::new(server_home.clone());
+        let rollout_store = RolloutStore::new(server_home.clone(), Some(Arc::clone(&deps.db)));
+        let goal_durable_store = GoalDurableStore::with_primary(
+            server_home.clone(),
+            rollout_store.clone(),
+            Arc::clone(&deps.db),
+        );
+        let usage_ledger = UsageLedger::new(rollout_store.clone(), Arc::clone(&deps.db));
         let sandbox_network_proxy = std::sync::Arc::new(std::sync::Mutex::new(None));
         // Proxy startup is async; ports are published via the thread-safe
         // `set_sandbox_proxy_ports` store (not process-wide `env::set_var`).
@@ -343,8 +360,11 @@ impl ServerRuntime {
             deps,
             rollout_store,
             goal_durable_store,
+            usage_ledger,
             sessions: Mutex::new(HashMap::new()),
             session_interactive: SessionInteractiveLanes::default(),
+            event_subscriptions: Mutex::new(HashMap::new()),
+            sessions_by_cwd_subscriptions: std::sync::atomic::AtomicUsize::new(0),
             active_turns: active_turn::ActiveTurnRegistry::default(),
             connections: Arc::new(Mutex::new(HashMap::new())),
             terminal_turn_statuses: Mutex::new(VecDeque::new()),
@@ -362,6 +382,7 @@ impl ServerRuntime {
             command_exec_manager: command_exec::CommandExecManager::new(),
             code_index_warmup: code_index_warmup::CodeIndexWarmup::new(),
             active_workspace_baselines: Mutex::new(HashMap::new()),
+            restore_plans: Mutex::new(HashMap::new()),
             title_generation_in_flight: Mutex::new(HashSet::new()),
             self_weak: self_weak.clone(),
             session_lru: Mutex::new(session_cache::ParentSessionLru::new(
@@ -382,6 +403,16 @@ impl ServerRuntime {
             .lock()
             .ok()
             .and_then(|slot| slot.clone())
+    }
+
+    /// The rollout store, for the startup event-log reconciler (08 §7).
+    pub(crate) fn rollout_store(&self) -> RolloutStore {
+        self.rollout_store.clone()
+    }
+
+    /// The shared SQLite handle (session index, queues, event log).
+    pub(crate) fn deps_db(&self) -> Arc<crate::db::Database> {
+        Arc::clone(&self.deps.db)
     }
 }
 

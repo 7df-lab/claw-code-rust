@@ -14,6 +14,10 @@ impl ServerRuntime {
         self: &Arc<Self>,
         session_id: SessionId,
     ) -> bool {
+        let Some(session_handle) = self.session(session_id).await else {
+            return false;
+        };
+        let state_change_guard = session_handle.lock_state_change().await;
         let Some(queued) = self
             .pop_next_queued_turn_input(session_id, /*require_idle_session*/ false)
             .await
@@ -31,10 +35,23 @@ impl ServerRuntime {
         }
         self.activate_queued_turn(session_id, &turn, &turn_config)
             .await;
+        drop(state_change_guard);
         self.broadcast_event(crate::ServerEvent::TurnStarted(TurnEventPayload {
             session_id,
             turn: turn.clone(),
         }))
+        .await;
+        // `drained` carries queueItemId + startedTurnId, emitted in the same
+        // session-actor operation as the matching turn/started so handles
+        // bind atomically (01 §4.3).
+        self.broadcast_queue_updated(
+            session_id,
+            devo_protocol::canonical::queue::QueueChange::Drained,
+            queued.queued_item_id,
+            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(
+                uuid::Uuid::from(turn.turn_id),
+            )),
+        )
         .await;
         let runtime = Arc::clone(self);
         tokio::spawn(async move {
@@ -59,6 +76,10 @@ impl ServerRuntime {
         self: &Arc<Self>,
         session_id: SessionId,
     ) -> bool {
+        let Some(session_handle) = self.session(session_id).await else {
+            return false;
+        };
+        let state_change_guard = session_handle.lock_state_change().await;
         let Some(queued) = self
             .pop_next_queued_turn_input(session_id, /*require_idle_session*/ false)
             .await
@@ -76,10 +97,20 @@ impl ServerRuntime {
         }
         self.activate_queued_turn(session_id, &turn, &turn_config)
             .await;
+        drop(state_change_guard);
         self.broadcast_event(crate::ServerEvent::TurnStarted(TurnEventPayload {
             session_id,
             turn: turn.clone(),
         }))
+        .await;
+        self.broadcast_queue_updated(
+            session_id,
+            devo_protocol::canonical::queue::QueueChange::Drained,
+            queued.queued_item_id.clone(),
+            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(
+                uuid::Uuid::from(turn.turn_id),
+            )),
+        )
         .await;
         Box::pin(Arc::clone(self).execute_turn(ExecuteTurnRequest {
             session_id,
@@ -136,6 +167,9 @@ impl ServerRuntime {
             );
         }
         Some(QueuedTurnInput {
+            queued_item_id: devo_protocol::canonical::ids::QueueItemId::from_legacy_uuid(
+                uuid::Uuid::from(popped.queued_input_id),
+            ),
             display_input: popped.display_input,
             input_text: popped.input_text,
             input_messages: popped.input_messages,

@@ -29,7 +29,10 @@ The server runtime uses **one session actor per session**. Durable session state
 ### Queues
 
 - **`pending_turn_queue`:** user-visible queued turns while a session is busy. Enqueue via `SessionHandle::enqueue_pending_turn_input`; pop/remove/steer via actor commands only.
-- **`btw_input_queue`:** steer / between-turn input during an active turn. Enqueue only via `EnqueueBtwInput` (mailbox); clear at turn finalize.
+- **`steer_input_queue`:** input for injection into an active turn. Active-turn
+  handlers mutate it through the reservation snapshot's shared mutex rather
+  than waiting on the actor mailbox; finalization either consumes it or
+  degrades unconsumed input to `pending_turn_queue`.
 - **After dequeuing,** broadcast queue updates and start the next turn from a spawned task (`chain_queued_followup_turn` / `spawn_next_turn_from_queue`).
 
 ### Tests

@@ -459,6 +459,13 @@ impl ServerClientCore {
         self.request_devo("session/title/update", params).await
     }
 
+    pub(crate) async fn session_delete(
+        &mut self,
+        params: AcpDeleteSessionParams,
+    ) -> Result<AcpDeleteSessionResult> {
+        self.request(ACP_SESSION_DELETE_METHOD, params).await
+    }
+
     pub(crate) async fn session_metadata_update(
         &mut self,
         params: SessionMetadataUpdateParams,
@@ -949,6 +956,8 @@ fn format_protocol_error_code(code: &ProtocolErrorCode) -> &'static str {
         ProtocolErrorCode::ForkTurnNotFound => "fork_turn_not_found",
         ProtocolErrorCode::ForkTurnNotStable => "fork_turn_not_stable",
         ProtocolErrorCode::PermissionDenied => "permission_denied",
+        ProtocolErrorCode::CursorExpired => "cursor_expired",
+        ProtocolErrorCode::QueueItemNotFound => "queue_item_not_found",
         ProtocolErrorCode::WorkspaceUnavailable => "workspace_unavailable",
         ProtocolErrorCode::InheritedSegmentWriteFailed => "inherited_segment_write_failed",
         ProtocolErrorCode::ForkRetentionRequired => "fork_retention_required",
@@ -963,6 +972,9 @@ fn format_protocol_error_code(code: &ProtocolErrorCode) -> &'static str {
         ProtocolErrorCode::InvalidContentParts => "invalid_content_parts",
         ProtocolErrorCode::InvalidMentions => "invalid_mentions",
         ProtocolErrorCode::WorkspaceRestoreFailedToStart => "workspace_restore_failed_to_start",
+        ProtocolErrorCode::RestorePlanNotFound => "restore_plan_not_found",
+        ProtocolErrorCode::RestorePlanExpired => "restore_plan_expired",
+        ProtocolErrorCode::WorkspaceVersionConflict => "workspace_version_conflict",
         ProtocolErrorCode::InternalError => "internal_error",
     }
 }
@@ -1034,6 +1046,7 @@ fn acp_session_metadata_from_start_params(
         last_query_usage: None,
         last_query_total_tokens: 0,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
     }
 }
 
@@ -1071,6 +1084,7 @@ fn acp_session_metadata_from_session_info(session_info: &AcpSessionInfo) -> Sess
         last_query_usage: None,
         last_query_total_tokens: 0,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
     }
 }
 

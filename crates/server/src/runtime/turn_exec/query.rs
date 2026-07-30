@@ -4,7 +4,7 @@ use devo_core::tools::{
     AgentToolCoordinator, ClientFilesystem, ClientTerminal, ToolAgentScope, ToolCall,
     ToolExecutionOptions, ToolRuntime, ToolRuntimeContext,
 };
-use devo_core::{Message, QueryEvent, QueryOptions, TurnConfig, query_with_options};
+use devo_core::{Message, QueryEvent, QueryOptions, TurnConfig, query};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -62,6 +62,7 @@ impl ServerRuntime {
         };
         state.core.config.token_budget = turn_config.token_budget();
         state.core.collaboration_mode = collaboration_mode;
+        state.summary.collaboration_mode = collaboration_mode;
         if let Some(goal) = turn_goal {
             state.core.set_active_goal(goal);
         } else {
@@ -161,15 +162,28 @@ impl ServerRuntime {
         // turn cleanly.  The tool-execution cancel guard already handles the
         // "cancel during tools" case (line ~1827).
         let result = {
-            let mut query_future = std::pin::pin!(query_with_options(
+            let provider = self.usage_ledger.instrumented_provider(
+                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                session_id,
+                Some(turn_id),
+                devo_protocol::canonical::usage::UsagePurpose::TurnQuery,
+            );
+            let compaction_provider = self.usage_ledger.instrumented_provider(
+                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                session_id,
+                Some(turn_id),
+                devo_protocol::canonical::usage::UsagePurpose::Compaction,
+            );
+            let mut query_future = std::pin::pin!(query(
                 &mut state.core,
                 turn_config,
-                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                provider,
                 registry,
                 &runtime,
                 Some(callback),
                 QueryOptions {
                     cancel_token: Some(query_cancel_token.clone()),
+                    compaction_provider: Some(compaction_provider),
                 },
             ));
             tokio::select! {

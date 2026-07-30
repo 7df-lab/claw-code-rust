@@ -116,15 +116,22 @@ impl ServerRuntime {
             }
         };
         let acp_auth_config = self.acp_auth_config();
+        // Typed-items opt-in (P2): accepted from the initialize params `_meta`
+        // or from `clientCapabilities._meta`, both in the
+        // `{ "devo": { "typedItems": true } }` shape.
+        let typed_items = devo_protocol::devo_typed_items_opted_in(params.meta.as_ref())
+            || devo_protocol::devo_typed_items_opted_in(params.client_capabilities.meta.as_ref());
         if let Some(connection) = self.connections.lock().await.get_mut(&connection_id) {
             connection.state = ConnectionState::Ready;
             connection.acp_authenticated = !acp_auth_config.enabled;
             connection.acp_client_capabilities = params.client_capabilities.clone();
+            connection.typed_items = typed_items;
         }
         tracing::info!(
             connection_id,
             protocol_version = params.protocol_version,
             client = ?params.client_info.as_ref().map(|info| info.name.as_str()),
+            typed_items,
             "accepted ACP initialize request"
         );
         let mut meta = serde_json::Map::new();
@@ -140,6 +147,12 @@ impl ServerRuntime {
             meta.insert(
                 "devo/serverHome".to_string(),
                 serde_json::Value::String(self.metadata.server_home.display().to_string()),
+            );
+        }
+        if typed_items {
+            meta.insert(
+                devo_protocol::DEVO_EXTENSION_META.to_string(),
+                serde_json::json!({ devo_protocol::DEVO_TYPED_ITEMS_META: true }),
             );
         }
         acp_success_response(

@@ -1,19 +1,18 @@
 use super::*;
 
 use crate::execution::PendingApproval;
+use crate::runtime::permission_decision::AuthorizationDecision;
 use crate::runtime::session_actor::approval_scope::{
     apply_approval_scope_to_state, apply_path_scope_to_permission_profile,
 };
 use crate::runtime::session_interactive::complete_approval_wait;
+use devo_protocol::ApprovalDecisionPayload;
+use devo_protocol::ApprovalRequestPayload;
+use devo_protocol::PendingServerRequestContext;
+use devo_protocol::ServerRequestKind;
 
 use std::path::Component;
 use std::path::Path;
-
-enum PolicyAuthorization {
-    Allow,
-    Ask,
-    Deny(String),
-}
 
 enum AutoReviewOutcome {
     Approve,
@@ -55,9 +54,11 @@ impl ServerRuntime {
         permission_profile: devo_safety::RuntimePermissionProfile,
         request: ToolPermissionRequest,
     ) -> Result<PermissionGrant, String> {
-        if let Some(result) = permission_mode_authorization(permission_mode, &request) {
-            return match result {
-                Ok(grant) => {
+        if let Some(decision) = permission_mode_authorization(permission_mode) {
+            return match decision {
+                AuthorizationDecision::Allow { source } => {
+                    trace_permission_decision(session_id, &request, source, "allow", None);
+                    let grant = escalation_permission_grant(&request);
                     if grant.bypass_sandbox
                         && let Err(reason) = self
                             .check_escalation_unsandboxed_forbidden(session_id, &request.cwd)
@@ -69,10 +70,20 @@ impl ServerRuntime {
                     }
                     Ok(grant)
                 }
-                Err(reason) => {
+                AuthorizationDecision::Deny { source, reason } => {
+                    trace_permission_decision(
+                        session_id,
+                        &request,
+                        source,
+                        "deny",
+                        Some(reason.as_str()),
+                    );
                     self.run_permission_denied_hook(session_id, &request, &reason)
                         .await;
                     Err(reason)
+                }
+                AuthorizationDecision::Ask { .. } => {
+                    unreachable!("permission mode override never returns ask")
                 }
             };
         }
@@ -86,6 +97,13 @@ impl ServerRuntime {
             return Err(reason);
         }
         if let Some(grant) = self.approval_cache_grant(session_id, &request).await {
+            trace_permission_decision(
+                session_id,
+                &request,
+                devo_protocol::canonical::item::ApprovalDecisionSource::User,
+                "allow",
+                None,
+            );
             return Ok(grant);
         }
         let permission_profile = self
@@ -101,18 +119,42 @@ impl ServerRuntime {
                 .as_ref(),
         );
         match policy {
-            PolicyAuthorization::Allow => Ok(escalation_permission_grant(&request)),
-            PolicyAuthorization::Deny(reason) => {
+            AuthorizationDecision::Allow { source } => {
+                trace_permission_decision(session_id, &request, source, "allow", None);
+                Ok(escalation_permission_grant(&request))
+            }
+            AuthorizationDecision::Deny { source, reason } => {
+                trace_permission_decision(
+                    session_id,
+                    &request,
+                    source,
+                    "deny",
+                    Some(reason.as_str()),
+                );
                 self.run_permission_denied_hook(session_id, &request, &reason)
                     .await;
                 Err(reason)
             }
-            PolicyAuthorization::Ask => {
+            AuthorizationDecision::Ask { source } => {
+                tracing::debug!(
+                    session_id = %session_id,
+                    tool = %request.tool_name,
+                    approval_id = %request.tool_call_id,
+                    decision_source = ?source,
+                    "permission policy requires an interactive decision"
+                );
                 if let Some(reason) = self
                     .permission_request_hook_block_reason(session_id, &request)
                     .await
                 {
                     let message = format!("blocked by PermissionRequest hook: {reason}");
+                    trace_permission_decision(
+                        session_id,
+                        &request,
+                        devo_protocol::canonical::item::ApprovalDecisionSource::Hook,
+                        "deny",
+                        Some(message.as_str()),
+                    );
                     self.run_permission_denied_hook(session_id, &request, &message)
                         .await;
                     return Err(message);
@@ -133,9 +175,23 @@ impl ServerRuntime {
                             .await
                         {
                             AutoReviewOutcome::Approve => {
+                                trace_permission_decision(
+                                    session_id,
+                                    &request,
+                                    devo_protocol::canonical::item::ApprovalDecisionSource::AutoReview,
+                                    "allow",
+                                    None,
+                                );
                                 return Ok(approved_permission_grant(&request));
                             }
                             AutoReviewOutcome::Deny(reason) => {
+                                trace_permission_decision(
+                                    session_id,
+                                    &request,
+                                    devo_protocol::canonical::item::ApprovalDecisionSource::AutoReview,
+                                    "deny",
+                                    Some(reason.as_str()),
+                                );
                                 self.run_permission_denied_hook(session_id, &request, &reason)
                                     .await;
                                 return Err(format!("rejected by auto-reviewer: {reason}"));
@@ -145,7 +201,7 @@ impl ServerRuntime {
                     }
                 }
                 let result = self
-                    .request_tool_approval(session_id, request.clone())
+                    .request_tool_approval(session_id, turn_id, request.clone())
                     .await;
                 if let Err(reason) = &result {
                     self.run_permission_denied_hook(session_id, &request, reason)
@@ -217,11 +273,14 @@ impl ServerRuntime {
                 &runtime_context,
             )
             .await;
-        let response = match runtime_context
-            .provider
-            .completion(build_approval_review_request(model, request, &context))
-            .await
-        {
+        let model_request = build_approval_review_request(model, request, &context);
+        let provider = self.usage_ledger.instrumented_provider(
+            Arc::clone(&runtime_context.provider),
+            session_id,
+            Some(turn_id),
+            devo_protocol::canonical::usage::UsagePurpose::AutoReview,
+        );
+        let response = match provider.completion(model_request).await {
             Ok(response) => response,
             Err(error) => {
                 tracing::warn!(
@@ -364,22 +423,43 @@ impl ServerRuntime {
         rationale: &str,
     ) {
         let approval_id = format!("auto-review-{}", request.tool_call_id);
-        self.emit_turn_item(
+        let item_id = ItemId::new();
+        let item_seq = self.allocate_item_sequence(session_id).await;
+        let canonical_decision = if decision.eq_ignore_ascii_case("approve") {
+            devo_protocol::canonical::item::ApprovalDecisionKind::Approved
+        } else {
+            devo_protocol::canonical::item::ApprovalDecisionKind::Denied
+        };
+        self.persist_completed_approval_item(
             session_id,
             turn_id,
+            item_id,
+            item_seq,
+            &approval_id,
+            request,
+            canonical_decision,
+            devo_protocol::canonical::item::ApprovalDecisionSource::AutoReview,
+        )
+        .await;
+        self.emit_item_completed(
+            session_id,
+            turn_id,
+            item_id,
+            Some(item_seq),
             ItemKind::ApprovalDecision,
-            TurnItem::ApprovalDecision(ApprovalDecisionItem {
-                approval_id: approval_id.clone(),
-                decision: decision.to_string(),
-                scope: "auto_review".to_string(),
-            }),
             serde_json::json!({
                 "approval_id": approval_id,
                 "decision": decision,
                 "scope": "auto_review",
+                "decision_source": "autoReview",
+                "revision": 1,
                 "rationale": rationale,
+                "action_summary": request.action_summary,
+                "justification": request.justification,
                 "tool_name": request.tool_name,
                 "resource": format!("{:?}", request.resource),
+                "path": request.path,
+                "host": request.host,
                 "target": request.target,
             }),
         )
@@ -560,18 +640,16 @@ impl ServerRuntime {
     async fn request_tool_approval(
         &self,
         session_id: SessionId,
+        turn_id: TurnId,
         request: ToolPermissionRequest,
     ) -> Result<PermissionGrant, String> {
         let host_session_id = self.permission_host_session_id(session_id).await;
         let available_scopes = approval_scopes_for_request(&request);
-        let connection_id = self
+        let owner_connection_id = self
             .active_turns
             .active_connection_id(host_session_id)
             .await
             .or(self.active_turns.active_connection_id(session_id).await);
-        let Some(connection_id) = connection_id else {
-            return Err("no ACP client connection is available for permission request".to_string());
-        };
 
         if host_session_id != session_id {
             tracing::debug!(
@@ -583,9 +661,62 @@ impl ServerRuntime {
         }
 
         let approval_id = request.tool_call_id.clone();
+        let approval_item_id = ItemId::new();
+        let approval_item_seq = self.allocate_item_sequence(session_id).await;
+        let request_payload = ApprovalRequestPayload {
+            request: PendingServerRequestContext {
+                request_id: approval_id.clone().into(),
+                request_kind: match request.resource {
+                    devo_safety::ResourceKind::ShellExec => {
+                        ServerRequestKind::ItemCommandExecutionRequestApproval
+                    }
+                    devo_safety::ResourceKind::FileWrite => {
+                        ServerRequestKind::ItemFileChangeRequestApproval
+                    }
+                    devo_safety::ResourceKind::FileRead
+                    | devo_safety::ResourceKind::Network
+                    | devo_safety::ResourceKind::Custom(_) => {
+                        ServerRequestKind::ItemPermissionsRequestApproval
+                    }
+                },
+                session_id,
+                turn_id: Some(turn_id),
+                item_id: Some(approval_item_id),
+            },
+            approval_id: approval_id.clone().into(),
+            action_summary: request.action_summary.clone(),
+            justification: request.justification.clone().unwrap_or_default(),
+            resource: Some(format!("{:?}", request.resource)),
+            available_scopes: available_scopes.clone(),
+            path: request.path.as_ref().map(|path| path.display().to_string()),
+            host: request.host.clone(),
+            target: request.target.clone(),
+            command_pattern: request.command_pattern.clone(),
+            command_prefix: request.command_prefix.clone(),
+        };
+        self.emit_item_started(
+            session_id,
+            turn_id,
+            approval_item_id,
+            Some(approval_item_seq),
+            ItemKind::ApprovalRequest,
+            serde_json::to_value(&request_payload).expect("serialize approval request payload"),
+        )
+        .await;
+        let persisted_approval = self
+            .persist_waiting_approval_item(
+                session_id,
+                turn_id,
+                approval_item_id,
+                approval_item_seq,
+                &request,
+                &available_scopes,
+            )
+            .await;
         let (tx, rx) = oneshot::channel();
         let pending = PendingApproval {
             owner_session_id: session_id,
+            turn_id,
             tool_name: request.tool_name.clone(),
             resource: Some(request.resource.clone()),
             path: request.path.clone(),
@@ -596,6 +727,7 @@ impl ServerRuntime {
             command: devo_core::tools::command_str_for_permission_request(&request),
             cwd: request.cwd.clone(),
             sandbox_permissions: devo_core::tools::sandbox_permissions_from_input(&request.input),
+            persisted: persisted_approval.clone(),
             tx,
         };
         self.session_interactive
@@ -608,17 +740,16 @@ impl ServerRuntime {
             .active_turns
             .cancel_token_for_host_or_session(host_session_id, session_id)
             .await;
-        let response = match self
-            .send_request_to_connection_cancellable(
-                connection_id,
-                devo_protocol::ACP_SESSION_REQUEST_PERMISSION_METHOD,
-                serde_json::to_value(request_params)
-                    .expect("serialize ACP permission request params"),
+        let (decision, scope) = match self
+            .request_permission_from_controllers(
+                host_session_id,
+                owner_connection_id,
+                request_params,
                 cancel_token,
             )
             .await
         {
-            Ok(response) => response,
+            Ok(decision) => decision,
             Err(error) => {
                 self.session_interactive
                     .remove_pending_approval(host_session_id, &approval_id)
@@ -626,27 +757,86 @@ impl ServerRuntime {
                 return Err(format!("permission request failed: {error}"));
             }
         };
-        let response: devo_protocol::AcpRequestPermissionResponse =
-            match serde_json::from_value(response) {
-                Ok(response) => response,
-                Err(error) => {
-                    self.session_interactive
-                        .remove_pending_approval(host_session_id, &approval_id)
-                        .await;
-                    return Err(format!(
-                        "invalid session/request_permission response: {error}"
-                    ));
-                }
-            };
-        let (decision, scope) = match approval_decision_from_acp_outcome(response.outcome) {
-            Ok(decision) => decision,
-            Err(error) => {
-                self.session_interactive
-                    .remove_pending_approval(host_session_id, &approval_id)
-                    .await;
-                return Err(error);
+        let (outcome, reason) = match &decision {
+            ApprovalDecisionValue::Approve => ("allow", None),
+            ApprovalDecisionValue::Deny => ("deny", Some("rejected by user")),
+            ApprovalDecisionValue::Cancel => ("deny", Some("cancelled by user")),
+        };
+        trace_permission_decision(
+            session_id,
+            &request,
+            devo_protocol::canonical::item::ApprovalDecisionSource::User,
+            outcome,
+            reason,
+        );
+        let decision_label = match &decision {
+            ApprovalDecisionValue::Approve => "approve",
+            ApprovalDecisionValue::Deny => "deny",
+            ApprovalDecisionValue::Cancel => "cancel",
+        };
+        let scope_label = approval_scope_label(&scope);
+        let canonical_decision = match &decision {
+            ApprovalDecisionValue::Approve => {
+                devo_protocol::canonical::item::ApprovalDecisionKind::Approved
+            }
+            ApprovalDecisionValue::Deny => {
+                devo_protocol::canonical::item::ApprovalDecisionKind::Denied
+            }
+            ApprovalDecisionValue::Cancel => {
+                devo_protocol::canonical::item::ApprovalDecisionKind::Cancelled
             }
         };
+        if let Some(persisted) = &persisted_approval {
+            self.persist_resolved_approval_item(
+                session_id,
+                turn_id,
+                &request,
+                &available_scopes,
+                canonical_decision,
+                canonical_approval_scope(&scope),
+                devo_protocol::canonical::item::ApprovalDecisionSource::User,
+                persisted,
+            )
+            .await;
+        }
+        let mut decision_payload = serde_json::to_value(ApprovalDecisionPayload {
+            approval_id: approval_id.clone().into(),
+            decision: decision_label.to_string(),
+            scope: scope_label.to_string(),
+            decision_source: Some(devo_protocol::canonical::item::ApprovalDecisionSource::User),
+        })
+        .expect("serialize approval decision payload");
+        if let Some(payload) = decision_payload.as_object_mut() {
+            payload.insert("revision".into(), serde_json::json!(2));
+            payload.insert(
+                "action_summary".into(),
+                serde_json::json!(request.action_summary.clone()),
+            );
+            payload.insert(
+                "justification".into(),
+                serde_json::json!(request.justification.clone().unwrap_or_default()),
+            );
+            payload.insert(
+                "resource".into(),
+                serde_json::json!(format!("{:?}", request.resource)),
+            );
+            payload.insert(
+                "available_scopes".into(),
+                serde_json::json!(available_scopes),
+            );
+            payload.insert("path".into(), serde_json::json!(request.path.clone()));
+            payload.insert("host".into(), serde_json::json!(request.host.clone()));
+            payload.insert("target".into(), serde_json::json!(request.target.clone()));
+        }
+        self.emit_item_completed(
+            session_id,
+            turn_id,
+            approval_item_id,
+            Some(approval_item_seq),
+            ItemKind::ApprovalDecision,
+            decision_payload,
+        )
+        .await;
 
         if let Some(pending) = self
             .session_interactive
@@ -658,6 +848,7 @@ impl ServerRuntime {
                 let (scope_tx, _) = oneshot::channel();
                 let pending_for_scope = PendingApproval {
                     owner_session_id: pending.owner_session_id,
+                    turn_id: pending.turn_id,
                     tool_name: pending.tool_name,
                     resource: pending.resource,
                     path: pending.path,
@@ -668,6 +859,7 @@ impl ServerRuntime {
                     command: pending.command,
                     cwd: pending.cwd,
                     sandbox_permissions: pending.sandbox_permissions,
+                    persisted: pending.persisted,
                     tx: scope_tx,
                 };
                 // ExecuteTurn owns the session mailbox, so ApplyApprovalScope cannot
@@ -713,19 +905,29 @@ fn policy_decision(
     profile: &devo_safety::RuntimePermissionProfile,
     request: &ToolPermissionRequest,
     exec_policy: Option<&devo_execpolicy::Policy>,
-) -> PolicyAuthorization {
+) -> AuthorizationDecision {
+    use devo_protocol::canonical::item::ApprovalDecisionSource;
+
     if profile.auto_approve {
-        return PolicyAuthorization::Allow;
+        return AuthorizationDecision::Allow {
+            source: ApprovalDecisionSource::StaticPolicy,
+        };
     }
     if request_forces_approval(request) {
-        return PolicyAuthorization::Ask;
+        return AuthorizationDecision::Ask {
+            source: ApprovalDecisionSource::StaticPolicy,
+        };
     }
     match request.resource {
         devo_safety::ResourceKind::Network => {
             if profile.allow_network {
-                PolicyAuthorization::Allow
+                AuthorizationDecision::Allow {
+                    source: ApprovalDecisionSource::StaticPolicy,
+                }
             } else {
-                PolicyAuthorization::Ask
+                AuthorizationDecision::Ask {
+                    source: ApprovalDecisionSource::StaticPolicy,
+                }
             }
         }
         devo_safety::ResourceKind::ShellExec => {
@@ -733,27 +935,41 @@ fn policy_decision(
         }
         devo_safety::ResourceKind::FileRead => {
             let Some(path) = request.path.as_ref() else {
-                return PolicyAuthorization::Ask;
+                return AuthorizationDecision::Ask {
+                    source: ApprovalDecisionSource::StaticPolicy,
+                };
             };
             if path_matches_any_prefix(path, &profile.readable_roots)
                 || path_matches_any_prefix(path, &profile.writable_roots)
             {
-                PolicyAuthorization::Allow
+                AuthorizationDecision::Allow {
+                    source: ApprovalDecisionSource::StaticPolicy,
+                }
             } else {
-                PolicyAuthorization::Ask
+                AuthorizationDecision::Ask {
+                    source: ApprovalDecisionSource::StaticPolicy,
+                }
             }
         }
         devo_safety::ResourceKind::FileWrite => {
             let Some(path) = request.path.as_ref() else {
-                return PolicyAuthorization::Ask;
+                return AuthorizationDecision::Ask {
+                    source: ApprovalDecisionSource::StaticPolicy,
+                };
             };
             if path_matches_any_prefix(path, &profile.writable_roots) {
-                PolicyAuthorization::Allow
+                AuthorizationDecision::Allow {
+                    source: ApprovalDecisionSource::StaticPolicy,
+                }
             } else {
-                PolicyAuthorization::Ask
+                AuthorizationDecision::Ask {
+                    source: ApprovalDecisionSource::StaticPolicy,
+                }
             }
         }
-        devo_safety::ResourceKind::Custom(_) => PolicyAuthorization::Allow,
+        devo_safety::ResourceKind::Custom(_) => AuthorizationDecision::Allow {
+            source: ApprovalDecisionSource::StaticPolicy,
+        },
     }
 }
 
@@ -761,16 +977,21 @@ fn shell_exec_policy_decision(
     profile: &devo_safety::RuntimePermissionProfile,
     request: &ToolPermissionRequest,
     exec_policy: Option<&devo_execpolicy::Policy>,
-) -> PolicyAuthorization {
+) -> AuthorizationDecision {
     use devo_execpolicy::Decision;
+    use devo_protocol::canonical::item::ApprovalDecisionSource;
     use devo_util_shell_command::is_dangerous_command::command_might_be_dangerous;
 
     if !profile.allow_shell_commands {
-        return PolicyAuthorization::Ask;
+        return AuthorizationDecision::Ask {
+            source: ApprovalDecisionSource::StaticPolicy,
+        };
     }
     let command = shell_command_for_policy(request);
     if command.is_empty() {
-        return PolicyAuthorization::Ask;
+        return AuthorizationDecision::Ask {
+            source: ApprovalDecisionSource::StaticPolicy,
+        };
     }
     // Fail closed on multi-line / control-separated commands even when a
     // pre-parsed argv is present (shlex would otherwise collapse newlines).
@@ -779,12 +1000,16 @@ fn shell_exec_policy_decision(
         .iter()
         .any(|b| matches!(b, b'\n' | b'\r' | 0x0b | 0x0c))
     {
-        return PolicyAuthorization::Ask;
+        return AuthorizationDecision::Ask {
+            source: ApprovalDecisionSource::StaticPolicy,
+        };
     }
     // Background `&` (not `&&`) splits jobs; argv-based checks miss the
     // trailing command, so fail closed like newlines.
     if command_contains_standalone_ampersand(&command) {
-        return PolicyAuthorization::Ask;
+        return AuthorizationDecision::Ask {
+            source: ApprovalDecisionSource::StaticPolicy,
+        };
     }
     let argv = shell_argv_for_policy(request, &command);
 
@@ -793,11 +1018,16 @@ fn shell_exec_policy_decision(
             crate::exec_policy_store::exec_policy_decision_for_argv(policy, argv)
     {
         return match decision {
-            Decision::Allow => PolicyAuthorization::Allow,
-            Decision::Forbidden => {
-                PolicyAuthorization::Deny("command blocked by user exec policy rules".to_string())
-            }
-            Decision::Prompt => PolicyAuthorization::Ask,
+            Decision::Allow => AuthorizationDecision::Allow {
+                source: ApprovalDecisionSource::ExecPolicy,
+            },
+            Decision::Forbidden => AuthorizationDecision::Deny {
+                source: ApprovalDecisionSource::ExecPolicy,
+                reason: "command blocked by user exec policy rules".to_string(),
+            },
+            Decision::Prompt => AuthorizationDecision::Ask {
+                source: ApprovalDecisionSource::ExecPolicy,
+            },
         };
     }
 
@@ -805,7 +1035,9 @@ fn shell_exec_policy_decision(
         .as_ref()
         .is_some_and(|argv| command_might_be_dangerous(argv))
     {
-        return PolicyAuthorization::Ask;
+        return AuthorizationDecision::Ask {
+            source: ApprovalDecisionSource::StaticPolicy,
+        };
     }
 
     match devo_safety::evaluate_shell_command_for_profile(profile, &command, &request.cwd) {
@@ -813,10 +1045,32 @@ fn shell_exec_policy_decision(
         // command was ambiguous without a definite file touch). Allow and run
         // under the session sandbox. Ask/Deny still require user approval.
         devo_safety::permission::PolicyDecision::NoMatch
-        | devo_safety::permission::PolicyDecision::Allow => PolicyAuthorization::Allow,
+        | devo_safety::permission::PolicyDecision::Allow => AuthorizationDecision::Allow {
+            source: ApprovalDecisionSource::StaticPolicy,
+        },
         devo_safety::permission::PolicyDecision::Ask
-        | devo_safety::permission::PolicyDecision::Deny { .. } => PolicyAuthorization::Ask,
+        | devo_safety::permission::PolicyDecision::Deny { .. } => AuthorizationDecision::Ask {
+            source: ApprovalDecisionSource::StaticPolicy,
+        },
     }
+}
+
+fn trace_permission_decision(
+    session_id: SessionId,
+    request: &ToolPermissionRequest,
+    source: devo_protocol::canonical::item::ApprovalDecisionSource,
+    outcome: &'static str,
+    reason: Option<&str>,
+) {
+    tracing::info!(
+        session_id = %session_id,
+        tool = %request.tool_name,
+        approval_id = %request.tool_call_id,
+        decision_source = ?source,
+        outcome,
+        reason,
+        "permission decision resolved"
+    );
 }
 
 fn shell_command_for_policy(request: &ToolPermissionRequest) -> String {
@@ -916,6 +1170,38 @@ fn approval_scopes_for_request(request: &ToolPermissionRequest) -> Vec<String> {
     }
     scopes.push("tool".to_string());
     scopes
+}
+
+fn approval_scope_label(scope: &ApprovalScopeValue) -> &'static str {
+    match scope {
+        ApprovalScopeValue::Once => "once",
+        ApprovalScopeValue::Turn => "turn",
+        ApprovalScopeValue::Session => "session",
+        ApprovalScopeValue::PathPrefix => "path_prefix",
+        ApprovalScopeValue::Host => "host",
+        ApprovalScopeValue::Tool => "tool",
+        ApprovalScopeValue::CommandPrefix => "command_prefix",
+        ApprovalScopeValue::CommandPrefixPersist => "command_prefix_persist",
+    }
+}
+
+fn canonical_approval_scope(
+    scope: &ApprovalScopeValue,
+) -> devo_protocol::canonical::item::ApprovalScope {
+    match scope {
+        ApprovalScopeValue::Once => devo_protocol::canonical::item::ApprovalScope::Once,
+        ApprovalScopeValue::Turn => devo_protocol::canonical::item::ApprovalScope::Turn,
+        ApprovalScopeValue::Session => devo_protocol::canonical::item::ApprovalScope::Session,
+        ApprovalScopeValue::PathPrefix => devo_protocol::canonical::item::ApprovalScope::PathPrefix,
+        ApprovalScopeValue::Host => devo_protocol::canonical::item::ApprovalScope::Host,
+        ApprovalScopeValue::Tool => devo_protocol::canonical::item::ApprovalScope::Tool,
+        ApprovalScopeValue::CommandPrefix => {
+            devo_protocol::canonical::item::ApprovalScope::CommandPrefix
+        }
+        ApprovalScopeValue::CommandPrefixPersist => {
+            devo_protocol::canonical::item::ApprovalScope::CommandPrefixPersist
+        }
+    }
 }
 
 fn acp_request_permission_params(
@@ -1088,7 +1374,7 @@ fn acp_tool_kind_for_permission_request(
     }
 }
 
-fn approval_decision_from_acp_outcome(
+pub(super) fn approval_decision_from_acp_outcome(
     outcome: devo_protocol::AcpPermissionOutcome,
 ) -> Result<(ApprovalDecisionValue, ApprovalScopeValue), String> {
     match outcome {
@@ -1236,13 +1522,17 @@ fn permission_tool_extra(
     ])
 }
 
-fn permission_mode_authorization(
-    mode: PermissionMode,
-    request: &ToolPermissionRequest,
-) -> Option<Result<PermissionGrant, String>> {
+fn permission_mode_authorization(mode: PermissionMode) -> Option<AuthorizationDecision> {
+    use devo_protocol::canonical::item::ApprovalDecisionSource;
+
     match mode {
-        PermissionMode::AutoApprove => Some(Ok(escalation_permission_grant(request))),
-        PermissionMode::Deny => Some(Err("approval policy is deny".to_string())),
+        PermissionMode::AutoApprove => Some(AuthorizationDecision::Allow {
+            source: ApprovalDecisionSource::StaticPolicy,
+        }),
+        PermissionMode::Deny => Some(AuthorizationDecision::Deny {
+            source: ApprovalDecisionSource::StaticPolicy,
+            reason: "approval policy is deny".to_string(),
+        }),
         PermissionMode::Interactive => None,
     }
 }
@@ -1496,17 +1786,21 @@ mod tests {
 
     #[test]
     fn permission_mode_overrides_authorization_policy() {
-        let request = test_permission_request("shell_command");
         assert_eq!(
-            permission_mode_authorization(PermissionMode::AutoApprove, &request),
-            Some(Ok(PermissionGrant::default()))
+            permission_mode_authorization(PermissionMode::AutoApprove),
+            Some(AuthorizationDecision::Allow {
+                source: devo_protocol::canonical::item::ApprovalDecisionSource::StaticPolicy,
+            })
         );
         assert_eq!(
-            permission_mode_authorization(PermissionMode::Deny, &request),
-            Some(Err("approval policy is deny".to_string()))
+            permission_mode_authorization(PermissionMode::Deny),
+            Some(AuthorizationDecision::Deny {
+                source: devo_protocol::canonical::item::ApprovalDecisionSource::StaticPolicy,
+                reason: "approval policy is deny".to_string(),
+            })
         );
         assert_eq!(
-            permission_mode_authorization(PermissionMode::Interactive, &request),
+            permission_mode_authorization(PermissionMode::Interactive),
             None
         );
     }
@@ -1521,11 +1815,17 @@ mod tests {
         });
 
         assert_eq!(
-            permission_mode_authorization(PermissionMode::AutoApprove, &request),
-            Some(Ok(PermissionGrant {
+            permission_mode_authorization(PermissionMode::AutoApprove),
+            Some(AuthorizationDecision::Allow {
+                source: devo_protocol::canonical::item::ApprovalDecisionSource::StaticPolicy,
+            })
+        );
+        assert_eq!(
+            escalation_permission_grant(&request),
+            PermissionGrant {
                 bypass_sandbox: true,
                 already_approved: false,
-            }))
+            }
         );
     }
 
@@ -1548,7 +1848,7 @@ mod tests {
 
         assert!(matches!(
             test_policy_decision(&profile, &request),
-            PolicyAuthorization::Allow
+            AuthorizationDecision::Allow { .. }
         ));
         assert_eq!(
             escalation_permission_grant(&request),
@@ -1710,7 +2010,7 @@ mod tests {
 
         assert!(matches!(
             test_policy_decision(&profile, &request),
-            PolicyAuthorization::Allow
+            AuthorizationDecision::Allow { .. }
         ));
     }
 
@@ -1727,7 +2027,7 @@ mod tests {
 
         assert!(matches!(
             test_policy_decision(&profile, &request),
-            PolicyAuthorization::Ask
+            AuthorizationDecision::Ask { .. }
         ));
     }
 
@@ -1747,7 +2047,7 @@ mod tests {
 
         assert!(matches!(
             test_policy_decision(&profile, &request),
-            PolicyAuthorization::Ask
+            AuthorizationDecision::Ask { .. }
         ));
     }
 
@@ -1765,7 +2065,7 @@ mod tests {
 
         assert!(matches!(
             test_policy_decision(&profile, &request),
-            PolicyAuthorization::Allow
+            AuthorizationDecision::Allow { .. }
         ));
     }
 
@@ -1783,7 +2083,7 @@ mod tests {
 
         assert!(matches!(
             test_policy_decision(&profile, &request),
-            PolicyAuthorization::Allow
+            AuthorizationDecision::Allow { .. }
         ));
     }
 
@@ -1801,7 +2101,7 @@ mod tests {
 
         assert!(matches!(
             test_policy_decision(&profile, &request),
-            PolicyAuthorization::Ask
+            AuthorizationDecision::Ask { .. }
         ));
     }
 
@@ -1822,7 +2122,7 @@ mod tests {
             assert!(
                 matches!(
                     test_policy_decision(&profile, &request),
-                    PolicyAuthorization::Ask
+                    AuthorizationDecision::Ask { .. }
                 ),
                 "expected Ask for {command}"
             );
@@ -1844,7 +2144,7 @@ mod tests {
 
         assert!(matches!(
             test_policy_decision(&profile, &request),
-            PolicyAuthorization::Allow
+            AuthorizationDecision::Allow { .. }
         ));
     }
 
@@ -1890,7 +2190,7 @@ mod tests {
     fn test_policy_decision(
         profile: &devo_safety::RuntimePermissionProfile,
         request: &ToolPermissionRequest,
-    ) -> PolicyAuthorization {
+    ) -> AuthorizationDecision {
         policy_decision(profile, request, /*exec_policy*/ None)
     }
 

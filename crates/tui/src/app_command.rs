@@ -103,6 +103,10 @@ pub(crate) enum AppCommand {
     SwitchSession {
         session_id: SessionId,
     },
+    RenameSession {
+        title: String,
+    },
+    DeleteSession,
     RollbackToUserTurn {
         user_turn_index: u32,
     },
@@ -196,6 +200,10 @@ pub(crate) enum AppCommandView<'a> {
     SwitchSession {
         session_id: SessionId,
     },
+    RenameSession {
+        title: &'a str,
+    },
+    DeleteSession,
     RollbackToUserTurn {
         user_turn_index: u32,
     },
@@ -321,6 +329,14 @@ impl AppCommand {
         Self::SwitchSession { session_id }
     }
 
+    pub(crate) fn rename_session(title: String) -> Self {
+        Self::RenameSession { title }
+    }
+
+    pub(crate) fn delete_session() -> Self {
+        Self::DeleteSession
+    }
+
     pub(crate) fn rollback_to_user_turn(user_turn_index: u32) -> Self {
         Self::RollbackToUserTurn { user_turn_index }
     }
@@ -351,6 +367,8 @@ impl AppCommand {
             Self::UpdateSandboxProfile { .. } => "update_sandbox_profile",
             Self::BrowseInputHistory { .. } => "browse_input_history",
             Self::SwitchSession { .. } => "switch_session",
+            Self::RenameSession { .. } => "rename_session",
+            Self::DeleteSession => "delete_session",
             Self::RollbackToUserTurn { .. } => "rollback_to_user_turn",
             Self::ForkAtUserTurn { .. } => "fork_at_user_turn",
         }
@@ -439,6 +457,8 @@ impl AppCommand {
             Self::SwitchSession { session_id } => AppCommandView::SwitchSession {
                 session_id: *session_id,
             },
+            Self::RenameSession { title } => AppCommandView::RenameSession { title },
+            Self::DeleteSession => AppCommandView::DeleteSession,
             Self::RollbackToUserTurn { user_turn_index } => AppCommandView::ThreadRollback {
                 num_turns: *user_turn_index,
             },

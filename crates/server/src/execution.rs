@@ -66,6 +66,7 @@ pub(crate) fn sandbox_bypass_key_from_pending(
 
 pub(crate) struct PendingApproval {
     pub(crate) owner_session_id: devo_protocol::SessionId,
+    pub(crate) turn_id: TurnId,
     pub(crate) tool_name: String,
     pub(crate) resource: Option<devo_safety::ResourceKind>,
     pub(crate) path: Option<PathBuf>,
@@ -76,12 +77,24 @@ pub(crate) struct PendingApproval {
     pub(crate) command: Option<String>,
     pub(crate) cwd: PathBuf,
     pub(crate) sandbox_permissions: String,
+    pub(crate) persisted: Option<PersistedLivingItem>,
     pub(crate) tx: oneshot::Sender<ApprovalDecisionValue>,
 }
 
 pub(crate) struct PendingUserInput {
     pub(crate) turn_id: TurnId,
+    /// The questions the tool asked; kept so subscription snapshots can
+    /// rebuild the waiting `UserInputRequest` item (08 §4).
+    pub(crate) questions: Vec<devo_protocol::RequestUserInputQuestion>,
+    pub(crate) persisted: Option<PersistedLivingItem>,
     pub(crate) tx: oneshot::Sender<RequestUserInputResponse>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PersistedLivingItem {
+    pub(crate) item_id: devo_protocol::canonical::ids::ItemId,
+    pub(crate) seq: u64,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -241,8 +254,8 @@ pub(crate) struct RuntimeSession {
     pub(crate) latest_compaction_snapshot: Option<devo_core::CompactionSnapshotLine>,
     /// Shared handle to the pending-turn queue owned by `core_session`.
     pub(crate) pending_turn_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
-    /// Shared handle to the `/btw` queue owned by `core_session`.
-    pub(crate) btw_input_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
+    /// Shared handle to the active-turn steer queue owned by `core_session`.
+    pub(crate) steer_input_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
     /// Tool exposure policy for turns run in this session.
     pub(crate) agent_tool_policy: devo_protocol::AgentToolPolicy,
     /// Optional maximum number of turns allowed in this session.

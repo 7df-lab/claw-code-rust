@@ -96,6 +96,29 @@ fn deepseek_model() -> Model {
     .into()
 }
 
+fn toggle_only_model() -> Model {
+    devo_core::ModelPreset {
+        slug: "laguna-s-2.1".to_string(),
+        display_name: "laguna-s-2.1".to_string(),
+        reasoning_capability: ReasoningCapability::Toggle,
+        supported_reasoning_levels: Vec::new(),
+        default_reasoning_effort: Some(ReasoningEffort::Medium),
+        ..devo_core::ModelPreset::default()
+    }
+    .into()
+}
+
+fn toggle_only_provider_vendor() -> ProviderVendor {
+    ProviderVendor {
+        name: "Poolside".to_string(),
+        base_url: Some("https://api.poolside.ai".to_string()),
+        credential: Some("poolside_api_key".to_string()),
+        headers: None,
+        wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
+        enabled: true,
+    }
+}
+
 fn deepseek_provider_vendor() -> ProviderVendor {
     ProviderVendor {
         name: "Deepseek".to_string(),
@@ -521,6 +544,7 @@ fn onboarding_invocation_and_reasoning_popups_render_inline_and_use_model_preset
 
     let reasoning_view = rendered_rows(&widget, 160, 60).join("\n");
     assert_eq!(reasoning_view.contains("Reason Effort: High"), true);
+    assert_eq!(reasoning_view.contains(" Off"), true);
     assert_eq!(reasoning_view.contains("> High"), true);
     assert_eq!(reasoning_view.contains(" Max"), true);
     assert_eq!(reasoning_view.contains("Medium"), false);
@@ -543,6 +567,48 @@ fn onboarding_invocation_and_reasoning_popups_render_inline_and_use_model_preset
         serde_json::Value::String("high".to_string())
     );
     assert_eq!(payload["api_key"], serde_json::Value::Null);
+}
+
+#[test]
+fn onboarding_toggle_model_reasoning_popup_shows_off_and_on() {
+    let models = vec![toggle_only_model()];
+    let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = OnboardingWidget::new(
+        &models,
+        AppEventSender::new(app_event_tx),
+        FrameRequester::test_dummy(),
+        true,
+    );
+    assert_eq!(
+        next_shell_command(&mut app_event_rx),
+        "provider list".to_string()
+    );
+
+    widget.on_provider_vendors_listed(vec![toggle_only_provider_vendor()]);
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+
+    let reasoning_view = rendered_rows(&widget, 160, 60).join("\n");
+    assert_eq!(reasoning_view.contains("Reason Effort: On"), true);
+    assert_eq!(reasoning_view.contains(" Off"), true);
+    assert_eq!(reasoning_view.contains("> On"), true);
+    assert_eq!(reasoning_view.contains("Medium"), false);
+
+    widget.handle_key_event(press(KeyCode::Enter));
+
+    let command = next_shell_command(&mut app_event_rx);
+    let payload = command
+        .strip_prefix("onboard ")
+        .expect("onboard command prefix");
+    let payload: serde_json::Value = serde_json::from_str(payload).expect("valid onboarding json");
+
+    assert_eq!(
+        payload["default_reasoning_effort"],
+        serde_json::Value::String("enabled".to_string())
+    );
 }
 
 #[test]

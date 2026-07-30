@@ -198,6 +198,7 @@ mod tests {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
         };
 
         let info = acp_session_info_from_metadata(&session);

@@ -105,6 +105,21 @@ pub enum ClientMethod {
     ProviderVendorList,
     ProviderValidate,
     ProviderVendorUpsert,
+    // New Native API methods (canonical types; not part of the legacy
+    // `_devo/*` alias surface).
+    SessionTurnsList,
+    SessionItemsList,
+    SessionRollbackPreview,
+    SessionRollbackCommit,
+    SubscriptionCreate,
+    SubscriptionUpdate,
+    SubscriptionAck,
+    SubscriptionUnsubscribe,
+    SessionQueuePush,
+    SessionQueueList,
+    SessionQueueUpdate,
+    SessionQueueRemove,
+    SessionQueueSteer,
 }
 
 impl ClientMethod {
@@ -159,6 +174,19 @@ impl ClientMethod {
             Self::ProviderVendorList => "provider/list",
             Self::ProviderValidate => "provider/validate",
             Self::ProviderVendorUpsert => "provider/upsert",
+            Self::SessionTurnsList => "session/turns/list",
+            Self::SessionItemsList => "session/items/list",
+            Self::SessionRollbackPreview => "session/rollback/preview",
+            Self::SessionRollbackCommit => "session/rollback/commit",
+            Self::SubscriptionCreate => "subscription/create",
+            Self::SubscriptionUpdate => "subscription/update",
+            Self::SubscriptionAck => "subscription/ack",
+            Self::SubscriptionUnsubscribe => "subscription/unsubscribe",
+            Self::SessionQueuePush => "session/queue/push",
+            Self::SessionQueueList => "session/queue/list",
+            Self::SessionQueueUpdate => "session/queue/update",
+            Self::SessionQueueRemove => "session/queue/remove",
+            Self::SessionQueueSteer => "session/queue/steer",
         }
     }
 
@@ -213,6 +241,19 @@ impl ClientMethod {
             "provider/list" => Self::ProviderVendorList,
             "provider/validate" => Self::ProviderValidate,
             "provider/upsert" => Self::ProviderVendorUpsert,
+            "session/turns/list" => Self::SessionTurnsList,
+            "session/items/list" => Self::SessionItemsList,
+            "session/rollback/preview" => Self::SessionRollbackPreview,
+            "session/rollback/commit" => Self::SessionRollbackCommit,
+            "subscription/create" => Self::SubscriptionCreate,
+            "subscription/update" => Self::SubscriptionUpdate,
+            "subscription/ack" => Self::SubscriptionAck,
+            "subscription/unsubscribe" => Self::SubscriptionUnsubscribe,
+            "session/queue/push" => Self::SessionQueuePush,
+            "session/queue/list" => Self::SessionQueueList,
+            "session/queue/update" => Self::SessionQueueUpdate,
+            "session/queue/remove" => Self::SessionQueueRemove,
+            "session/queue/steer" => Self::SessionQueueSteer,
             _ => return None,
         })
     }
@@ -254,6 +295,14 @@ pub enum ProtocolErrorCode {
     ForkTurnNotStable,
     #[error("PermissionDenied")]
     PermissionDenied,
+    /// The ack/replay cursor is outside the stored log (regression, future
+    /// value, or unknown stream); the client must re-snapshot (08 §4).
+    #[error("CursorExpired")]
+    CursorExpired,
+    /// The addressed queue entry is no longer queued (drained, removed, or
+    /// never existed) — `session/queue/*` (01 §4.3).
+    #[error("QueueItemNotFound")]
+    QueueItemNotFound,
     #[error("WorkspaceUnavailable")]
     WorkspaceUnavailable,
     #[error("InheritedSegmentWriteFailed")]
@@ -278,6 +327,15 @@ pub enum ProtocolErrorCode {
     InvalidMentions,
     #[error("WorkspaceRestoreFailedToStart")]
     WorkspaceRestoreFailedToStart,
+    #[serde(rename = "RESTORE_PLAN_NOT_FOUND")]
+    #[error("RESTORE_PLAN_NOT_FOUND")]
+    RestorePlanNotFound,
+    #[serde(rename = "RESTORE_PLAN_EXPIRED")]
+    #[error("RESTORE_PLAN_EXPIRED")]
+    RestorePlanExpired,
+    #[serde(rename = "WORKSPACE_VERSION_CONFLICT")]
+    #[error("WORKSPACE_VERSION_CONFLICT")]
+    WorkspaceVersionConflict,
     #[error("InternalError")]
     InternalError,
 }
@@ -507,6 +565,8 @@ impl fmt::Display for McpAuthStatus {
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
@@ -565,6 +625,18 @@ mod tests {
                 ProtocolErrorCode::WorkspaceRestoreFailedToStart,
                 "WorkspaceRestoreFailedToStart",
             ),
+            (
+                ProtocolErrorCode::RestorePlanNotFound,
+                "RESTORE_PLAN_NOT_FOUND",
+            ),
+            (
+                ProtocolErrorCode::RestorePlanExpired,
+                "RESTORE_PLAN_EXPIRED",
+            ),
+            (
+                ProtocolErrorCode::WorkspaceVersionConflict,
+                "WORKSPACE_VERSION_CONFLICT",
+            ),
         ];
 
         for (code, expected_str) in &codes {
@@ -621,6 +693,27 @@ mod tests {
         assert_eq!(
             ClientMethod::WorkspaceChangesRead.as_str(),
             "workspace/changes/read"
+        );
+    }
+
+    #[test]
+    fn client_method_recognizes_two_phase_session_rollback() {
+        assert_eq!(
+            [
+                ClientMethod::parse("session/rollback/preview"),
+                ClientMethod::parse("session/rollback/commit"),
+            ],
+            [
+                Some(ClientMethod::SessionRollbackPreview),
+                Some(ClientMethod::SessionRollbackCommit),
+            ]
+        );
+        assert_eq!(
+            [
+                ClientMethod::SessionRollbackPreview.as_str(),
+                ClientMethod::SessionRollbackCommit.as_str(),
+            ],
+            ["session/rollback/preview", "session/rollback/commit"]
         );
     }
 

@@ -154,6 +154,13 @@ impl ChatWidget {
                         );
                         true
                     }
+                    SessionHistoryMetadata::ProposedPlan => {
+                        self.add_history_entry_without_redraw(Box::new(
+                            history_cell::new_proposed_plan(item.body.clone(), &self.session.cwd),
+                        ));
+                        true
+                    }
+                    SessionHistoryMetadata::TurnSummary { .. } => false,
                     SessionHistoryMetadata::Edited { changes } => {
                         self.add_restored_file_change_item(item, changes.clone());
                         true
@@ -257,19 +264,20 @@ impl ChatWidget {
                     }
                 }
                 devo_protocol::SessionHistoryItemKind::TurnSummary => {
+                    let input_mode = turn_summary_input_mode(item);
                     let summary = match item.body.as_str() {
                         "failed" => history_cell::TurnSummaryCell::new_failed(
-                            InputMode::Build,
+                            input_mode,
                             item.title.clone(),
                             self.active_accent_color(),
                         ),
                         "interrupted" => history_cell::TurnSummaryCell::new_interrupted(
-                            InputMode::Build,
+                            input_mode,
                             item.title.clone(),
                             self.active_accent_color(),
                         ),
                         _ => history_cell::TurnSummaryCell::new(
-                            InputMode::Build,
+                            input_mode,
                             item.title.clone(),
                             item.duration_ms,
                             self.active_accent_color(),
@@ -580,5 +588,14 @@ impl ChatWidget {
             false,
         );
         self.add_history_entry_without_redraw(Box::new(exec));
+    }
+}
+
+fn turn_summary_input_mode(item: &SessionHistoryItem) -> InputMode {
+    match item.metadata {
+        Some(SessionHistoryMetadata::TurnSummary { collaboration_mode }) => {
+            InputMode::from_collaboration_mode(collaboration_mode)
+        }
+        _ => InputMode::Build,
     }
 }

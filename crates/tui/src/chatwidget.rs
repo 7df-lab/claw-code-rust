@@ -375,6 +375,11 @@ impl ChatWidget {
             .status_widget()
             .map(crate::status_indicator_widget::StatusIndicatorWidget::header)
     }
+
+    #[cfg(test)]
+    pub(crate) fn has_bottom_pane_view_for_test(&self) -> bool {
+        self.bottom_pane.has_view_for_test()
+    }
 }
 
 impl ChatWidget {

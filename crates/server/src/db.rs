@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -18,15 +19,15 @@ use devo_protocol::{
 pub enum QueueType {
     /// Pending turn inputs (from turn/start while a turn is active).
     Turn,
-    /// /btw steer inputs (from turn/steer, scoped to current turn only).
-    Btw,
+    /// Inputs injected into the active turn by `turn/steer`.
+    Steer,
 }
 
 impl QueueType {
     fn as_str(&self) -> &'static str {
         match self {
             QueueType::Turn => "turn",
-            QueueType::Btw => "btw",
+            QueueType::Steer => "steer",
         }
     }
 }
@@ -59,6 +60,39 @@ pub struct SessionStats {
     pub turn_count: usize,
     pub prompt_token_estimate: usize,
 }
+
+/// One derived event row before per-stream sequencing (08 §5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewEventLogRow {
+    /// Stable identity of the rollout fact: `<rollout_path>#<line_index>`.
+    pub source_fact_id: String,
+    /// Notification method, e.g. `item/started`.
+    pub event_kind: String,
+    pub stream_id: String,
+    pub event_id: String,
+    /// `EventEnvelope` JSON (meta + notification).
+    pub payload: String,
+    pub created_at: String,
+}
+
+/// A stored event row including its per-stream sequence number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventLogRow {
+    pub source_fact_id: String,
+    pub event_kind: String,
+    pub stream_id: String,
+    pub event_id: String,
+    pub seq: u64,
+    pub payload: String,
+    pub created_at: String,
+}
+
+/// Current index schema version recorded in `schema_meta` (05 §2.3).
+/// Bump when a migration changes the index layout; the rollout files are
+/// the rebuildable source of truth on any mismatch.
+/// v2: adds `event_log` + `projection_watermark` (08 §5/§7).
+/// v3: renames the persisted active-turn steer queue from `btw` to `steer`.
+const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// SQLite database for session metadata, token stats, and pending queues.
 pub struct Database {
@@ -112,7 +146,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS pending_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                queue_type TEXT NOT NULL CHECK(queue_type IN ('turn', 'btw')),
+                queue_type TEXT NOT NULL CHECK(queue_type IN ('turn', 'steer')),
                 kind TEXT NOT NULL,
                 content TEXT NOT NULL,
                 pending_input_id TEXT,
@@ -239,6 +273,240 @@ impl Database {
             conn.execute("ALTER TABLE sessions ADD COLUMN agent_path TEXT", [])
                 .context("failed to add agent_path column")?;
         }
+        // Queue entries have an explicit position so `session/queue/update`
+        // can reorder without rewriting row ids (P4c); existing rows keep
+        // their insertion order (position = id).
+        if !pending_messages_has_column(&conn, "position")? {
+            conn.execute(
+                "ALTER TABLE pending_messages ADD COLUMN position INTEGER",
+                [],
+            )
+            .context("failed to add pending_messages position column")?;
+            conn.execute(
+                "UPDATE pending_messages SET position = id WHERE position IS NULL",
+                [],
+            )
+            .context("failed to backfill pending_messages position")?;
+        }
+        let pending_messages_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pending_messages'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        if pending_messages_sql
+            .as_deref()
+            .is_some_and(|sql| sql.contains("'btw'"))
+        {
+            // P4c originally used `btw` for the active-turn steer queue. The
+            // product `/btw` feature is an unrelated ephemeral side question,
+            // so migrate the storage value and CHECK constraint together.
+            conn.execute_batch(
+                "
+                BEGIN;
+                ALTER TABLE pending_messages RENAME TO pending_messages_legacy;
+                CREATE TABLE pending_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    queue_type TEXT NOT NULL CHECK(queue_type IN ('turn', 'steer')),
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    pending_input_id TEXT,
+                    metadata TEXT,
+                    created_at INTEGER NOT NULL,
+                    position INTEGER NOT NULL
+                );
+                INSERT INTO pending_messages
+                    (id, session_id, queue_type, kind, content, pending_input_id, metadata, created_at, position)
+                SELECT id, session_id,
+                    CASE queue_type WHEN 'btw' THEN 'steer' ELSE queue_type END,
+                    kind, content, pending_input_id, metadata, created_at, position
+                FROM pending_messages_legacy;
+                DROP TABLE pending_messages_legacy;
+                CREATE INDEX idx_pending_session
+                    ON pending_messages(session_id, queue_type);
+                COMMIT;
+                ",
+            )
+            .context("failed to migrate pending steer queue from btw to steer")?;
+        }
+        // Schema version table (05 §2.3): the new authority going forward.
+        // The ad-hoc column probes above are the v0 baseline and keep working
+        // for databases created before this table existed.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+        )
+        .context("failed to create schema_meta table")?;
+        conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [CURRENT_SCHEMA_VERSION.to_string()],
+        )
+        .context("failed to record schema version")?;
+        // Persisted event log (08 §5/§7): the rollout JSONL is the canonical
+        // recovery log; this table is the delivery log used for cursor replay.
+        // Rows are idempotent by (source_fact_id, event_kind, stream_id);
+        // `seq` is strictly increasing per stream. A database rebuild expires
+        // all cursors and forces re-snapshot — rows are never modified.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS event_log (
+                source_fact_id TEXT NOT NULL,
+                event_kind TEXT NOT NULL,
+                stream_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (source_fact_id, event_kind, stream_id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS event_log_stream_seq
+                ON event_log(stream_id, seq);
+
+            CREATE TABLE IF NOT EXISTS projection_watermark (
+                rollout_path TEXT PRIMARY KEY,
+                last_line_index INTEGER NOT NULL
+            );",
+        )
+        .context("failed to create event_log tables")?;
+        Ok(())
+    }
+
+    /// The recorded schema version, if any. `None` means the database
+    /// predates the `schema_meta` table (implicitly version 0).
+    pub fn schema_version(&self) -> Result<Option<u32>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        value
+            .map(|value| {
+                value
+                    .parse::<u32>()
+                    .context("invalid schema_version in schema_meta")
+            })
+            .transpose()
+    }
+
+    // === Event log (08 §5/§7) ===
+
+    /// Idempotently inserts derived event rows. `seq` is allocated per stream
+    /// inside the same statement, and the `(source_fact_id, event_kind,
+    /// stream_id)` primary key makes re-projection of the same rollout fact a
+    /// no-op — reconciliation never duplicates, only backfills. Returns the
+    /// number of rows actually inserted.
+    pub fn insert_event_log_rows(&self, rows: &[NewEventLogRow]) -> Result<usize> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let mut inserted = 0usize;
+        for row in rows {
+            let changes = conn
+                .execute(
+                    "INSERT OR IGNORE INTO event_log
+                        (source_fact_id, event_kind, stream_id, event_id, seq, payload, created_at)
+                     SELECT ?1, ?2, ?3, ?4,
+                        (SELECT COALESCE(MAX(seq), 0) + 1 FROM event_log WHERE stream_id = ?3),
+                        ?5, ?6",
+                    params![
+                        row.source_fact_id,
+                        row.event_kind,
+                        row.stream_id,
+                        row.event_id,
+                        row.payload,
+                        row.created_at,
+                    ],
+                )
+                .context("failed to insert event_log row")?;
+            inserted += changes;
+        }
+        Ok(inserted)
+    }
+
+    /// Reads stored events of one stream after `after_seq`, ordered by seq
+    /// (cursor replay, 08 §4).
+    pub fn event_log_rows(&self, stream_id: &str, after_seq: u64) -> Result<Vec<EventLogRow>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let mut stmt = conn
+            .prepare(
+                "SELECT source_fact_id, event_kind, stream_id, event_id, seq, payload, created_at
+                 FROM event_log WHERE stream_id = ?1 AND seq > ?2 ORDER BY seq",
+            )
+            .context("failed to prepare event_log read")?;
+        let rows = stmt
+            .query_map(params![stream_id, after_seq as i64], |row| {
+                Ok(EventLogRow {
+                    source_fact_id: row.get(0)?,
+                    event_kind: row.get(1)?,
+                    stream_id: row.get(2)?,
+                    event_id: row.get(3)?,
+                    seq: row.get::<_, i64>(4)? as u64,
+                    payload: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })
+            .context("failed to read event_log rows")?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to decode event_log rows")
+    }
+
+    /// Total number of stored event rows (reconciliation tests).
+    pub fn event_log_len(&self) -> Result<u64> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event_log", [], |row| row.get(0))
+            .context("failed to count event_log rows")?;
+        Ok(count as u64)
+    }
+
+    /// The highest stored seq of one stream — the subscription barrier seq
+    /// (08 §4). `None` when the stream has no rows yet.
+    pub fn event_log_max_seq(&self, stream_id: &str) -> Result<Option<u64>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let value: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(seq) FROM event_log WHERE stream_id = ?1",
+                params![stream_id],
+                |row| row.get(0),
+            )
+            .context("failed to read stream barrier seq")?;
+        Ok(value.map(|value| value as u64))
+    }
+
+    /// The last rollout line index projected into `event_log` for a file.
+    pub fn projection_watermark(&self, rollout_path: &Path) -> Result<Option<u64>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let value: Option<i64> = conn
+            .query_row(
+                "SELECT last_line_index FROM projection_watermark WHERE rollout_path = ?1",
+                params![rollout_path.to_string_lossy().as_ref()],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(value.map(|value| value as u64))
+    }
+
+    /// Advances the projection watermark for a rollout file.
+    pub fn set_projection_watermark(
+        &self,
+        rollout_path: &Path,
+        last_line_index: u64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute(
+            "INSERT INTO projection_watermark (rollout_path, last_line_index) VALUES (?1, ?2)
+             ON CONFLICT(rollout_path) DO UPDATE SET last_line_index = excluded.last_line_index",
+            params![
+                rollout_path.to_string_lossy().as_ref(),
+                last_line_index as i64
+            ],
+        )
+        .context("failed to update projection watermark")?;
         Ok(())
     }
 
@@ -531,38 +799,12 @@ impl Database {
         item: &PendingInputItem,
     ) -> Result<()> {
         let conn = self.conn.lock().expect("database mutex poisoned");
-        let (kind_str, content) = match &item.kind {
-            PendingInputKind::UserText { text } => ("user_text", text.clone()),
-            PendingInputKind::UserInput {
-                input,
-                display_text,
-                prompt_text,
-                prompt_messages,
-            } => {
-                let content = serde_json::json!({
-                    "input": input,
-                    "display_text": display_text,
-                    "prompt_text": prompt_text,
-                    "prompt_messages": prompt_messages,
-                });
-                ("user_input", content.to_string())
-            }
-            PendingInputKind::ToolCallBlockedByHook {
-                tool_use_id,
-                reason,
-            } => {
-                let content = serde_json::json!({
-                    "tool_use_id": tool_use_id,
-                    "reason": reason,
-                });
-                ("tool_call_blocked", content.to_string())
-            }
-            PendingInputKind::BudgetLimitSteering => ("budget_limit", String::new()),
-        };
+        let (kind_str, content) = pending_kind_parts(&item.kind);
         let metadata_str = item.metadata.as_ref().map(|v| v.to_string());
         conn.execute(
-            "INSERT INTO pending_messages (session_id, queue_type, kind, content, pending_input_id, metadata, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO pending_messages (session_id, queue_type, kind, content, pending_input_id, metadata, created_at, position)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                (SELECT COALESCE(MAX(position), 0) + 1 FROM pending_messages WHERE session_id = ?1 AND queue_type = ?2)",
             params![
                 session_id.to_string(),
                 queue.as_str(),
@@ -575,6 +817,127 @@ impl Database {
         )
         .context("failed to push pending message")?;
         Ok(())
+    }
+
+    /// Replaces one pending message's content (kind/content/metadata), keyed
+    /// by its stable `pending_input_id` (`session/queue/update`). Returns
+    /// whether the entry still existed.
+    pub fn update_pending_content(
+        &self,
+        session_id: &SessionId,
+        queue: QueueType,
+        item: &PendingInputItem,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let (kind_str, content) = pending_kind_parts(&item.kind);
+        let metadata_str = item.metadata.as_ref().map(|v| v.to_string());
+        let changes = conn
+            .execute(
+                "UPDATE pending_messages SET kind = ?4, content = ?5, metadata = ?6
+                 WHERE session_id = ?1 AND queue_type = ?2 AND pending_input_id = ?3",
+                params![
+                    session_id.to_string(),
+                    queue.as_str(),
+                    item.id.to_string(),
+                    kind_str,
+                    content,
+                    metadata_str,
+                ],
+            )
+            .context("failed to update pending message")?;
+        Ok(changes == 1)
+    }
+
+    /// Merges one key into a pending message's metadata JSON (used for the
+    /// `clientUserMessageId` dedup key, 01 §4.3). Returns whether the entry
+    /// existed.
+    pub fn set_pending_metadata_field(
+        &self,
+        session_id: &SessionId,
+        queue: QueueType,
+        pending_input_id: &PendingInputId,
+        key: &str,
+        value: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let changes = conn
+            .execute(
+                "UPDATE pending_messages
+                 SET metadata = json_set(COALESCE(metadata, '{}'), '$.' || ?4, ?5)
+                 WHERE session_id = ?1 AND queue_type = ?2 AND pending_input_id = ?3",
+                params![
+                    session_id.to_string(),
+                    queue.as_str(),
+                    pending_input_id.to_string(),
+                    key,
+                    value,
+                ],
+            )
+            .context("failed to update pending message metadata")?;
+        Ok(changes == 1)
+    }
+
+    /// Rewrites queue positions to 1..=N following `ordered_ids`
+    /// (`session/queue/update` reorder). Ids not listed keep their relative
+    /// order at the end.
+    pub fn set_pending_positions(
+        &self,
+        session_id: &SessionId,
+        queue: QueueType,
+        ordered_ids: &[PendingInputId],
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        for (index, id) in ordered_ids.iter().enumerate() {
+            conn.execute(
+                "UPDATE pending_messages SET position = ?4
+                 WHERE session_id = ?1 AND queue_type = ?2 AND pending_input_id = ?3",
+                params![
+                    session_id.to_string(),
+                    queue.as_str(),
+                    id.to_string(),
+                    (index + 1) as i64,
+                ],
+            )
+            .context("failed to reorder pending messages")?;
+        }
+        Ok(())
+    }
+
+    /// Lists pending messages of one queue without draining them
+    /// (subscription snapshots, 08 §4).
+    pub fn list_pending(
+        &self,
+        session_id: &SessionId,
+        queue: QueueType,
+    ) -> Result<Vec<PendingInputItem>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let mut stmt = conn
+            .prepare(
+                "SELECT kind, content, pending_input_id, metadata, created_at
+                 FROM pending_messages
+                 WHERE session_id = ?1 AND queue_type = ?2
+                 ORDER BY position ASC, id ASC",
+            )
+            .context("failed to prepare list_pending statement")?;
+        let items = stmt
+            .query_map(params![session_id.to_string(), queue.as_str()], |row| {
+                let kind_str: String = row.get(0)?;
+                let content: String = row.get(1)?;
+                let pending_input_id: Option<String> = row.get(2)?;
+                let metadata_str: Option<String> = row.get(3)?;
+                let created_at: i64 = row.get(4)?;
+                Ok(pending_input_from_row(
+                    &kind_str,
+                    &content,
+                    pending_input_id,
+                    metadata_str,
+                    created_at,
+                ))
+            })
+            .context("failed to query pending messages")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to decode pending messages")?;
+        Ok(items)
     }
 
     /// Drains all pending messages from the specified queue, deleting them in the process.
@@ -595,7 +958,7 @@ impl Database {
                     "SELECT kind, content, pending_input_id, metadata, created_at
                      FROM pending_messages
                      WHERE session_id = ?1 AND queue_type = ?2
-                     ORDER BY id ASC",
+                     ORDER BY position ASC, id ASC",
                 )
                 .context("failed to prepare drain_pending statement")?;
             let rows = stmt
@@ -606,61 +969,13 @@ impl Database {
                     let metadata_str: Option<String> = row.get(3)?;
                     let created_at: i64 = row.get(4)?;
 
-                    let kind = match kind_str.as_str() {
-                        "user_text" => PendingInputKind::UserText { text: content },
-                        "user_input" => serde_json::from_str::<serde_json::Value>(&content)
-                            .ok()
-                            .and_then(|value| {
-                                Some(PendingInputKind::UserInput {
-                                    input: serde_json::from_value(value.get("input")?.clone())
-                                        .ok()?,
-                                    display_text: value
-                                        .get("display_text")?
-                                        .as_str()
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                    prompt_text: value
-                                        .get("prompt_text")?
-                                        .as_str()
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                    prompt_messages: value
-                                        .get("prompt_messages")
-                                        .and_then(|messages| {
-                                            serde_json::from_value(messages.clone()).ok()
-                                        })
-                                        .unwrap_or_default(),
-                                })
-                            })
-                            .unwrap_or(PendingInputKind::UserText { text: content }),
-                        "tool_call_blocked" => {
-                            let parsed: serde_json::Value =
-                                serde_json::from_str(&content).unwrap_or_default();
-                            PendingInputKind::ToolCallBlockedByHook {
-                                tool_use_id: parsed["tool_use_id"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                reason: parsed["reason"].as_str().unwrap_or_default().to_string(),
-                            }
-                        }
-                        "budget_limit" => PendingInputKind::BudgetLimitSteering,
-                        _ => PendingInputKind::UserText { text: content },
-                    };
-
-                    let metadata = metadata_str.and_then(|s| serde_json::from_str(&s).ok());
-
-                    Ok(PendingInputItem {
-                        id: pending_input_id
-                            .and_then(|id| PendingInputId::try_from(id).ok())
-                            .unwrap_or_default(),
-                        kind,
-                        metadata,
-                        created_at: Utc
-                            .timestamp_opt(created_at, 0)
-                            .single()
-                            .unwrap_or_else(Utc::now),
-                    })
+                    Ok(pending_input_from_row(
+                        &kind_str,
+                        &content,
+                        pending_input_id,
+                        metadata_str,
+                        created_at,
+                    ))
                 })
                 .context("failed to query pending messages")?;
 
@@ -729,9 +1044,17 @@ impl Database {
 }
 
 fn sessions_has_column(conn: &Connection, column: &str) -> Result<bool> {
+    table_has_column(conn, "sessions", column)
+}
+
+fn pending_messages_has_column(conn: &Connection, column: &str) -> Result<bool> {
+    table_has_column(conn, "pending_messages", column)
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = conn
-        .prepare("PRAGMA table_info(sessions)")
-        .context("failed to inspect sessions schema")?;
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .with_context(|| format!("failed to inspect {table} schema"))?;
     let columns = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .context("failed to read sessions schema")?;
@@ -808,6 +1131,7 @@ fn parse_session_metadata_row(
         last_query_usage: None,
         last_query_total_tokens: 0,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
     })
 }
 
@@ -830,6 +1154,104 @@ fn parse_additional_directories_column(
     })
 }
 
+/// Maps a `PendingInputKind` to its `(kind, content)` storage pair (shared
+/// by `push_pending` and `update_pending_content`).
+fn pending_kind_parts(kind: &PendingInputKind) -> (&'static str, String) {
+    match kind {
+        PendingInputKind::UserText { text } => ("user_text", text.clone()),
+        PendingInputKind::UserInput {
+            input,
+            display_text,
+            prompt_text,
+            prompt_messages,
+        } => {
+            let content = serde_json::json!({
+                "input": input,
+                "display_text": display_text,
+                "prompt_text": prompt_text,
+                "prompt_messages": prompt_messages,
+            });
+            ("user_input", content.to_string())
+        }
+        PendingInputKind::ToolCallBlockedByHook {
+            tool_use_id,
+            reason,
+        } => {
+            let content = serde_json::json!({
+                "tool_use_id": tool_use_id,
+                "reason": reason,
+            });
+            ("tool_call_blocked", content.to_string())
+        }
+        PendingInputKind::BudgetLimitSteering => ("budget_limit", String::new()),
+    }
+}
+
+/// Maps one `pending_messages` row to its `PendingInputItem` (shared by
+/// `drain_pending` and `list_pending`).
+fn pending_input_from_row(
+    kind_str: &str,
+    content: &str,
+    pending_input_id: Option<String>,
+    metadata_str: Option<String>,
+    created_at: i64,
+) -> PendingInputItem {
+    let kind = match kind_str {
+        "user_text" => PendingInputKind::UserText {
+            text: content.to_string(),
+        },
+        "user_input" => serde_json::from_str::<serde_json::Value>(content)
+            .ok()
+            .and_then(|value| {
+                Some(PendingInputKind::UserInput {
+                    input: serde_json::from_value(value.get("input")?.clone()).ok()?,
+                    display_text: value
+                        .get("display_text")?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    prompt_text: value
+                        .get("prompt_text")?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    prompt_messages: value
+                        .get("prompt_messages")
+                        .and_then(|messages| serde_json::from_value(messages.clone()).ok())
+                        .unwrap_or_default(),
+                })
+            })
+            .unwrap_or(PendingInputKind::UserText {
+                text: content.to_string(),
+            }),
+        "tool_call_blocked" => {
+            let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
+            PendingInputKind::ToolCallBlockedByHook {
+                tool_use_id: parsed["tool_use_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                reason: parsed["reason"].as_str().unwrap_or_default().to_string(),
+            }
+        }
+        "budget_limit" => PendingInputKind::BudgetLimitSteering,
+        _ => PendingInputKind::UserText {
+            text: content.to_string(),
+        },
+    };
+    PendingInputItem {
+        id: pending_input_id
+            .and_then(|id| PendingInputId::try_from(id).ok())
+            .unwrap_or_default(),
+        kind,
+        metadata: metadata_str.and_then(|s| serde_json::from_str(&s).ok()),
+        created_at: Utc
+            .timestamp_opt(created_at, 0)
+            .single()
+            .unwrap_or_else(Utc::now),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,6 +1263,90 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let db = Database::open(db_path).expect("open database");
         (db, dir)
+    }
+
+    #[test]
+    fn schema_meta_records_current_schema_version() {
+        let (db, _dir) = test_db();
+        assert_eq!(
+            db.schema_version().expect("read schema version"),
+            Some(CURRENT_SCHEMA_VERSION)
+        );
+        // Re-opening an existing database keeps the recorded version.
+        let (db, dir) = test_db();
+        drop(db);
+        let db = Database::open(dir.path().join("test.db")).expect("reopen database");
+        assert_eq!(
+            db.schema_version().expect("read schema version"),
+            Some(CURRENT_SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn migration_renames_legacy_btw_queue_rows_to_steer() {
+        let dir = TempDir::new().expect("create temp dir");
+        let db_path = dir.path().join("legacy.db");
+        let session_id = SessionId::new();
+        {
+            let conn = Connection::open(&db_path).expect("open legacy database");
+            conn.execute_batch(
+                "
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    cwd TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE pending_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    queue_type TEXT NOT NULL CHECK(queue_type IN ('turn', 'btw')),
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    pending_input_id TEXT,
+                    metadata TEXT,
+                    created_at INTEGER NOT NULL,
+                    position INTEGER
+                );
+                CREATE INDEX idx_pending_session
+                    ON pending_messages(session_id, queue_type);
+                ",
+            )
+            .expect("create legacy queue tables");
+            conn.execute(
+                "INSERT INTO sessions (id, cwd, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                params![session_id.to_string(), ".", 0, 0],
+            )
+            .expect("insert legacy session");
+            conn.execute(
+                "INSERT INTO pending_messages
+                    (session_id, queue_type, kind, content, pending_input_id, created_at, position)
+                 VALUES (?1, 'btw', 'user_text', 'keep steering', ?2, 0, 1)",
+                params![session_id.to_string(), PendingInputId::new().to_string()],
+            )
+            .expect("insert legacy steer row");
+        }
+
+        let db = Database::open(db_path).expect("migrate legacy database");
+        assert_eq!(
+            db.count_pending(&session_id, QueueType::Steer)
+                .expect("count migrated steer row"),
+            1
+        );
+        let conn = db.conn.lock().expect("database mutex poisoned");
+        let queue_type: String = conn
+            .query_row("SELECT queue_type FROM pending_messages", [], |row| {
+                row.get(0)
+            })
+            .expect("read migrated queue type");
+        assert_eq!(queue_type, "steer");
+        let old_value = conn.execute(
+            "INSERT INTO pending_messages
+                (session_id, queue_type, kind, content, created_at, position)
+             VALUES (?1, 'btw', 'user_text', 'obsolete', 0, 2)",
+            params![session_id.to_string()],
+        );
+        assert!(old_value.is_err(), "legacy queue type must be rejected");
     }
 
     #[test]
@@ -910,6 +1416,7 @@ mod tests {
             last_query_usage: None,
             last_query_total_tokens: 0,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
         }
     }
 
@@ -1077,9 +1584,9 @@ mod tests {
             None,
             Utc::now(),
         );
-        let btw_item = PendingInputItem::new(
+        let steer_item = PendingInputItem::new(
             PendingInputKind::UserText {
-                text: "btw msg".into(),
+                text: "steer msg".into(),
             },
             None,
             Utc::now(),
@@ -1087,24 +1594,24 @@ mod tests {
 
         db.push_pending(&meta.session_id, QueueType::Turn, &turn_item)
             .expect("push");
-        db.push_pending(&meta.session_id, QueueType::Btw, &btw_item)
+        db.push_pending(&meta.session_id, QueueType::Steer, &steer_item)
             .expect("push");
 
         let turn_count = db
             .count_pending(&meta.session_id, QueueType::Turn)
             .expect("count");
-        let btw_count = db
-            .count_pending(&meta.session_id, QueueType::Btw)
+        let steer_count = db
+            .count_pending(&meta.session_id, QueueType::Steer)
             .expect("count");
         assert_eq!(turn_count, 1);
-        assert_eq!(btw_count, 1);
+        assert_eq!(steer_count, 1);
 
-        db.clear_pending(&meta.session_id, QueueType::Btw)
+        db.clear_pending(&meta.session_id, QueueType::Steer)
             .expect("clear");
-        let btw_count = db
-            .count_pending(&meta.session_id, QueueType::Btw)
+        let steer_count = db
+            .count_pending(&meta.session_id, QueueType::Steer)
             .expect("count");
-        assert_eq!(btw_count, 0);
+        assert_eq!(steer_count, 0);
 
         let turn_count = db
             .count_pending(&meta.session_id, QueueType::Turn)

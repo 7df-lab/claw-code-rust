@@ -9,6 +9,7 @@ use devo_core::SessionId;
 use devo_protocol::AcpAvailableCommand;
 use devo_protocol::AcpCost;
 use devo_protocol::AcpSessionConfigOption;
+use devo_protocol::CollaborationMode;
 use devo_protocol::ProviderModelBinding;
 use devo_protocol::ProviderRetryPhase;
 use devo_protocol::ProviderVendor;
@@ -587,6 +588,8 @@ pub(crate) enum WorkerEvent {
         loaded_item_count: u64,
         /// Pending turn input texts queued for the next turn.
         pending_texts: Vec<String>,
+        /// Collaboration mode restored from the resumed session metadata.
+        collaboration_mode: CollaborationMode,
     },
     /// The current session title changed.
     SessionRenamed {
@@ -594,6 +597,11 @@ pub(crate) enum WorkerEvent {
         session_id: String,
         /// The new session title.
         title: String,
+    },
+    /// The current session was deleted.
+    SessionDeleted {
+        /// The deleted session identifier.
+        session_id: String,
     },
     /// The active session or its context-compaction transcript item started compaction.
     SessionCompactionStarted,

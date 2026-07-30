@@ -26,7 +26,7 @@ pub(crate) struct TurnReservationSnapshot {
     pub(crate) summary: SessionMetadata,
     pub(crate) runtime_context: Arc<SessionRuntimeContext>,
     pub(crate) pending_turn_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
-    pub(crate) btw_input_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
+    pub(crate) steer_input_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
 }
 
 /// Hook runner inputs derived from session actor state.

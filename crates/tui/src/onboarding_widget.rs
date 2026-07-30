@@ -32,7 +32,7 @@ use devo_protocol::Model;
 use devo_protocol::ProviderModelBinding;
 use devo_protocol::ProviderVendor;
 use devo_protocol::ProviderWireApi;
-use devo_protocol::ReasoningEffortPreset;
+use devo_protocol::ReasoningEffortOption;
 
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
@@ -583,25 +583,24 @@ impl OnboardingWidget {
 
     fn reasoning_effort_items(&self, slug: &str) -> Vec<ReasoningEffortItem> {
         self.model_by_slug(slug)
-            .map(Model::reasoning_effort_options)
+            .map(|model| model.effective_reasoning_capability().options())
             .unwrap_or_default()
             .into_iter()
             .map(Self::reasoning_effort_item)
             .collect()
     }
 
-    fn reasoning_effort_item(preset: ReasoningEffortPreset) -> ReasoningEffortItem {
+    fn reasoning_effort_item(option: ReasoningEffortOption) -> ReasoningEffortItem {
         ReasoningEffortItem {
-            label: preset.effort.label().to_string(),
-            value: preset.effort.label().to_ascii_lowercase(),
-            description: preset.description,
+            label: option.label,
+            value: option.value,
+            description: option.description,
         }
     }
 
     fn default_reasoning_effort_index(&self, slug: &str, items: &[ReasoningEffortItem]) -> usize {
         self.model_by_slug(slug)
-            .and_then(|model| model.default_reasoning_effort)
-            .map(|effort| effort.label().to_ascii_lowercase())
+            .and_then(Model::default_reasoning_effort_selection)
             .and_then(|value| items.iter().position(|item| item.value == value))
             .unwrap_or(0)
     }

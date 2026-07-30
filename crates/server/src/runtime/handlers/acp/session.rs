@@ -434,8 +434,8 @@ impl ServerRuntime {
                     .map_err(|error| format!("failed to clear pending turn queue: {error}"))?;
                 self.deps
                     .db
-                    .clear_pending(&session_id, crate::db::QueueType::Btw)
-                    .map_err(|error| format!("failed to clear pending btw queue: {error}"))?;
+                    .clear_pending(&session_id, crate::db::QueueType::Steer)
+                    .map_err(|error| format!("failed to clear pending steer queue: {error}"))?;
                 self.deps
                     .db
                     .delete_session(&session_id)

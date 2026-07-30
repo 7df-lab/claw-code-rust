@@ -332,6 +332,8 @@ mod tests {
                 "compact",
                 "resume",
                 "new",
+                "rename",
+                "delete",
                 "status",
                 "permissions",
                 "show-reasoning",

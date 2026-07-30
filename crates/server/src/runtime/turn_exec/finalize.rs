@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use devo_core::{SessionId, TurnError, TurnStatus, TurnUsage};
-use devo_protocol::{SessionHistoryItem, SessionHistoryItemKind, TurnFailedPayload};
+use devo_protocol::{
+    SessionHistoryItem, SessionHistoryItemKind, SessionHistoryMetadata, TurnFailedPayload,
+};
 
 use super::super::ServerRuntime;
 use super::super::subagent_usage::ParentUsageSnapshot;
@@ -159,7 +161,7 @@ impl ServerRuntime {
         } else {
             state.core.last_turn_interrupted = false;
         }
-        self.clear_btw_input_queue(state, session_id).await;
+        self.clear_steer_input_queue(state, session_id).await;
         self.append_terminal_turn_record(
             state,
             session_id,
@@ -265,23 +267,85 @@ impl ServerRuntime {
         final_turn
     }
 
-    async fn clear_btw_input_queue(
+    async fn clear_steer_input_queue(
         self: &Arc<Self>,
         state: &SessionActorState,
         session_id: SessionId,
     ) {
         let is_ephemeral = state.summary.ephemeral;
-        let btw_input_queue = Arc::clone(&state.btw_input_queue);
-        btw_input_queue
-            .lock()
-            .expect("btw input queue mutex should not be poisoned")
-            .clear();
-        if !is_ephemeral && let Err(err) = self.deps.db.clear_pending(&session_id, QueueType::Btw) {
-            tracing::warn!(
-                session_id = %session_id,
-                error = %err,
-                "failed to clear btw input messages from database"
-            );
+        let steer_input_queue = Arc::clone(&state.steer_input_queue);
+        let leftover: Vec<devo_core::PendingInputItem> = {
+            let mut queue = steer_input_queue
+                .lock()
+                .expect("steer input queue mutex should not be poisoned");
+            queue.drain(..).collect()
+        };
+        if !leftover.is_empty() {
+            // Any unconsumed steer degrades into the session turn queue
+            // (01 §4.3); normally `SessionState::end_turn` already moved
+            // them, this covers terminal paths that skip it.
+            let mut queue = state
+                .pending_turn_queue
+                .lock()
+                .expect("pending turn queue mutex should not be poisoned");
+            for item in &leftover {
+                queue.push_back(item.clone());
+            }
+        }
+        if !is_ephemeral {
+            // The database mirrors the same degradation, but only for ids that
+            // remain in the shared in-memory turn queue. A steer already
+            // drained by follow-up scheduling was consumed into its next turn;
+            // retaining or moving its steer row would leave an orphan and make
+            // a restart resurrect a duplicate. Every other steer row is dropped.
+            let queued_ids: std::collections::HashSet<devo_core::PendingInputId> = state
+                .pending_turn_queue
+                .lock()
+                .expect("pending turn queue mutex should not be poisoned")
+                .iter()
+                .map(|item| item.id)
+                .collect();
+            match self.deps.db.drain_pending(&session_id, QueueType::Steer) {
+                Ok(rows) => {
+                    for item in &rows {
+                        if !queued_ids.contains(&item.id) {
+                            continue;
+                        }
+                        if let Err(error) =
+                            self.deps
+                                .db
+                                .push_pending(&session_id, QueueType::Turn, item)
+                        {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = %error,
+                                "failed to degrade steer input into the turn queue"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %err,
+                        "failed to drain steer input messages from database"
+                    );
+                }
+            }
+        }
+        for item in &leftover {
+            self.broadcast_queue_updated(
+                session_id,
+                devo_protocol::canonical::queue::QueueChange::Added,
+                devo_protocol::canonical::ids::QueueItemId::from_legacy_uuid(uuid::Uuid::from(
+                    item.id,
+                )),
+                None,
+            )
+            .await;
+        }
+        if !leftover.is_empty() {
+            self.broadcast_updated_queue(session_id).await;
         }
     }
 
@@ -411,7 +475,9 @@ fn append_terminal_history_items(
         title: final_turn.model.clone(),
         body: outcome.to_string(),
         tool_io: None,
-        metadata: None,
+        metadata: Some(SessionHistoryMetadata::TurnSummary {
+            collaboration_mode: state.core.collaboration_mode,
+        }),
         duration_ms: duration_secs,
     });
 }

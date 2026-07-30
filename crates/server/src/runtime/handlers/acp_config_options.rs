@@ -59,6 +59,7 @@ impl ServerRuntime {
                 "session does not exist".to_string(),
             ));
         };
+        let _state_change_guard = session_arc.lock_state_change().await;
 
         let snapshot: HookContextSnapshot =
             session_arc.hook_context_snapshot().await.ok_or_else(|| {

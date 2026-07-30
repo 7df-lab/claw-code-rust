@@ -5,6 +5,7 @@ mod client;
 mod connection;
 pub mod db;
 mod event;
+mod event_reconcile;
 mod exec_policy_store;
 mod execution;
 pub mod goal;
@@ -23,6 +24,7 @@ mod titles;
 mod tool_actions;
 mod transport;
 mod turn;
+mod usage_ledger;
 mod workspace_changes;
 
 pub use approval::*;

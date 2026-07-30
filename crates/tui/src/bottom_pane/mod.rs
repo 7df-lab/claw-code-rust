@@ -35,6 +35,7 @@ mod paste_burst;
 mod pending_thread_approvals;
 pub(crate) mod popup_consts;
 mod prompt_args;
+mod proposed_plan_actions_view;
 mod reference_popup;
 mod request_user_input_overlay;
 pub(crate) mod scroll_state;
@@ -51,6 +52,7 @@ use chat_composer::ChatComposerConfig;
 use chat_composer::InputResult as ComposerInputResult;
 pub(crate) use custom_prompt_view::CustomPromptView;
 pub(crate) use input_mode::InputMode;
+pub(crate) use proposed_plan_actions_view::ProposedPlanActionsView;
 
 use crate::app_command::AppCommand;
 use crate::app_command::InputHistoryDirection;
@@ -474,6 +476,11 @@ impl BottomPane {
 
     pub(crate) fn open_popup_view(&mut self, view: Box<dyn BottomPaneView>) {
         self.push_view(view);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_view_for_test(&self) -> bool {
+        !self.view_stack.is_empty()
     }
 
     pub(crate) fn open_request_user_input(

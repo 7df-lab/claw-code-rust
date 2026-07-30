@@ -1,0 +1,37 @@
+{
+  "description": "Lock file pinning the official ACP/A2A specification snapshots used by the adapters. Upgrading a protocol requires explicitly updating this file, the generated bindings, and the conformance fixtures in the same change.",
+  "protocols": {
+    "acp": {
+      "version": "1",
+      "snapshot": "~/Downloads/agent-client-protocol-main",
+      "truthSources": [
+        {
+          "path": "schema/v1/schema.json",
+          "role": "wire schema (normative)",
+          "sha256": "7f1fba1561163729115247df75b67aeed02085115fbc7ef0131fb01d456c08f9"
+        }
+      ],
+      "supplementary": [
+        "schema/v1/src/",
+        "docs/protocol/v1/"
+      ],
+      "notes": "schema/v2 is unstable and is NOT adopted."
+    },
+    "a2a": {
+      "version": "1.0",
+      "snapshot": "~/Downloads/A2A-main",
+      "truthSources": [
+        {
+          "path": "specification/a2a.proto",
+          "role": "normative specification",
+          "sha256": "945df6e34001b2bfd0fd62d9484b63094dfad9d78705e41e2873441c419ae2d1"
+        }
+      ],
+      "supplementary": [
+        "docs/specification.md",
+        "specification/json/README.md"
+      ],
+      "notes": "protobuf JSON mapping is used for the JSON-RPC binding; specification/json/README.md is an entry note only and does not replace the proto."
+    }
+  }
+}

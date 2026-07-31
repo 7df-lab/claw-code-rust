@@ -39,7 +39,7 @@ impl PtyChildGuard {
 
     fn kill_and_wait(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            let _ = child.kill();
+            kill_pty_child(child);
             let _ = child.wait();
         }
     }
@@ -52,9 +52,22 @@ impl PtyChildGuard {
 impl Drop for PtyChildGuard {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            let _ = child.kill();
+            kill_pty_child(child);
         }
     }
+}
+
+/// Kill the PTY child and its process group.
+///
+/// `portable-pty` on Unix already runs `setsid()` in the child, so the shell is
+/// the session/process-group leader. A direct `Child::kill` only targets that
+/// PID; descendants such as `sleep` keep the PTY slave open. Signal the whole
+/// group first, then fall back to the direct kill.
+fn kill_pty_child(child: &mut Box<dyn Child + Send + Sync>) {
+    if let Some(pid) = child.process_id() {
+        let _ = devo_util_process::process_group::kill_process_group_by_pid(pid);
+    }
+    let _ = child.kill();
 }
 
 /// Run a command attached to a pseudo-terminal (PTY).

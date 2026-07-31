@@ -65,13 +65,14 @@ async fn execute_shell_command_cancels_non_tty_process() {
     let cancel_token = CancellationToken::new();
     let cancel_task_token = cancel_token.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         cancel_task_token.cancel();
     });
 
+    let started = Instant::now();
     let result = execute_shell_command(
         ShellExecRequest {
-            command: "sleep 5; echo should_not_print".to_string(),
+            command: "echo cancelled_output; sleep 5; echo should_not_print".to_string(),
             workdir: std::env::current_dir().unwrap_or_default(),
             description: "cancel test".into(),
             shell_override: None,
@@ -88,8 +89,74 @@ async fn execute_shell_command_cancels_non_tty_process() {
     .await
     .expect("execute shell command");
 
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "cancel should not wait for descendant sleep to finish"
+    );
     assert!(result.is_error);
-    assert_eq!(result.content.into_string(), "command cancelled");
+    let text = result.content.into_string();
+    assert!(
+        text.starts_with("command cancelled"),
+        "expected cancel prefix, got {text:?}"
+    );
+    assert!(
+        text.contains("cancelled_output"),
+        "expected retained stdout, got {text:?}"
+    );
+    assert!(
+        !text.contains("should_not_print"),
+        "cancelled command should not reach later output, got {text:?}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn execute_shell_command_cancels_tty_process() {
+    let cancel_token = CancellationToken::new();
+    let cancel_task_token = cancel_token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancel_task_token.cancel();
+    });
+
+    let started = Instant::now();
+    let result = execute_shell_command(
+        ShellExecRequest {
+            command: "echo cancelled_output; sleep 5; echo should_not_print".to_string(),
+            workdir: std::env::current_dir().unwrap_or_default(),
+            description: "pty cancel test".into(),
+            shell_override: Some("bash".to_string()),
+            tty: true,
+            login: false,
+            timeout_ms: 10_000,
+            yield_time_ms: 100,
+            max_output_tokens: 100,
+            sandbox_profile: None,
+        },
+        None,
+        cancel_token,
+    )
+    .await
+    .expect("execute shell command");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "cancel should not wait for descendant sleep to finish"
+    );
+    assert!(result.is_error);
+    let text = result.content.into_string();
+    assert!(
+        text.starts_with("command cancelled"),
+        "expected cancel prefix, got {text:?}"
+    );
+    assert!(
+        text.contains("cancelled_output"),
+        "expected retained output, got {text:?}"
+    );
+    assert!(
+        !text.contains("should_not_print"),
+        "cancelled command should not reach later output, got {text:?}"
+    );
 }
 
 #[cfg(unix)]
@@ -206,15 +273,16 @@ use super::{SandboxLaunchPlan, platform_shell_program, preview, resolve_shell, t
 #[cfg(unix)]
 #[tokio::test]
 async fn execute_shell_command_pipe_times_out() {
+    let started = Instant::now();
     let result = execute_shell_command(
         ShellExecRequest {
-            command: "sleep 5".to_string(),
+            command: "echo before_timeout; sleep 5".to_string(),
             workdir: std::env::current_dir().unwrap_or_default(),
             description: "timeout test".into(),
             shell_override: None,
             tty: false,
             login: false,
-            timeout_ms: 100,
+            timeout_ms: 200,
             yield_time_ms: 50,
             max_output_tokens: 100,
             sandbox_profile: None,
@@ -225,12 +293,19 @@ async fn execute_shell_command_pipe_times_out() {
     .await
     .expect("execute shell command");
 
-    assert!(result.is_error);
     assert!(
-        result
-            .content
-            .into_string()
-            .contains("command timed out after 100ms")
+        started.elapsed() < Duration::from_secs(2),
+        "timeout should not wait for descendant sleep to finish"
+    );
+    assert!(result.is_error);
+    let text = result.content.into_string();
+    assert!(
+        text.contains("command timed out after 200ms"),
+        "expected timeout prefix, got {text:?}"
+    );
+    assert!(
+        text.contains("before_timeout"),
+        "expected retained stdout, got {text:?}"
     );
 }
 

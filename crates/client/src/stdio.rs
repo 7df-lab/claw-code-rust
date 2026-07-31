@@ -28,7 +28,6 @@ use crate::client_core::ServerClientCore;
 use crate::protocol_trace::ProtocolTrace;
 use crate::protocol_trace::TraceDirection;
 
-pub use crate::acp_terminal::ACP_TERMINAL_OUTPUT_NOTIFICATION_METHOD;
 pub use crate::client_core::ServerNotificationMessage;
 
 const SERVER_CHILD_STDIN_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
@@ -125,13 +124,6 @@ impl StdioServerClient {
         let result = self.core.initialize().await?;
         tracing::info!("stdio server client initialized");
         Ok(result)
-    }
-
-    pub async fn acp_terminal_output_snapshot(
-        &self,
-        terminal_id: &str,
-    ) -> Result<AcpTerminalOutputResult> {
-        self.core.acp_terminal_output_snapshot(terminal_id).await
     }
 
     pub async fn session_start(
@@ -511,7 +503,7 @@ mod tests {
                 write_text_file: true,
                 meta: None,
             },
-            terminal: true,
+            terminal: false,
             meta: None,
         }
     }
@@ -568,7 +560,7 @@ mod tests {
                 write_text_file: false,
                 meta: None,
             },
-            terminal: true,
+            terminal: false,
             meta: None,
         };
         let (mut client, pending) =

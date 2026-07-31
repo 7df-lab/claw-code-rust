@@ -62,7 +62,8 @@ runtime behavior, and workspace execution under your control.
   OpenAI-compatible, Anthropic-compatible, DeepSeek, Qwen, Kimi, GLM, MiniMax,
   Xiaomi MiMo, OpenRouter, or local endpoints.
 - **MCP support** - Connect external tools and context through
-  [Model Context Protocol](https://modelcontextprotocol.io/) servers.
+  [Model Context Protocol](https://modelcontextprotocol.io/) servers. See
+  [Configuration](./docs/configuration.md#mcp-servers) for setup.
 - **Skill support** - Package repeatable workflows, instructions, scripts, and
   references as reusable [Agent Skills](https://agentskills.io/).
 - **Long-running task support** - Let Devo manage context automatically across

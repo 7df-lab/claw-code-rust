@@ -30,10 +30,6 @@ pub(super) fn query_event_delivery_policy(event: &QueryEvent) -> QueryEventDeliv
         | QueryEvent::ToolUseStart { .. }
         | QueryEvent::ToolExecutionStart { .. }
         | QueryEvent::ToolResult { .. }
-        | QueryEvent::ToolProgress {
-            progress: devo_core::tools::ToolProgress::Terminal { .. },
-            ..
-        }
         | QueryEvent::TurnComplete { .. } => QueryEventDeliveryPolicy::MustDeliver,
     }
 }
@@ -75,11 +71,7 @@ pub(super) fn query_event_trace_delta_len(event: &QueryEvent) -> usize {
                 | devo_core::tools::ToolProgress::Completion { summary: delta },
             ..
         } => delta.len(),
-        QueryEvent::ToolProgress {
-            progress: devo_core::tools::ToolProgress::Terminal { .. },
-            ..
-        }
-        | QueryEvent::ProviderRetryStatus(_)
+        QueryEvent::ProviderRetryStatus(_)
         | QueryEvent::ContextCompactionStarted
         | QueryEvent::ContextCompactionCompleted
         | QueryEvent::ContextCompactionFailed { .. }

@@ -1,6 +1,5 @@
 mod agent;
 mod apply_patch;
-mod bash;
 #[cfg(feature = "code-search")]
 mod code_search;
 mod edit;
@@ -25,7 +24,6 @@ mod websearch;
 
 pub(crate) use agent::register_agent_tools;
 pub use apply_patch::ApplyPatchHandler;
-pub use bash::BashHandler;
 #[cfg(feature = "code-search")]
 pub use code_search::CodeSearchHandler;
 pub use edit::EditHandler;
@@ -138,7 +136,6 @@ fn build_registry_from_builder(
 
     for (kind, name) in handlers {
         let handler: Arc<dyn ToolHandler> = match kind {
-            ToolHandlerKind::Bash => Arc::new(BashHandler::new()),
             #[cfg(feature = "code-search")]
             ToolHandlerKind::CodeSearch => {
                 let service = Arc::new(
@@ -186,7 +183,7 @@ fn build_registry_from_builder(
             )),
         };
         let legacy_alias = match kind {
-            ToolHandlerKind::Bash if name == "shell_command" => Some("bash"),
+            ToolHandlerKind::ShellCommand if name == "shell_command" => Some("bash"),
             ToolHandlerKind::Glob if name == "find" => Some("glob"),
             ToolHandlerKind::Question if name == "request_user_input" => Some("question"),
             ToolHandlerKind::WebSearch if name == "web_search" => Some("websearch"),

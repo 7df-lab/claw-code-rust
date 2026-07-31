@@ -1,21 +1,21 @@
-use std::path::PathBuf;
-
 use async_trait::async_trait;
 
 use crate::contracts::{
     ToolCallError, ToolContext, ToolProgressSender, ToolResult, ToolResultContent,
 };
-use crate::json_schema::JsonSchema;
+use crate::registry_plan::shell_command_tool_spec;
 use crate::shell_exec::{
-    ShellExecRequest, default_max_output_tokens, default_timeout_ms, default_yield_time_ms,
+    DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_TIMEOUT_MS, DEFAULT_YIELD_TIME_MS, ShellExecRequest,
     execute_shell_command,
 };
 use crate::tool_handler::ToolHandler;
-use crate::tool_spec::{ToolCapabilityTag, ToolExecutionMode, ToolOutputMode, ToolSpec};
-use crate::tools::client_terminal_shell::{
-    ClientTerminalShellRequest, execute_with_client_terminal,
-};
+use crate::tool_spec::ToolSpec;
 
+/// Tool adapter for `shell_command` (and the legacy `bash` alias).
+///
+/// Parses model input and runs the command locally via [`execute_shell_command`].
+/// The ToolSpec comes from [`shell_command_tool_spec`] so the registry plan and
+/// handler share one schema.
 pub struct ShellCommandHandler {
     spec: ToolSpec,
 }
@@ -29,36 +29,7 @@ impl Default for ShellCommandHandler {
 impl ShellCommandHandler {
     pub fn new() -> Self {
         Self {
-            spec: ToolSpec {
-                name: "shell_command".into(),
-                description: "Executes a shell command with optional timeout.".into(),
-                input_schema: JsonSchema::object(
-                    std::collections::BTreeMap::from([
-                        (
-                            "command".to_string(),
-                            JsonSchema::string(Some("The command to execute.")),
-                        ),
-                        (
-                            "workdir".to_string(),
-                            JsonSchema::string(Some("Working directory")),
-                        ),
-                        (
-                            "timeout_ms".to_string(),
-                            JsonSchema::integer(Some("Timeout in milliseconds")),
-                        ),
-                    ]),
-                    Some(vec!["command".to_string()]),
-                    None,
-                ),
-                output_mode: ToolOutputMode::Text,
-                execution_mode: ToolExecutionMode::Mutating,
-                capability_tags: vec![ToolCapabilityTag::ExecuteProcess],
-                supports_parallel: false,
-                preparation_feedback: crate::tool_spec::ToolPreparationFeedback::None,
-                display_name: None,
-                supports_cancellation: None,
-                supports_streaming: None,
-            },
+            spec: shell_command_tool_spec("shell_command"),
         }
     }
 }
@@ -73,7 +44,7 @@ impl ToolHandler for ShellCommandHandler {
         &self,
         ctx: ToolContext,
         input: serde_json::Value,
-        progress: Option<ToolProgressSender>,
+        _progress: Option<ToolProgressSender>,
     ) -> Result<ToolResult, ToolCallError> {
         let command = input
             .get("command")
@@ -81,50 +52,40 @@ impl ToolHandler for ShellCommandHandler {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolCallError::InvalidInput("missing 'command' field".into()))?;
 
-        let workdir = input
-            .get("workdir")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from)
+        let timeout_ms = input["timeout"]
+            .as_u64()
+            .or_else(|| input["timeout_ms"].as_u64())
+            .unwrap_or(DEFAULT_TIMEOUT_MS);
+        let workdir = input["workdir"]
+            .as_str()
+            .map(std::path::PathBuf::from)
             .unwrap_or_else(|| ctx.workspace_root.clone());
-
-        let timeout_ms = input["timeout_ms"].as_u64().unwrap_or(default_timeout_ms());
-
+        let description = input["description"]
+            .as_str()
+            .unwrap_or("shell command")
+            .to_string();
+        let shell_override = input["shell"].as_str().map(ToOwned::to_owned);
+        let tty = input["tty"].as_bool().unwrap_or(false);
         let login = input["login"].as_bool().unwrap_or(true);
-        let terminal_workdir = if workdir.is_absolute() {
-            workdir.clone()
-        } else {
-            ctx.workspace_root.join(&workdir)
-        };
-
-        if let Some(result) = execute_with_client_terminal(
-            &ctx,
-            ClientTerminalShellRequest {
-                command: command.to_string(),
-                workdir: terminal_workdir,
-                description: "shell command".into(),
-                shell_override: None,
-                login,
-                timeout_ms,
-                max_output_tokens: default_max_output_tokens(),
-            },
-            progress,
-        )
-        .await?
-        {
-            return Ok(result);
-        }
+        let yield_time_ms = input["yield_time_ms"]
+            .as_u64()
+            .unwrap_or(DEFAULT_YIELD_TIME_MS);
+        let max_output_tokens = input["max_output_tokens"]
+            .as_u64()
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
 
         let output = execute_shell_command(
             ShellExecRequest {
                 command: command.to_string(),
                 workdir,
-                description: "shell command".into(),
-                shell_override: None,
-                tty: false,
+                description,
+                shell_override,
+                tty,
                 login,
                 timeout_ms,
-                yield_time_ms: default_yield_time_ms(),
-                max_output_tokens: default_max_output_tokens(),
+                yield_time_ms,
+                max_output_tokens,
                 sandbox_profile: ctx.sandbox_profile.clone(),
             },
             None,
@@ -133,18 +94,18 @@ impl ToolHandler for ShellCommandHandler {
         .await
         .map_err(|e| ToolCallError::ExecutionFailed(e.to_string()))?;
 
+        let display = output.display_content;
         let text = output.content.into_string();
-        if output.is_error {
-            Ok(ToolResult::error(
+        let mut result = if output.is_error {
+            ToolResult::error(
                 ToolResultContent::Text(text.clone()),
                 "Command failed",
                 ToolCallError::ExecutionFailed(text),
-            ))
+            )
         } else {
-            Ok(ToolResult::success(
-                ToolResultContent::Text(text),
-                "Command executed",
-            ))
-        }
+            ToolResult::success(ToolResultContent::Text(text), "Command executed")
+        };
+        result.display_content = display;
+        Ok(result)
     }
 }

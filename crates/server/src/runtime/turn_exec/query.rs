@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use devo_core::tools::{
-    AgentToolCoordinator, ClientFilesystem, ClientTerminal, ToolAgentScope, ToolCall,
-    ToolExecutionOptions, ToolRuntime, ToolRuntimeContext,
+    AgentToolCoordinator, ClientFilesystem, ToolAgentScope, ToolCall, ToolExecutionOptions,
+    ToolRuntime, ToolRuntimeContext,
 };
 use devo_core::{Message, QueryEvent, QueryOptions, TurnConfig, query};
 use tokio::sync::mpsc;
@@ -121,7 +121,6 @@ impl ServerRuntime {
                 collaboration_mode,
                 agent_coordinator: Some(Arc::clone(self) as Arc<dyn AgentToolCoordinator>),
                 client_filesystem: Some(Arc::clone(self) as Arc<dyn ClientFilesystem>),
-                client_terminal: Some(Arc::clone(self) as Arc<dyn ClientTerminal>),
                 file_read_ledger: Arc::clone(&state.file_read_ledger),
                 local_web_search: match &turn_config.web_search {
                     devo_core::ResolvedWebSearchConfig::Local(config) => Some(config.clone()),

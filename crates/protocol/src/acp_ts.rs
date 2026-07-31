@@ -132,12 +132,6 @@ pub fn generate_acp_typescript() -> String {
     push_decl::<AcpFsReadTextFileParams>(&cfg, &mut output);
     push_decl::<AcpFsReadTextFileResult>(&cfg, &mut output);
     push_decl::<AcpFsWriteTextFileParams>(&cfg, &mut output);
-    push_decl::<AcpTerminalCreateParams>(&cfg, &mut output);
-    push_decl::<AcpTerminalCreateResult>(&cfg, &mut output);
-    push_decl::<AcpTerminalParams>(&cfg, &mut output);
-    push_decl::<AcpTerminalOutputResult>(&cfg, &mut output);
-    push_decl::<AcpTerminalWaitForExitResult>(&cfg, &mut output);
-    push_decl::<AcpTerminalExitStatus>(&cfg, &mut output);
 
     output.push_str("export type AcpResumeSessionResult = AcpLoadSessionResult;\n");
     output.push_str("export type AcpCloseSessionParams = AcpSessionActionParams;\n");
@@ -470,11 +464,6 @@ fn register_acp_schemas(
     schema::<AcpFsReadTextFileParams>(schemas);
     schema::<AcpFsReadTextFileResult>(schemas);
     schema::<AcpFsWriteTextFileParams>(schemas);
-    schema::<AcpTerminalCreateParams>(schemas);
-    schema::<AcpTerminalCreateResult>(schemas);
-    schema::<AcpTerminalParams>(schemas);
-    schema::<AcpTerminalOutputResult>(schemas);
-    schema::<AcpTerminalWaitForExitResult>(schemas);
 
     method(
         methods,
@@ -615,51 +604,6 @@ fn register_acp_schemas(
         ACP_FS_WRITE_TEXT_FILE_METHOD,
         MethodSchemaBinding {
             incoming_request: Some("AcpFsWriteTextFileParams"),
-            outgoing_response: Some("AcpEmptyResult"),
-            ..MethodSchemaBinding::default()
-        },
-    );
-    method(
-        methods,
-        ACP_TERMINAL_CREATE_METHOD,
-        MethodSchemaBinding {
-            incoming_request: Some("AcpTerminalCreateParams"),
-            outgoing_response: Some("AcpTerminalCreateResult"),
-            ..MethodSchemaBinding::default()
-        },
-    );
-    method(
-        methods,
-        ACP_TERMINAL_OUTPUT_METHOD,
-        MethodSchemaBinding {
-            incoming_request: Some("AcpTerminalParams"),
-            outgoing_response: Some("AcpTerminalOutputResult"),
-            ..MethodSchemaBinding::default()
-        },
-    );
-    method(
-        methods,
-        ACP_TERMINAL_WAIT_FOR_EXIT_METHOD,
-        MethodSchemaBinding {
-            incoming_request: Some("AcpTerminalParams"),
-            outgoing_response: Some("AcpTerminalWaitForExitResult"),
-            ..MethodSchemaBinding::default()
-        },
-    );
-    method(
-        methods,
-        ACP_TERMINAL_KILL_METHOD,
-        MethodSchemaBinding {
-            incoming_request: Some("AcpTerminalParams"),
-            outgoing_response: Some("AcpEmptyResult"),
-            ..MethodSchemaBinding::default()
-        },
-    );
-    method(
-        methods,
-        ACP_TERMINAL_RELEASE_METHOD,
-        MethodSchemaBinding {
-            incoming_request: Some("AcpTerminalParams"),
             outgoing_response: Some("AcpEmptyResult"),
             ..MethodSchemaBinding::default()
         },

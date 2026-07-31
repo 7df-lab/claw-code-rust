@@ -213,3 +213,87 @@ collapse_reasoning = true
 workspace `config.toml`, затем добавьте или сохраните соответствующие provider и
 binding. API key храните в `auth.json` и ссылайтесь на него через
 `[providers.<id>].credential`.
+
+## MCP-серверы
+
+Devo подключается к серверам [Model Context Protocol](https://modelcontextprotocol.io/),
+настроенным в пользовательском или workspace `config.toml` в разделе `[mcp]`.
+Каждый сервер - это одна запись в массиве `servers`, а его таблица `transport`
+определяет способ подключения. Поддерживаются транспорты `stdio`,
+`streamable_http` и устаревший `sse`.
+
+Пример stdio:
+
+```toml
+[mcp]
+auto_start = true
+refresh_on_config_reload = true
+
+[[mcp.servers]]
+id = "filesystem"
+display_name = "Filesystem"
+enabled = true
+startup_policy = "lazy" # eager | lazy | manual
+trust_policy = "user" # user | workspace | untrusted
+allowed_capabilities = ["tools", "resources", "prompts"]
+roots_policy = "workspace" # none | workspace | custom
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
+# cwd = "/path/to/workdir"
+# env = { MY_VAR = "value" }
+# env_vars = ["HOME", "PATH"]
+```
+
+Streamable HTTP с bearer token:
+
+```toml
+[[mcp.servers]]
+id = "github"
+display_name = "GitHub"
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "streamable_http"
+url = "https://api.githubcopilot.com/mcp/"
+auth = { kind = "bearer_token", token = "replace-me" }
+http_headers = { "X-Custom" = "static-value" }
+env_http_headers = { "Authorization" = "GITHUB_TOKEN" }
+```
+
+Устаревший SSE-транспорт:
+
+```toml
+[mcp.servers.transport]
+kind = "sse"
+url = "https://example.com/mcp/sse"
+```
+
+Примечания к полям:
+
+- `auto_start` и `refresh_on_config_reload` по умолчанию равны `true`.
+- `startup_policy` управляет запуском включенного сервера: `eager` - при
+  bootstrap, `lazy` - при первом использовании, `manual` - только по явному
+  запросу.
+- Для stdio `env` задает литеральные значения, а `env_vars` - список имен
+  переменных, наследуемых из локального окружения; `{ name = "X",
+  source = "remote" }` для stdio не поддерживается.
+- Для HTTP-транспортов `http_headers` задает литеральные заголовки, а
+  `env_http_headers` сопоставляет имя заголовка с переменной окружения,
+  поставляющей его значение.
+- Пустой `allowed_capabilities` означает отсутствие ограничений. Сейчас рантайм
+  в основном работает с `tools`; чтение resources еще не подключено.
+- `output_limits` задает `max_tool_output_bytes` (по умолчанию 1 MiB) и
+  `max_resource_bytes` (по умолчанию 10 MiB).
+- Верхнеуровневый `mcp_oauth_credentials_store` принимает `auto` (по умолчанию),
+  `file` или `keyring` и выбирает место хранения OAuth-credentials.
+- Предпочитайте заголовки или значения из переменных окружения, а не жестко
+  зашитые token в `config.toml`. Поле `auth_ref` есть в каждой записи сервера,
+  но пока не подключено к рантайму.
+
+Поведение при слиянии: `[mcp]` сливается по полям, как другие таблицы, но
+`servers` - это массив. Поэтому список `[[mcp.servers]]` уровня проекта заменяет
+пользовательский список целиком, а не сливает по `id`.
+
+Проверить конфигурацию можно в TUI командой `/mcp list`.

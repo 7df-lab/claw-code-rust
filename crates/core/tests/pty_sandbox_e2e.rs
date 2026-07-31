@@ -43,14 +43,19 @@ fn temp_workspace(tag: &str) -> (PathBuf, TempDirGuard) {
     (workspace, guard)
 }
 
-async fn run_pty_command(command: &str, workspace: &Path, process_id: i32) -> String {
+async fn run_sandboxed_command(
+    command: &str,
+    workspace: &Path,
+    process_id: i32,
+    tty: bool,
+) -> String {
     let (process, mut rx) = UnifiedExecProcess::spawn_with_sandbox(
         process_id,
         command,
         workspace,
         /*shell*/ Some("bash"),
         /*login*/ false,
-        /*tty*/ true,
+        tty,
         Some(PROFILE.to_string()),
     )
     .await
@@ -80,14 +85,20 @@ async fn pty_spawn_enforces_deny_read_and_write() {
     }
 
     // A denied file must not be readable from inside the PTY.
-    let output = run_pty_command("cat secret.txt", &workspace, 1).await;
+    let output = run_sandboxed_command("cat secret.txt", &workspace, 1, /*tty*/ true).await;
     assert!(
         !output.contains(MARKER),
         "PTY child read a denied path:\n{output}"
     );
 
     // A denied file must not be writable from inside the PTY.
-    let _ = run_pty_command("echo hijacked >> secret.txt", &workspace, 2).await;
+    let _ = run_sandboxed_command(
+        "echo hijacked >> secret.txt",
+        &workspace,
+        2,
+        /*tty*/ true,
+    )
+    .await;
     assert_eq!(
         std::fs::read_to_string(workspace.join("secret.txt")).expect("read denied file"),
         format!("SECRET={MARKER}"),
@@ -95,9 +106,47 @@ async fn pty_spawn_enforces_deny_read_and_write() {
     );
 
     // A non-denied file stays readable (the sandbox did not break the PTY).
-    let output = run_pty_command("cat control.txt", &workspace, 3).await;
+    let output = run_sandboxed_command("cat control.txt", &workspace, 3, /*tty*/ true).await;
     assert!(
         output.contains("hello workspace"),
         "PTY child must still read the control file:\n{output}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipe_spawn_enforces_profile_without_child_side_seatbelt() {
+    let (workspace, _guard) = temp_workspace("pipe");
+
+    match devo_sandbox::wrap_command_for_profile(
+        Some(PROFILE),
+        &workspace,
+        devo_sandbox::WrapMode::PipeComposed,
+        &devo_sandbox::SandboxLogger::new(),
+    ) {
+        Ok(devo_sandbox::SandboxWrap::Wrapped(_)) => {}
+        other => {
+            eprintln!("skipping: no pipe sandbox launcher available ({other:?})");
+            return;
+        }
+    }
+
+    for process_id in 10..20 {
+        let output = run_sandboxed_command(
+            "cat control.txt",
+            &workspace,
+            process_id,
+            /*tty*/ false,
+        )
+        .await;
+        assert!(
+            output.contains("hello workspace"),
+            "pipe child must read the control file:\n{output}"
+        );
+    }
+
+    let output = run_sandboxed_command("cat secret.txt", &workspace, 20, /*tty*/ false).await;
+    assert!(
+        !output.contains(MARKER),
+        "pipe child read a denied path:\n{output}"
     );
 }

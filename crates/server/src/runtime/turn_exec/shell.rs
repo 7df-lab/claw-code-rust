@@ -93,7 +93,6 @@ impl ServerRuntime {
                 collaboration_mode: devo_protocol::CollaborationMode::Build,
                 agent_coordinator: None,
                 client_filesystem: None,
-                client_terminal: None,
                 file_read_ledger,
                 local_web_search: None,
                 hooks: self.hook_context_for_session(session_id).await,
@@ -114,7 +113,6 @@ impl ServerRuntime {
                                     turn_id: tool_execution_start_turn_id,
                                     tool_call_id,
                                     status: "in_progress".to_string(),
-                                    terminal_id: None,
                                 },
                             ))
                             .await;

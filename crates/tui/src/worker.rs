@@ -47,7 +47,6 @@ use devo_protocol::SessionPlanStepStatus;
 use devo_protocol::SpawnAgentParams;
 use devo_protocol::ThreadGoalStatus;
 use devo_protocol::TurnFailedPayload;
-use devo_server::ACP_TERMINAL_OUTPUT_NOTIFICATION_METHOD;
 use devo_server::AcpDeleteSessionParams;
 use devo_server::ApprovalDecisionPayload;
 use devo_server::ApprovalRequestPayload;
@@ -90,7 +89,6 @@ use crate::events::PlanStep;
 use crate::events::PlanStepStatus;
 use crate::events::SessionListEntry;
 use crate::events::SubagentMonitorAgent;
-use crate::events::SubagentMonitorEvent;
 use crate::events::TextItemKind;
 use crate::events::TranscriptItem;
 use crate::events::TranscriptItemKind;
@@ -99,20 +97,15 @@ use crate::events::WorkerEvent;
 mod acp_events;
 mod subagent_events;
 
-#[cfg(test)]
-use acp_events::acp_terminal_output_event;
-use acp_events::acp_terminal_output_event_with_session;
 use acp_events::parse_acp_session_notification;
 use acp_events::session_metadata_from_acp_update;
 use acp_events::spawn_agent_result_from_acp_update;
 use acp_events::spawn_task_message_from_acp_update;
-use acp_events::subagent_monitor_events_from_acp_session_notification_with_terminal_state;
+use acp_events::subagent_monitor_events_from_acp_session_notification;
 use acp_events::subagent_monitor_events_from_unwrapped_server_notification;
 #[cfg(test)]
 use acp_events::worker_events_from_acp_notification;
-#[cfg(test)]
-use acp_events::worker_events_from_acp_notification_with_terminal_state;
-use acp_events::worker_events_from_acp_session_notification_with_terminal_state;
+use acp_events::worker_events_from_acp_session_notification;
 
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
 const WORKER_ABORT_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
@@ -145,20 +138,6 @@ struct EnsureSessionOutcome {
     reasoning_effort_selection: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     created: bool,
-}
-
-fn acp_terminal_snapshot_delta(
-    previous_output: &mut String,
-    output: String,
-    truncated: bool,
-) -> Option<String> {
-    let delta = if truncated || !output.starts_with(previous_output.as_str()) {
-        output.clone()
-    } else {
-        output[previous_output.len()..].to_string()
-    };
-    *previous_output = output;
-    (!delta.is_empty()).then_some(delta)
 }
 
 fn should_apply_terminal_turn_usage_fallback(
@@ -880,11 +859,6 @@ async fn run_worker_inner(
     let mut input_history_cursor: Option<usize> = None;
     let mut active_reference_search_id: Option<ReferenceSearchId> = None;
     let mut active_shell_process_ids: HashSet<String> = HashSet::new();
-    let mut visible_acp_terminal_ids: HashSet<String> = HashSet::new();
-    let mut visible_acp_terminal_session_ids: HashMap<String, SessionId> = HashMap::new();
-    let mut private_acp_terminal_ids: HashSet<String> = HashSet::new();
-    let mut pending_acp_terminal_output: HashMap<String, String> = HashMap::new();
-    let mut polled_acp_terminal_output: HashMap<String, String> = HashMap::new();
     let mut next_shell_process_index = 1_u64;
 
     if let Some(initial_session_id) = config.initial_session_id {
@@ -950,8 +924,6 @@ async fn run_worker_inner(
         }
     }
     let _ = emit_skills_list(&mut client, &session_cwd, event_tx, false).await;
-    let mut acp_terminal_poll = tokio::time::interval(Duration::from_millis(250));
-    acp_terminal_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -1216,11 +1188,6 @@ async fn run_worker_inner(
                                 session_id = None;
                                 child_agent_sessions.clear();
                                 btw_agent_sessions.clear();
-                                visible_acp_terminal_ids.clear();
-                                visible_acp_terminal_session_ids.clear();
-                                private_acp_terminal_ids.clear();
-                                pending_acp_terminal_output.clear();
-                                polled_acp_terminal_output.clear();
                                 active_turn_id = None;
                                 active_reference_search_id = None;
                                 last_query_total_tokens = 0;
@@ -1669,11 +1636,6 @@ async fn run_worker_inner(
                                         session_id = Some(next_session_id);
                                         child_agent_sessions.clear();
                                         btw_agent_sessions.clear();
-                                        visible_acp_terminal_ids.clear();
-                                        visible_acp_terminal_session_ids.clear();
-                                        private_acp_terminal_ids.clear();
-                                        pending_acp_terminal_output.clear();
-                                        polled_acp_terminal_output.clear();
                                         session_cwd = result.session.cwd.clone();
                                         input_history_cursor = None;
                                         let active_agent_label =
@@ -2006,11 +1968,6 @@ async fn run_worker_inner(
                                                 session_id = Some(next_session_id);
                                                 child_agent_sessions.clear();
                                                 btw_agent_sessions.clear();
-                                                visible_acp_terminal_ids.clear();
-                                                visible_acp_terminal_session_ids.clear();
-                                                private_acp_terminal_ids.clear();
-                                                pending_acp_terminal_output.clear();
-                                                polled_acp_terminal_output.clear();
                                                 session_cwd = resumed.session.cwd.clone();
                                                 input_history_cursor = None;
                                                 let active_agent_label =
@@ -2326,55 +2283,6 @@ async fn run_worker_inner(
                             }
                         }
                     }
-                    _ = acp_terminal_poll.tick(), if !visible_acp_terminal_ids.is_empty() => {
-                        let terminal_ids = visible_acp_terminal_ids
-                            .iter()
-                            .filter(|terminal_id| !private_acp_terminal_ids.contains(*terminal_id))
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        for terminal_id in terminal_ids {
-                            match client.acp_terminal_output_snapshot(&terminal_id).await {
-                                Ok(snapshot) => {
-                                    if let Some(delta) = acp_terminal_snapshot_delta(
-                                        polled_acp_terminal_output
-                                            .entry(terminal_id.clone())
-                                            .or_default(),
-                                        snapshot.output,
-                                        snapshot.truncated,
-                                    ) {
-                                        if let Some(owner_session_id) =
-                                            visible_acp_terminal_session_ids.get(&terminal_id).copied()
-                                            && Some(owner_session_id) != session_id
-                                        {
-                                            let _ = event_tx.send(WorkerEvent::SubagentMonitor {
-                                                event: SubagentMonitorEvent::ToolOutputDelta {
-                                                    session_id: owner_session_id,
-                                                    tool_use_id: terminal_id.clone(),
-                                                    delta,
-                                                },
-                                            });
-                                        } else {
-                                            let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
-                                                tool_use_id: terminal_id.clone(),
-                                                delta,
-                                            });
-                                        }
-                                    }
-                                    if snapshot.exit_status.is_some() {
-                                        visible_acp_terminal_ids.remove(&terminal_id);
-                                        visible_acp_terminal_session_ids.remove(&terminal_id);
-                                        polled_acp_terminal_output.remove(&terminal_id);
-                                    }
-                                }
-                                Err(error) => {
-                                    tracing::debug!(%error, terminal_id, "failed to poll ACP terminal output");
-                                    visible_acp_terminal_ids.remove(&terminal_id);
-                                    visible_acp_terminal_session_ids.remove(&terminal_id);
-                                    polled_acp_terminal_output.remove(&terminal_id);
-                                }
-                            }
-                        }
-                    }
                     notification = client.recv_notification() => {
                         match notification {
                             Some(notification) => {
@@ -2407,24 +2315,6 @@ async fn run_worker_inner(
                                     });
                                     continue;
                                 }
-                                if method == ACP_TERMINAL_OUTPUT_NOTIFICATION_METHOD {
-                                    if let Some(terminal_id) =
-                                        params.get("terminalId").and_then(serde_json::Value::as_str)
-                                    {
-                                        private_acp_terminal_ids.insert(terminal_id.to_string());
-                                        polled_acp_terminal_output.remove(terminal_id);
-                                    }
-                                    if let Some(event) = acp_terminal_output_event_with_session(
-                                        &params,
-                                        &visible_acp_terminal_ids,
-                                        &mut pending_acp_terminal_output,
-                                        session_id,
-                                        &visible_acp_terminal_session_ids,
-                                    ) {
-                                        let _ = event_tx.send(event);
-                                    }
-                                    continue;
-                                }
                                 if method == ACP_SESSION_UPDATE_METHOD {
                                     let Some(notification) = parse_acp_session_notification(&params) else {
                                         continue;
@@ -2450,24 +2340,14 @@ async fn run_worker_inner(
                                             )
                                             .await;
                                         }
-                                        for event in worker_events_from_acp_session_notification_with_terminal_state(
-                                            notification,
-                                            &mut visible_acp_terminal_ids,
-                                            &mut pending_acp_terminal_output,
-                                            Some(&mut visible_acp_terminal_session_ids),
-                                        ) {
+                                        for event in worker_events_from_acp_session_notification(notification) {
                                             let _ = event_tx.send(event);
                                         }
                                         continue;
                                     }
 
                                     if child_agent_sessions.contains(&notification_session_id) {
-                                        for event in subagent_monitor_events_from_acp_session_notification_with_terminal_state(
-                                            notification,
-                                            &mut visible_acp_terminal_ids,
-                                            &mut pending_acp_terminal_output,
-                                            &mut visible_acp_terminal_session_ids,
-                                        ) {
+                                        for event in subagent_monitor_events_from_acp_session_notification(notification) {
                                             let _ = event_tx.send(event);
                                         }
                                     }
@@ -4715,7 +4595,6 @@ mod tests {
     use chrono::Utc;
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
-    use std::collections::HashSet;
     use std::future::pending;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -4731,8 +4610,6 @@ mod tests {
 
     use super::QueryWorkerHandle;
     use super::ShellCommandExecStart;
-    use super::acp_terminal_output_event;
-    use super::acp_terminal_snapshot_delta;
     use super::btw_agent_prompt;
     use super::btw_spawn_params;
     use super::handle_completed_item;
@@ -4749,7 +4626,6 @@ mod tests {
     use super::tool_call_started_event;
     use super::truncate_tool_output;
     use super::worker_events_from_acp_notification;
-    use super::worker_events_from_acp_notification_with_terminal_state;
     use crate::events::PlanStep;
     use crate::events::PlanStepStatus;
     use crate::events::SessionListEntry;
@@ -5878,156 +5754,6 @@ mod tests {
     }
 
     #[test]
-    fn raw_acp_terminal_content_and_output_emit_command_rows() {
-        let session_id = SessionId::new();
-        let events = worker_events_from_acp_notification(
-            &serde_json::json!({
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": "call-1",
-                    "content": [
-                        {
-                            "type": "terminal",
-                            "terminalId": "term_1"
-                        }
-                    ]
-                }
-            }),
-            Some(session_id),
-        );
-        assert_eq!(
-            events,
-            vec![WorkerEvent::ToolCall {
-                tool_use_id: "term_1".to_string(),
-                summary: "Terminal term_1".to_string(),
-                preparing: false,
-                parsed_commands: None,
-            }]
-        );
-
-        let visible_terminal_ids = HashSet::from(["term_1".to_string()]);
-        let mut pending_terminal_output = HashMap::new();
-        assert_eq!(
-            acp_terminal_output_event(
-                &serde_json::json!({
-                    "terminalId": "term_1",
-                    "delta": "hello\n"
-                }),
-                &visible_terminal_ids,
-                &mut pending_terminal_output,
-            ),
-            Some(WorkerEvent::ToolOutputDelta {
-                tool_use_id: "term_1".to_string(),
-                delta: "hello\n".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn raw_acp_terminal_rows_are_deduplicated_and_early_output_is_buffered() {
-        let session_id = SessionId::new();
-        let mut visible_terminal_ids = HashSet::new();
-        let mut pending_terminal_output = HashMap::new();
-
-        assert_eq!(
-            acp_terminal_output_event(
-                &serde_json::json!({
-                    "terminalId": "term_1",
-                    "delta": "early\n"
-                }),
-                &visible_terminal_ids,
-                &mut pending_terminal_output,
-            ),
-            None
-        );
-        assert_eq!(
-            pending_terminal_output.get("term_1"),
-            Some(&"early\n".to_string())
-        );
-
-        let first_events = worker_events_from_acp_notification_with_terminal_state(
-            &serde_json::json!({
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": "call-1",
-                    "content": [
-                        {
-                            "type": "terminal",
-                            "terminalId": "term_1"
-                        }
-                    ]
-                }
-            }),
-            Some(session_id),
-            &mut visible_terminal_ids,
-            &mut pending_terminal_output,
-        );
-        assert_eq!(
-            first_events,
-            vec![
-                WorkerEvent::ToolCall {
-                    tool_use_id: "term_1".to_string(),
-                    summary: "Terminal term_1".to_string(),
-                    preparing: false,
-                    parsed_commands: None,
-                },
-                WorkerEvent::ToolOutputDelta {
-                    tool_use_id: "term_1".to_string(),
-                    delta: "early\n".to_string(),
-                },
-            ]
-        );
-
-        let second_events = worker_events_from_acp_notification_with_terminal_state(
-            &serde_json::json!({
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": "call-1",
-                    "content": [
-                        {
-                            "type": "terminal",
-                            "terminalId": "term_1"
-                        }
-                    ]
-                }
-            }),
-            Some(session_id),
-            &mut visible_terminal_ids,
-            &mut pending_terminal_output,
-        );
-        assert_eq!(second_events, Vec::new());
-    }
-
-    #[test]
-    fn acp_terminal_snapshot_delta_emits_incremental_output() {
-        let mut previous_output = String::new();
-
-        assert_eq!(
-            acp_terminal_snapshot_delta(&mut previous_output, "hello".to_string(), false),
-            Some("hello".to_string())
-        );
-        assert_eq!(
-            acp_terminal_snapshot_delta(&mut previous_output, "hello world".to_string(), false),
-            Some(" world".to_string())
-        );
-        assert_eq!(
-            acp_terminal_snapshot_delta(&mut previous_output, "hello world".to_string(), false),
-            None
-        );
-        assert_eq!(
-            acp_terminal_snapshot_delta(&mut previous_output, "world".to_string(), true),
-            Some("world".to_string())
-        );
-        assert_eq!(
-            acp_terminal_snapshot_delta(&mut previous_output, "fresh".to_string(), false),
-            Some("fresh".to_string())
-        );
-    }
-
-    #[test]
     fn completed_apply_patch_tool_result_emits_patch_applied() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         handle_completed_item(
@@ -6484,17 +6210,7 @@ mod tests {
             }
         }))
         .expect("ACP session notification");
-        let mut visible_terminal_ids = HashSet::new();
-        let mut pending_terminal_output = HashMap::new();
-        let mut terminal_session_ids = HashMap::new();
-
-        let events =
-            super::subagent_monitor_events_from_acp_session_notification_with_terminal_state(
-                notification,
-                &mut visible_terminal_ids,
-                &mut pending_terminal_output,
-                &mut terminal_session_ids,
-            );
+        let events = super::subagent_monitor_events_from_acp_session_notification(notification);
 
         assert_eq!(
             events,
@@ -6559,17 +6275,7 @@ mod tests {
             "_meta": meta
         }))
         .expect("ACP session notification");
-        let mut visible_terminal_ids = HashSet::new();
-        let mut pending_terminal_output = HashMap::new();
-        let mut terminal_session_ids = HashMap::new();
-
-        let events =
-            super::subagent_monitor_events_from_acp_session_notification_with_terminal_state(
-                notification,
-                &mut visible_terminal_ids,
-                &mut pending_terminal_output,
-                &mut terminal_session_ids,
-            );
+        let events = super::subagent_monitor_events_from_acp_session_notification(notification);
 
         assert_eq!(
             events,
@@ -6652,17 +6358,7 @@ mod tests {
             }
         }))
         .expect("ACP session notification");
-        let mut visible_terminal_ids = HashSet::new();
-        let mut pending_terminal_output = HashMap::new();
-        let mut terminal_session_ids = HashMap::new();
-
-        let events =
-            super::subagent_monitor_events_from_acp_session_notification_with_terminal_state(
-                notification,
-                &mut visible_terminal_ids,
-                &mut pending_terminal_output,
-                &mut terminal_session_ids,
-            );
+        let events = super::subagent_monitor_events_from_acp_session_notification(notification);
 
         assert_eq!(
             events,

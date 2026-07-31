@@ -9,7 +9,6 @@ use crate::AcpMessageId;
 use crate::AcpPermissionOptionId;
 use crate::AcpSessionConfigOption;
 use crate::AcpSessionModeId;
-use crate::AcpTerminalId;
 use crate::AcpToolCallId;
 use crate::SessionId;
 use crate::acp::AcpMeta;
@@ -270,10 +269,6 @@ pub enum AcpToolCallContent {
         old_text: Option<String>,
         #[serde(rename = "newText")]
         new_text: String,
-    },
-    Terminal {
-        #[serde(rename = "terminalId")]
-        terminal_id: AcpTerminalId,
     },
 }
 

@@ -26,7 +26,6 @@ pub type AcpMessageId = String;
 pub type AcpPermissionOptionId = String;
 pub type AcpProtocolVersion = u16;
 pub type AcpRequestId = serde_json::Value;
-pub type AcpTerminalId = String;
 pub type AcpToolCallId = String;
 
 fn jsonrpc_version() -> String {

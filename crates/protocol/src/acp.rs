@@ -18,11 +18,6 @@ pub const ACP_SESSION_SET_MODE_METHOD: &str = "session/set_mode";
 pub const ACP_SESSION_SET_CONFIG_OPTION_METHOD: &str = "session/set_config_option";
 pub const ACP_FS_READ_TEXT_FILE_METHOD: &str = "fs/read_text_file";
 pub const ACP_FS_WRITE_TEXT_FILE_METHOD: &str = "fs/write_text_file";
-pub const ACP_TERMINAL_CREATE_METHOD: &str = "terminal/create";
-pub const ACP_TERMINAL_OUTPUT_METHOD: &str = "terminal/output";
-pub const ACP_TERMINAL_WAIT_FOR_EXIT_METHOD: &str = "terminal/wait_for_exit";
-pub const ACP_TERMINAL_KILL_METHOD: &str = "terminal/kill";
-pub const ACP_TERMINAL_RELEASE_METHOD: &str = "terminal/release";
 pub const ACP_JSONRPC_VERSION: &str = "2.0";
 pub const DEVO_EXTENSION_METHOD_PREFIX: &str = "_devo/";
 pub const DEVO_ORIGINAL_METHOD_META: &str = "devo/originalMethod";
@@ -92,7 +87,6 @@ mod tests {
     use crate::ServerEvent;
     use crate::SessionId;
     use crate::ToolCallPayload;
-    use crate::ToolResultPayload;
     use crate::TurnId;
     use crate::acp_client_io::*;
     use crate::acp_common::*;
@@ -610,16 +604,11 @@ mod tests {
             status: Some(AcpToolCallStatus::Completed),
             raw_input: Some(serde_json::json!({ "path": path_json.clone() })),
             raw_output: Some(serde_json::json!({ "changed": true })),
-            content: vec![
-                AcpToolCallContent::Diff {
-                    path: path.clone(),
-                    old_text: Some("old\n".to_string()),
-                    new_text: "new\n".to_string(),
-                },
-                AcpToolCallContent::Terminal {
-                    terminal_id: "term_1".to_string(),
-                },
-            ],
+            content: vec![AcpToolCallContent::Diff {
+                path: path.clone(),
+                old_text: Some("old\n".to_string()),
+                new_text: "new\n".to_string(),
+            }],
             locations: vec![AcpToolCallLocation {
                 path: path.clone(),
                 line: None,
@@ -643,10 +632,6 @@ mod tests {
                         "path": path_json.clone(),
                         "oldText": "old\n",
                         "newText": "new\n"
-                    },
-                    {
-                        "type": "terminal",
-                        "terminalId": "term_1"
                     }
                 ],
                 "locations": [
@@ -1002,68 +987,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_metadata_content_can_emit_terminal_content() {
-        let session_id = SessionId::new();
-        let turn_id = TurnId::new();
-        let item_id = ItemId::new();
-        let raw_output = serde_json::json!({
-            "content": [
-                {
-                    "type": "terminal",
-                    "terminalId": "term_1"
-                }
-            ],
-            "output": "done\n",
-            "truncated": false,
-            "exitStatus": {
-                "exitCode": 0,
-                "signal": null
-            }
-        });
-        let payload_value = serde_json::to_value(ToolResultPayload {
-            tool_call_id: "call-1".to_string(),
-            tool_name: Some("shell_command".to_string()),
-            input: Some(serde_json::json!({"command": "echo done"})),
-            content: raw_output.clone(),
-            display_content: None,
-            is_error: false,
-            summary: "Command executed".to_string(),
-        })
-        .expect("serialize tool result payload");
-        let event = ServerEvent::ItemCompleted(ItemEventPayload {
-            context: EventContext {
-                session_id,
-                turn_id: Some(turn_id),
-                item_id: Some(item_id),
-                seq: 1,
-                item_seq: None,
-            },
-            item: crate::ItemEnvelope {
-                item_id: ItemId::new(),
-                item_kind: ItemKind::ToolResult,
-                payload: payload_value,
-            },
-        });
-
-        assert_eq!(
-            strip_update_activity_at(acp_update_from_server_event(&event)),
-            Some(AcpSessionUpdate::ToolCallUpdate {
-                tool_call_id: "call-1".to_string(),
-                title: Some("Command executed".to_string()),
-                kind: Some(AcpToolKind::Execute),
-                status: Some(AcpToolCallStatus::Completed),
-                raw_input: Some(serde_json::json!({"command": "echo done"})),
-                raw_output: Some(raw_output),
-                content: vec![AcpToolCallContent::Terminal {
-                    terminal_id: "term_1".to_string(),
-                }],
-                locations: Vec::new(),
-                meta: Some(turn_item_meta(&turn_id, &item_id)),
-            })
-        );
-    }
-
-    #[test]
     fn usage_update_size_uses_context_window() {
         let session_id = SessionId::new();
         let payload = crate::TurnUsageUpdatedPayload {
@@ -1200,7 +1123,6 @@ mod tests {
             turn_id,
             tool_call_id: "call-1".to_string(),
             status: "in_progress".to_string(),
-            terminal_id: None,
         });
         let (_, update_value) =
             acp_notification_from_server_event("tool_call/status_updated", &update);
@@ -1214,42 +1136,6 @@ mod tests {
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": "call-1",
                 "status": "in_progress",
-                "_meta": {
-                    "devo/turnId": turn_id.to_string()
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn tool_status_update_can_emit_terminal_content() {
-        let session_id = SessionId::new();
-        let turn_id = TurnId::new();
-        let update = ServerEvent::ToolCallStatusUpdated(crate::ToolCallStatusUpdatedPayload {
-            session_id,
-            turn_id,
-            tool_call_id: "call-1".to_string(),
-            status: "in_progress".to_string(),
-            terminal_id: Some("term_1".to_string()),
-        });
-        let (_, update_value) =
-            acp_notification_from_server_event("tool_call/status_updated", &update);
-        let mut update_json = update_value["update"].clone();
-        assert_activity_at(&update_json);
-        strip_json_activity_at(&mut update_json);
-
-        assert_eq!(
-            update_json,
-            serde_json::json!({
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": "call-1",
-                "status": "in_progress",
-                "content": [
-                    {
-                        "type": "terminal",
-                        "terminalId": "term_1"
-                    }
-                ],
                 "_meta": {
                     "devo/turnId": turn_id.to_string()
                 }

@@ -132,7 +132,6 @@ use crate::usage_ledger::UsageLedger;
 use crate::workspace_changes::ActiveWorkspaceBaseline;
 
 mod acp_fs;
-mod acp_terminal;
 mod active_turn;
 mod agents;
 mod approval;

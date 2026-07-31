@@ -21,7 +21,6 @@ use crate::tool_spec::ToolCapabilityTag;
 use crate::tools::deferred_loading::is_subagent_agent_coordination_tool;
 use devo_tools::AgentToolCoordinator;
 use devo_tools::ClientFilesystem;
-use devo_tools::ClientTerminal;
 use devo_tools::FileReadLedger;
 use devo_tools::ToolAgentScope;
 use tokio_util::sync::CancellationToken;
@@ -333,7 +332,6 @@ impl ToolRuntime {
             collaboration_mode: self.context.collaboration_mode,
             agent_coordinator: self.context.agent_coordinator.clone(),
             client_filesystem: self.context.client_filesystem.clone(),
-            client_terminal: self.context.client_terminal.clone(),
             file_read_ledger: Some(Arc::clone(&self.context.file_read_ledger)),
             network_proxy: self.context.network_proxy.clone(),
             network_no_proxy: self.context.network_no_proxy.clone(),
@@ -614,7 +612,6 @@ pub struct ToolRuntimeContext {
     pub collaboration_mode: devo_protocol::CollaborationMode,
     pub agent_coordinator: Option<Arc<dyn AgentToolCoordinator>>,
     pub client_filesystem: Option<Arc<dyn ClientFilesystem>>,
-    pub client_terminal: Option<Arc<dyn ClientTerminal>>,
     pub file_read_ledger: Arc<FileReadLedger>,
     pub local_web_search: Option<ResolvedLocalWebSearchConfig>,
     pub hooks: Option<crate::hooks::HookRuntimeContext>,
@@ -634,7 +631,6 @@ impl Default for ToolRuntimeContext {
             collaboration_mode: devo_protocol::CollaborationMode::default(),
             agent_coordinator: None,
             client_filesystem: None,
-            client_terminal: None,
             file_read_ledger: Arc::new(FileReadLedger::new()),
             local_web_search: None,
             hooks: None,
@@ -660,10 +656,6 @@ impl std::fmt::Debug for ToolRuntimeContext {
             .field(
                 "client_filesystem",
                 &self.client_filesystem.as_ref().map(|_| "<configured>"),
-            )
-            .field(
-                "client_terminal",
-                &self.client_terminal.as_ref().map(|_| "<configured>"),
             )
             .field("file_read_ledger", &"<configured>")
             .field(
@@ -1622,7 +1614,6 @@ mod tests {
                 collaboration_mode: devo_protocol::CollaborationMode::Build,
                 agent_coordinator: None,
                 client_filesystem: None,
-                client_terminal: None,
                 file_read_ledger: std::sync::Arc::new(devo_tools::FileReadLedger::new()),
                 local_web_search: None,
                 hooks: None,

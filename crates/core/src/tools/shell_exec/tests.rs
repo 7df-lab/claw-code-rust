@@ -2,7 +2,9 @@ use super::*;
 use crate::ToolContent;
 use pretty_assertions::assert_eq;
 use std::hint::black_box;
-use std::time::Instant;
+use std::path::Path;
+use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn execute_shell_command_non_tty_sends_progress() {
@@ -199,7 +201,109 @@ async fn execute_shell_command_error_output_is_text_only() {
     assert!(matches!(result.content, ToolContent::Text(text) if text.contains("exit code 7")));
 }
 
-use super::{merge_streams, platform_shell_program, preview, resolve_shell, truncate_output};
+use super::{SandboxLaunchPlan, platform_shell_program, preview, resolve_shell, truncate_output};
+
+#[cfg(unix)]
+#[tokio::test]
+async fn execute_shell_command_pipe_times_out() {
+    let result = execute_shell_command(
+        ShellExecRequest {
+            command: "sleep 5".to_string(),
+            workdir: std::env::current_dir().unwrap_or_default(),
+            description: "timeout test".into(),
+            shell_override: None,
+            tty: false,
+            login: false,
+            timeout_ms: 100,
+            yield_time_ms: 50,
+            max_output_tokens: 100,
+            sandbox_profile: None,
+        },
+        None,
+        CancellationToken::new(),
+    )
+    .await
+    .expect("execute shell command");
+
+    assert!(result.is_error);
+    assert!(
+        result
+            .content
+            .into_string()
+            .contains("command timed out after 100ms")
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_pipe_and_pty_launch_plans_wrap_via_sandbox_exec() {
+    let workspace = temp_sandbox_workspace(
+        "shell-exec-macos",
+        "[profiles.wrapdeny]\nextends = \"workspace\"\ndeny = [\"secret.txt\"]\n",
+    );
+    let shell = resolve_shell(Some("bash"), false);
+    for (label, plan) in [
+        (
+            "pipe",
+            SandboxLaunchPlan::prepare_pipe(Some("wrapdeny"), &workspace, &shell, "echo hi"),
+        ),
+        (
+            "pty",
+            SandboxLaunchPlan::prepare_pty(Some("wrapdeny"), &workspace, &shell, "echo hi"),
+        ),
+    ] {
+        let plan = plan.unwrap_or_else(|error| panic!("{label} prepare failed: {error}"));
+        match plan.wrap() {
+            devo_sandbox::SandboxWrap::Wrapped(wrapped) => {
+                assert_eq!(wrapped.program, "/usr/bin/sandbox-exec", "{label}");
+                assert!(wrapped.helper_enforces, "{label}");
+            }
+            devo_sandbox::SandboxWrap::None => assert!(
+                !Path::new("/usr/bin/sandbox-exec").is_file(),
+                "{label}: sandbox-exec exists but wrap was declined"
+            ),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_inactive_profile_prepare_pipe_builds_direct_command() {
+    let workdir = std::env::current_dir().unwrap_or_default();
+    let shell = resolve_shell(None, false);
+    let plan = SandboxLaunchPlan::prepare_pipe(None, &workdir, &shell, "echo hi")
+        .expect("inactive profile should prepare");
+    assert!(matches!(plan.wrap(), devo_sandbox::SandboxWrap::None));
+    let _cmd = plan.build_tokio_command(&shell, "echo hi");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_inactive_profile_prepare_pty_builds_builder() {
+    let workdir = std::env::current_dir().unwrap_or_default();
+    let shell = resolve_shell(None, false);
+    let plan = SandboxLaunchPlan::prepare_pty(None, &workdir, &shell, "echo hi")
+        .expect("inactive profile should prepare");
+    assert!(matches!(plan.wrap(), devo_sandbox::SandboxWrap::None));
+    let _builder = plan.build_pty_command_builder(&shell, "echo hi");
+}
+
+#[cfg(target_os = "macos")]
+fn temp_sandbox_workspace(tag: &str, toml_body: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let workspace = std::env::temp_dir().join(format!(
+        "devo-shell-exec-{tag}-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(workspace.join(".devo")).expect("create .devo");
+    std::fs::write(workspace.join(".devo").join("sandbox.toml"), toml_body)
+        .expect("write sandbox.toml");
+    workspace
+}
 
 #[test]
 #[cfg(windows)]
@@ -299,7 +403,7 @@ fn bench_truncate_output_ascii_large_truncation() {
 
 #[test]
 fn merge_streams_combines_stdout_and_stderr() {
-    let result = merge_streams("out", "err");
+    let result = super::pipe::merge_streams("out", "err");
     assert!(result.contains("out"));
     assert!(result.contains("[stderr]"));
     assert!(result.contains("err"));
@@ -307,5 +411,5 @@ fn merge_streams_combines_stdout_and_stderr() {
 
 #[test]
 fn merge_streams_no_output() {
-    assert_eq!(merge_streams("", ""), "");
+    assert_eq!(super::pipe::merge_streams("", ""), "");
 }

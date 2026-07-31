@@ -102,13 +102,6 @@ impl WebSocketServerClient {
         self.core.initialize().await
     }
 
-    pub async fn acp_terminal_output_snapshot(
-        &self,
-        terminal_id: &str,
-    ) -> Result<AcpTerminalOutputResult> {
-        self.core.acp_terminal_output_snapshot(terminal_id).await
-    }
-
     pub async fn session_start(
         &mut self,
         params: SessionStartParams,

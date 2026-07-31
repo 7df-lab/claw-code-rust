@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 use devo_core::SessionId;
 use devo_protocol::AcpContentBlock;
@@ -37,46 +36,14 @@ struct AcpToolCallEventData {
     content: Vec<AcpToolCallContent>,
 }
 
-struct AcpTerminalRenderState<'a> {
-    visible_terminal_ids: &'a mut HashSet<String>,
-    pending_terminal_output: &'a mut HashMap<String, String>,
-    terminal_session_ids: Option<&'a mut HashMap<String, SessionId>>,
-    owner_session_id: Option<SessionId>,
-}
-
-impl AcpTerminalRenderState<'_> {
-    fn mark_visible(&mut self, terminal_id: &str) -> Option<String> {
-        if let (Some(owner_session_id), Some(terminal_session_ids)) = (
-            self.owner_session_id,
-            self.terminal_session_ids.as_deref_mut(),
-        ) {
-            terminal_session_ids.insert(terminal_id.to_string(), owner_session_id);
-        }
-        if self.visible_terminal_ids.insert(terminal_id.to_string()) {
-            Some(
-                self.pending_terminal_output
-                    .remove(terminal_id)
-                    .unwrap_or_default(),
-            )
-        } else {
-            None
-        }
-    }
-}
-
-struct AcpSessionUpdateRender<'a> {
+struct AcpSessionUpdateRender {
     session_id: SessionId,
     update: AcpSessionUpdate,
-    terminal_state: AcpTerminalRenderState<'a>,
 }
 
-impl From<AcpSessionUpdateRender<'_>> for Vec<WorkerEvent> {
-    fn from(render: AcpSessionUpdateRender<'_>) -> Self {
-        let AcpSessionUpdateRender {
-            session_id,
-            update,
-            terminal_state,
-        } = render;
+impl From<AcpSessionUpdateRender> for Vec<WorkerEvent> {
+    fn from(render: AcpSessionUpdateRender) -> Self {
+        let AcpSessionUpdateRender { session_id, update } = render;
         match update {
             AcpSessionUpdate::AgentMessageChunk {
                 content,
@@ -170,7 +137,6 @@ impl From<AcpSessionUpdateRender<'_>> for Vec<WorkerEvent> {
                     content,
                 },
                 kind,
-                terminal_state,
             ),
             AcpSessionUpdate::ToolCallUpdate {
                 tool_call_id,
@@ -191,7 +157,6 @@ impl From<AcpSessionUpdateRender<'_>> for Vec<WorkerEvent> {
                     content,
                 },
                 kind,
-                terminal_state,
             ),
             AcpSessionUpdate::UserMessageChunk { .. }
             | AcpSessionUpdate::SessionInfoUpdate { title: None, .. } => Vec::new(),
@@ -200,77 +165,9 @@ impl From<AcpSessionUpdateRender<'_>> for Vec<WorkerEvent> {
 }
 
 #[cfg(test)]
-pub(super) fn acp_terminal_output_event(
-    params: &serde_json::Value,
-    visible_terminal_ids: &HashSet<String>,
-    pending_terminal_output: &mut HashMap<String, String>,
-) -> Option<WorkerEvent> {
-    acp_terminal_output_event_with_session(
-        params,
-        visible_terminal_ids,
-        pending_terminal_output,
-        None,
-        &HashMap::new(),
-    )
-}
-
-pub(super) fn acp_terminal_output_event_with_session(
-    params: &serde_json::Value,
-    visible_terminal_ids: &HashSet<String>,
-    pending_terminal_output: &mut HashMap<String, String>,
-    active_session_id: Option<SessionId>,
-    terminal_session_ids: &HashMap<String, SessionId>,
-) -> Option<WorkerEvent> {
-    let terminal_id = params.get("terminalId")?.as_str()?.to_string();
-    let delta = params.get("delta")?.as_str()?.to_string();
-    if delta.is_empty() {
-        return None;
-    }
-    if !visible_terminal_ids.contains(&terminal_id) {
-        pending_terminal_output
-            .entry(terminal_id)
-            .or_default()
-            .push_str(&delta);
-        return None;
-    }
-    if let Some(owner_session_id) = terminal_session_ids.get(&terminal_id).copied()
-        && Some(owner_session_id) != active_session_id
-    {
-        return Some(WorkerEvent::SubagentMonitor {
-            event: SubagentMonitorEvent::ToolOutputDelta {
-                session_id: owner_session_id,
-                tool_use_id: terminal_id,
-                delta,
-            },
-        });
-    }
-    Some(WorkerEvent::ToolOutputDelta {
-        tool_use_id: terminal_id,
-        delta,
-    })
-}
-
-#[cfg(test)]
 pub(super) fn worker_events_from_acp_notification(
     params: &serde_json::Value,
     active_session_id: Option<SessionId>,
-) -> Vec<WorkerEvent> {
-    let mut visible_terminal_ids = HashSet::new();
-    let mut pending_terminal_output = HashMap::new();
-    worker_events_from_acp_notification_with_terminal_state(
-        params,
-        active_session_id,
-        &mut visible_terminal_ids,
-        &mut pending_terminal_output,
-    )
-}
-
-#[cfg(test)]
-pub(super) fn worker_events_from_acp_notification_with_terminal_state(
-    params: &serde_json::Value,
-    active_session_id: Option<SessionId>,
-    visible_terminal_ids: &mut HashSet<String>,
-    pending_terminal_output: &mut HashMap<String, String>,
 ) -> Vec<WorkerEvent> {
     let Some(notification) = parse_acp_session_notification(params) else {
         return Vec::new();
@@ -278,12 +175,7 @@ pub(super) fn worker_events_from_acp_notification_with_terminal_state(
     if Some(notification.session_id) != active_session_id {
         return Vec::new();
     }
-    worker_events_from_acp_session_notification_with_terminal_state(
-        notification,
-        visible_terminal_ids,
-        pending_terminal_output,
-        None,
-    )
+    worker_events_from_acp_session_notification(notification)
 }
 
 pub(super) fn parse_acp_session_notification(
@@ -292,21 +184,12 @@ pub(super) fn parse_acp_session_notification(
     serde_json::from_value::<AcpSessionNotification>(params.clone()).ok()
 }
 
-pub(super) fn worker_events_from_acp_session_notification_with_terminal_state(
+pub(super) fn worker_events_from_acp_session_notification(
     notification: AcpSessionNotification,
-    visible_terminal_ids: &mut HashSet<String>,
-    pending_terminal_output: &mut HashMap<String, String>,
-    terminal_session_ids: Option<&mut HashMap<String, SessionId>>,
 ) -> Vec<WorkerEvent> {
     Vec::from(AcpSessionUpdateRender {
         session_id: notification.session_id,
         update: notification.update,
-        terminal_state: AcpTerminalRenderState {
-            visible_terminal_ids,
-            pending_terminal_output,
-            terminal_session_ids,
-            owner_session_id: Some(notification.session_id),
-        },
     })
 }
 
@@ -362,11 +245,8 @@ pub(super) fn spawn_agent_result_from_acp_update(
     }
 }
 
-pub(super) fn subagent_monitor_events_from_acp_session_notification_with_terminal_state(
+pub(super) fn subagent_monitor_events_from_acp_session_notification(
     notification: AcpSessionNotification,
-    visible_terminal_ids: &mut HashSet<String>,
-    pending_terminal_output: &mut HashMap<String, String>,
-    terminal_session_ids: &mut HashMap<String, SessionId>,
 ) -> Vec<WorkerEvent> {
     if let Some(events) = subagent_monitor_events_from_wrapped_server_event(&notification) {
         return events;
@@ -435,12 +315,6 @@ pub(super) fn subagent_monitor_events_from_acp_session_notification_with_termina
                 raw_output,
                 content,
             },
-            AcpTerminalRenderState {
-                visible_terminal_ids,
-                pending_terminal_output,
-                terminal_session_ids: Some(terminal_session_ids),
-                owner_session_id: Some(session_id),
-            },
         ),
         AcpSessionUpdate::ToolCallUpdate {
             tool_call_id,
@@ -460,12 +334,6 @@ pub(super) fn subagent_monitor_events_from_acp_session_notification_with_termina
                 raw_input,
                 raw_output,
                 content,
-            },
-            AcpTerminalRenderState {
-                visible_terminal_ids,
-                pending_terminal_output,
-                terminal_session_ids: Some(terminal_session_ids),
-                owner_session_id: Some(session_id),
             },
         ),
         AcpSessionUpdate::UserMessageChunk { content, .. } => acp_content_display_text(&content)
@@ -619,7 +487,6 @@ fn turn_usage_payload_from_acp_meta(
 fn worker_events_from_acp_tool_call(
     tool_call: AcpToolCallEventData,
     kind: AcpToolKind,
-    terminal_state: AcpTerminalRenderState<'_>,
 ) -> Vec<WorkerEvent> {
     let title = tool_call
         .title
@@ -642,24 +509,20 @@ fn worker_events_from_acp_tool_call(
             input,
         });
     }
-    events.extend(worker_events_from_acp_tool_content(
-        AcpToolCallEventData {
-            tool_call_id,
-            title: Some(title),
-            status: Some(status),
-            raw_input: tool_call.raw_input,
-            raw_output: tool_call.raw_output,
-            content: tool_call.content,
-        },
-        terminal_state,
-    ));
+    events.extend(worker_events_from_acp_tool_content(AcpToolCallEventData {
+        tool_call_id,
+        title: Some(title),
+        status: Some(status),
+        raw_input: tool_call.raw_input,
+        raw_output: tool_call.raw_output,
+        content: tool_call.content,
+    }));
     events
 }
 
 fn worker_events_from_acp_tool_call_update(
     tool_call: AcpToolCallEventData,
     kind: Option<AcpToolKind>,
-    terminal_state: AcpTerminalRenderState<'_>,
 ) -> Vec<WorkerEvent> {
     let mut events = Vec::new();
     if let Some(input) = tool_call.raw_input.clone() {
@@ -679,17 +542,11 @@ fn worker_events_from_acp_tool_call_update(
             parsed_commands: Vec::new(),
         });
     }
-    events.extend(worker_events_from_acp_tool_content(
-        tool_call,
-        terminal_state,
-    ));
+    events.extend(worker_events_from_acp_tool_content(tool_call));
     events
 }
 
-fn worker_events_from_acp_tool_content(
-    tool_call: AcpToolCallEventData,
-    mut terminal_state: AcpTerminalRenderState<'_>,
-) -> Vec<WorkerEvent> {
+fn worker_events_from_acp_tool_content(tool_call: AcpToolCallEventData) -> Vec<WorkerEvent> {
     let mut events = Vec::new();
     let mut changes = HashMap::new();
     let mut text_parts = Vec::new();
@@ -706,22 +563,6 @@ fn worker_events_from_acp_tool_content(
                 new_text,
             } => {
                 changes.insert(path, file_change_from_acp_diff(old_text, new_text));
-            }
-            AcpToolCallContent::Terminal { terminal_id } => {
-                if let Some(delta) = terminal_state.mark_visible(&terminal_id) {
-                    events.push(WorkerEvent::ToolCall {
-                        tool_use_id: terminal_id.clone(),
-                        summary: format!("Terminal {terminal_id}"),
-                        preparing: false,
-                        parsed_commands: None,
-                    });
-                    if !delta.is_empty() {
-                        events.push(WorkerEvent::ToolOutputDelta {
-                            tool_use_id: terminal_id,
-                            delta,
-                        });
-                    }
-                }
             }
         }
     }
@@ -772,7 +613,6 @@ fn worker_events_from_acp_tool_content(
 fn subagent_events_from_acp_tool_call(
     session_id: SessionId,
     tool_call: AcpToolCallEventData,
-    terminal_state: AcpTerminalRenderState<'_>,
 ) -> Vec<WorkerEvent> {
     let title = tool_call
         .title
@@ -799,7 +639,6 @@ fn subagent_events_from_acp_tool_call(
             raw_output: tool_call.raw_output,
             content: tool_call.content,
         },
-        terminal_state,
     ));
     events
 }
@@ -807,7 +646,6 @@ fn subagent_events_from_acp_tool_call(
 fn subagent_events_from_acp_tool_call_update(
     session_id: SessionId,
     tool_call: AcpToolCallEventData,
-    terminal_state: AcpTerminalRenderState<'_>,
 ) -> Vec<WorkerEvent> {
     let mut events = Vec::new();
     // Status-only updates must not overwrite the live title with a generic
@@ -821,18 +659,13 @@ fn subagent_events_from_acp_tool_call_update(
             },
         });
     }
-    events.extend(subagent_events_from_acp_tool_content(
-        session_id,
-        tool_call,
-        terminal_state,
-    ));
+    events.extend(subagent_events_from_acp_tool_content(session_id, tool_call));
     events
 }
 
 fn subagent_events_from_acp_tool_content(
     session_id: SessionId,
     tool_call: AcpToolCallEventData,
-    mut terminal_state: AcpTerminalRenderState<'_>,
 ) -> Vec<WorkerEvent> {
     let mut events = Vec::new();
     let mut text_parts = Vec::new();
@@ -846,26 +679,6 @@ fn subagent_events_from_acp_tool_content(
             }
             AcpToolCallContent::Diff { .. } => {
                 diff_count += 1;
-            }
-            AcpToolCallContent::Terminal { terminal_id } => {
-                if let Some(delta) = terminal_state.mark_visible(&terminal_id) {
-                    events.push(WorkerEvent::SubagentMonitor {
-                        event: SubagentMonitorEvent::ToolCall {
-                            session_id,
-                            tool_use_id: terminal_id.clone(),
-                            summary: format!("Terminal {terminal_id}"),
-                        },
-                    });
-                    if !delta.is_empty() {
-                        events.push(WorkerEvent::SubagentMonitor {
-                            event: SubagentMonitorEvent::ToolOutputDelta {
-                                session_id,
-                                tool_use_id: terminal_id,
-                                delta,
-                            },
-                        });
-                    }
-                }
             }
         }
     }

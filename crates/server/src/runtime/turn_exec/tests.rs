@@ -518,12 +518,6 @@ fn lifecycle_and_control_query_events_are_must_deliver() {
             is_error: false,
             summary: "read README.md".to_string(),
         },
-        devo_core::QueryEvent::ToolProgress {
-            tool_use_id: "tool-1".to_string(),
-            progress: devo_core::tools::ToolProgress::Terminal {
-                terminal_id: "terminal-1".to_string(),
-            },
-        },
         devo_core::QueryEvent::TextDelta("text".to_string()),
         devo_core::QueryEvent::ReasoningDelta("reasoning".to_string()),
         devo_core::QueryEvent::TurnComplete {

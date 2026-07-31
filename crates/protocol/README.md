@@ -50,13 +50,6 @@ The current server-to-client ACP request methods are:
   runtime action.
 - `fs/read_text_file`: ask the client to read an absolute text-file path.
 - `fs/write_text_file`: ask the client to write text to an absolute file path.
-- `terminal/create`: ask the client to create a terminal-backed process.
-- `terminal/output`: ask the client for a terminal output snapshot.
-- `terminal/wait_for_exit`: ask the client to wait for a terminal process to
-  exit.
-- `terminal/kill`: ask the client to kill a terminal process.
-- `terminal/release`: ask the client to release a terminal process and clean up
-  associated state.
 
 Devo-specific client-to-server APIs are sent with the `_devo/` method prefix.
 The prefix is applied by the client transport, then removed by the server before

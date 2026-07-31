@@ -106,7 +106,6 @@ pub(crate) async fn run_prompt(
             collaboration_mode: devo_protocol::CollaborationMode::Build,
             agent_coordinator: None,
             client_filesystem: None,
-            client_terminal: None,
             file_read_ledger: std::sync::Arc::new(devo_core::tools::FileReadLedger::new()),
             local_web_search: None,
             hooks: (!app_config.hooks.is_empty()).then(|| devo_core::HookRuntimeContext {
@@ -530,7 +529,6 @@ fn write_query_event_jsonl(session_id: &str, event: &QueryEvent) -> Result<()> {
                     Some(message.as_str())
                 }
                 devo_core::tools::ToolProgress::Completion { summary } => Some(summary.as_str()),
-                devo_core::tools::ToolProgress::Terminal { .. } => None,
             };
             if let Some(delta) = delta {
                 write_jsonl(&PromptJsonlEvent::ToolProgress {

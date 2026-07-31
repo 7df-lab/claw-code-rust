@@ -43,12 +43,6 @@ use crate::AcpSetConfigOptionResult;
 use crate::AcpSetModeParams;
 use crate::AcpSetModeResult;
 use crate::AcpSuccessResponse;
-use crate::AcpTerminalCreateParams;
-use crate::AcpTerminalCreateResult;
-use crate::AcpTerminalId;
-use crate::AcpTerminalOutputResult;
-use crate::AcpTerminalParams;
-use crate::AcpTerminalWaitForExitResult;
 use crate::AcpToolCallContent;
 use crate::AcpToolCallLocation;
 use crate::AcpToolCallStatus;
@@ -62,8 +56,6 @@ pub type AcpAuthMethodAgent = crate::AcpAuthMethod;
 pub type AcpCancelNotification = AcpCancelParams;
 pub type AcpCloseSessionRequest = AcpCloseSessionParams;
 pub type AcpCloseSessionResponse = AcpCloseSessionResult;
-pub type AcpCreateTerminalRequest = AcpTerminalCreateParams;
-pub type AcpCreateTerminalResponse = AcpTerminalCreateResult;
 pub type AcpDeleteSessionRequest = AcpDeleteSessionParams;
 pub type AcpDeleteSessionResponse = AcpDeleteSessionResult;
 pub type AcpEmbeddedResourceResource = AcpEmbeddedResource;
@@ -73,8 +65,6 @@ pub type AcpExtRequest<T = serde_json::Value> = AcpClientRequest<T>;
 pub type AcpExtResponse<T = serde_json::Value> = AcpSuccessResponse<T>;
 pub type AcpInitializeRequest = AcpInitializeParams;
 pub type AcpInitializeResponse = AcpInitializeResult;
-pub type AcpKillTerminalRequest = AcpTerminalParams;
-pub type AcpKillTerminalResponse = crate::AcpEmptyResult;
 pub type AcpListSessionsRequest = AcpListSessionsParams;
 pub type AcpListSessionsResponse = AcpListSessionsResult;
 pub type AcpLoadSessionRequest = AcpLoadSessionParams;
@@ -88,8 +78,6 @@ pub type AcpPromptRequest = AcpPromptParams;
 pub type AcpPromptResponse = AcpPromptResult;
 pub type AcpReadTextFileRequest = AcpFsReadTextFileParams;
 pub type AcpReadTextFileResponse = AcpFsReadTextFileResult;
-pub type AcpReleaseTerminalRequest = AcpTerminalParams;
-pub type AcpReleaseTerminalResponse = crate::AcpEmptyResult;
 pub type AcpRequestPermissionRequest = AcpRequestPermissionParams;
 pub type AcpRequestPermissionOutcome = AcpPermissionOutcome;
 pub type AcpResumeSessionRequest = AcpResumeSessionParams;
@@ -98,10 +86,6 @@ pub type AcpSetSessionConfigOptionRequest = AcpSetConfigOptionParams;
 pub type AcpSetSessionConfigOptionResponse = AcpSetConfigOptionResult;
 pub type AcpSetSessionModeRequest = AcpSetModeParams;
 pub type AcpSetSessionModeResponse = AcpSetModeResult;
-pub type AcpTerminalOutputRequest = AcpTerminalParams;
-pub type AcpTerminalOutputResponse = AcpTerminalOutputResult;
-pub type AcpWaitForTerminalExitRequest = AcpTerminalParams;
-pub type AcpWaitForTerminalExitResponse = AcpTerminalWaitForExitResult;
 pub type AcpWriteTextFileRequest = AcpFsWriteTextFileParams;
 pub type AcpWriteTextFileResponse = crate::AcpEmptyResult;
 pub type AcpUnstructuredCommandInput = String;
@@ -184,15 +168,6 @@ pub struct AcpDiff {
     pub old_text: Option<String>,
     #[serde(rename = "newText")]
     pub new_text: String,
-    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
-    pub meta: Option<AcpMeta>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpTerminal {
-    #[serde(rename = "terminalId")]
-    pub terminal_id: AcpTerminalId,
     #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<AcpMeta>,
 }

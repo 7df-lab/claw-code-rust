@@ -10,15 +10,12 @@ use crate::shell_exec::{
 };
 use crate::tool_handler::ToolHandler;
 use crate::tool_spec::ToolSpec;
-use crate::tools::client_terminal_shell::{
-    ClientTerminalShellRequest, execute_with_client_terminal,
-};
 
 /// Tool adapter for `shell_command` (and the legacy `bash` alias).
 ///
-/// Parses model input and delegates process execution to [`execute_shell_command`]
-/// or the client terminal when available. The ToolSpec comes from
-/// [`shell_command_tool_spec`] so the registry plan and handler share one schema.
+/// Parses model input and runs the command locally via [`execute_shell_command`].
+/// The ToolSpec comes from [`shell_command_tool_spec`] so the registry plan and
+/// handler share one schema.
 pub struct ShellCommandHandler {
     spec: ToolSpec,
 }
@@ -47,7 +44,7 @@ impl ToolHandler for ShellCommandHandler {
         &self,
         ctx: ToolContext,
         input: serde_json::Value,
-        progress: Option<ToolProgressSender>,
+        _progress: Option<ToolProgressSender>,
     ) -> Result<ToolResult, ToolCallError> {
         let command = input
             .get("command")
@@ -77,29 +74,6 @@ impl ToolHandler for ShellCommandHandler {
             .as_u64()
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
-        let terminal_workdir = if workdir.is_absolute() {
-            workdir.clone()
-        } else {
-            ctx.workspace_root.join(&workdir)
-        };
-
-        if let Some(result) = execute_with_client_terminal(
-            &ctx,
-            ClientTerminalShellRequest {
-                command: command.to_string(),
-                workdir: terminal_workdir,
-                description: description.clone(),
-                shell_override: shell_override.clone(),
-                login,
-                timeout_ms,
-                max_output_tokens,
-            },
-            progress,
-        )
-        .await?
-        {
-            return Ok(result);
-        }
 
         let output = execute_shell_command(
             ShellExecRequest {

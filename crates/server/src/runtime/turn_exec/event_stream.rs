@@ -213,7 +213,6 @@ pub(crate) fn spawn_turn_event_stream(
                                 turn_id: turn_for_events.turn_id,
                                 tool_call_id: id,
                                 status: "in_progress".to_string(),
-                                terminal_id: None,
                             },
                         ))
                         .await;
@@ -714,20 +713,6 @@ async fn handle_tool_progress(
             None => message,
         }),
         devo_core::tools::ToolProgress::Completion { summary } => Some(summary),
-        devo_core::tools::ToolProgress::Terminal { terminal_id } => {
-            runtime
-                .broadcast_event(ServerEvent::ToolCallStatusUpdated(
-                    devo_protocol::ToolCallStatusUpdatedPayload {
-                        session_id,
-                        turn_id,
-                        tool_call_id: tool_use_id.clone(),
-                        status: "in_progress".to_string(),
-                        terminal_id: Some(terminal_id),
-                    },
-                ))
-                .await;
-            None
-        }
     };
     let Some(content) = content else {
         return;

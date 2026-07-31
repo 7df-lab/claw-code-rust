@@ -61,7 +61,8 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
   Anthropic 互換、DeepSeek、Qwen、Kimi、GLM、MiniMax、Xiaomi MiMo、
   OpenRouter、またはローカルエンドポイントを利用できます。
 - **MCP サポート** - [Model Context Protocol](https://modelcontextprotocol.io/)
-  サーバーを通じて外部ツールとコンテキストを接続できます。
+  サーバーを通じて外部ツールとコンテキストを接続できます。設定方法は
+  [設定](./docs/configuration.ja.md#mcp-サーバー) を参照してください。
 - **Skill サポート** - 再利用可能なワークフロー、手順、スクリプト、参照資料を
   [Agent Skills](https://agentskills.io/) としてパッケージ化できます。
 - **長時間タスクのサポート** - 複数ターンにまたがる作業でも Devo が自動的にコンテキストを管理し、

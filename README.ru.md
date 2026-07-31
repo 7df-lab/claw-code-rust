@@ -62,7 +62,8 @@ Devo предназначен для команд, которым нужен cod
   для OpenAI-совместимых, Anthropic-совместимых, DeepSeek, Qwen, Kimi, GLM,
   MiniMax, Xiaomi MiMo, OpenRouter или локальных endpoint.
 - **Поддержка MCP** - Подключайте внешние инструменты и контекст через серверы
-  [Model Context Protocol](https://modelcontextprotocol.io/).
+  [Model Context Protocol](https://modelcontextprotocol.io/). Настройка описана в
+  [Конфигурации](./docs/configuration.ru.md#mcp-серверы).
 - **Поддержка Skill** - Упаковывайте повторяемые workflow, инструкции, скрипты
   и справочные материалы как переиспользуемые
   [Agent Skills](https://agentskills.io/).

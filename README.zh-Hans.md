@@ -57,6 +57,7 @@ Desktop 体验、终端工作流以及工作区执行边界的团队。
   OpenRouter 或本地端点。
 - **MCP 支持** - 通过
   [Model Context Protocol](https://modelcontextprotocol.io/) 服务器连接外部工具和上下文。
+  配置方式见 [配置](./docs/configuration.zh-Hans.md#mcp-服务器)。
 - **Skill 支持** - 将可复用工作流、说明、脚本和参考资料打包成可复用的
   [Agent Skills](https://agentskills.io/)。
 - **长任务支持** - 让 Devo 在多轮工作中自动管理上下文，避免任务变长后丢失上下文。

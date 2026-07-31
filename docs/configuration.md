@@ -215,3 +215,86 @@ Manually copy the fields you still want into `[model.<slug>]` sections in the
 user or workspace `config.toml`, then add or retain the matching provider and
 model binding. Keep API keys in `auth.json`; refer to them from
 `[providers.<id>].credential`.
+
+## MCP Servers
+
+Devo connects to [Model Context Protocol](https://modelcontextprotocol.io/)
+servers configured in user or workspace `config.toml` under `[mcp]`. Each server
+is one entry in the `servers` array, and its `transport` table selects how Devo
+connects. Supported transports are `stdio`, `streamable_http`, and the deprecated
+`sse`.
+
+Stdio example:
+
+```toml
+[mcp]
+auto_start = true
+refresh_on_config_reload = true
+
+[[mcp.servers]]
+id = "filesystem"
+display_name = "Filesystem"
+enabled = true
+startup_policy = "lazy" # eager | lazy | manual
+trust_policy = "user" # user | workspace | untrusted
+allowed_capabilities = ["tools", "resources", "prompts"]
+roots_policy = "workspace" # none | workspace | custom
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
+# cwd = "/path/to/workdir"
+# env = { MY_VAR = "value" }
+# env_vars = ["HOME", "PATH"]
+```
+
+Streamable HTTP with a bearer token:
+
+```toml
+[[mcp.servers]]
+id = "github"
+display_name = "GitHub"
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "streamable_http"
+url = "https://api.githubcopilot.com/mcp/"
+auth = { kind = "bearer_token", token = "replace-me" }
+http_headers = { "X-Custom" = "static-value" }
+env_http_headers = { "Authorization" = "GITHUB_TOKEN" }
+```
+
+Legacy SSE transport:
+
+```toml
+[mcp.servers.transport]
+kind = "sse"
+url = "https://example.com/mcp/sse"
+```
+
+Field notes:
+
+- `auto_start` and `refresh_on_config_reload` default to `true`.
+- `startup_policy` controls when an enabled server starts: `eager` during
+  bootstrap, `lazy` on first use, or `manual` only by explicit request.
+- For stdio, `env` provides literal values and `env_vars` lists names inherited
+  from the local environment; `{ name = "X", source = "remote" }` is not
+  supported for stdio.
+- For HTTP transports, `http_headers` provides literal headers and
+  `env_http_headers` maps a header name to the environment variable that
+  supplies its value.
+- Empty `allowed_capabilities` means no restriction. The runtime currently
+  focuses on `tools`; resource reads are not wired yet.
+- `output_limits` sets `max_tool_output_bytes` (default 1 MiB) and
+  `max_resource_bytes` (default 10 MiB).
+- Top-level `mcp_oauth_credentials_store` is `auto` (default), `file`, or
+  `keyring` and selects where OAuth credentials are stored.
+- Prefer environment-injected headers or values over hard-coding tokens into
+  `config.toml`. `auth_ref` exists on each server record but is not wired to the
+  runtime yet.
+
+Merge behavior: `[mcp]` is merged field-wise like other tables, but `servers` is
+an array. A project-level `[[mcp.servers]]` list therefore replaces the
+user-level list instead of merging by `id`.
+
+Verify the configuration in the TUI with `/mcp list`.

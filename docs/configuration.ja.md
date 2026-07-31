@@ -206,3 +206,84 @@ collapse_reasoning = true
 `[model.<slug>]` へ手動でコピーし、対応する provider と model binding を追加または
 保持してください。API key は `auth.json` に置き、`[providers.<id>].credential`
 から参照します。
+
+## MCP サーバー
+
+Devo は、ユーザーまたは workspace の `config.toml` の `[mcp]` で設定した
+[Model Context Protocol](https://modelcontextprotocol.io/) サーバーに接続します。
+各サーバーは `servers` 配列の 1 エントリで、`transport` テーブルが接続方式を
+決めます。対応トランスポートは `stdio`、`streamable_http`、非推奨の `sse` です。
+
+stdio の例:
+
+```toml
+[mcp]
+auto_start = true
+refresh_on_config_reload = true
+
+[[mcp.servers]]
+id = "filesystem"
+display_name = "Filesystem"
+enabled = true
+startup_policy = "lazy" # eager | lazy | manual
+trust_policy = "user" # user | workspace | untrusted
+allowed_capabilities = ["tools", "resources", "prompts"]
+roots_policy = "workspace" # none | workspace | custom
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
+# cwd = "/path/to/workdir"
+# env = { MY_VAR = "value" }
+# env_vars = ["HOME", "PATH"]
+```
+
+bearer token を使う Streamable HTTP:
+
+```toml
+[[mcp.servers]]
+id = "github"
+display_name = "GitHub"
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "streamable_http"
+url = "https://api.githubcopilot.com/mcp/"
+auth = { kind = "bearer_token", token = "replace-me" }
+http_headers = { "X-Custom" = "static-value" }
+env_http_headers = { "Authorization" = "GITHUB_TOKEN" }
+```
+
+レガシー SSE トランスポート:
+
+```toml
+[mcp.servers.transport]
+kind = "sse"
+url = "https://example.com/mcp/sse"
+```
+
+フィールドの説明:
+
+- `auto_start` と `refresh_on_config_reload` は既定で `true` です。
+- `startup_policy` は有効なサーバーの起動タイミングを制御します: `eager` は
+  ブートストラップ時、`lazy` は初回利用時、`manual` は明示的な要求のみです。
+- stdio では `env` がリテラル値を渡し、`env_vars` がローカル環境から継承する
+  変数名のリストです。stdio では `{ name = "X", source = "remote" }` は
+  サポートされません。
+- HTTP トランスポートでは、`http_headers` がリテラルヘッダーを渡し、
+  `env_http_headers` はヘッダー名を、値を供給する環境変数名に対応付けます。
+- `allowed_capabilities` が空の場合は制限なしです。現時点のランタイムは主に
+  `tools` を扱い、リソース読み取りはまだ接続されていません。
+- `output_limits` は `max_tool_output_bytes`（既定 1 MiB）と
+  `max_resource_bytes`（既定 10 MiB）を設定します。
+- トップレベルの `mcp_oauth_credentials_store` は `auto`（既定）、`file`、
+  `keyring` のいずれかで、OAuth 認証情報の保存先を選びます。
+- token を `config.toml` に直接書くより、環境変数からヘッダーや値を注入する
+  ことを推奨します。`auth_ref` は各サーバーレコードに存在しますが、ランタイム
+  にはまだ接続されていません。
+
+マージ動作: `[mcp]` は他のテーブルと同じくフィールド単位でマージされますが、
+`servers` は配列です。したがって、workspace の `[[mcp.servers]]` リストは
+ユーザーレベルのリストを `id` 単位でマージせず置き換えます。
+
+TUI の `/mcp list` で設定を確認できます。

@@ -197,3 +197,81 @@ collapse_reasoning = true
 請手動把仍需使用的欄位複製到使用者或工作區 `config.toml` 的 `[model.<slug>]`
 段，並新增或保留對應 provider 和 model binding。API key 繼續放在 `auth.json`，
 透過 `[providers.<id>].credential` 引用。
+
+## MCP 伺服器
+
+Devo 透過使用者或工作區 `config.toml` 中的 `[mcp]` 設定
+[Model Context Protocol](https://modelcontextprotocol.io/) 伺服器。每個伺服器是
+`servers` 陣列中的一項，其 `transport` 表決定 Devo 的連線方式。支援的傳輸方式有
+`stdio`、`streamable_http` 和已棄用的 `sse`。
+
+stdio 範例：
+
+```toml
+[mcp]
+auto_start = true
+refresh_on_config_reload = true
+
+[[mcp.servers]]
+id = "filesystem"
+display_name = "Filesystem"
+enabled = true
+startup_policy = "lazy" # eager | lazy | manual
+trust_policy = "user" # user | workspace | untrusted
+allowed_capabilities = ["tools", "resources", "prompts"]
+roots_policy = "workspace" # none | workspace | custom
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
+# cwd = "/path/to/workdir"
+# env = { MY_VAR = "value" }
+# env_vars = ["HOME", "PATH"]
+```
+
+帶 bearer token 的 Streamable HTTP：
+
+```toml
+[[mcp.servers]]
+id = "github"
+display_name = "GitHub"
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "streamable_http"
+url = "https://api.githubcopilot.com/mcp/"
+auth = { kind = "bearer_token", token = "replace-me" }
+http_headers = { "X-Custom" = "static-value" }
+env_http_headers = { "Authorization" = "GITHUB_TOKEN" }
+```
+
+舊版 SSE 傳輸：
+
+```toml
+[mcp.servers.transport]
+kind = "sse"
+url = "https://example.com/mcp/sse"
+```
+
+欄位說明：
+
+- `auto_start` 與 `refresh_on_config_reload` 預設均為 `true`。
+- `startup_policy` 控制已啟用伺服器的啟動時機：`eager` 在啟動階段啟動，`lazy`
+  首次使用時啟動，`manual` 僅依明確請求啟動。
+- stdio 下，`env` 提供字面值，`env_vars` 列出從本機環境繼承的變數名稱；
+  stdio 不支援 `{ name = "X", source = "remote" }`。
+- HTTP 傳輸下，`http_headers` 提供字面 header，`env_http_headers` 將 header
+  名稱對應到提供其值的環境變數名稱。
+- `allowed_capabilities` 為空表示不限制。目前執行階段主要接入 `tools`，資源讀取
+  尚未接線。
+- `output_limits` 設定 `max_tool_output_bytes`（預設 1 MiB）與
+  `max_resource_bytes`（預設 10 MiB）。
+- 頂層 `mcp_oauth_credentials_store` 取值為 `auto`（預設）、`file` 或
+  `keyring`，選擇 OAuth 憑據的儲存位置。
+- 盡量用環境變數注入 header 或值，避免把 token 硬編碼進 `config.toml`。
+  `auth_ref` 欄位已存在於每個伺服器記錄中，但尚未接入執行階段。
+
+合併行為：`[mcp]` 與其他表一樣依欄位合併，但 `servers` 是陣列。專案級的
+`[[mcp.servers]]` 列表會整體取代使用者級列表，而不是依 `id` 合併。
+
+可在 TUI 中用 `/mcp list` 驗證配置。

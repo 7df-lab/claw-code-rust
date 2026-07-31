@@ -14,9 +14,9 @@ use crate::events::ToolProgressSender;
 use crate::invocation::FunctionToolOutput;
 
 const MAX_METADATA_LENGTH: usize = 30_000;
-const DEFAULT_TIMEOUT_MS: u64 = 120_000;
-const DEFAULT_YIELD_TIME_MS: u64 = 1_000;
-const DEFAULT_MAX_OUTPUT_TOKENS: usize = 16_000;
+pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+pub(crate) const DEFAULT_YIELD_TIME_MS: u64 = 1_000;
+pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: usize = 16_000;
 const TRUNCATED_SUFFIX: &str = "\n\n... [truncated]";
 
 #[cfg(not(unix))]
@@ -61,12 +61,22 @@ fn try_windows_sandbox_launch(
     }
 }
 
+/// Input to [`execute_shell_command`]: the caller's raw request before shell
+/// resolution or pipe/PTY branching.
+///
+/// `shell_override` / `login` select the interpreter; `tty` chooses the
+/// execution path. Shared runtime knobs (workdir, timeouts, sandbox, …) are
+/// forwarded into whichever path runs.
 pub(crate) struct ShellExecRequest {
     pub command: String,
     pub workdir: PathBuf,
     pub description: String,
+    /// Optional shell name/alias (`bash`, `pwsh`, `cmd`, …). `None` uses the
+    /// platform default.
     pub shell_override: Option<String>,
+    /// When true, run under a PTY via [`run_with_pty`]; otherwise pipe spawn.
     pub tty: bool,
+    /// Prefer login-shell args (e.g. `bash -lc`) when resolving the shell.
     pub login: bool,
     pub timeout_ms: u64,
     pub yield_time_ms: u64,
@@ -74,6 +84,10 @@ pub(crate) struct ShellExecRequest {
     pub sandbox_profile: Option<String>,
 }
 
+/// Resolved arguments for [`run_with_pty`] after `ShellExecRequest` has been
+/// normalized: shell override/login → [`ShellSpec`], and the command possibly
+/// rewritten (e.g. PowerShell UTF-8 prelude). Does not carry `tty` /
+/// `shell_override` / `login` because those are already applied.
 struct PtyRunConfig {
     shell: ShellSpec,
     command_to_run: String,
@@ -85,15 +99,22 @@ struct PtyRunConfig {
     sandbox_profile: Option<String>,
 }
 
+/// RAII guard around a PTY-spawned child process.
+///
+/// Ensures the child is killed if the guard is dropped while still armed
+/// (timeout, cancel, or early return). Call [`Self::disarm`] after a clean
+/// exit so [`Drop`] does not kill an already-reaped process.
 struct PtyChildGuard {
     child: Option<Box<dyn Child + Send + Sync>>,
 }
 
 impl PtyChildGuard {
+    /// Take ownership of `child` and keep the guard armed.
     fn new(child: Box<dyn Child + Send + Sync>) -> Self {
         Self { child: Some(child) }
     }
 
+    /// Non-blocking poll for exit status; panics if already disarmed.
     fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
         self.child
             .as_mut()
@@ -101,6 +122,7 @@ impl PtyChildGuard {
             .try_wait()
     }
 
+    /// Force-kill the child and wait for it to exit (best-effort).
     fn kill_and_wait(&mut self) {
         if let Some(child) = self.child.as_mut() {
             let _ = child.kill();
@@ -108,12 +130,14 @@ impl PtyChildGuard {
         }
     }
 
+    /// Release ownership without killing; subsequent [`Drop`] is a no-op.
     fn disarm(mut self) {
         self.child.take();
     }
 }
 
 impl Drop for PtyChildGuard {
+    /// Kill the child if the guard was dropped while still armed.
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
             let _ = child.kill();
@@ -121,53 +145,18 @@ impl Drop for PtyChildGuard {
     }
 }
 
-pub(crate) fn default_timeout_ms() -> u64 {
-    DEFAULT_TIMEOUT_MS
-}
-
-pub(crate) fn default_yield_time_ms() -> u64 {
-    DEFAULT_YIELD_TIME_MS
-}
-
-pub(crate) fn default_max_output_tokens() -> usize {
-    DEFAULT_MAX_OUTPUT_TOKENS
-}
-
-#[allow(dead_code)]
-pub(crate) fn windows_destructive_filesystem_guidance() -> &'static str {
-    r#"Windows safety rules:
-- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.
-- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked."#
-}
-
-#[allow(dead_code)]
-pub(crate) fn shell_command_description() -> String {
-    if cfg!(windows) {
-        format!(
-            r#"Runs a Powershell command (Windows) and returns its output.
-
-Examples of valid command strings:
-
-- ls -a (show hidden): "Get-ChildItem -Force"
-- recursive find by name: "Get-ChildItem -Recurse -Filter *.py"
-- recursive grep: "Get-ChildItem -Path C:\myrepo -Recurse | Select-String -Pattern 'TODO' -CaseSensitive"
-- ps aux | grep python: "Get-Process | Where-Object {{ $_.ProcessName -like '*python*' }}"
-- setting an env var: "$env:FOO='bar'; echo $env:FOO"
-- running an inline Python script: "@'\nprint('Hello, world!')\n'@ | python -"
-
-{}"#,
-            windows_destructive_filesystem_guidance()
-        )
-    } else {
-        "Runs a shell command and returns its output.\n- Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary.".to_string()
-    }
-}
-
+/// Run a shell command from a [`ShellExecRequest`].
+///
+/// Resolves the shell and command, then either delegates to [`run_with_pty`]
+/// when `tty` is set, or spawns a non-interactive pipe process (stdout/stderr
+/// captured). Applies sandbox wrapping when a profile is set, waits for
+/// completion (or cancel/timeout), and returns truncated tool output.
 pub(crate) async fn execute_shell_command(
     request: ShellExecRequest,
     progress: Option<ToolProgressSender>,
     cancel_token: CancellationToken,
 ) -> anyhow::Result<FunctionToolOutput> {
+    // --- Validate request & normalize shell/command ---
     let ShellExecRequest {
         command,
         workdir,
@@ -189,6 +178,7 @@ pub(crate) async fn execute_shell_command(
     }
 
     let shell = resolve_shell(shell_override.as_deref(), login);
+    // PowerShell often emits mojibake without an explicit UTF-8 console encoding.
     let command_to_run = if cfg!(windows) && shell.program.eq_ignore_ascii_case("powershell") {
         format!(
             concat!(
@@ -204,6 +194,7 @@ pub(crate) async fn execute_shell_command(
         command
     };
 
+    // --- PTY path (interactive / TTY) ---
     if tty {
         return run_with_pty(
             PtyRunConfig {
@@ -222,12 +213,18 @@ pub(crate) async fn execute_shell_command(
         .await;
     }
 
+    // --- Pipe path: sandbox wrap + build Command ---
     info!(command = %command_to_run, shell = shell.program, "executing shell command");
     let command_preview = preview(&command_to_run);
 
-    // Linux pipe spawns compose a bwrap wrapper with the pre_exec sandbox when
-    // the profile needs enforcement Landlock cannot express (deny paths,
-    // network restriction); everything else runs unwrapped.
+    // Unix (`cfg(unix)` covers Linux *and* macOS): decide whether to launch through
+    // an OS sandbox wrapper. `wrap_command_for_profile` picks the launcher:
+    // - macOS: `sandbox-exec` with a Seatbelt profile (full policy). Seatbelt is
+    //   never applied via `pre_exec` after fork in a multithreaded process.
+    // - Linux: Landlock/`pre_exec` usually carries the profile; `bwrap` is added
+    //   only when PipeComposed needs what Landlock cannot express (deny paths,
+    //   network restriction).
+    // Windows uses the separate `try_windows_sandbox_launch` path below.
     #[cfg(unix)]
     let sandbox_wrap = match devo_sandbox::wrap_command_for_profile(
         sandbox_profile.as_deref(),
@@ -259,6 +256,7 @@ pub(crate) async fn execute_shell_command(
         }
     };
 
+    // Prefer OS wrapper (`sandbox-exec` / `bwrap` / Windows launcher); else bare shell.
     let mut child = match &sandbox_wrap {
         devo_sandbox::SandboxWrap::Wrapped(wrapped) => {
             let mut child = Command::new(&wrapped.program);
@@ -298,16 +296,14 @@ pub(crate) async fn execute_shell_command(
         .current_dir(&workdir)
         .kill_on_drop(true);
 
+    // --- Apply in-process sandbox (Unix pre_exec) and env ---
     #[cfg(unix)]
     {
         let sandbox_workspace = workdir.clone();
-        let helper_enforces = matches!(
-            &sandbox_wrap,
-            devo_sandbox::SandboxWrap::Wrapped(wrapped) if wrapped.helper_enforces
-        );
-        let sandbox_plan = if helper_enforces {
-            None
-        } else {
+        // `requires_child_apply` is false on macOS (Seatbelt is only via
+        // `sandbox-exec`) and when a Linux wrapper already enforces the full
+        // policy. Otherwise resolve Landlock/seccomp for `pre_exec`.
+        let sandbox_plan = if sandbox_wrap.requires_child_apply() {
             match devo_util_process::sandbox::resolve_profile_for_spawn(
                 sandbox_profile.as_deref(),
                 &sandbox_workspace,
@@ -319,8 +315,15 @@ pub(crate) async fn execute_shell_command(
                     )));
                 }
             }
+        } else {
+            None
         };
         unsafe {
+            // `pre_exec` runs in the child after `fork`, before `exec`. Apply the
+            // parent-resolved Landlock/seccomp plan here so only the spawned
+            // command is sandboxed (parent stays unrestricted). Config must not
+            // be loaded in this hook — resolve above in the parent. Skipped when
+            // `sandbox_plan` is `None` (macOS / fully wrapped Linux).
             child.pre_exec(move || {
                 devo_util_process::sandbox::apply_resolved_in_child(sandbox_plan.as_ref())
             });
@@ -336,6 +339,7 @@ pub(crate) async fn execute_shell_command(
     #[cfg(unix)]
     apply_sandbox_proxy_env(&mut child, sandbox_profile.as_deref(), &workdir);
 
+    // --- Spawn and schedule sandbox placeholder cleanup ---
     let spawned = match child.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -356,6 +360,7 @@ pub(crate) async fn execute_shell_command(
         });
     }
 
+    // --- Wait for exit, cancel, or timeout ---
     let result = tokio::select! {
         result = timeout(Duration::from_millis(timeout_ms), spawned.wait_with_output()) => result,
         _ = cancel_token.cancelled() => {
@@ -363,6 +368,7 @@ pub(crate) async fn execute_shell_command(
         }
     };
 
+    // --- Build success / error tool output ---
     match result {
         Ok(Ok(output)) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -524,11 +530,18 @@ fn apply_sandbox_proxy_env(
     }
 }
 
+/// Run a command attached to a pseudo-terminal (PTY).
+///
+/// Used when [`ShellExecRequest::tty`] is true. Opens a PTY, optionally wraps
+/// the spawn in an OS sandbox launcher (no `pre_exec` on this path), reads
+/// master output on a background thread, and polls the child until exit,
+/// timeout, or cancel. Returns truncated tool output with TTY metadata.
 async fn run_with_pty(
     config: PtyRunConfig,
     progress: Option<ToolProgressSender>,
     cancel_token: CancellationToken,
 ) -> anyhow::Result<FunctionToolOutput> {
+    // --- Open PTY ---
     let PtyRunConfig {
         shell,
         command_to_run,
@@ -549,9 +562,11 @@ async fn run_with_pty(
         })
         .map_err(|error| anyhow::anyhow!("failed to open PTY: {error}"))?;
 
-    // PTY spawns have no pre_exec hook: enforce the profile by wrapping the
-    // command in the OS sandbox launcher (macOS sandbox-exec, Linux bwrap).
-    // The wrapped child must NOT also apply the profile (no nested sandboxes).
+    // --- Sandbox wrap (OS launcher only; no nested in-child apply) ---
+    // PTY spawns have no `pre_exec` hook. Unix: `wrap_command_for_profile(PtyOnly)`
+    // wraps with macOS `sandbox-exec` or Linux `bwrap` carrying the full profile.
+    // Windows: `try_windows_sandbox_launch` below. Do not also apply the profile
+    // in-process (no nested sandboxes).
     #[cfg(unix)]
     let sandbox_wrap = match devo_sandbox::wrap_command_for_profile(
         sandbox_profile.as_deref(),
@@ -585,6 +600,7 @@ async fn run_with_pty(
     #[cfg(not(unix))]
     let _ = sandbox_profile;
 
+    // --- Build CommandBuilder (wrapper or bare shell) ---
     let mut builder = match &sandbox_wrap {
         devo_sandbox::SandboxWrap::Wrapped(wrapped) => {
             let mut builder = CommandBuilder::new(&wrapped.program);
@@ -614,6 +630,7 @@ async fn run_with_pty(
             CommandBuilder::new(shell.program)
         }
     };
+    // Windows sandbox launch already embeds the full command line.
     #[cfg(not(unix))]
     if windows_launch.is_none() {
         builder.args(shell.args);
@@ -637,6 +654,7 @@ async fn run_with_pty(
         builder.env(key, value);
     }
 
+    // --- Spawn on slave, guard child, drop slave fd ---
     let child = pair
         .slave
         .spawn_command(builder)
@@ -655,6 +673,7 @@ async fn run_with_pty(
     let mut child = PtyChildGuard::new(child);
     drop(pair.slave);
 
+    // --- Background reader: master → channel ---
     let mut reader = pair
         .master
         .try_clone_reader()
@@ -675,6 +694,7 @@ async fn run_with_pty(
         }
     });
 
+    // --- Poll loop: drain output, wait for exit / timeout / cancel ---
     let started = Instant::now();
     let sleep_ms = yield_time_ms.max(10);
     let timeout = Duration::from_millis(timeout_ms);
@@ -684,6 +704,7 @@ async fn run_with_pty(
     let mut cancelled = false;
 
     loop {
+        // Non-blocking drain so progress can stream while the child still runs.
         while let Ok(chunk) = rx.try_recv() {
             output.extend_from_slice(&chunk);
             if let Some(ref sender) = progress {
@@ -716,6 +737,7 @@ async fn run_with_pty(
         }
     }
 
+    // --- Final drain + tool result ---
     while let Ok(chunk) = rx.try_recv() {
         output.extend_from_slice(&chunk);
     }
@@ -733,6 +755,7 @@ async fn run_with_pty(
             "command cancelled\n{text}"
         )));
     }
+    // Clean exit: release ownership so Drop does not kill a finished process.
     child.disarm();
 
     let is_error = exit_code.unwrap_or(1) != 0;
@@ -761,317 +784,4 @@ async fn run_with_pty(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ToolContent;
-    use pretty_assertions::assert_eq;
-    use std::hint::black_box;
-    use std::time::Instant;
-
-    #[tokio::test]
-    async fn execute_shell_command_non_tty_sends_progress() {
-        let cmd = "echo stream_test";
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-
-        let result = execute_shell_command(
-            ShellExecRequest {
-                command: cmd.to_string(),
-                workdir: std::env::current_dir().unwrap_or_default(),
-                description: "test".into(),
-                shell_override: None,
-                tty: false,
-                login: false,
-                timeout_ms: 5000,
-                yield_time_ms: 100,
-                max_output_tokens: 100,
-                sandbox_profile: None,
-            },
-            Some(tx),
-            CancellationToken::new(),
-        )
-        .await;
-
-        assert!(result.is_ok(), "command should succeed: {:?}", result.err());
-        // Progress channel should have received output
-        if let Ok(chunk) = rx.try_recv() {
-            assert!(!chunk.is_empty(), "progress chunk should not be empty");
-        }
-    }
-
-    #[tokio::test]
-    async fn execute_shell_command_progress_none_does_not_crash() {
-        let cmd = "echo test";
-        let result = execute_shell_command(
-            ShellExecRequest {
-                command: cmd.to_string(),
-                workdir: std::env::current_dir().unwrap_or_default(),
-                description: "test".into(),
-                shell_override: None,
-                tty: false,
-                login: false,
-                timeout_ms: 5000,
-                yield_time_ms: 100,
-                max_output_tokens: 100,
-                sandbox_profile: None,
-            },
-            None,
-            CancellationToken::new(),
-        )
-        .await;
-        assert!(result.is_ok());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn execute_shell_command_cancels_non_tty_process() {
-        let cancel_token = CancellationToken::new();
-        let cancel_task_token = cancel_token.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            cancel_task_token.cancel();
-        });
-
-        let result = execute_shell_command(
-            ShellExecRequest {
-                command: "sleep 5; echo should_not_print".to_string(),
-                workdir: std::env::current_dir().unwrap_or_default(),
-                description: "cancel test".into(),
-                shell_override: None,
-                tty: false,
-                login: false,
-                timeout_ms: 10_000,
-                yield_time_ms: 100,
-                max_output_tokens: 100,
-                sandbox_profile: None,
-            },
-            None,
-            cancel_token,
-        )
-        .await
-        .expect("execute shell command");
-
-        assert!(result.is_error);
-        assert_eq!(result.content.into_string(), "command cancelled");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn aborting_tty_command_kills_pty_child() {
-        let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let started_marker = temp_dir.path().join("started");
-        let delayed_marker = temp_dir.path().join("delayed");
-        let quote_path = |path: &std::path::Path| {
-            format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
-        };
-        let command = format!(
-            "touch {}; sleep 2; touch {}",
-            quote_path(&started_marker),
-            quote_path(&delayed_marker)
-        );
-        let cancel_token = CancellationToken::new();
-        let task_cancel_token = cancel_token.clone();
-        let task = tokio::spawn(execute_shell_command(
-            ShellExecRequest {
-                command,
-                workdir: temp_dir.path().to_path_buf(),
-                description: "abort PTY test".into(),
-                shell_override: Some("bash".to_string()),
-                tty: true,
-                login: false,
-                timeout_ms: 10_000,
-                yield_time_ms: 100,
-                max_output_tokens: 100,
-                sandbox_profile: None,
-            },
-            None,
-            task_cancel_token,
-        ));
-
-        for _ in 0..50 {
-            if started_marker.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(started_marker.exists(), "PTY command should have started");
-        cancel_token.cancel();
-        task.abort();
-        let _ = task.await;
-        tokio::time::sleep(Duration::from_millis(2_500)).await;
-
-        assert!(
-            !delayed_marker.exists(),
-            "aborted PTY command should not reach delayed marker"
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_shell_command_success_metadata_is_mixed() {
-        let result = execute_shell_command(
-            ShellExecRequest {
-                command: "echo metadata_test".to_string(),
-                workdir: std::env::current_dir().unwrap_or_default(),
-                description: "metadata test".into(),
-                shell_override: None,
-                tty: false,
-                login: false,
-                timeout_ms: 5000,
-                yield_time_ms: 100,
-                max_output_tokens: 100,
-                sandbox_profile: None,
-            },
-            None,
-            CancellationToken::new(),
-        )
-        .await
-        .expect("execute shell command");
-
-        assert!(!result.is_error);
-        match result.content {
-            ToolContent::Mixed {
-                text: Some(text),
-                json: Some(metadata),
-            } => {
-                assert!(text.contains("metadata_test"));
-                assert_eq!(metadata["description"], "metadata test");
-            }
-            content => panic!("expected mixed success output, got {content:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn execute_shell_command_error_output_is_text_only() {
-        let result = execute_shell_command(
-            ShellExecRequest {
-                command: "exit 7".to_string(),
-                workdir: std::env::current_dir().unwrap_or_default(),
-                description: "error test".into(),
-                shell_override: None,
-                tty: false,
-                login: false,
-                timeout_ms: 5000,
-                yield_time_ms: 100,
-                max_output_tokens: 100,
-                sandbox_profile: None,
-            },
-            None,
-            CancellationToken::new(),
-        )
-        .await
-        .expect("execute shell command");
-
-        assert!(result.is_error);
-        assert!(matches!(result.content, ToolContent::Text(text) if text.contains("exit code 7")));
-    }
-
-    use super::{merge_streams, platform_shell_program, preview, resolve_shell, truncate_output};
-
-    #[test]
-    #[cfg(windows)]
-    fn resolve_shell_prefers_powershell_alias() {
-        let spec = resolve_shell(Some("pwsh"), true);
-        assert_eq!(spec.program, "powershell");
-        assert_eq!(spec.args, &["-NoLogo", "-NoProfile", "-Command"]);
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn resolve_shell_prefers_cmd_alias() {
-        let spec = resolve_shell(Some("cmd.exe"), true);
-        assert_eq!(spec.program, "cmd");
-        assert_eq!(spec.args, &["/C"]);
-    }
-
-    #[test]
-    fn resolve_shell_defaults_to_platform_shell_login() {
-        let spec = resolve_shell(None, true);
-        assert_eq!(spec.program, platform_shell_program(true));
-    }
-
-    #[test]
-    fn preview_truncates_long_text() {
-        let long = "a".repeat(30_001);
-        let result = preview(&long);
-        assert!(result.ends_with("\n\n..."));
-    }
-
-    #[test]
-    fn truncate_output_handles_zero_tokens() {
-        assert_eq!(truncate_output("text", 0), "");
-    }
-
-    #[test]
-    fn truncate_output_limits_length() {
-        let input = "a".repeat(200);
-        let result = truncate_output(&input, 10);
-        assert!(result.ends_with("\n\n... [truncated]"));
-        assert!(result.len() < input.len());
-    }
-
-    #[test]
-    fn truncate_output_preserves_utf8_boundaries() {
-        assert_eq!(truncate_output("😀😀😀", 1), "😀😀😀");
-        assert_eq!(
-            truncate_output("😀😀😀😀😀", 1),
-            "😀😀😀😀\n\n... [truncated]"
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_truncate_output_ascii_no_truncation() {
-        let input = "shell output line\n".repeat(256);
-        let iterations = 200_000;
-        let expected_len = input.len();
-        let started = Instant::now();
-        let mut total_len = 0usize;
-
-        for _ in 0..iterations {
-            total_len += black_box(truncate_output(black_box(&input), black_box(2_000))).len();
-        }
-
-        let elapsed = started.elapsed();
-        assert_eq!(total_len, expected_len * iterations);
-        println!(
-            "truncate_output_ascii_no_truncation iterations={iterations} bytes={expected_len} elapsed_ms={} per_call_us={:.2}",
-            elapsed.as_secs_f64() * 1_000.0,
-            elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_truncate_output_ascii_large_truncation() {
-        let input = "shell output line\n".repeat(8_192);
-        let iterations = 50_000;
-        let expected_len = truncate_output(&input, 1_000).len();
-        let started = Instant::now();
-        let mut total_len = 0usize;
-
-        for _ in 0..iterations {
-            total_len += black_box(truncate_output(black_box(&input), black_box(1_000))).len();
-        }
-
-        let elapsed = started.elapsed();
-        assert_eq!(total_len, expected_len * iterations);
-        println!(
-            "truncate_output_ascii_large_truncation iterations={iterations} bytes={} elapsed_ms={} per_call_us={:.2}",
-            input.len(),
-            elapsed.as_secs_f64() * 1_000.0,
-            elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64
-        );
-    }
-
-    #[test]
-    fn merge_streams_combines_stdout_and_stderr() {
-        let result = merge_streams("out", "err");
-        assert!(result.contains("out"));
-        assert!(result.contains("[stderr]"));
-        assert!(result.contains("err"));
-    }
-
-    #[test]
-    fn merge_streams_no_output() {
-        assert_eq!(merge_streams("", ""), "");
-    }
-}
+mod tests;

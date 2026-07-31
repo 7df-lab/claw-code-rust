@@ -8,7 +8,7 @@ use crate::tool_spec::{
 use crate::tools::websearch_prompt::web_search_prompt;
 use devo_config::AppConfig;
 
-const BASH_DESCRIPTION: &str = include_str!("bash.txt");
+const SHELL_COMMAND_DESCRIPTION: &str = include_str!("shell_command.txt");
 const READ_DESCRIPTION: &str = include_str!("read.txt");
 const WRITE_DESCRIPTION: &str = include_str!("write.txt");
 const EDIT_DESCRIPTION: &str = include_str!("edit.txt");
@@ -69,8 +69,9 @@ impl ToolPlanConfig {
 
     pub fn validate(&self) {
         // No incompatible combinations currently exist.
-        // - use_shell_command and use_unified_exec are independent (shell_command replaces bash,
-        //   unified exec adds new tools)
+        // - use_shell_command and use_unified_exec are independent (shell_command is the
+        //   canonical shell tool name; setting use_shell_command false keeps legacy "bash")
+        // - unified exec adds new tools alongside shell_command
         // - code_search is a read-only search tool and does not conflict with either
         // - all can be true simultaneously with no conflict
     }
@@ -87,6 +88,23 @@ impl Default for ToolPlanConfig {
             network_proxy: None,
             network_no_proxy: None,
         }
+    }
+}
+
+/// Shared ToolSpec for the shell tool (`shell_command`, or legacy name `bash`).
+pub(crate) fn shell_command_tool_spec(name: impl Into<String>) -> ToolSpec {
+    ToolSpec {
+        name: name.into(),
+        description: shell_command_description(),
+        input_schema: shell_command_schema(),
+        output_mode: ToolOutputMode::Mixed,
+        execution_mode: ToolExecutionMode::Mutating,
+        capability_tags: vec![ToolCapabilityTag::ExecuteProcess],
+        supports_parallel: false,
+        preparation_feedback: ToolPreparationFeedback::None,
+        display_name: None,
+        supports_cancellation: None,
+        supports_streaming: None,
     }
 }
 
@@ -159,7 +177,7 @@ fn shell_command_schema() -> JsonSchema {
     )
 }
 
-fn bash_description() -> String {
+fn shell_command_description() -> String {
     let chaining = if cfg!(windows) {
         "If commands depend on each other and must run sequentially, use a single PowerShell command string. In Windows PowerShell 5.1, do not rely on Bash chaining semantics like `cmd1 && cmd2`; prefer `cmd1; if ($?) { cmd2 }` when the later command depends on earlier success."
     } else {
@@ -168,7 +186,7 @@ fn bash_description() -> String {
 
     let shell = if cfg!(windows) { "powershell" } else { "bash" };
 
-    BASH_DESCRIPTION
+    SHELL_COMMAND_DESCRIPTION
         .replace(
             "${directory}",
             &std::env::current_dir().map_or_else(|_| ".".to_string(), |p| p.display().to_string()),
@@ -703,37 +721,14 @@ pub fn build_tool_registry_plan(config: &ToolPlanConfig) -> ToolRegistryPlan {
 
     if config.use_shell_command {
         plan.push(
-            ToolSpec {
-                name: "shell_command".to_string(),
-                description: bash_description(),
-                input_schema: shell_command_schema(),
-                output_mode: ToolOutputMode::Mixed,
-                execution_mode: ToolExecutionMode::Mutating,
-                capability_tags: vec![ToolCapabilityTag::ExecuteProcess],
-                supports_parallel: false,
-                preparation_feedback: ToolPreparationFeedback::None,
-                display_name: None,
-                supports_cancellation: None,
-                supports_streaming: None,
-            },
-            ToolHandlerKind::Bash,
+            shell_command_tool_spec("shell_command"),
+            ToolHandlerKind::ShellCommand,
         );
     } else {
+        // Legacy tool name; same handler and schema as shell_command.
         plan.push(
-            ToolSpec {
-                name: "bash".to_string(),
-                description: bash_description(),
-                input_schema: shell_command_schema(),
-                output_mode: ToolOutputMode::Mixed,
-                execution_mode: ToolExecutionMode::Mutating,
-                capability_tags: vec![ToolCapabilityTag::ExecuteProcess],
-                supports_parallel: false,
-                preparation_feedback: ToolPreparationFeedback::None,
-                display_name: None,
-                supports_cancellation: None,
-                supports_streaming: None,
-            },
-            ToolHandlerKind::Bash,
+            shell_command_tool_spec("bash"),
+            ToolHandlerKind::ShellCommand,
         );
     }
 
@@ -1108,7 +1103,8 @@ mod tests {
         assert!(
             plan.handlers
                 .iter()
-                .any(|(kind, name)| *kind == ToolHandlerKind::Bash && name == "shell_command")
+                .any(|(kind, name)| *kind == ToolHandlerKind::ShellCommand
+                    && name == "shell_command")
         );
     }
 

@@ -31,22 +31,30 @@ pub fn is_likely_sandbox_denied(
     false
 }
 
-/// Seatbelt (and similar) often kill the sandboxed process with a signal and
-/// leave empty stdout/stderr. `ExitStatus::code()` is then `None`, which callers
-/// historically report as `-1` without a useful hint.
+/// Detect a signal that specifically indicates sandbox enforcement.
+///
+/// Empty output is not evidence by itself: a child can crash in `pre_exec` or
+/// abort for unrelated reasons. Linux seccomp's `SIGSYS` is the only bare
+/// signal classified as a denial; other signals require a denial keyword.
 pub fn is_likely_sandbox_denied_after_signal(
     sandbox_was_active: bool,
     signal: Option<i32>,
     stdout: &str,
     stderr: &str,
 ) -> bool {
-    if !sandbox_was_active || signal.is_none() {
+    if !sandbox_was_active {
         return false;
     }
     if streams_contain_sandbox_keyword(stdout, stderr) {
         return true;
     }
-    stdout.trim().is_empty() && stderr.trim().is_empty()
+    #[cfg(unix)]
+    if signal == Some(libc::SIGSYS) {
+        return true;
+    }
+    #[cfg(not(unix))]
+    let _ = signal;
+    false
 }
 
 fn streams_contain_sandbox_keyword(stdout: &str, stderr: &str) -> bool {
@@ -201,9 +209,17 @@ mod tests {
         assert!(is_likely_sandbox_denied(true, 128 + libc::SIGSYS, "", ""));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn empty_signal_death_under_sandbox_is_denial() {
-        assert!(is_likely_sandbox_denied_after_signal(true, Some(9), "", ""));
+    fn unrelated_empty_signal_death_is_not_denial() {
+        for signal in [libc::SIGTRAP, libc::SIGABRT, libc::SIGKILL] {
+            assert!(!is_likely_sandbox_denied_after_signal(
+                true,
+                Some(signal),
+                "",
+                ""
+            ));
+        }
         assert!(!is_likely_sandbox_denied_after_signal(
             false,
             Some(9),
@@ -212,6 +228,17 @@ mod tests {
         ));
         assert!(!is_likely_sandbox_denied_after_signal(
             true, /*signal*/ None, "", ""
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigsys_signal_detects_denial() {
+        assert!(is_likely_sandbox_denied_after_signal(
+            true,
+            Some(libc::SIGSYS),
+            "",
+            ""
         ));
     }
 
@@ -240,17 +267,17 @@ mod tests {
         assert_eq!(message, "exit code 1\n[stderr]\noperation not permitted");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn shell_error_message_with_signal_prefixes_empty_kill() {
+    fn shell_error_message_with_signal_reports_unrelated_crash() {
         let message = shell_error_message_with_signal(
             Some("workspace"),
             /*exit_code*/ None,
-            Some(9),
+            Some(libc::SIGTRAP),
             "",
             "",
             "",
         );
-        assert!(message.starts_with("SANDBOX_DENIED:"));
-        assert!(message.contains("exit code 137"));
+        assert_eq!(message, format!("exit code {}\n", 128 + libc::SIGTRAP));
     }
 }

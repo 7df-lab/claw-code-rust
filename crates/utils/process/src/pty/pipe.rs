@@ -154,15 +154,10 @@ async fn spawn_process_with_stdin_mode(
     #[cfg(unix)]
     let sandbox_workspace = cwd.to_path_buf();
     #[cfg(unix)]
-    let helper_enforces = matches!(
-        &sandbox_wrap,
-        devo_sandbox::SandboxWrap::Wrapped(wrapped) if wrapped.helper_enforces
-    );
-    #[cfg(unix)]
-    let sandbox_plan = if helper_enforces {
-        None
-    } else {
+    let sandbox_plan = if sandbox_wrap.requires_child_apply() {
         crate::sandbox::resolve_profile_for_spawn(sandbox_profile.as_deref(), &sandbox_workspace)?
+    } else {
+        None
     };
     #[cfg(unix)]
     unsafe {

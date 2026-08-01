@@ -6777,6 +6777,42 @@ fn interrupt_request_switches_working_status_to_stopping_immediately() {
     assert!(history.contains("interrupted"), "history:\n{history}");
 }
 
+/// Trace: L2-DES-AGENT-002
+/// Verifies: Esc interrupt is accepted while a compaction turn is active.
+#[test]
+fn interrupt_during_session_compaction_is_accepted() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    let turn_id = TurnId::new();
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id,
+    });
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionCompactionStarted);
+    widget.handle_key_event(press_key(KeyCode::Esc));
+    assert!(app_event_rx.try_recv().is_err());
+    widget.handle_key_event(press_key(KeyCode::Esc));
+    assert_eq!(app_event_rx.try_recv(), Ok(AppEvent::Interrupt));
+    assert!(widget.request_interrupt());
+    let rows = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(rows.contains("Stopping…"), "rows:\n{rows}");
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionCompactionFailed {
+        message: "compaction canceled".to_string(),
+    });
+    let rows = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(!rows.contains("Stopping…"), "rows:\n{rows}");
+    assert!(!rows.contains("Compacting session"), "rows:\n{rows}");
+}
+
 #[test]
 fn interrupt_failure_restores_working_status() {
     let model = Model {

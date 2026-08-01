@@ -1464,6 +1464,7 @@ impl ChatWidget {
                 prompt_token_estimate,
             } => {
                 self.busy = false;
+                self.active_turn_id = None;
                 self.bottom_pane.set_task_running(false);
                 self.total_input_tokens = total_input_tokens;
                 self.total_output_tokens = total_output_tokens;
@@ -1491,6 +1492,7 @@ impl ChatWidget {
             }
             WorkerEvent::SessionCompactionFailed { message } => {
                 self.busy = false;
+                self.active_turn_id = None;
                 self.bottom_pane.set_task_running(false);
                 if self.status_message != "Session compaction failed" {
                     self.add_to_history(history_cell::new_live_aligned_error_event_with_hint(

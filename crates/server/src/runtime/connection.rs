@@ -1421,6 +1421,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::ItemDeltaPayload;
+    use anyhow::Context;
     use anyhow::Result;
     use async_trait::async_trait;
     use devo_core::AppConfigStore;
@@ -3554,12 +3555,321 @@ mod tests {
         let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
         let session_handle = runtime.session(session_id).await.expect("session");
         let state_change_guard = session_handle.lock_state_change().await;
-        let compaction =
-            tokio::spawn(Arc::clone(&runtime).run_session_compaction(session_id, session_handle));
+        let now = Utc::now();
+        let turn = crate::turn::TurnMetadata {
+            turn_id: TurnId::new(),
+            session_id,
+            sequence: 1,
+            status: TurnStatus::Running,
+            kind: devo_core::TurnKind::ManualCompaction,
+            model: "test-model".to_string(),
+            model_binding_id: None,
+            reasoning_effort_selection: None,
+            reasoning_effort: None,
+            request_model: "test-model".to_string(),
+            request_thinking: None,
+            started_at: now,
+            completed_at: None,
+            usage: None,
+            stop_reason: None,
+            failure_reason: None,
+        };
+        let compaction = tokio::spawn(Arc::clone(&runtime).run_session_compaction(
+            session_id,
+            session_handle,
+            turn,
+        ));
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!compaction.is_finished());
         drop(state_change_guard);
         tokio::time::timeout(Duration::from_secs(5), compaction).await??;
+        Ok(())
+    }
+
+    struct TurnOkCompactHangProvider;
+
+    #[async_trait]
+    impl ModelProviderSDK for TurnOkCompactHangProvider {
+        async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            std::future::pending::<()>().await;
+            unreachable!("hanging compaction completion should be canceled")
+        }
+
+        async fn completion_stream(
+            &self,
+            _request: ModelRequest,
+        ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent>> + Send>>>
+        {
+            Ok(Box::pin(futures::stream::iter(vec![Ok(
+                StreamEvent::MessageDone {
+                    response: ModelResponse {
+                        id: "turn-ok".into(),
+                        content: vec![devo_protocol::ResponseContent::Text("ok".into())],
+                        stop_reason: Some(devo_protocol::StopReason::EndTurn),
+                        usage: devo_protocol::Usage::default(),
+                        metadata: devo_protocol::ResponseMetadata::default(),
+                    },
+                },
+            )])))
+        }
+
+        fn name(&self) -> &str {
+            "turn-ok-compact-hang"
+        }
+    }
+
+    /// Trace: L2-DES-AGENT-002
+    /// Verifies: session/cancel (via turn interrupt) stops hanging compaction
+    /// and reopens admission.
+    #[tokio::test]
+    async fn session_cancel_stops_in_flight_compaction() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime =
+            build_runtime_with_provider(data_root.path(), Arc::new(TurnOkCompactHangProvider));
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        start_turn(&runtime, connection_id, session_id, "seed history").await?;
+        for _ in 0..200 {
+            if runtime.runtime_active_turn_id(session_id).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            runtime.runtime_active_turn_id(session_id).await.is_none(),
+            "seed turn should finish before compact"
+        );
+
+        let compact_response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 200,
+                    "method": "_devo/session/compact",
+                    "params": { "session_id": session_id }
+                }),
+            )
+            .await
+            .expect("session/compact response");
+        assert!(
+            compact_response.get("error").is_none(),
+            "session/compact: {compact_response}"
+        );
+        let compact_result: TurnStartResult = serde_json::from_value(
+            compact_response
+                .get("result")
+                .cloned()
+                .expect("compact result"),
+        )?;
+        let TurnStartResult::Started { turn_id, .. } = compact_result else {
+            panic!("expected TurnStartResult::Started, got {compact_result:?}");
+        };
+
+        for _ in 0..50 {
+            if runtime.runtime_active_turn_id(session_id).await == Some(turn_id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            runtime.runtime_active_turn_id(session_id).await,
+            Some(turn_id),
+            "compaction should own the active turn while summarizer hangs"
+        );
+
+        let cancel_response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 201,
+                    "method": "session/cancel",
+                    "params": { "sessionId": session_id }
+                }),
+            )
+            .await
+            .expect("session/cancel response");
+        assert!(
+            cancel_response.get("error").is_none(),
+            "session/cancel: {cancel_response}"
+        );
+
+        for _ in 0..200 {
+            if runtime.runtime_active_turn_id(session_id).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            runtime.runtime_active_turn_id(session_id).await.is_none(),
+            "cancel should clear the active compaction turn"
+        );
+
+        let idle_cancel = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 202,
+                    "method": "session/cancel",
+                    "params": { "sessionId": session_id }
+                }),
+            )
+            .await
+            .expect("idempotent cancel response");
+        assert!(
+            idle_cancel.get("error").is_none(),
+            "idle cancel should be idempotent: {idle_cancel}"
+        );
+
+        let compact_again = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 203,
+                    "method": "_devo/session/compact",
+                    "params": { "session_id": session_id }
+                }),
+            )
+            .await
+            .expect("second session/compact response");
+        assert!(
+            compact_again.get("error").is_none(),
+            "session should accept compact after cancel: {compact_again}"
+        );
+        if let Some(active_turn_id) = runtime.runtime_active_turn_id(session_id).await {
+            let _ = runtime
+                .handle_incoming(
+                    connection_id,
+                    serde_json::json!({
+                        "id": 204,
+                        "method": "_devo/turn/interrupt",
+                        "params": {
+                            "session_id": session_id,
+                            "turn_id": active_turn_id,
+                            "reason": "test cleanup"
+                        }
+                    }),
+                )
+                .await;
+        }
+        Ok(())
+    }
+
+    /// Trace: L2-DES-AGENT-002
+    /// Verifies: if compaction claimed active_turn then failed to record terminal
+    /// status, interrupt recovery still emits canceled lifecycle events.
+    ///
+    /// Deadlock note: a live compaction task holds `state_change_gate` across
+    /// `compact_history`. Recovery must cancel that work before a later compact
+    /// can admit; this test waits for the gate after recovery.
+    #[tokio::test]
+    async fn recover_orphaned_compaction_after_actor_claim() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime =
+            build_runtime_with_provider(data_root.path(), Arc::new(TurnOkCompactHangProvider));
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        start_turn(&runtime, connection_id, session_id, "seed history").await?;
+        for _ in 0..200 {
+            if runtime.runtime_active_turn_id(session_id).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let compact_response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 210,
+                    "method": "_devo/session/compact",
+                    "params": { "session_id": session_id }
+                }),
+            )
+            .await
+            .expect("session/compact response");
+        let compact_result: TurnStartResult = serde_json::from_value(
+            compact_response
+                .get("result")
+                .cloned()
+                .expect("compact result"),
+        )?;
+        let TurnStartResult::Started { turn_id, .. } = compact_result else {
+            panic!("expected TurnStartResult::Started, got {compact_result:?}");
+        };
+        for _ in 0..50 {
+            if runtime.runtime_active_turn_id(session_id).await == Some(turn_id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            runtime.runtime_active_turn_id(session_id).await,
+            Some(turn_id)
+        );
+
+        let session_handle = runtime.session(session_id).await.expect("session");
+        // Simulate: task claimed actor active_turn, then was aborted before
+        // record_terminal_turn_status. Keep the abort handle so recovery can
+        // still abort the hanging summarizer and release state_change_gate.
+        assert_eq!(
+            session_handle.clear_active_turn_if_matches(turn_id).await,
+            Some(true)
+        );
+
+        let recovered = runtime
+            .recover_orphaned_manual_compaction_interrupt(&session_handle, session_id, turn_id)
+            .await
+            .expect("orphaned compaction should recover");
+        assert_eq!(recovered.status, TurnStatus::Interrupted);
+        assert!(
+            runtime.runtime_active_turn_id(session_id).await.is_none(),
+            "recovery should clear runtime handles"
+        );
+        assert!(
+            runtime
+                .recent_terminal_turn_status(turn_id)
+                .await
+                .is_some_and(|snapshot| snapshot.status == TurnStatus::Interrupted)
+        );
+
+        // Hanging compact_history held state_change_gate; wait until cancel/abort
+        // lets that task drop it before admitting another compact.
+        let gate = tokio::time::timeout(Duration::from_secs(5), session_handle.lock_state_change())
+            .await
+            .context("timed out waiting for compaction to release state_change_gate")?;
+        drop(gate);
+
+        let compact_again = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 211,
+                    "method": "_devo/session/compact",
+                    "params": { "session_id": session_id }
+                }),
+            )
+            .await
+            .expect("second session/compact response");
+        assert!(
+            compact_again.get("error").is_none(),
+            "session should accept compact after orphan recovery: {compact_again}"
+        );
+        if let Some(active_turn_id) = runtime.runtime_active_turn_id(session_id).await {
+            let _ = runtime
+                .handle_incoming(
+                    connection_id,
+                    serde_json::json!({
+                        "id": 212,
+                        "method": "_devo/turn/interrupt",
+                        "params": {
+                            "session_id": session_id,
+                            "turn_id": active_turn_id,
+                            "reason": "test cleanup"
+                        }
+                    }),
+                )
+                .await;
+        }
         Ok(())
     }
 

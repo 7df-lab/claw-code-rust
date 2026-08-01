@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use devo_protocol::{Model, ModelRequest, RequestMessage, ResponseContent, SamplingControls};
 use devo_provider::ModelProviderSDK;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use super::compaction::{CompactionError, HistorySummarizer};
@@ -69,7 +70,11 @@ fn should_keep_summary_line(line: &str) -> bool {
 
 #[async_trait]
 impl HistorySummarizer for DefaultHistorySummarizer {
-    async fn summarize(&self, messages: Vec<RequestMessage>) -> Result<String, CompactionError> {
+    async fn summarize(
+        &self,
+        messages: Vec<RequestMessage>,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<String, CompactionError> {
         let request = ModelRequest {
             model_slug: devo_protocol::ModelProfileKey::CatalogSlug(self.model_slug.clone()),
             model: self.request_model.clone(),
@@ -94,7 +99,20 @@ impl HistorySummarizer for DefaultHistorySummarizer {
             "sending LLM compaction request"
         );
 
-        let response = match self.provider.completion(request).await {
+        let completion = self.provider.completion(request);
+        let response = match cancel_token {
+            Some(cancel_token) => {
+                tokio::select! {
+                    biased;
+                    () = cancel_token.cancelled() => {
+                        return Err(CompactionError::Canceled);
+                    }
+                    result = completion => result,
+                }
+            }
+            None => completion.await,
+        };
+        let response = match response {
             Ok(r) => r,
             Err(e) => {
                 let err_msg = e.to_string();

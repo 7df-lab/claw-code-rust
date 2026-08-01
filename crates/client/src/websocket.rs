@@ -178,8 +178,14 @@ impl WebSocketServerClient {
     pub async fn session_compact(
         &mut self,
         params: SessionCompactParams,
-    ) -> Result<SessionCompactResult> {
+    ) -> Result<TurnStartResult> {
         self.core.request_devo("session/compact", params).await
+    }
+
+    pub async fn session_cancel(&mut self, params: AcpCancelParams) -> Result<AcpEmptyResult> {
+        self.core
+            .request(devo_protocol::ACP_SESSION_CANCEL_METHOD, params)
+            .await
     }
 
     pub async fn goal_create(&mut self, params: GoalCreateParams) -> Result<GoalCreateResult> {

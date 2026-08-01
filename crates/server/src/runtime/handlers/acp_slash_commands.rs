@@ -27,7 +27,6 @@ use crate::AcpStopReason;
 use crate::CollaborationMode;
 use crate::InputItem;
 use crate::SessionCompactParams;
-use crate::SessionCompactResult;
 use crate::SuccessResponse;
 use crate::TurnExecutionMode;
 use crate::TurnStartParams;
@@ -147,9 +146,9 @@ impl ServerRuntime {
                     .expect("serialize session compact params"),
             )
             .await;
-        let Ok(_response) = serde_json::from_value::<SuccessResponse<SessionCompactResult>>(
-            legacy_response.clone(),
-        ) else {
+        let Ok(_response) =
+            serde_json::from_value::<SuccessResponse<TurnStartResult>>(legacy_response.clone())
+        else {
             return AcpSlashCommandPromptResult::Response(legacy_error_to_acp(
                 request_id,
                 legacy_response,

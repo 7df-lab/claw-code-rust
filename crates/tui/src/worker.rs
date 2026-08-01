@@ -1390,13 +1390,7 @@ async fn run_worker_inner(
                                     .await
                                 {
                                     Ok(result) => {
-                                        model = result
-                                            .session
-                                            .model
-                                            .clone()
-                                            .unwrap_or(model);
-                                        model_binding_id = result.session.model_binding_id.clone();
-                                        reasoning_effort_selection = result.session.reasoning_effort_selection.clone();
+                                        handle_turn_start_result(result, &mut active_turn_id);
                                         let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
                                     }
                                     Err(error) => {
@@ -2149,7 +2143,8 @@ async fn run_worker_inner(
                                 }
                             }
                             Some(OperationCommand::InterruptTurn) => {
-                                if let (Some(turn_id), Some(active_session_id)) = (active_turn_id, session_id)
+                                if let (Some(turn_id), Some(active_session_id)) =
+                                    (active_turn_id, session_id)
                                     && let Err(error) = client
                                         .turn_interrupt(TurnInterruptParams {
                                             session_id: active_session_id,
@@ -2157,11 +2152,11 @@ async fn run_worker_inner(
                                             reason: Some("user requested interrupt".to_string()),
                                         })
                                         .await
-                                    {
+                                {
                                     let _ = event_tx.send(WorkerEvent::InterruptFailed {
                                         message: error.to_string(),
                                     });
-                                    }
+                                }
                             }
                             Some(OperationCommand::RunBtwQuestion { question }) => {
                                 let Some(active_session_id) = session_id else {
@@ -2747,14 +2742,14 @@ async fn run_worker_inner(
                                         }
                                     }
                                     "context/usageUpdated" => {
-                                        if let ServerEvent::ContextUsageUpdated(payload) = event {
-                                            if session_id.is_some_and(|id| id == payload.session_id) {
-                                                last_query_total_tokens =
-                                                    payload.occupancy.total_tokens as usize;
-                                                let _ = event_tx.send(WorkerEvent::ContextUsageUpdated {
-                                                    occupancy: payload.occupancy,
-                                                });
-                                            }
+                                        if let ServerEvent::ContextUsageUpdated(payload) = event
+                                            && session_id.is_some_and(|id| id == payload.session_id)
+                                        {
+                                            last_query_total_tokens =
+                                                payload.occupancy.total_tokens as usize;
+                                            let _ = event_tx.send(WorkerEvent::ContextUsageUpdated {
+                                                occupancy: payload.occupancy,
+                                            });
                                         }
                                     }
                                     "turn/failed" => {

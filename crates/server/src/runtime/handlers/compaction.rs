@@ -1,5 +1,15 @@
 use super::super::*;
+use std::panic::AssertUnwindSafe;
+
+use devo_protocol::TurnFailedPayload;
 use devo_protocol::approx_tokens_from_byte_count;
+use futures::FutureExt;
+
+enum CompactionTurnOutcome {
+    Skipped,
+    Failed { message: String },
+    Canceled,
+}
 
 impl ServerRuntime {
     pub(crate) async fn handle_session_compact(
@@ -18,18 +28,7 @@ impl ServerRuntime {
             }
         };
 
-        let session_handle = match self.session(params.session_id).await {
-            Some(session) => session,
-            None => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::SessionNotFound,
-                    "session does not exist",
-                );
-            }
-        };
-
-        let Some(summary) = session_handle.summary().await else {
+        let Some(session_handle) = self.session(params.session_id).await else {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::SessionNotFound,
@@ -37,25 +36,210 @@ impl ServerRuntime {
             );
         };
 
+        let _state_change_guard = session_handle.lock_state_change().await;
+        let Some(reservation) = session_handle.turn_reservation_snapshot().await else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session does not exist",
+            );
+        };
+
+        let requested_model = session_model_selection(&reservation.summary);
+        let requested_reasoning_effort_selection =
+            reservation.summary.reasoning_effort_selection.clone();
+        let turn_config = reservation
+            .runtime_context
+            .resolve_turn_config(requested_model, requested_reasoning_effort_selection);
+        let resolved_request = turn_config
+            .model
+            .resolve_reasoning_effort_selection(turn_config.reasoning_effort_selection.as_deref());
+        let request_model = turn_config.provider_request_model(&resolved_request.request_model);
+        let now = Utc::now();
+        let turn = TurnMetadata {
+            turn_id: TurnId::new(),
+            session_id: params.session_id,
+            sequence: reservation
+                .latest_turn
+                .as_ref()
+                .map_or(1, |turn| turn.sequence + 1),
+            status: TurnStatus::Running,
+            kind: devo_core::TurnKind::ManualCompaction,
+            model: turn_config.model.slug.clone(),
+            model_binding_id: turn_config.model_binding_id.clone(),
+            reasoning_effort_selection: turn_config.reasoning_effort_selection.clone(),
+            reasoning_effort: resolved_request.effective_reasoning_effort,
+            request_model,
+            request_thinking: resolved_request.request_thinking,
+            started_at: now,
+            completed_at: None,
+            usage: None,
+            stop_reason: None,
+            failure_reason: None,
+        };
+
+        if !session_handle
+            .try_begin_active_turn(turn.clone(), turn_config)
+            .await
+            .unwrap_or(false)
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::TurnAlreadyRunning,
+                "cannot compact while a turn is active or queued",
+            );
+        }
+
+        if let Some(persistence) = session_handle.turn_persistence_snapshot().await
+            && persistence.record.is_some()
+            && let Err(error) = self
+                .persist_turn_line_deduped(params.session_id, &turn)
+                .await
+        {
+            let _ = session_handle
+                .clear_active_turn_if_matches(turn.turn_id)
+                .await;
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                format!("failed to persist compaction turn start: {error}"),
+            );
+        }
+
         let runtime = Arc::clone(self);
-        tokio::spawn(async move {
-            if let Err(panic) =
-                AssertUnwindSafe(runtime.run_session_compaction(params.session_id, session_handle))
-                    .catch_unwind()
-                    .await
-            {
-                tracing::error!(
-                    session_id = %params.session_id,
-                    panic = ?panic,
-                    "session compaction task panicked"
-                );
-            }
-        });
-        tracing::info!(session_id = %params.session_id, "accepted async session compaction request");
+        let session_id = params.session_id;
+        let turn_for_task = turn.clone();
+        let session_handle_for_task = session_handle.clone();
+        self.spawn_active_turn_task(
+            session_id,
+            turn.clone(),
+            /*connection_id*/ None,
+            async move {
+                let runtime_for_panic = Arc::clone(&runtime);
+                let session_handle_for_panic = session_handle_for_task.clone();
+                let turn_for_panic = turn_for_task.clone();
+                if let Err(panic) = AssertUnwindSafe(runtime.run_session_compaction(
+                    session_id,
+                    session_handle_for_task,
+                    turn_for_task,
+                ))
+                .catch_unwind()
+                .await
+                {
+                    tracing::error!(
+                        session_id = %session_id,
+                        turn_id = %turn_for_panic.turn_id,
+                        panic = ?panic,
+                        "session compaction task panicked"
+                    );
+                    runtime_for_panic
+                        .finalize_manual_compaction_turn(
+                            &session_handle_for_panic,
+                            session_id,
+                            turn_for_panic.clone(),
+                            CompactionTurnOutcome::Failed {
+                                message: "compaction failed: panicked".to_string(),
+                            },
+                        )
+                        .await;
+                    // If the panic happened after claim, finalize is a no-op — still
+                    // recover so the session is not left without terminal events.
+                    if runtime_for_panic
+                        .recent_terminal_turn_status(turn_for_panic.turn_id)
+                        .await
+                        .is_none()
+                    {
+                        let _ = runtime_for_panic
+                            .recover_orphaned_manual_compaction_interrupt(
+                                &session_handle_for_panic,
+                                session_id,
+                                turn_for_panic.turn_id,
+                            )
+                            .await;
+                        if runtime_for_panic
+                            .recent_terminal_turn_status(turn_for_panic.turn_id)
+                            .await
+                            .is_none()
+                        {
+                            // Actor claim may have cleared runtime metadata too; force
+                            // a Failed terminal so admission reopens.
+                            let mut failed = turn_for_panic;
+                            failed.status = TurnStatus::Failed;
+                            failed.completed_at = Some(Utc::now());
+                            session_handle_for_panic
+                                .set_session_idle(Some(failed.clone()))
+                                .await;
+                            runtime_for_panic
+                                .clear_active_turn_runtime_handles(session_id)
+                                .await;
+                            runtime_for_panic
+                                .broadcast_event(ServerEvent::SessionCompactionFailed(
+                                    SessionCompactionFailedPayload {
+                                        session_id,
+                                        message: "compaction failed: panicked".to_string(),
+                                    },
+                                ))
+                                .await;
+                            runtime_for_panic
+                                .broadcast_event(ServerEvent::TurnFailed(TurnFailedPayload {
+                                    session_id,
+                                    turn: failed.clone(),
+                                    error: None,
+                                }))
+                                .await;
+                            runtime_for_panic
+                                .broadcast_event(ServerEvent::TurnCompleted(TurnEventPayload {
+                                    session_id,
+                                    turn: failed.clone(),
+                                }))
+                                .await;
+                            runtime_for_panic
+                                .broadcast_event(ServerEvent::SessionStatusChanged(
+                                    SessionStatusChangedPayload {
+                                        session_id,
+                                        status: SessionRuntimeStatus::Idle,
+                                    },
+                                ))
+                                .await;
+                            runtime_for_panic
+                                .record_terminal_turn_status(
+                                    failed.turn_id,
+                                    TerminalTurnSnapshot::from_turn(&failed),
+                                )
+                                .await;
+                        }
+                    }
+                }
+            },
+        )
+        .await;
+
+        tracing::info!(
+            session_id = %session_id,
+            turn_id = %turn.turn_id,
+            sequence = turn.sequence,
+            "started manual compaction turn"
+        );
+        self.broadcast_event(ServerEvent::SessionStatusChanged(
+            SessionStatusChangedPayload {
+                session_id,
+                status: SessionRuntimeStatus::ActiveTurn,
+            },
+        ))
+        .await;
+        self.broadcast_event(ServerEvent::TurnStarted(TurnEventPayload {
+            session_id,
+            turn: turn.clone(),
+        }))
+        .await;
 
         serde_json::to_value(SuccessResponse {
             id: request_id,
-            result: SessionCompactResult { session: summary },
+            result: TurnStartResult::Started {
+                turn_id: turn.turn_id,
+                status: turn.status.clone(),
+                accepted_at: now,
+            },
         })
         .expect("serialize session/compact response")
     }
@@ -64,9 +248,23 @@ impl ServerRuntime {
         self: Arc<Self>,
         session_id: SessionId,
         session_handle: crate::runtime::session_actor::SessionHandle,
+        turn: TurnMetadata,
     ) {
-        tracing::info!(session_id = %session_id, "session compaction task started");
+        tracing::info!(
+            session_id = %session_id,
+            turn_id = %turn.turn_id,
+            "session compaction task started"
+        );
         let Some(started_summary) = session_handle.summary().await else {
+            self.finalize_manual_compaction_turn(
+                &session_handle,
+                session_id,
+                turn,
+                CompactionTurnOutcome::Failed {
+                    message: "compaction failed: session unavailable".to_string(),
+                },
+            )
+            .await;
             return;
         };
         self.broadcast_event(ServerEvent::SessionCompactionStarted(SessionEventPayload {
@@ -83,6 +281,12 @@ impl ServerRuntime {
         )
         .await;
 
+        let cancel_token = self
+            .active_turns
+            .cancel_token(session_id)
+            .await
+            .unwrap_or_else(CancellationToken::new);
+
         // Compaction computes a replacement from a history snapshot. Keep the
         // session mutation gate for the whole summarize-and-apply operation so
         // rollback, turn admission, and metadata edits cannot make that
@@ -91,12 +295,15 @@ impl ServerRuntime {
         let result = {
             let Some(runtime_session) = session_handle.export_runtime_session().await else {
                 tracing::warn!(session_id = %session_id, "session compaction failed: session unavailable");
-                self.broadcast_event(ServerEvent::SessionCompactionFailed(
-                    SessionCompactionFailedPayload {
-                        session_id,
+                drop(state_change_guard);
+                self.finalize_manual_compaction_turn(
+                    &session_handle,
+                    session_id,
+                    turn,
+                    CompactionTurnOutcome::Failed {
                         message: "compaction failed: session unavailable".to_string(),
                     },
-                ))
+                )
                 .await;
                 return;
             };
@@ -132,6 +339,7 @@ impl ServerRuntime {
 
             tracing::debug!(
                 session_id = %session_id,
+                turn_id = %turn.turn_id,
                 model = %model_slug,
                 request_model = %request_model,
                 item_count = items.len(),
@@ -145,7 +353,7 @@ impl ServerRuntime {
                     .runtime_context
                     .provider_for_route(turn_config.provider_route.clone()),
                 session_id,
-                None,
+                Some(turn.turn_id),
                 devo_protocol::canonical::usage::UsagePurpose::Compaction,
             );
             let summarizer = DefaultHistorySummarizer::with_models(
@@ -162,15 +370,76 @@ impl ServerRuntime {
                 kind: CompactionKind::Proactive,
             };
 
-            compact_history(&items, &token_info, &summarizer, &config).await
+            // Drop the core_session lock before the long summarizer await.
+            drop(core_session);
+            drop(runtime_session);
+
+            compact_history(
+                &items,
+                &token_info,
+                &summarizer,
+                &config,
+                Some(&cancel_token),
+            )
+            .await
         };
 
+        // Summarize is done: detach abort so interrupt cannot kill mid-terminalize.
+        // Cancel token still works for any remaining cooperative checks.
+        self.detach_active_turn_abort(session_id).await;
+
         match result {
+            Err(devo_core::history::compaction::CompactionError::Canceled) => {
+                drop(state_change_guard);
+                tracing::info!(
+                    session_id = %session_id,
+                    turn_id = %turn.turn_id,
+                    "session compaction canceled"
+                );
+                self.finalize_manual_compaction_turn(
+                    &session_handle,
+                    session_id,
+                    turn,
+                    CompactionTurnOutcome::Canceled,
+                )
+                .await;
+            }
             Ok(CompactAction::Replaced(compacted_items)) => {
+                if cancel_token.is_cancelled() {
+                    drop(state_change_guard);
+                    self.finalize_manual_compaction_turn(
+                        &session_handle,
+                        session_id,
+                        turn,
+                        CompactionTurnOutcome::Canceled,
+                    )
+                    .await;
+                    return;
+                }
                 let Some(mut runtime_session) = session_handle.export_runtime_session().await
                 else {
+                    drop(state_change_guard);
+                    self.finalize_manual_compaction_turn(
+                        &session_handle,
+                        session_id,
+                        turn,
+                        CompactionTurnOutcome::Failed {
+                            message: "compaction failed: session unavailable".to_string(),
+                        },
+                    )
+                    .await;
                     return;
                 };
+                // Claim terminalization before mutating history so an interrupt that
+                // already took `active_turn` cannot race with replace_state.
+                if session_handle
+                    .clear_active_turn_if_matches(turn.turn_id)
+                    .await
+                    != Some(true)
+                {
+                    drop(state_change_guard);
+                    return;
+                }
                 let preserved_item_ids = Self::preserved_item_ids_from_compacted(
                     &runtime_session.persisted_turn_items,
                     &compacted_items,
@@ -271,146 +540,113 @@ impl ServerRuntime {
                     }
                 }
 
-                if let Some(turn_id) = runtime_session
-                    .latest_turn
-                    .as_ref()
-                    .map(|t| t.turn_id)
-                    .or_else(|| runtime_session.active_turn.as_ref().map(|t| t.turn_id))
-                {
-                    let item_id = devo_core::ItemId::new();
-                    let item_seq = runtime_session.next_item_seq;
-                    runtime_session.loaded_item_count += 1;
-                    runtime_session.next_item_seq += 1;
+                let turn_id = turn.turn_id;
+                let item_id = devo_core::ItemId::new();
+                let item_seq = runtime_session.next_item_seq;
+                runtime_session.loaded_item_count += 1;
+                runtime_session.next_item_seq += 1;
 
-                    let payload = serde_json::json!({ "title": "Context Compaction" });
-                    self.broadcast_event(ServerEvent::ItemStarted(ItemEventPayload {
-                        context: EventContext {
-                            session_id,
-                            turn_id: Some(turn_id),
-                            item_id: Some(item_id),
-                            seq: item_seq,
-                            item_seq: Some(item_seq),
-                        },
-                        item: ItemEnvelope {
-                            item_id,
-                            item_kind: ItemKind::ContextCompaction,
-                            payload: payload.clone(),
-                        },
-                    }))
-                    .await;
+                let payload = serde_json::json!({ "title": "Context Compaction" });
+                self.broadcast_event(ServerEvent::ItemStarted(ItemEventPayload {
+                    context: EventContext {
+                        session_id,
+                        turn_id: Some(turn_id),
+                        item_id: Some(item_id),
+                        seq: item_seq,
+                        item_seq: Some(item_seq),
+                    },
+                    item: ItemEnvelope {
+                        item_id,
+                        item_kind: ItemKind::ContextCompaction,
+                        payload: payload.clone(),
+                    },
+                }))
+                .await;
 
-                    self.broadcast_event(ServerEvent::ItemCompleted(ItemEventPayload {
-                        context: EventContext {
-                            session_id,
-                            turn_id: Some(turn_id),
-                            item_id: Some(item_id),
-                            seq: item_seq,
-                            item_seq: Some(item_seq),
-                        },
-                        item: ItemEnvelope {
-                            item_id,
-                            item_kind: ItemKind::ContextCompaction,
-                            payload,
-                        },
-                    }))
-                    .await;
+                self.broadcast_event(ServerEvent::ItemCompleted(ItemEventPayload {
+                    context: EventContext {
+                        session_id,
+                        turn_id: Some(turn_id),
+                        item_id: Some(item_id),
+                        seq: item_seq,
+                        item_seq: Some(item_seq),
+                    },
+                    item: ItemEnvelope {
+                        item_id,
+                        item_kind: ItemKind::ContextCompaction,
+                        payload,
+                    },
+                }))
+                .await;
 
-                    let summary_turn_item =
-                        Self::summary_turn_item_from_compacted(&compacted_items);
-                    let compact_summary = match &summary_turn_item {
-                        TurnItem::ContextCompaction(TextItem { text }) => text.clone(),
-                        _ => String::new(),
-                    };
-                    if let Some(record) = runtime_session.record.clone() {
-                        runtime_session.latest_compaction_snapshot =
-                            Some(devo_core::CompactionSnapshotLine {
-                                timestamp: Utc::now(),
-                                session_id,
-                                turn_id,
-                                summary_item_id: item_id,
-                                preserved_item_ids: preserved_item_ids.clone(),
-                                context_occupancy: runtime_session
-                                    .summary
-                                    .last_context_occupancy
-                                    .clone(),
-                            });
-                        runtime_session.persisted_turn_items.push(
-                            crate::execution::PersistedTurnItem {
-                                turn_id,
-                                turn_kind: devo_core::TurnKind::ManualCompaction,
-                                item_id,
-                                turn_item: summary_turn_item.clone(),
-                            },
-                        );
-
-                        let item_record = crate::persistence::build_item_record(
+                let summary_turn_item = Self::summary_turn_item_from_compacted(&compacted_items);
+                let compact_summary = match &summary_turn_item {
+                    TurnItem::ContextCompaction(TextItem { text }) => text.clone(),
+                    _ => String::new(),
+                };
+                if let Some(record) = runtime_session.record.clone() {
+                    runtime_session.latest_compaction_snapshot =
+                        Some(devo_core::CompactionSnapshotLine {
+                            timestamp: Utc::now(),
                             session_id,
                             turn_id,
+                            summary_item_id: item_id,
+                            preserved_item_ids: preserved_item_ids.clone(),
+                            context_occupancy: runtime_session
+                                .summary
+                                .last_context_occupancy
+                                .clone(),
+                        });
+                    runtime_session.persisted_turn_items.push(
+                        crate::execution::PersistedTurnItem {
+                            turn_id,
+                            turn_kind: devo_core::TurnKind::ManualCompaction,
                             item_id,
-                            item_seq,
-                            summary_turn_item,
-                            None,
-                            None,
+                            turn_item: summary_turn_item.clone(),
+                        },
+                    );
+
+                    let item_record = crate::persistence::build_item_record(
+                        session_id,
+                        turn_id,
+                        item_id,
+                        item_seq,
+                        summary_turn_item,
+                        None,
+                        None,
+                    );
+                    if let Err(error) = self.rollout_store.append_item(&record, item_record) {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %error,
+                            "failed to persist compaction summary item"
                         );
-                        if let Err(error) = self.rollout_store.append_item(&record, item_record) {
-                            tracing::warn!(
-                                session_id = %session_id,
-                                error = %error,
-                                "failed to persist compaction summary item"
-                            );
-                        }
-                        if let Err(error) = self.rollout_store.append_compaction_snapshot(
-                            &record,
-                            runtime_session
-                                .latest_compaction_snapshot
-                                .clone()
-                                .expect("compaction snapshot should be set"),
-                        ) {
+                    }
+                    if let Some(snapshot) = runtime_session.latest_compaction_snapshot.clone() {
+                        if let Err(error) = self
+                            .rollout_store
+                            .append_compaction_snapshot(&record, snapshot)
+                        {
                             tracing::warn!(
                                 session_id = %session_id,
                                 error = %error,
                                 "failed to persist compaction snapshot"
                             );
                         }
+                    } else {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            "compaction snapshot missing after summary item write"
+                        );
                     }
-                    let summary = runtime_session.summary.clone();
-                    session_handle
-                        .replace_state(
-                            crate::runtime::session_actor::SessionActorState::from_runtime_session(
-                                runtime_session,
-                            ),
-                        )
-                        .await;
-                    drop(state_change_guard);
-                    self.run_session_hook(
-                        session_id,
-                        devo_core::HookEvent::PostCompact,
-                        serde_json::Map::from_iter([
-                            ("trigger".to_string(), serde_json::json!("manual")),
-                            (
-                                "compact_summary".to_string(),
-                                serde_json::Value::String(compact_summary),
-                            ),
-                        ]),
-                    )
-                    .await;
-                    tracing::info!(session_id = %session_id, "session compaction completed with replacement");
-                    if let Some(occupancy) = summary.last_context_occupancy.clone() {
-                        self.broadcast_event(ServerEvent::ContextUsageUpdated(
-                            crate::ContextUsageUpdatedPayload {
-                                session_id,
-                                occupancy,
-                            },
-                        ))
-                        .await;
-                    }
-                    self.broadcast_event(ServerEvent::SessionCompactionCompleted(
-                        SessionEventPayload { session: summary },
-                    ))
-                    .await;
-                    return;
                 }
 
+                let mut completed_turn = turn.clone();
+                completed_turn.status = TurnStatus::Completed;
+                completed_turn.completed_at = Some(Utc::now());
+                runtime_session.active_turn = None;
+                runtime_session.latest_turn = Some(completed_turn.clone());
+                runtime_session.summary.status = SessionRuntimeStatus::Idle;
                 let summary = runtime_session.summary.clone();
                 session_handle
                     .replace_state(
@@ -420,7 +656,37 @@ impl ServerRuntime {
                     )
                     .await;
                 drop(state_change_guard);
-                tracing::info!(session_id = %session_id, "session compaction completed with replacement");
+                self.clear_active_turn_runtime_handles(session_id).await;
+                if let Some(persistence) = session_handle.turn_persistence_snapshot().await
+                    && persistence.record.is_some()
+                    && let Err(error) = self
+                        .persist_turn_line_deduped(session_id, &completed_turn)
+                        .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        turn_id = %completed_turn.turn_id,
+                        error = %error,
+                        "failed to persist compaction turn completion"
+                    );
+                }
+                self.run_session_hook(
+                    session_id,
+                    devo_core::HookEvent::PostCompact,
+                    serde_json::Map::from_iter([
+                        ("trigger".to_string(), serde_json::json!("manual")),
+                        (
+                            "compact_summary".to_string(),
+                            serde_json::Value::String(compact_summary),
+                        ),
+                    ]),
+                )
+                .await;
+                tracing::info!(
+                    session_id = %session_id,
+                    turn_id = %completed_turn.turn_id,
+                    "session compaction completed with replacement"
+                );
                 if let Some(occupancy) = summary.last_context_occupancy.clone() {
                     self.broadcast_event(ServerEvent::ContextUsageUpdated(
                         crate::ContextUsageUpdatedPayload {
@@ -434,30 +700,201 @@ impl ServerRuntime {
                     SessionEventPayload { session: summary },
                 ))
                 .await;
+                self.broadcast_event(ServerEvent::TurnCompleted(TurnEventPayload {
+                    session_id,
+                    turn: completed_turn.clone(),
+                }))
+                .await;
+                self.broadcast_event(ServerEvent::SessionStatusChanged(
+                    SessionStatusChangedPayload {
+                        session_id,
+                        status: SessionRuntimeStatus::Idle,
+                    },
+                ))
+                .await;
+                self.record_terminal_turn_status(
+                    completed_turn.turn_id,
+                    TerminalTurnSnapshot::from_turn(&completed_turn),
+                )
+                .await;
             }
             Ok(CompactAction::Skipped) => {
-                let Some(summary) = session_handle.summary().await else {
-                    return;
-                };
                 drop(state_change_guard);
-                tracing::info!(session_id = %session_id, "session compaction completed without replacement");
-                self.broadcast_event(ServerEvent::SessionCompactionCompleted(
-                    SessionEventPayload { session: summary },
-                ))
+                tracing::info!(
+                    session_id = %session_id,
+                    turn_id = %turn.turn_id,
+                    "session compaction completed without replacement"
+                );
+                self.finalize_manual_compaction_turn(
+                    &session_handle,
+                    session_id,
+                    turn,
+                    CompactionTurnOutcome::Skipped,
+                )
                 .await;
             }
             Err(error) => {
                 drop(state_change_guard);
-                tracing::warn!(session_id = %session_id, error = %error, "session compaction failed");
-                self.broadcast_event(ServerEvent::SessionCompactionFailed(
-                    SessionCompactionFailedPayload {
-                        session_id,
+                tracing::warn!(
+                    session_id = %session_id,
+                    turn_id = %turn.turn_id,
+                    error = %error,
+                    "session compaction failed"
+                );
+                self.finalize_manual_compaction_turn(
+                    &session_handle,
+                    session_id,
+                    turn,
+                    CompactionTurnOutcome::Failed {
                         message: format!("compaction failed: {error}"),
                     },
-                ))
+                )
                 .await;
             }
         }
+    }
+
+    /// Terminalize a manual compaction turn when the task still owns `active_turn`.
+    ///
+    /// If interrupt already claimed the turn via `interrupt_active_turn`, this is a
+    /// no-op so we do not double-emit terminal events.
+    async fn finalize_manual_compaction_turn(
+        self: &Arc<Self>,
+        session_handle: &crate::runtime::session_actor::SessionHandle,
+        session_id: SessionId,
+        mut turn: TurnMetadata,
+        outcome: CompactionTurnOutcome,
+    ) {
+        // Ensure interrupt abort cannot drop us between claim and event emit.
+        self.detach_active_turn_abort(session_id).await;
+
+        let now = Utc::now();
+        turn.completed_at = Some(now);
+        turn.status = match &outcome {
+            CompactionTurnOutcome::Skipped => TurnStatus::Completed,
+            CompactionTurnOutcome::Failed { .. } => TurnStatus::Failed,
+            CompactionTurnOutcome::Canceled => TurnStatus::Interrupted,
+        };
+
+        // Atomic claim: interrupt may have already taken `active_turn`.
+        if session_handle
+            .clear_active_turn_if_matches(turn.turn_id)
+            .await
+            != Some(true)
+        {
+            return;
+        }
+        session_handle.set_session_idle(Some(turn.clone())).await;
+        self.clear_active_turn_runtime_handles(session_id).await;
+
+        if let Some(persistence) = session_handle.turn_persistence_snapshot().await
+            && persistence.record.is_some()
+            && let Err(error) = self.persist_turn_line_deduped(session_id, &turn).await
+        {
+            tracing::warn!(
+                session_id = %session_id,
+                turn_id = %turn.turn_id,
+                error = %error,
+                "failed to persist compaction turn terminal line"
+            );
+        }
+
+        match outcome {
+            CompactionTurnOutcome::Skipped => {
+                let Some(summary) = session_handle.summary().await else {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        turn_id = %turn.turn_id,
+                        "compaction skipped but session summary unavailable"
+                    );
+                    self.broadcast_event(ServerEvent::TurnCompleted(TurnEventPayload {
+                        session_id,
+                        turn: turn.clone(),
+                    }))
+                    .await;
+                    self.broadcast_event(ServerEvent::SessionStatusChanged(
+                        SessionStatusChangedPayload {
+                            session_id,
+                            status: SessionRuntimeStatus::Idle,
+                        },
+                    ))
+                    .await;
+                    self.record_terminal_turn_status(
+                        turn.turn_id,
+                        TerminalTurnSnapshot::from_turn(&turn),
+                    )
+                    .await;
+                    return;
+                };
+                if let Some(occupancy) = summary.last_context_occupancy.clone() {
+                    self.broadcast_event(ServerEvent::ContextUsageUpdated(
+                        crate::ContextUsageUpdatedPayload {
+                            session_id,
+                            occupancy,
+                        },
+                    ))
+                    .await;
+                }
+                self.broadcast_event(ServerEvent::SessionCompactionCompleted(
+                    SessionEventPayload { session: summary },
+                ))
+                .await;
+                self.broadcast_event(ServerEvent::TurnCompleted(TurnEventPayload {
+                    session_id,
+                    turn: turn.clone(),
+                }))
+                .await;
+            }
+            CompactionTurnOutcome::Failed { message } => {
+                self.broadcast_event(ServerEvent::SessionCompactionFailed(
+                    SessionCompactionFailedPayload {
+                        session_id,
+                        message,
+                    },
+                ))
+                .await;
+                self.broadcast_event(ServerEvent::TurnFailed(TurnFailedPayload {
+                    session_id,
+                    turn: turn.clone(),
+                    error: None,
+                }))
+                .await;
+                self.broadcast_event(ServerEvent::TurnCompleted(TurnEventPayload {
+                    session_id,
+                    turn: turn.clone(),
+                }))
+                .await;
+            }
+            CompactionTurnOutcome::Canceled => {
+                self.broadcast_event(ServerEvent::SessionCompactionFailed(
+                    SessionCompactionFailedPayload {
+                        session_id,
+                        message: "compaction canceled".to_string(),
+                    },
+                ))
+                .await;
+                self.broadcast_event(ServerEvent::TurnInterrupted(TurnEventPayload {
+                    session_id,
+                    turn: turn.clone(),
+                }))
+                .await;
+                self.broadcast_event(ServerEvent::TurnCompleted(TurnEventPayload {
+                    session_id,
+                    turn: turn.clone(),
+                }))
+                .await;
+            }
+        }
+
+        self.broadcast_event(ServerEvent::SessionStatusChanged(
+            SessionStatusChangedPayload {
+                session_id,
+                status: SessionRuntimeStatus::Idle,
+            },
+        ))
+        .await;
+        self.record_terminal_turn_status(turn.turn_id, TerminalTurnSnapshot::from_turn(&turn))
+            .await;
     }
 
     fn preserved_item_ids_from_compacted(

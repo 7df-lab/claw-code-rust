@@ -293,11 +293,6 @@ pub struct SessionCompactParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct SessionCompactResult {
-    pub session: SessionMetadata,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct SessionForkParams {
     pub session_id: SessionId,
     pub title: Option<String>,

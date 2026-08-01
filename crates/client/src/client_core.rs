@@ -475,8 +475,15 @@ impl ServerClientCore {
     pub(crate) async fn session_compact(
         &mut self,
         params: SessionCompactParams,
-    ) -> Result<SessionCompactResult> {
+    ) -> Result<TurnStartResult> {
         self.request_devo("session/compact", params).await
+    }
+
+    pub(crate) async fn session_cancel(
+        &mut self,
+        params: AcpCancelParams,
+    ) -> Result<AcpEmptyResult> {
+        self.request(ACP_SESSION_CANCEL_METHOD, params).await
     }
 
     pub(crate) async fn goal_create(

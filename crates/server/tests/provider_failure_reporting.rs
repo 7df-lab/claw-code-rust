@@ -173,6 +173,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
                 | ServerEvent::TurnPlanUpdated(_)
                 | ServerEvent::TurnDiffUpdated(_)
                 | ServerEvent::TurnUsageUpdated(_)
+                | ServerEvent::ContextUsageUpdated(_)
                 | ServerEvent::ItemStarted(_)
                 | ServerEvent::ItemCompleted(_)
                 | ServerEvent::ItemDelta { .. }

@@ -1376,11 +1376,15 @@ async fn session_compact_runs_asynchronously_and_emits_lifecycle_events() -> Res
         .await
         .context("session/compact response")?;
     let compact_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionCompactResult>,
+        devo_server::SuccessResponse<devo_server::TurnStartResult>,
     >(compact_response)?
     .result;
-    assert_eq!(compact_result.session.session_id, session_id);
+    match compact_result {
+        devo_server::TurnStartResult::Started { .. } => {}
+        other => panic!("expected TurnStartResult::Started, got {other:?}"),
+    };
 
+    wait_for_notification_method(&mut notifications_rx, "turn/started").await?;
     wait_for_notification_method(&mut notifications_rx, "session/compaction/started").await?;
     wait_for_notification_method(&mut notifications_rx, "session/compaction/completed").await?;
     Ok(())

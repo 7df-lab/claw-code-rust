@@ -1,14 +1,12 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use chrono::Utc;
-use futures::FutureExt;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -71,7 +69,6 @@ use crate::RequestUserInputResponse;
 use crate::ServerEvent;
 use crate::ServerRequestResolvedPayload;
 use crate::SessionCompactParams;
-use crate::SessionCompactResult;
 use crate::SessionCompactionFailedPayload;
 use crate::SessionEventPayload;
 use crate::SessionForkParams;
@@ -254,14 +251,14 @@ pub(crate) enum TurnInputMode {
 const TERMINAL_TURN_STATUS_LIMIT: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TerminalTurnSnapshot {
-    status: TurnStatus,
-    stop_reason: Option<devo_core::StopReason>,
-    failure_reason: Option<devo_protocol::TurnFailureReason>,
+pub(crate) struct TerminalTurnSnapshot {
+    pub(crate) status: TurnStatus,
+    pub(crate) stop_reason: Option<devo_core::StopReason>,
+    pub(crate) failure_reason: Option<devo_protocol::TurnFailureReason>,
 }
 
 impl TerminalTurnSnapshot {
-    fn from_turn(turn: &TurnMetadata) -> Self {
+    pub(crate) fn from_turn(turn: &TurnMetadata) -> Self {
         Self {
             status: turn.status.clone(),
             stop_reason: turn.stop_reason.clone(),

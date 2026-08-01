@@ -200,7 +200,6 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<SessionMetadataUpdateParams>(&cfg, &mut output);
     push_decl::<SessionMetadataUpdateResult>(&cfg, &mut output);
     push_decl::<SessionCompactParams>(&cfg, &mut output);
-    push_decl::<SessionCompactResult>(&cfg, &mut output);
     push_decl::<SessionForkParams>(&cfg, &mut output);
     push_decl::<SessionForkResult>(&cfg, &mut output);
     push_decl::<SessionRollbackMode>(&cfg, &mut output);
@@ -652,7 +651,6 @@ fn register_devo_protocol_schemas(
     schema::<SessionRollbackParams>(schemas);
     schema::<SessionRollbackResult>(schemas);
     schema::<SessionCompactParams>(schemas);
-    schema::<SessionCompactResult>(schemas);
     schema::<SkillListParams>(schemas);
     schema::<SkillListResult>(schemas);
     schema::<SkillChangedParams>(schemas);
@@ -783,10 +781,7 @@ fn register_devo_protocol_schemas(
         methods,
         ClientMethod::SessionRollback,
     );
-    devo_method::<SessionCompactParams, SessionCompactResult>(
-        methods,
-        ClientMethod::SessionCompact,
-    );
+    devo_method::<SessionCompactParams, TurnStartResult>(methods, ClientMethod::SessionCompact);
     devo_method::<SkillListParams, SkillListResult>(methods, ClientMethod::SkillsList);
     devo_method::<SkillChangedParams, SkillChangedResult>(methods, ClientMethod::SkillsChanged);
     devo_method::<SkillSetEnabledParams, SkillSetEnabledResult>(

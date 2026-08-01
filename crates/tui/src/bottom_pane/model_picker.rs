@@ -238,8 +238,7 @@ impl ModelPickerView {
                 })
                 .max()
                 .unwrap_or(0)
-                .min(16)
-                .max(8)
+                .clamp(8, 16)
         } else {
             0
         };

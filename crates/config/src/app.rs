@@ -43,6 +43,10 @@ use crate::upsert_user_auth_api_key;
 use crate::write_atomic;
 use crate::write_provider_config;
 
+mod mcp_store;
+
+pub use mcp_store::mcp_server_record_for_cli;
+
 /// Stores the fully normalized runtime configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -564,7 +568,9 @@ fn provider_section_from_value(
         })
 }
 
-fn ensure_toml_table(value: &mut toml::Value) -> &mut toml::map::Map<String, toml::Value> {
+pub(crate) fn ensure_toml_table(
+    value: &mut toml::Value,
+) -> &mut toml::map::Map<String, toml::Value> {
     if !value.is_table() {
         *value = toml::Value::Table(Default::default());
     }
@@ -656,6 +662,7 @@ impl AppConfigLoader for FileSystemAppConfigLoader {
                     message: source.to_string(),
                 })?;
         config.provider = provider_config;
+        config.mcp.ensure_bundled_servers();
         validate_app_config(&config)?;
         Ok(config)
     }

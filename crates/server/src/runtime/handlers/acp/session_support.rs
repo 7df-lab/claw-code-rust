@@ -62,7 +62,10 @@ impl ServerRuntime {
                 config.mcp_oauth_credentials_store.unwrap_or_default(),
             )
         };
-        let mcp_manager = Arc::new(RmcpMcpManager::new(mcp_config, oauth_store_mode));
+        let mcp_manager = Arc::new(RmcpMcpManager::new(
+            mcp_config.with_code_search_workspace_cwd(cwd.to_path_buf()),
+            oauth_store_mode,
+        ));
         let registry =
             devo_core::tools::handlers::build_registry_from_plan_with_mcp(&tool_plan, mcp_manager)
                 .await;

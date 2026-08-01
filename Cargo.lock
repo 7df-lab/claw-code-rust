@@ -1775,7 +1775,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "devo-code-search"
+name = "devo-code-search-mcp"
 version = "0.1.32"
 dependencies = [
  "anyhow",
@@ -1792,11 +1792,13 @@ dependencies = [
  "pretty_assertions",
  "rayon",
  "reqwest 0.13.4",
+ "rmcp",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-c",
@@ -1850,7 +1852,6 @@ dependencies = [
  "base64 0.22.1",
  "bm25",
  "chrono",
- "devo-code-search",
  "devo-config",
  "devo-execpolicy",
  "devo-network-proxy",
@@ -2111,7 +2112,6 @@ dependencies = [
  "chrono",
  "clap",
  "devo-client",
- "devo-code-search",
  "devo-core",
  "devo-execpolicy",
  "devo-file-search",

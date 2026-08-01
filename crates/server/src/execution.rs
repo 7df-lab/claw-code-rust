@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
 use devo_core::AgentsMdConfig;
+use devo_core::McpManager;
 use devo_core::ModelCatalog;
 use devo_core::SessionConfig;
 use devo_core::SessionRecord;
@@ -129,6 +130,14 @@ pub struct ServerRuntimeDependencies {
     pub(crate) process_context: Arc<SessionRuntimeContext>,
 }
 
+/// Builds an empty MCP manager for tests and bootstrap paths without servers.
+pub fn empty_mcp_manager() -> Arc<dyn McpManager> {
+    Arc::new(devo_mcp::manager::RmcpMcpManager::new(
+        devo_core::McpConfig::default(),
+        Default::default(),
+    ))
+}
+
 impl ServerRuntimeDependencies {
     /// Creates a new bundle of runtime dependencies for the transport server.
     /// TODO: Should fix the clippy::too_many_arguments, decrease the arguments count.
@@ -137,6 +146,7 @@ impl ServerRuntimeDependencies {
         provider: Arc<dyn ModelProviderSDK>,
         provider_router: Arc<dyn ProviderRouter>,
         registry: Arc<ToolRegistry>,
+        mcp_manager: Arc<dyn McpManager>,
         default_model: String,
         model_catalog: Arc<dyn ModelCatalog>,
         provider_vendor_catalog: Arc<ProviderVendorCatalog>,
@@ -150,6 +160,7 @@ impl ServerRuntimeDependencies {
             Arc::clone(&provider),
             Arc::clone(&provider_router),
             Arc::clone(&registry),
+            mcp_manager,
             default_model.clone(),
             Arc::clone(&model_catalog),
             Arc::clone(&skill_catalog),
@@ -353,6 +364,7 @@ mod tests {
             Arc::clone(&provider),
             Arc::new(SingleProviderRouter::new(provider)),
             Arc::new(ToolRegistry::new()),
+            empty_mcp_manager(),
             "catalog-slug".to_string(),
             Arc::new(PresetModelCatalog::new(vec![
                 Model {

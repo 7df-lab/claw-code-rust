@@ -89,7 +89,7 @@ provider fields without clearing every omitted provider field from lower layers.
 - `skills.bundled.enabled = true`
 - `skills.include_instructions = true`
 - `skills.config = []`
-- `experimental.code_search = true`
+- bundled `[[mcp.servers]]` entry `id = "code_search"` with `enabled = false`
 - `tools.web_search.mode = "provider"`
 - `updates.enabled = true`
 - `updates.check_on_startup = true`
@@ -149,8 +149,15 @@ enabled = false
 name = "code-review"
 enabled = true
 
-[experimental]
-code-search = true
+[[mcp.servers]]
+id = "code_search"
+display_name = "Code Search"
+enabled = false
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["devo-code-search-mcp"]
 
 [tools.web_search]
 mode = "local" # disabled, provider, or local

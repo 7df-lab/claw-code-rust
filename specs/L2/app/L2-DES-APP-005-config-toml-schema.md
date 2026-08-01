@@ -526,16 +526,32 @@ Rules:
 
 ## Experimental
 
-`[experimental]` controls runtime feature gates.
+`[experimental]` is reserved for runtime feature gates.
 
-Fields:
+The former `code-search` boolean gate has been removed. Semantic code search is
+provided by the bundled MCP server `code_search` (`devo-code-search-mcp`), which
+is present in MCP config with `enabled = false` by default. Users enable it via
+`devo mcp enable code_search` or the TUI `/mcps` UI.
 
-- `code-search`: boolean; when true, the built-in `code_search` code retrieval tool is registered and exposed.
+Legacy `[experimental] code-search` / `code_search` keys are ignored for
+backward compatibility.
 
-Rules:
+## Bundled MCP servers
 
-- Missing `code-search` defaults to true.
-- `code_search` may be accepted as a compatibility alias, but writers should emit `code-search`.
+Devo ensures the following server is present after config load when missing by
+id (user records with the same id are never overwritten):
+
+```toml
+[[mcp.servers]]
+id = "code_search"
+display_name = "Code Search"
+enabled = false
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["devo-code-search-mcp"]
+```
 
 ## Tools
 

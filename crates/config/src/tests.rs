@@ -19,6 +19,13 @@ use super::HookShell;
 use super::HooksConfig;
 use super::LogRotation;
 use super::LoggingConfig;
+use super::McpOutputLimits;
+use super::McpRootsPolicy;
+use super::McpServerId;
+use super::McpServerRecord;
+use super::McpStartupPolicy;
+use super::McpTransportConfig;
+use super::McpTrustPolicy;
 use super::ModelBindingConfig;
 use super::ModelOverrideConfig;
 use super::OAuthCredentialsStoreMode;
@@ -134,7 +141,7 @@ check_interval_hours = 48
                 include_instructions: Some(true),
                 config: Vec::new(),
             },
-            experimental: ExperimentalConfig { code_search: true },
+            experimental: ExperimentalConfig::default(),
             mcp_oauth_credentials_store: Some(OAuthCredentialsStoreMode::default()),
             mcp: super::McpConfig::default(),
             tools: ToolsConfig::default(),
@@ -434,11 +441,14 @@ pattern = "deploy"
 }
 
 #[test]
-fn default_app_config_enables_code_search() {
-    assert_eq!(
-        AppConfig::default().experimental,
-        ExperimentalConfig { code_search: true }
-    );
+fn default_app_config_includes_disabled_code_search_mcp_server() {
+    let mcp = AppConfig::default().mcp;
+    let server = mcp
+        .servers
+        .iter()
+        .find(|record| record.id.0 == super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID)
+        .expect("bundled code_search server");
+    assert!(!server.enabled);
 }
 
 #[test]
@@ -541,77 +551,86 @@ fn loader_rejects_empty_server_auth_name_when_enabled() {
 }
 
 #[test]
-fn loader_accepts_experimental_code_search_kebab_key() {
-    let root = unique_temp_dir("config-experimental-kebab");
+fn loader_ignores_legacy_experimental_code_search_keys() {
+    let root = unique_temp_dir("config-experimental-legacy");
     let home = root.join("home").join(".devo");
     std::fs::create_dir_all(&home).expect("home config dir");
     std::fs::write(
         home.join("config.toml"),
-        "[experimental]\ncode-search = true\n",
+        "[experimental]\ncode-search = true\ncode_search = false\n",
     )
     .expect("write user config");
 
     let loader = FileSystemAppConfigLoader::new(home);
     let config = loader.load(None).expect("load config");
 
-    assert_eq!(
-        config.experimental,
-        ExperimentalConfig { code_search: true }
-    );
+    assert_eq!(config.experimental, ExperimentalConfig::default());
+    let server = config
+        .mcp
+        .servers
+        .iter()
+        .find(|record| record.id.0 == super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID)
+        .expect("bundled code_search server");
+    assert!(!server.enabled);
 
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn loader_accepts_experimental_code_search_snake_alias() {
-    let root = unique_temp_dir("config-experimental-snake");
+fn loader_ensures_bundled_code_search_mcp_when_servers_list_is_empty() {
+    let root = unique_temp_dir("config-bundled-mcp-ensure");
     let home = root.join("home").join(".devo");
     std::fs::create_dir_all(&home).expect("home config dir");
-    std::fs::write(
-        home.join("config.toml"),
-        "[experimental]\ncode_search = true\n",
-    )
-    .expect("write user config");
+    std::fs::write(home.join("config.toml"), "[mcp]\nservers = []\n").expect("write user config");
 
     let loader = FileSystemAppConfigLoader::new(home);
     let config = loader.load(None).expect("load config");
 
+    assert_eq!(config.mcp.servers.len(), 1);
     assert_eq!(
-        config.experimental,
-        ExperimentalConfig { code_search: true }
+        config.mcp.servers[0].id.0,
+        super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID
     );
+    assert!(!config.mcp.servers[0].enabled);
 
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Trace: L2-DES-MCP-002
+/// Verifies: enabling bundled code_search materializes it into user config.toml.
 #[test]
-fn loader_merges_experimental_config_in_normal_precedence_order() {
-    let root = unique_temp_dir("config-experimental-merge");
+fn set_mcp_server_enabled_materializes_bundled_code_search() {
+    let root = unique_temp_dir("config-bundled-mcp-enable");
     let home = root.join("home").join(".devo");
-    let workspace = root.join("workspace");
     std::fs::create_dir_all(&home).expect("home config dir");
-    std::fs::create_dir_all(workspace.join(".devo")).expect("workspace config dir");
-    std::fs::write(
-        home.join("config.toml"),
-        "[experimental]\ncode-search = false\n",
-    )
-    .expect("write user config");
-    std::fs::write(
-        workspace.join(".devo").join("config.toml"),
-        "[experimental]\ncode-search = true\n",
-    )
-    .expect("write project config");
-    let cli_overrides: toml::Value = "[experimental]\ncode-search = false\n"
-        .parse()
-        .expect("parse cli overrides");
+    std::fs::write(home.join("config.toml"), "[mcp]\nservers = []\n").expect("write user config");
 
-    let loader = FileSystemAppConfigLoader::new(home).with_cli_overrides(cli_overrides);
-    let config = loader.load(Some(&workspace)).expect("load config");
-
-    assert_eq!(
-        config.experimental,
-        ExperimentalConfig { code_search: false }
+    let config_file = home.join("config.toml");
+    let mut store = AppConfigStore::load(home, /*workspace_root*/ None).expect("load store");
+    assert!(
+        !std::fs::read_to_string(&config_file)
+            .expect("read user config")
+            .contains("code_search")
     );
+
+    store
+        .set_mcp_server_enabled(
+            super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID,
+            /*enabled*/ true,
+        )
+        .expect("enable bundled code_search");
+
+    let server = store
+        .mcp_servers()
+        .iter()
+        .find(|record| record.id.0 == super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID)
+        .expect("bundled code_search server");
+    assert!(server.enabled);
+
+    let user_config = std::fs::read_to_string(&config_file).expect("read user config");
+    assert!(user_config.contains("code_search"));
+    assert!(user_config.contains("devo-code-search-mcp"));
+    assert!(user_config.contains("enabled = true") || user_config.contains("enabled=true"));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1300,6 +1319,159 @@ fn loader_rejects_invalid_update_check_interval() {
         result,
         Err(super::AppConfigError::Validation { .. })
     ));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn mcp_upsert_remove_enable_round_trip_preserves_unrelated_sections() {
+    let root = unique_temp_dir("mcp-upsert-roundtrip");
+    let home = root.join("home").join(".devo");
+    std::fs::create_dir_all(&home).expect("home config dir");
+    std::fs::write(
+        home.join("config.toml"),
+        r#"
+[updates]
+enabled = true
+check_on_startup = false
+check_interval_hours = 12
+
+[logging]
+level = "warn"
+"#,
+    )
+    .expect("write user config");
+
+    let mut store =
+        AppConfigStore::load(home.clone(), /*workspace_root*/ None).expect("load store");
+    let stdio_record = McpServerRecord {
+        id: McpServerId("time".to_string()),
+        display_name: "time".to_string(),
+        transport: McpTransportConfig::Stdio {
+            command: vec![
+                "docker".to_string(),
+                "run".to_string(),
+                "-i".to_string(),
+                "--rm".to_string(),
+                "mcp/time".to_string(),
+            ],
+            cwd: None,
+            env: BTreeMap::new(),
+            env_vars: Vec::new(),
+        },
+        startup_policy: McpStartupPolicy::Lazy,
+        enabled: true,
+        trust_policy: McpTrustPolicy::User,
+        allowed_capabilities: Vec::new(),
+        roots_policy: McpRootsPolicy::None,
+        output_limits: McpOutputLimits::default(),
+        auth_ref: None,
+    };
+    store
+        .upsert_mcp_server(stdio_record.clone())
+        .expect("upsert stdio");
+
+    let http_record = McpServerRecord {
+        id: McpServerId("hello".to_string()),
+        display_name: "hello".to_string(),
+        transport: McpTransportConfig::StreamableHttp {
+            url: "http://localhost:8080/mcp".to_string(),
+            auth: None,
+            http_headers: BTreeMap::new(),
+            env_http_headers: BTreeMap::new(),
+        },
+        startup_policy: McpStartupPolicy::Lazy,
+        enabled: true,
+        trust_policy: McpTrustPolicy::User,
+        allowed_capabilities: Vec::new(),
+        roots_policy: McpRootsPolicy::None,
+        output_limits: McpOutputLimits::default(),
+        auth_ref: None,
+    };
+    store
+        .upsert_mcp_server(http_record.clone())
+        .expect("upsert http");
+
+    let sse_record = McpServerRecord {
+        id: McpServerId("legacy".to_string()),
+        display_name: "legacy".to_string(),
+        transport: McpTransportConfig::Sse {
+            url: "https://example.com/mcp/sse".to_string(),
+            auth: None,
+            http_headers: BTreeMap::new(),
+            env_http_headers: BTreeMap::new(),
+        },
+        startup_policy: McpStartupPolicy::Lazy,
+        enabled: true,
+        trust_policy: McpTrustPolicy::User,
+        allowed_capabilities: Vec::new(),
+        roots_policy: McpRootsPolicy::None,
+        output_limits: McpOutputLimits::default(),
+        auth_ref: None,
+    };
+    store
+        .upsert_mcp_server(sse_record.clone())
+        .expect("upsert sse");
+
+    let user_config = std::fs::read_to_string(home.join("config.toml")).expect("read user config");
+    assert!(user_config.contains("check_on_startup"));
+    assert!(user_config.contains("level"));
+    let server_ids: Vec<&str> = store
+        .mcp_servers()
+        .iter()
+        .map(|server| server.id.0.as_str())
+        .collect();
+    assert!(server_ids.contains(&"time"));
+    assert!(server_ids.contains(&"hello"));
+    assert!(server_ids.contains(&"legacy"));
+    assert!(server_ids.contains(&super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID));
+    assert_eq!(
+        store
+            .mcp_servers()
+            .iter()
+            .find(|server| server.id.0 == "time")
+            .expect("time server"),
+        &stdio_record
+    );
+
+    store
+        .set_mcp_server_enabled("time", /*enabled*/ false)
+        .expect("disable");
+    assert!(
+        !store
+            .mcp_servers()
+            .iter()
+            .find(|server| server.id.0 == "time")
+            .expect("time server")
+            .enabled
+    );
+
+    store.remove_mcp_server("hello").expect("remove hello");
+    assert!(
+        store
+            .mcp_servers()
+            .iter()
+            .all(|server| server.id.0 != "hello")
+    );
+
+    let reloaded = AppConfigStore::load(home, /*workspace_root*/ None).expect("reload");
+    let reloaded_ids: Vec<&str> = reloaded
+        .mcp_servers()
+        .iter()
+        .map(|server| server.id.0.as_str())
+        .collect();
+    assert!(reloaded_ids.contains(&"time"));
+    assert!(reloaded_ids.contains(&"legacy"));
+    assert!(reloaded_ids.contains(&super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID));
+    assert!(!reloaded_ids.contains(&"hello"));
+    assert!(
+        !reloaded
+            .mcp_servers()
+            .iter()
+            .find(|server| server.id.0 == "time")
+            .expect("time server")
+            .enabled
+    );
 
     let _ = std::fs::remove_dir_all(root);
 }

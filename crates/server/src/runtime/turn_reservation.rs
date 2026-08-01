@@ -138,6 +138,7 @@ mod tests {
                 Arc::clone(&provider),
                 Arc::new(SingleProviderRouter::new(provider)),
                 Arc::new(ToolRegistry::new()),
+                crate::empty_mcp_manager(),
                 "test-model".to_string(),
                 Arc::new(PresetModelCatalog::default()),
                 Arc::new(ProviderVendorCatalog::default()),

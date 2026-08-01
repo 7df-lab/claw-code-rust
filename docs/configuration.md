@@ -224,12 +224,28 @@ is one entry in the `servers` array, and its `transport` table selects how Devo
 connects. Supported transports are `stdio`, `streamable_http`, and the deprecated
 `sse`.
 
+Devo also presets a bundled, disabled-by-default semantic search server:
+
+```toml
+[[mcp.servers]]
+id = "code_search"
+display_name = "Code Search"
+enabled = false
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["devo-code-search-mcp"]
+```
+
+Enable it with `devo mcp enable code_search` (or `/mcps` in the TUI). The
+`devo-code-search-mcp` binary is installed next to `devo`.
+
 Stdio example:
 
 ```toml
 [mcp]
 auto_start = true
-refresh_on_config_reload = true
 
 [[mcp.servers]]
 id = "filesystem"
@@ -274,7 +290,7 @@ url = "https://example.com/mcp/sse"
 
 Field notes:
 
-- `auto_start` and `refresh_on_config_reload` default to `true`.
+- `auto_start` defaults to `true`. Enable/disable of MCP servers in a running session is applied live via `mcp/set_enabled` (TUI `/mcps`).
 - `startup_policy` controls when an enabled server starts: `eager` during
   bootstrap, `lazy` on first use, or `manual` only by explicit request.
 - For stdio, `env` provides literal values and `env_vars` lists names inherited
@@ -297,4 +313,34 @@ Merge behavior: `[mcp]` is merged field-wise like other tables, but `servers` is
 an array. A project-level `[[mcp.servers]]` list therefore replaces the
 user-level list instead of merging by `id`.
 
-Verify the configuration in the TUI with `/mcp list`.
+### CLI management
+
+Manage user-level MCP servers (`~/.devo/config.toml`) with `devo mcp`:
+
+```bash
+# Stdio (command + args after --)
+devo mcp add time -- docker run -i --rm mcp/time
+devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
+
+# Streamable HTTP (`--transport http` writes kind = "streamable_http")
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
+
+# Legacy SSE
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+
+devo mcp list
+devo mcp enable time
+devo mcp disable time
+devo mcp remove time
+```
+
+CLI `devo mcp enable|disable` writes user `config.toml` for offline use. An
+already-running interactive session applies enable/disable live through the TUI
+`/mcps` path (`mcp/set_enabled` RPC).
+
+Verify configuration in the TUI with `/mcps` (interactive server list → detail →
+tools; Enable/Disable persists config and applies the manager + tool registry
+for the next turn). Clients can also call `mcp/list`, `mcp/tools`, and
+`mcp/set_enabled`. Use `devo mcp add|list|remove|enable|disable` for CLI
+management.

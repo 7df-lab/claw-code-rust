@@ -1,6 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolHandlerKind {
-    CodeSearch,
     ShellCommand,
     Read,
     Write,

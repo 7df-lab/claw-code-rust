@@ -1,12 +1,16 @@
 [package]
-description = "Semble-style hybrid code retrieval for Devo workspace tools"
+description = "Semantic code retrieval and bundled code_search MCP server"
 edition.workspace = true
 license.workspace = true
-name = "devo-code-search"
+name = "devo-code-search-mcp"
 version.workspace = true
 
+[[bin]]
+name = "devo-code-search-mcp"
+path = "src/main.rs"
+
 [lib]
-name = "devo_code_search"
+name = "devo_code_search_mcp"
 path = "src/lib.rs"
 
 [dependencies]
@@ -26,8 +30,18 @@ reqwest-hf = { package = "reqwest", version = "0.13", default-features = false, 
     "rustls",
     "socks",
 ] }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+rmcp = { workspace = true, default-features = false, features = [
+    "macros",
+    "server",
+    "transport-async-rw",
+] }
+tokio = { workspace = true, features = [
+    "io-std",
+    "macros",
+    "rt-multi-thread",
+] }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tree-sitter = { workspace = true }

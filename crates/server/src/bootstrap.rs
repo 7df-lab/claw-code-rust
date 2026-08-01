@@ -194,12 +194,15 @@ pub async fn run_server_process(
         "loaded server config"
     );
 
-    let mcp_manager = Arc::new(RmcpMcpManager::new(
-        config.mcp.clone(),
+    let mcp_manager: Arc<dyn devo_core::McpManager> = Arc::new(RmcpMcpManager::new(
+        config.mcp.clone().with_code_search_workspace_cwd(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        ),
         config.mcp_oauth_credentials_store.unwrap_or_default(),
     ));
     let tool_plan = ToolPlanConfig::from_app_config(&config);
-    let registry = handlers::build_registry_from_plan_with_mcp(&tool_plan, mcp_manager).await;
+    let registry =
+        handlers::build_registry_from_plan_with_mcp(&tool_plan, Arc::clone(&mcp_manager)).await;
     let model_catalog: Arc<dyn ModelCatalog> = Arc::new(PresetModelCatalog::load_from_config(
         &config.provider.model_overrides,
     )?);
@@ -233,6 +236,7 @@ pub async fn run_server_process(
             provider.provider,
             provider_router,
             Arc::clone(&registry),
+            mcp_manager,
             provider.default_model,
             model_catalog,
             Arc::new(ProviderVendorCatalog::default()),

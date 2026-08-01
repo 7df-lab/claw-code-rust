@@ -73,6 +73,7 @@ fn build_runtime(data_root: &Path) -> Result<Arc<ServerRuntime>> {
             Arc::clone(&provider),
             Arc::new(SingleProviderRouter::new(provider)),
             Arc::new(ToolRegistry::new()),
+            devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::default()),
             Arc::new(ProviderVendorCatalog::default()),

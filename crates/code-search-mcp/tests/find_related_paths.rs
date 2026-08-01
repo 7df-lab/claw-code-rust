@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use devo_code_search::{
+use devo_code_search_mcp::{
     CodeSearchError, CodeSearchService, ContentFilter, HashEmbeddingProvider, RelatedRequest,
     SearchFilters,
 };

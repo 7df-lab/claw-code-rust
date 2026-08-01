@@ -12,7 +12,6 @@ use crate::events::ToolProgressSender;
 use crate::invocation::FunctionToolOutput;
 
 use super::launch::SandboxLaunchPlan;
-use super::preview;
 use super::resolve::ResolvedShellRun;
 use super::truncate_output;
 
@@ -223,7 +222,6 @@ pub(crate) async fn run_with_pty(
     Ok(FunctionToolOutput::success_with_metadata(
         content,
         json!({
-            "output": preview(&text),
             "command": command_to_run,
             "exit": exit_code,
             "description": description,

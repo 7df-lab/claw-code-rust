@@ -1,7 +1,5 @@
 mod agent;
 mod apply_patch;
-#[cfg(feature = "code-search")]
-mod code_search;
 mod edit;
 mod exec_command;
 mod file_change_metadata;
@@ -24,8 +22,6 @@ mod websearch;
 
 pub(crate) use agent::register_agent_tools;
 pub use apply_patch::ApplyPatchHandler;
-#[cfg(feature = "code-search")]
-pub use code_search::CodeSearchHandler;
 pub use edit::EditHandler;
 pub use exec_command::{ExecCommandHandler, WriteStdinHandler};
 pub use file_write::WriteHandler;
@@ -66,12 +62,23 @@ pub fn build_registry_from_plan(config: &ToolPlanConfig) -> crate::registry::Too
     for spec in specs {
         builder.push_spec(spec);
     }
-    build_registry_from_builder(handlers, builder, Vec::new(), config)
+    build_registry_from_builder(handlers, builder, Vec::new(), None)
 }
 
 pub async fn build_registry_from_plan_with_mcp(
     config: &ToolPlanConfig,
     mcp_manager: Arc<dyn McpManager>,
+) -> crate::registry::ToolRegistry {
+    rebuild_registry_from_plan_with_mcp(config, mcp_manager, None).await
+}
+
+/// Rebuilds a tool registry from the current MCP manager, optionally reusing
+/// the previous unified-exec [`ProcessStore`] and deferred-load state so live
+/// sessions keep background processes across MCP enable/disable.
+pub async fn rebuild_registry_from_plan_with_mcp(
+    config: &ToolPlanConfig,
+    mcp_manager: Arc<dyn McpManager>,
+    previous: Option<&crate::registry::ToolRegistry>,
 ) -> crate::registry::ToolRegistry {
     let plan = build_tool_registry_plan(config);
     let specs = plan.specs;
@@ -112,16 +119,18 @@ pub async fn build_registry_from_plan_with_mcp(
         ));
     }
 
-    build_registry_from_builder(handlers, builder, mcp_handlers, config)
+    build_registry_from_builder(handlers, builder, mcp_handlers, previous)
 }
 
 fn build_registry_from_builder(
     handlers: Vec<(ToolHandlerKind, String)>,
     mut builder: ToolRegistryBuilder,
     mcp_handlers: Vec<(String, Arc<dyn ToolHandler>)>,
-    config: &ToolPlanConfig,
+    previous: Option<&crate::registry::ToolRegistry>,
 ) -> crate::registry::ToolRegistry {
-    let process_store = Arc::new(ProcessStore::new());
+    let process_store = previous
+        .and_then(|registry| registry.unified_exec_store.clone())
+        .unwrap_or_else(|| Arc::new(ProcessStore::new()));
     let background_tasks = Arc::new(crate::tools::background_tasks::BackgroundTaskStore::new(
         Arc::clone(&process_store),
     ));
@@ -129,32 +138,14 @@ fn build_registry_from_builder(
     builder.push_spec(goal_update_spec());
     builder.push_spec(tool_search_spec());
 
-    let loaded_deferred_tools = Arc::new(std::sync::Mutex::new(LoadedDeferredTools::default()));
+    let loaded_deferred_tools = previous
+        .map(|registry| Arc::clone(&registry.loaded_deferred_tools))
+        .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(LoadedDeferredTools::default())));
     builder.set_unified_exec_store(Arc::clone(&process_store));
     builder.set_loaded_deferred_tools(Arc::clone(&loaded_deferred_tools));
     builder.register_handler("update_goal", Arc::new(GoalUpdateHandler::new()));
-
     for (kind, name) in handlers {
         let handler: Arc<dyn ToolHandler> = match kind {
-            #[cfg(feature = "code-search")]
-            ToolHandlerKind::CodeSearch => {
-                let service = Arc::new(
-                    devo_code_search::CodeSearchService::production_with_network_proxy(
-                        devo_network_proxy::NetworkProxyConfig {
-                            proxy_url: config.network_proxy.clone(),
-                            no_proxy: config.network_no_proxy.clone(),
-                        },
-                    ),
-                );
-                builder.set_code_search_service(Arc::clone(&service));
-                Arc::new(CodeSearchHandler::with_service(service))
-            }
-            // When the `code-search` feature is disabled the planner never emits
-            // this handler kind (see registry_plan), so the arm is unreachable.
-            #[cfg(not(feature = "code-search"))]
-            ToolHandlerKind::CodeSearch => {
-                unreachable!("code_search handler requested but `code-search` feature is disabled")
-            }
             ToolHandlerKind::ShellCommand => Arc::new(ShellCommandHandler::new()),
             ToolHandlerKind::Read => Arc::new(ReadHandler::new()),
             ToolHandlerKind::Write => Arc::new(WriteHandler::new()),
@@ -214,8 +205,73 @@ fn build_registry_from_builder(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use pretty_assertions::assert_eq;
+    use serde_json::Value;
+
     use super::*;
+    use crate::mcp::McpError;
+    use crate::mcp::McpManager;
+    use crate::mcp::McpServerId;
+    use crate::mcp::McpServerStatus;
+    use crate::mcp::McpToolInfo;
     use crate::tool_spec::ToolExecutionMode;
+
+    struct EmptyMcpManager;
+
+    #[async_trait]
+    impl McpManager for EmptyMcpManager {
+        async fn statuses(&self) -> Result<Vec<McpServerStatus>, McpError> {
+            Ok(Vec::new())
+        }
+
+        async fn discover_tools(&self) -> Result<Vec<McpToolInfo>, McpError> {
+            Ok(Vec::new())
+        }
+
+        async fn refresh(&self, server_id: &McpServerId) -> Result<McpServerStatus, McpError> {
+            Err(McpError::McpServerUnavailable {
+                server_id: server_id.clone(),
+            })
+        }
+
+        async fn set_enabled(
+            &self,
+            server_id: &McpServerId,
+            _enabled: bool,
+        ) -> Result<McpServerStatus, McpError> {
+            Err(McpError::McpServerUnavailable {
+                server_id: server_id.clone(),
+            })
+        }
+
+        async fn invoke_tool(
+            &self,
+            server_id: &McpServerId,
+            tool_name: &str,
+            _input: Value,
+        ) -> Result<Value, McpError> {
+            Err(McpError::McpToolInvocationFailed {
+                server_id: server_id.clone(),
+                tool_name: tool_name.to_string(),
+                message: "empty manager".to_string(),
+            })
+        }
+
+        async fn read_resource(
+            &self,
+            server_id: &McpServerId,
+            uri: &str,
+        ) -> Result<Value, McpError> {
+            Err(McpError::McpResourceReadFailed {
+                server_id: server_id.clone(),
+                uri: uri.to_string(),
+                message: "empty manager".to_string(),
+            })
+        }
+    }
 
     #[test]
     fn default_registry_exposes_shell_command_and_accepts_bash_alias() {
@@ -225,27 +281,6 @@ mod tests {
         assert!(registry.spec("bash").is_none());
         assert!(registry.get("shell_command").is_some());
         assert!(registry.get("bash").is_some());
-    }
-
-    #[cfg(feature = "code-search")]
-    #[test]
-    fn registry_exposes_the_code_search_handlers_shared_service() {
-        let registry = build_registry_from_plan(&ToolPlanConfig::default());
-
-        assert!(registry.get("code_search").is_some());
-        assert!(registry.code_search_service().is_some());
-    }
-
-    #[cfg(feature = "code-search")]
-    #[test]
-    fn registry_has_no_code_search_service_when_the_tool_is_disabled() {
-        let registry = build_registry_from_plan(&ToolPlanConfig {
-            code_search: false,
-            ..ToolPlanConfig::default()
-        });
-
-        assert!(registry.get("code_search").is_none());
-        assert!(registry.code_search_service().is_none());
     }
 
     #[test]
@@ -266,5 +301,26 @@ mod tests {
         let spec = registry.spec("edit").expect("edit spec");
         assert_eq!(spec.execution_mode, ToolExecutionMode::Mutating);
         assert!(!spec.supports_parallel);
+    }
+
+    #[tokio::test]
+    async fn rebuild_registry_reuses_process_store() {
+        let manager: Arc<dyn McpManager> = Arc::new(EmptyMcpManager);
+        let first = rebuild_registry_from_plan_with_mcp(
+            &ToolPlanConfig::default(),
+            Arc::clone(&manager),
+            None,
+        )
+        .await;
+        let first_store = first
+            .unified_exec_store()
+            .expect("first registry should own a process store");
+        let second =
+            rebuild_registry_from_plan_with_mcp(&ToolPlanConfig::default(), manager, Some(&first))
+                .await;
+        let second_store = second
+            .unified_exec_store()
+            .expect("rebuilt registry should own a process store");
+        assert!(Arc::ptr_eq(&first_store, &second_store));
     }
 }

@@ -62,7 +62,7 @@ The mechanism must:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ System Prompt                                                 │
-│   [Pre-loaded tool schemas: read, find, grep, code_search, ...] │
+│   [Pre-loaded tool schemas: read, find, grep, ...] │
 │                                                               │
 │   <system-reminder>                                           │
 │   Deferred tools:                                             │
@@ -87,7 +87,7 @@ The mechanism must:
          ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Next Turn Prompt                                              │
-│   [Pre-loaded tool schemas: read, find, grep, code_search, ...] │
+│   [Pre-loaded tool schemas: read, find, grep, ...] │
 │   [Loaded deferred schemas: web_search, fetch_url]            │
 │   <system-reminder>                                           │
 │   Deferred tools:                                             │
@@ -111,7 +111,7 @@ These tools are included in every model turn when registered by the effective co
 | `read` | File read | Read file contents and metadata, including supported attachments. |
 | `find` | Search | Filename and path search backed by ripgrep. |
 | `grep` | Search | High-performance content search, normally backed by ripgrep. |
-| `code_search` | Search | Preferred codebase investigation and code retrieval tool, enabled by default unless `[experimental] code-search = false`. |
+| `code_search` / `mcp__code_search__code_search` | MCP | Optional semantic code retrieval via the bundled `code_search` MCP server (`devo-code-search-mcp`). Config preset is `enabled = false` by default. |
 | `ls` | File read | List directory contents with optional pattern filtering. |
 | `write` | File mutation | Create or overwrite files through structured content. |
 | `apply_patch` | File mutation | Apply structured patches to files. |
@@ -390,13 +390,14 @@ MCP tools are conditionally deferred. Each MCP server can define a tool loading 
 In user or project `config.toml`:
 
 ```toml
-[experimental]
-code-search = true
+[[mcp.servers]]
+id = "code_search"
+enabled = false
 
 [tools.deferred_loading]
 enabled = true
 default_policy = "defer_optional"
-preloaded = ["read", "find", "grep", "ls", "write", "apply_patch", "shell_command", "plan", "approval"] # code_search is registered by default unless disabled
+preloaded = ["read", "find", "grep", "ls", "write", "apply_patch", "shell_command", "plan", "approval"]
 deferred = ["web_search", "fetch_url", "skill", "spawn_subagent", "multi_tool_use"]
 hidden = []
 

@@ -176,6 +176,38 @@ pub struct McpListResult {
     pub servers: Vec<McpServerInfo>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolsParams {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolEntry {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolsResult {
+    pub tools: Vec<McpToolEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSetEnabledParams {
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSetEnabledResult {
+    pub servers: Vec<McpServerInfo>,
+}
+
 // ── context/usage/read ──
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -264,3 +296,41 @@ pub struct CredentialDeleteParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialDeleteResult {}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn mcp_tools_params_and_result_round_trip_camel_case() {
+        let params = McpToolsParams {
+            name: "time".to_string(),
+        };
+        let params_json = serde_json::to_value(&params).expect("serialize params");
+        assert_eq!(params_json, serde_json::json!({ "name": "time" }));
+        assert_eq!(
+            serde_json::from_value::<McpToolsParams>(params_json).expect("parse params"),
+            params
+        );
+
+        let result = McpToolsResult {
+            tools: vec![McpToolEntry {
+                name: "get_time".to_string(),
+                description: "Current time".to_string(),
+            }],
+        };
+        let result_json = serde_json::to_value(&result).expect("serialize result");
+        assert_eq!(
+            result_json,
+            serde_json::json!({
+                "tools": [{ "name": "get_time", "description": "Current time" }]
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<McpToolsResult>(result_json).expect("parse result"),
+            result
+        );
+    }
+}

@@ -380,6 +380,22 @@ pub static NATIVE_METHODS: &[MethodSpec] = &[
         idempotency: Idempotency::None,
     },
     MethodSpec {
+        name: "mcp/tools",
+        params_schema: schema_of::<McpToolsParams>,
+        result_schema: schema_of::<McpToolsResult>,
+        error_codes: &[],
+        required_capability: None,
+        idempotency: Idempotency::None,
+    },
+    MethodSpec {
+        name: "mcp/set_enabled",
+        params_schema: schema_of::<McpSetEnabledParams>,
+        result_schema: schema_of::<McpSetEnabledResult>,
+        error_codes: &[],
+        required_capability: None,
+        idempotency: Idempotency::None,
+    },
+    MethodSpec {
         name: "context/usage/read",
         params_schema: schema_of::<ContextUsageReadParams>,
         result_schema: schema_of::<ContextUsageReadResult>,

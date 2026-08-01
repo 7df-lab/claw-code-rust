@@ -445,9 +445,42 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    #[allow(dead_code)]
     pub(crate) fn composer_text(&self) -> String {
         self.composer.current_text()
+    }
+
+    /// Insert text at the composer cursor, adding a leading space when needed.
+    pub(crate) fn insert_composer_text(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let current = self.composer.current_text();
+        let needs_leading_space =
+            !current.is_empty() && !current.ends_with(|ch: char| ch.is_whitespace());
+        if needs_leading_space {
+            self.composer.insert_str(&format!(" {text} "));
+        } else {
+            self.composer.insert_str(&format!("{text} "));
+        }
+        self.request_redraw();
+    }
+
+    /// Insert a highlighted chip whose model-facing value differs from the display text.
+    pub(crate) fn insert_composer_bound_text(&mut self, display: &str, binding: &str) {
+        let display = display.trim();
+        let binding = binding.trim();
+        if display.is_empty() || binding.is_empty() {
+            return;
+        }
+        let current = self.composer.current_text();
+        let needs_leading_space =
+            !current.is_empty() && !current.ends_with(|ch: char| ch.is_whitespace());
+        if needs_leading_space {
+            self.composer.insert_str(" ");
+        }
+        self.composer.insert_bound_element(display, binding);
+        self.request_redraw();
     }
 
     #[cfg(test)]
@@ -702,6 +735,25 @@ impl BottomPane {
 
     fn active_view(&self) -> Option<&dyn BottomPaneView> {
         self.view_stack.last().map(std::convert::AsRef::as_ref)
+    }
+
+    /// Children for an open bottom-pane view: optional status, composer, then
+    /// the view below — matching `@` / `/` composer popups.
+    fn active_view_layout_children<'a>(
+        &'a self,
+        view: &'a dyn BottomPaneView,
+        include_composer: bool,
+    ) -> Vec<&'a dyn Renderable> {
+        let mut children: Vec<&dyn Renderable> = Vec::with_capacity(4);
+        if let Some(status) = &self.status {
+            children.push(&STATUS_SEPARATOR);
+            children.push(status);
+        }
+        if include_composer {
+            children.push(&self.composer);
+        }
+        children.push(view);
+        children
     }
 
     fn push_view(&mut self, view: Box<dyn BottomPaneView>) {
@@ -964,15 +1016,9 @@ impl Renderable for BottomPane {
         if area.is_empty() {
             return;
         }
-        if let Some(view) = self.active_view()
-            && let Some(status) = &self.status
-        {
-            let children: [&dyn Renderable; 3] = [&STATUS_SEPARATOR, status, view];
-            self.render_children(area, buf, &children);
-            return;
-        }
         if let Some(view) = self.active_view() {
-            view.render(area, buf);
+            let children = self.active_view_layout_children(view, /*include_composer*/ true);
+            self.render_children(area, buf, &children);
             return;
         }
         let mut children: Vec<&dyn Renderable> = Vec::with_capacity(5);
@@ -997,14 +1043,9 @@ impl Renderable for BottomPane {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        if let Some(view) = self.active_view()
-            && let Some(status) = &self.status
-        {
-            let children: [&dyn Renderable; 3] = [&STATUS_SEPARATOR, status, view];
-            return self.desired_children_height(width, &children);
-        }
         if let Some(view) = self.active_view() {
-            return view.desired_height(width);
+            let children = self.active_view_layout_children(view, /*include_composer*/ true);
+            return self.desired_children_height(width, &children);
         }
         let mut children: Vec<&dyn Renderable> = Vec::with_capacity(5);
         if let Some(status) = &self.status {
@@ -1026,14 +1067,20 @@ impl Renderable for BottomPane {
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        if let Some(view) = self.active_view()
-            && let Some(status) = &self.status
-        {
-            let children: [&dyn Renderable; 3] = [&STATUS_SEPARATOR, status, view];
-            return self.child_cursor_pos(area, &children);
-        }
         if let Some(view) = self.active_view() {
-            return view.cursor_pos(area);
+            // Include composer for vertical offset (view sits below it), but skip
+            // its caret so an unfocused draft does not steal focus from the panel.
+            let mut y = area.y;
+            if let Some(status) = &self.status {
+                for child in [&STATUS_SEPARATOR as &dyn Renderable, status] {
+                    let height = child.desired_height(area.width);
+                    y = y.saturating_add(height);
+                }
+            }
+            y = y.saturating_add(self.composer.desired_height(area.width));
+            let view_area = Rect::new(area.x, y, area.width, area.bottom().saturating_sub(y))
+                .intersection(area);
+            return view.cursor_pos(view_area);
         }
         let mut children: Vec<&dyn Renderable> = Vec::with_capacity(5);
         if let Some(status) = &self.status {
@@ -1180,5 +1227,113 @@ impl Renderable for ModelPickerView {
 
     fn desired_height(&self, width: u16) -> u16 {
         u16::try_from(self.render_lines(width).len()).unwrap_or(u16::MAX)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::app_event::AppEvent;
+    use crate::app_event_sender::AppEventSender;
+    use crate::bottom_pane::list_selection_view::ListSelectionView;
+    use crate::bottom_pane::list_selection_view::SelectionItem;
+    use crate::bottom_pane::list_selection_view::SelectionViewParams;
+    use crate::tui::frame_requester::FrameRequester;
+
+    fn test_bottom_pane() -> BottomPane {
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        BottomPane::new(BottomPaneParams {
+            app_event_tx: AppEventSender::new(tx),
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: true,
+            placeholder_text: "Ask Devo".to_string(),
+            disable_paste_burst: true,
+            skills: None,
+            animations_enabled: false,
+        })
+    }
+
+    fn render_bottom_pane(pane: &BottomPane, width: u16) -> String {
+        let height = pane.desired_height(width);
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        pane.render(area, &mut buf);
+        (0..area.height)
+            .map(|row| {
+                let mut line = String::new();
+                for col in 0..area.width {
+                    let symbol = buf[(area.x + col, area.y + row)].symbol();
+                    if symbol.is_empty() {
+                        line.push(' ');
+                    } else {
+                        line.push_str(symbol);
+                    }
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn active_view_stacks_below_composer_draft() {
+        let mut pane = test_bottom_pane();
+        let draft = "keep this draft visible";
+        pane.set_text_content(draft.to_string(), Vec::new(), Vec::new());
+        let composer_only_height = pane.desired_height(/*width*/ 80);
+        let app_event_tx = pane.app_event_tx.clone();
+        let accent = pane.accent_color;
+
+        pane.open_popup_view(Box::new(ListSelectionView::new(
+            SelectionViewParams {
+                title: Some("Test Picker".to_string()),
+                items: vec![SelectionItem {
+                    name: "Option A".to_string(),
+                    dismiss_on_select: true,
+                    ..SelectionItem::default()
+                }],
+                ..SelectionViewParams::default()
+            },
+            app_event_tx,
+            accent,
+        )));
+
+        let stacked_height = pane.desired_height(/*width*/ 80);
+        assert!(
+            stacked_height > composer_only_height,
+            "stacked height {stacked_height} should exceed composer-only {composer_only_height}"
+        );
+
+        let rendered = render_bottom_pane(&pane, /*width*/ 80);
+        let draft_row = rendered
+            .lines()
+            .position(|line| line.contains(draft))
+            .expect("missing composer draft");
+        let picker_row = rendered
+            .lines()
+            .position(|line| line.contains("Test Picker"))
+            .expect("missing picker title");
+        assert!(
+            picker_row > draft_row,
+            "picker should render below composer draft; draft_row={draft_row} picker_row={picker_row}\n{rendered}"
+        );
+
+        // Cursor must not land on the unfocused composer while a view is open.
+        let area = Rect::new(0, 0, 80, stacked_height);
+        let cursor = pane.cursor_pos(area);
+        let composer_height = pane.composer.desired_height(80);
+        if let Some((_, cursor_y)) = cursor {
+            assert!(
+                cursor_y >= composer_height,
+                "cursor y={cursor_y} should stay in the panel below composer height {composer_height}"
+            );
+        } else {
+            // Selection views may not expose a caret; None is fine.
+            assert_eq!(cursor, None);
+        }
     }
 }

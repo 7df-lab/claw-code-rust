@@ -1727,6 +1727,7 @@ fn build_runtime_with_provider(
             Arc::clone(&provider),
             Arc::new(SingleProviderRouter::new(provider)),
             Arc::new(ToolRegistry::new()),
+            devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::new(vec![
                 Model {

@@ -40,7 +40,7 @@ const MCP_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Runtime MCP manager that owns active RMCP clients.
 pub struct RmcpMcpManager {
-    config: McpConfig,
+    config: RwLock<McpConfig>,
     oauth_store_mode: OAuthCredentialsStoreMode,
     clients: RwLock<HashMap<McpServerId, Arc<RmcpClient>>>,
     statuses: RwLock<HashMap<McpServerId, McpServerStatus>>,
@@ -61,7 +61,7 @@ impl RmcpMcpManager {
         }
 
         Self {
-            config,
+            config: RwLock::new(config),
             oauth_store_mode,
             clients: RwLock::new(HashMap::with_capacity(server_count)),
             statuses: RwLock::new(statuses),
@@ -86,23 +86,58 @@ impl RmcpMcpManager {
         Ok(client)
     }
 
-    fn record(&self, server_id: &McpServerId) -> Result<&McpServerRecord, McpError> {
+    async fn record(&self, server_id: &McpServerId) -> Result<McpServerRecord, McpError> {
         self.config
+            .read()
+            .await
             .servers
             .iter()
             .find(|record| &record.id == server_id)
+            .cloned()
             .ok_or_else(|| McpError::McpServerUnavailable {
                 server_id: server_id.clone(),
             })
     }
 
-    fn discoverable_tool_records(&self) -> impl Iterator<Item = &McpServerRecord> {
-        self.config.servers.iter().filter(|record| {
-            record.enabled
-                && tools_capability_allowed(record)
-                && self.config.auto_start
-                && !matches!(record.startup_policy, McpStartupPolicy::Manual)
-        })
+    async fn discoverable_tool_records(&self) -> Vec<McpServerRecord> {
+        let config = self.config.read().await;
+        config
+            .servers
+            .iter()
+            .filter(|record| {
+                record.enabled
+                    && tools_capability_allowed(record)
+                    && config.auto_start
+                    && !matches!(record.startup_policy, McpStartupPolicy::Manual)
+            })
+            .cloned()
+            .collect()
+    }
+
+    async fn stop_server(&self, server_id: &McpServerId) -> McpServerStatus {
+        self.clients.write().await.remove(server_id);
+        let status = empty_status(server_id.clone(), McpStartupState::Disabled);
+        self.statuses
+            .write()
+            .await
+            .insert(server_id.clone(), status.clone());
+        status
+    }
+
+    async fn mark_failed(&self, server_id: &McpServerId, message: &str) -> McpServerStatus {
+        warn!(
+            server_id = %server_id,
+            error = %message,
+            "MCP server startup failed"
+        );
+        self.clients.write().await.remove(server_id);
+        let mut status = empty_status(server_id.clone(), McpStartupState::Failed);
+        status.last_refreshed_at = Some(chrono::Utc::now());
+        self.statuses
+            .write()
+            .await
+            .insert(server_id.clone(), status.clone());
+        status
     }
 }
 
@@ -125,8 +160,9 @@ impl McpManager for RmcpMcpManager {
     }
 
     async fn discover_tools(&self) -> Result<Vec<McpToolInfo>, McpError> {
-        let mut tools = Vec::with_capacity(self.config.servers.len());
-        for record in self.discoverable_tool_records() {
+        let records = self.discoverable_tool_records().await;
+        let mut tools = Vec::with_capacity(records.len());
+        for record in &records {
             match self.refresh(&record.id).await {
                 Ok(_) => {
                     let Some(client) = self.clients.read().await.get(&record.id).cloned() else {
@@ -169,7 +205,7 @@ impl McpManager for RmcpMcpManager {
     }
 
     async fn refresh(&self, server_id: &McpServerId) -> Result<McpServerStatus, McpError> {
-        let record = self.record(server_id)?;
+        let record = self.record(server_id).await?;
         if !record.enabled {
             return Err(McpError::McpServerUnavailable {
                 server_id: server_id.clone(),
@@ -181,27 +217,38 @@ impl McpManager for RmcpMcpManager {
             empty_status(server_id.clone(), McpStartupState::Starting),
         );
 
-        let client = self.ensure_client(record).await?;
-        let tools = if tools_capability_allowed(record) {
-            client
-                .list_tools(None, Some(MCP_OPERATION_TIMEOUT))
-                .await
-                .map_err(|err| McpError::McpProtocolError {
-                    server_id: server_id.clone(),
-                    message: err.to_string(),
-                })?
-                .tools
-                .into_iter()
-                .map(|tool| McpToolDescriptor {
-                    server_id: server_id.clone(),
-                    name: tool.name.into_owned(),
-                    description: tool
-                        .description
-                        .map(std::borrow::Cow::into_owned)
-                        .unwrap_or_default(),
-                    input_schema: Value::Object(Arc::unwrap_or_clone(tool.input_schema)),
-                })
-                .collect()
+        let client = match self.ensure_client(&record).await {
+            Ok(client) => client,
+            Err(err) => {
+                let message = err.to_string();
+                self.mark_failed(server_id, &message).await;
+                return Err(err);
+            }
+        };
+        let tools = if tools_capability_allowed(&record) {
+            match client.list_tools(None, Some(MCP_OPERATION_TIMEOUT)).await {
+                Ok(list) => list
+                    .tools
+                    .into_iter()
+                    .map(|tool| McpToolDescriptor {
+                        server_id: server_id.clone(),
+                        name: tool.name.into_owned(),
+                        description: tool
+                            .description
+                            .map(std::borrow::Cow::into_owned)
+                            .unwrap_or_default(),
+                        input_schema: Value::Object(Arc::unwrap_or_clone(tool.input_schema)),
+                    })
+                    .collect(),
+                Err(err) => {
+                    let message = err.to_string();
+                    self.mark_failed(server_id, &message).await;
+                    return Err(McpError::McpProtocolError {
+                        server_id: server_id.clone(),
+                        message,
+                    });
+                }
+            }
         } else {
             Vec::new()
         };
@@ -222,26 +269,72 @@ impl McpManager for RmcpMcpManager {
         Ok(status)
     }
 
+    async fn set_enabled(
+        &self,
+        server_id: &McpServerId,
+        enabled: bool,
+    ) -> Result<McpServerStatus, McpError> {
+        {
+            let mut config = self.config.write().await;
+            let record = config
+                .servers
+                .iter_mut()
+                .find(|record| &record.id == server_id)
+                .ok_or_else(|| McpError::McpServerUnavailable {
+                    server_id: server_id.clone(),
+                })?;
+            record.enabled = enabled;
+        }
+
+        if !enabled {
+            return Ok(self.stop_server(server_id).await);
+        }
+
+        match self.refresh(server_id).await {
+            Ok(status) => Ok(status),
+            Err(err) => {
+                // Persist succeeded; surface Failed status so callers can keep
+                // going while siblings remain unaffected.
+                Ok(self
+                    .statuses
+                    .read()
+                    .await
+                    .get(server_id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        tracing::debug!(
+                            server_id = %server_id,
+                            error = %err,
+                            "MCP enable failed without a status entry"
+                        );
+                        let mut failed = empty_status(server_id.clone(), McpStartupState::Failed);
+                        failed.last_refreshed_at = Some(chrono::Utc::now());
+                        failed
+                    }))
+            }
+        }
+    }
+
     async fn invoke_tool(
         &self,
         server_id: &McpServerId,
         tool_name: &str,
         input: Value,
     ) -> Result<Value, McpError> {
-        let record = self.record(server_id)?;
+        let record = self.record(server_id).await?;
         if !record.enabled {
             return Err(McpError::McpServerUnavailable {
                 server_id: server_id.clone(),
             });
         }
-        if !tools_capability_allowed(record) {
+        if !tools_capability_allowed(&record) {
             return Err(McpError::McpToolInvocationFailed {
                 server_id: server_id.clone(),
                 tool_name: tool_name.to_string(),
                 message: "MCP tools capability is not allowed for this server".to_string(),
             });
         }
-        let client = self.ensure_client(record).await?;
+        let client = self.ensure_client(&record).await?;
         let result = client
             .call_tool(
                 tool_name.to_string(),
@@ -491,8 +584,8 @@ mod tests {
         )
     }
 
-    #[test]
-    fn tool_discovery_respects_allowed_capabilities() {
+    #[tokio::test]
+    async fn tool_discovery_respects_allowed_capabilities() {
         let mut disabled = record(
             "disabled",
             vec![McpCapability::Tools],
@@ -517,10 +610,15 @@ mod tests {
 
         let server_ids = manager
             .discoverable_tool_records()
-            .map(|record| record.id.0.as_str())
+            .await
+            .into_iter()
+            .map(|record| record.id.0)
             .collect::<Vec<_>>();
 
-        assert_eq!(server_ids, vec!["implicit", "tools"]);
+        assert_eq!(
+            server_ids,
+            vec!["implicit".to_string(), "tools".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -567,6 +665,122 @@ mod tests {
             McpError::McpServerUnavailable {
                 server_id: McpServerId("disabled".to_string()),
             }
+        );
+        assert!(manager.clients.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_enabled_flips_config_and_marks_disabled_without_touching_siblings() {
+        let mut sibling = record(
+            "sibling",
+            vec![McpCapability::Tools],
+            McpStartupPolicy::Eager,
+        );
+        sibling.enabled = true;
+        let mut target = record(
+            "target",
+            vec![McpCapability::Tools],
+            McpStartupPolicy::Eager,
+        );
+        target.enabled = true;
+        let manager = manager_with(vec![sibling, target]);
+        manager.statuses.write().await.insert(
+            McpServerId("sibling".to_string()),
+            empty_status(McpServerId("sibling".to_string()), McpStartupState::Ready),
+        );
+
+        let status = manager
+            .set_enabled(&McpServerId("target".to_string()), /*enabled*/ false)
+            .await
+            .expect("disable should succeed");
+
+        assert_eq!(status.startup_state, McpStartupState::Disabled);
+        assert!(
+            !manager
+                .config
+                .read()
+                .await
+                .servers
+                .iter()
+                .find(|record| record.id.0 == "target")
+                .expect("target")
+                .enabled
+        );
+        assert!(
+            manager
+                .config
+                .read()
+                .await
+                .servers
+                .iter()
+                .find(|record| record.id.0 == "sibling")
+                .expect("sibling")
+                .enabled
+        );
+        assert_eq!(
+            manager
+                .statuses
+                .read()
+                .await
+                .get(&McpServerId("sibling".to_string()))
+                .expect("sibling status")
+                .startup_state,
+            McpStartupState::Ready
+        );
+        assert!(
+            !manager
+                .clients
+                .read()
+                .await
+                .contains_key(&McpServerId("target".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn set_enabled_true_with_bad_binary_persists_failed_status() {
+        let mut bad = record("bad", vec![McpCapability::Tools], McpStartupPolicy::Eager);
+        bad.enabled = false;
+        bad.transport = McpTransportConfig::Stdio {
+            command: vec!["__devo_missing_mcp_binary__".to_string()],
+            cwd: None,
+            env: BTreeMap::new(),
+            env_vars: Vec::new(),
+        };
+        let mut sibling = record(
+            "sibling",
+            vec![McpCapability::Tools],
+            McpStartupPolicy::Eager,
+        );
+        sibling.enabled = false;
+        let manager = manager_with(vec![sibling, bad]);
+
+        let status = manager
+            .set_enabled(&McpServerId("bad".to_string()), /*enabled*/ true)
+            .await
+            .expect("enable should return status even on startup failure");
+
+        assert_eq!(status.startup_state, McpStartupState::Failed);
+        assert!(
+            manager
+                .config
+                .read()
+                .await
+                .servers
+                .iter()
+                .find(|record| record.id.0 == "bad")
+                .expect("bad")
+                .enabled
+        );
+        assert!(
+            !manager
+                .config
+                .read()
+                .await
+                .servers
+                .iter()
+                .find(|record| record.id.0 == "sibling")
+                .expect("sibling")
+                .enabled
         );
         assert!(manager.clients.read().await.is_empty());
     }

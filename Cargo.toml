@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/core",
-    "crates/code-search",
+    "crates/code-search-mcp",
     "crates/execpolicy",
     "crates/tools",
     "crates/provider",
@@ -59,7 +59,7 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 derive_more = "2"
 devo-arg0 = { path = "crates/arg0" }
 devo-client = { path = "crates/client" }
-devo-code-search = { path = "crates/code-search" }
+devo-code-search-mcp = { path = "crates/code-search-mcp" }
 devo-config = { path = "crates/config" }
 devo-core = { path = "crates/core" }
 devo-execpolicy = { path = "crates/execpolicy" }

@@ -271,14 +271,15 @@ Client projections should include:
 
 Representative protocol surfaces may include:
 
-- `mcp.listServers`
-- `mcp.refreshServer`
-- `mcp.startServer`
-- `mcp.stopServer`
-- `mcp.listCapabilities`
+- `mcp/list`
+- `mcp/tools`
+- `mcp/set_enabled` (persist config and apply per-server start/stop live; rebuilds the tool registry Arc so the next turn sees catalog changes)
+- `mcp.refreshServer` / `mcp.startServer` / `mcp.stopServer` (optional aliases later; `mcp/set_enabled` is the user-facing compose)
 - `mcp.readResource`
 
 These protocol surfaces are client/server methods. Model-requested MCP tool execution still flows through the tool supervisor.
+
+Enable/disable must be host-owned: clients call `mcp/set_enabled` rather than writing `config.toml` and expecting a silent runtime apply. In-flight turns keep their existing registry Arc; subsequent turns use the swapped registry.
 
 ## Error Handling
 

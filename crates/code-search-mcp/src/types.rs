@@ -712,7 +712,7 @@ mod tests {
     fn bench_chunk_location_unix_path() {
         let chunk = Chunk {
             content: "content".to_string(),
-            file_path: Path::new("crates/code-search/src/index.rs").to_path_buf(),
+            file_path: Path::new("crates/code-search-mcp/src/index.rs").to_path_buf(),
             start_line: 123,
             end_line: 145,
             language: "rust".to_string(),
@@ -728,7 +728,7 @@ mod tests {
         let elapsed = started.elapsed();
         assert_eq!(
             total_len,
-            "crates/code-search/src/index.rs:123-145".len() * iterations
+            "crates/code-search-mcp/src/index.rs:123-145".len() * iterations
         );
         println!(
             "chunk_location_unix_path iterations={iterations} elapsed_ms={} per_call_ns={:.2}",
@@ -742,14 +742,14 @@ mod tests {
     fn bench_chunk_cmp_location_same_path_lines() {
         let left = Chunk {
             content: "left".to_string(),
-            file_path: Path::new("crates/code-search/src/index.rs").to_path_buf(),
+            file_path: Path::new("crates/code-search-mcp/src/index.rs").to_path_buf(),
             start_line: 1_234_567,
             end_line: 1_234_589,
             language: "rust".to_string(),
         };
         let right = Chunk {
             content: "right".to_string(),
-            file_path: Path::new("crates/code-search/src/index.rs").to_path_buf(),
+            file_path: Path::new("crates/code-search-mcp/src/index.rs").to_path_buf(),
             start_line: 1_234_568,
             end_line: 1_234_590,
             language: "rust".to_string(),

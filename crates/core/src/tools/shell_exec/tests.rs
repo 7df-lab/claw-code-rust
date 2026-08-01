@@ -2,7 +2,6 @@ use super::*;
 use crate::ToolContent;
 use pretty_assertions::assert_eq;
 use std::hint::black_box;
-use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -238,6 +237,17 @@ async fn execute_shell_command_success_metadata_is_mixed() {
         } => {
             assert!(text.contains("metadata_test"));
             assert_eq!(metadata["description"], "metadata test");
+            assert!(metadata.get("output").is_none());
+            assert_eq!(
+                ToolContent::Mixed {
+                    text: Some(text.clone()),
+                    json: Some(metadata.clone()),
+                }
+                .text_for_model()
+                .matches("metadata_test")
+                .count(),
+                1
+            );
         }
         content => panic!("expected mixed success output, got {content:?}"),
     }
@@ -268,7 +278,7 @@ async fn execute_shell_command_error_output_is_text_only() {
     assert!(matches!(result.content, ToolContent::Text(text) if text.contains("exit code 7")));
 }
 
-use super::{SandboxLaunchPlan, platform_shell_program, preview, resolve_shell, truncate_output};
+use super::{platform_shell_program, preview, resolve_shell, truncate_output};
 
 #[cfg(unix)]
 #[tokio::test]
@@ -334,7 +344,7 @@ fn macos_pipe_and_pty_launch_plans_wrap_via_sandbox_exec() {
                 assert!(wrapped.helper_enforces, "{label}");
             }
             devo_sandbox::SandboxWrap::None => assert!(
-                !Path::new("/usr/bin/sandbox-exec").is_file(),
+                !std::path::Path::new("/usr/bin/sandbox-exec").is_file(),
                 "{label}: sandbox-exec exists but wrap was declined"
             ),
         }

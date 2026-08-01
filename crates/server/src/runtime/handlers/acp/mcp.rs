@@ -92,7 +92,6 @@ pub(super) fn acp_mcp_config(
     Ok(McpConfig {
         servers: records,
         auto_start: true,
-        refresh_on_config_reload: false,
     })
 }
 
@@ -229,7 +228,6 @@ mod tests {
                     auth_ref: None,
                 }],
                 auto_start: true,
-                refresh_on_config_reload: false,
             }
         );
     }
@@ -311,7 +309,6 @@ mod tests {
                     },
                 ],
                 auto_start: true,
-                refresh_on_config_reload: false,
             }
         );
     }

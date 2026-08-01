@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 use crate::events::ToolProgressSender;
 use crate::invocation::FunctionToolOutput;
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "macos", windows)))]
 pub(crate) use launch::SandboxLaunchPlan;
 #[cfg(test)]
 pub(crate) use resolve::platform_shell_program;
@@ -111,8 +111,9 @@ pub(crate) async fn execute_shell_command(
 }
 
 // TODO: Preview truncation belongs on the client, not the server. Move
-// `preview` (and callers that stuff truncated text into tool metadata) to
-// the client side so the server returns full output / structured metadata.
+// `preview` (used today for short command metadata) and any remaining
+// display-oriented shortening to the client so the server returns full
+// stream text plus structured metadata without duplicating output.
 pub(crate) fn preview(text: &str) -> String {
     if text.len() <= MAX_METADATA_LENGTH {
         return text.to_string();

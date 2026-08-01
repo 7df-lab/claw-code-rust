@@ -491,6 +491,7 @@ fn build_runtime(
             provider,
             router,
             Arc::new(ToolRegistry::new()),
+            devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::new(vec![Model {
                 slug: "test-model".to_string(),

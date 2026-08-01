@@ -9,7 +9,7 @@ env:
   RIPGREP_VERSION: 15.1.0
 
 jobs:
-  # ── Matrix build ─────────────────────────────────────────────────────────
+  # ── Per-target: compile devo once, then package CLI and/or desktop ───────
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -19,23 +19,57 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             ext: ""
-            archive: tar.gz
+            package_cli: true
+            package_desktop: true
+            desktop_platform: linux
+            desktop_arch: x64
+            rg_target: x86_64-unknown-linux-musl
+            electron_args: --linux --x64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             ext: ""
-            archive: tar.gz
+            package_cli: true
+            package_desktop: true
+            desktop_platform: linux
+            desktop_arch: arm64
+            rg_target: aarch64-unknown-linux-gnu
+            electron_args: --linux --arm64
           - os: macos-latest
             target: aarch64-apple-darwin
             ext: ""
-            archive: tar.gz
+            package_cli: true
+            package_desktop: true
+            desktop_platform: mac
+            desktop_arch: arm64
+            rg_target: aarch64-apple-darwin
+            electron_args: --mac --arm64
           - os: macos-latest
             target: x86_64-apple-darwin
             ext: ""
-            archive: tar.gz
+            package_cli: true
+            package_desktop: true
+            desktop_platform: mac
+            desktop_arch: x64
+            rg_target: x86_64-apple-darwin
+            electron_args: --mac --x64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             ext: ".exe"
-            archive: zip
+            package_cli: true
+            package_desktop: true
+            desktop_platform: windows
+            desktop_arch: x64
+            rg_target: x86_64-pc-windows-msvc
+            electron_args: --win --x64
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            ext: ".exe"
+            package_cli: false
+            package_desktop: true
+            desktop_platform: windows
+            desktop_arch: arm64
+            rg_target: aarch64-pc-windows-msvc
+            electron_args: --win --arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -57,125 +91,71 @@ jobs:
         with:
           tool: cargo-zigbuild@0.22.3
 
-      - name: Build release binary (x86_64 Linux)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: cargo zigbuild --release --target ${{ matrix.target }} -p devo-cli
-
-      - name: Build release binary (Linux ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: cargo zigbuild --release --target ${{ matrix.target }} -p devo-cli
+      - name: Build release binary (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo zigbuild --release --target ${{ matrix.target }} -p devo-cli
+          cargo zigbuild --release --target ${{ matrix.target }} -p devo-code-search-mcp
 
       - name: Build release binary (macOS)
         if: runner.os == 'macOS'
-        run: cargo build --release --target ${{ matrix.target }} -p devo-cli
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p devo-cli
+          cargo build --release --target ${{ matrix.target }} -p devo-code-search-mcp
 
       - name: Build release binary (Windows)
         if: runner.os == 'Windows'
-        run: cargo build --release --target ${{ matrix.target }} -p devo-cli
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p devo-cli
+          cargo build --release --target ${{ matrix.target }} -p devo-code-search-mcp
 
       - name: Strip symbols (macOS)
         if: runner.os == 'macOS'
-        run: strip target/${{ matrix.target }}/release/devo${{ matrix.ext }}
+        run: |
+          strip target/${{ matrix.target }}/release/devo${{ matrix.ext }}
+          strip target/${{ matrix.target }}/release/devo-code-search-mcp${{ matrix.ext }}
 
-      - name: Prepare staging directory
+      # ── CLI archive (skipped for desktop-only targets) ────────────────────
+      - name: Prepare CLI staging directory
+        if: matrix.package_cli
         shell: bash
         run: |
           staging=devo-${{ github.ref_name }}-${{ matrix.target }}
           mkdir -p "$staging"
           cp target/${{ matrix.target }}/release/devo${{ matrix.ext }} "$staging/"
+          cp target/${{ matrix.target }}/release/devo-code-search-mcp${{ matrix.ext }} "$staging/"
           cp README.md LICENSE "$staging/" 2>/dev/null || true
           echo "STAGING=$staging" >> "$GITHUB_ENV"
 
       - name: Create tar.gz archive (Linux/macOS)
-        if: runner.os != 'Windows'
+        if: matrix.package_cli && runner.os != 'Windows'
         run: tar czf "${{ env.STAGING }}.tar.gz" "${{ env.STAGING }}"
 
       - name: Create zip archive (Windows)
-        if: runner.os == 'Windows'
+        if: matrix.package_cli && runner.os == 'Windows'
         shell: pwsh
         run: |
           $staging = "$env:STAGING"
           Compress-Archive -Path "$staging/*" -DestinationPath "$staging.zip"
 
       - uses: actions/upload-artifact@v4
+        if: matrix.package_cli
         with:
           name: devo-${{ github.ref_name }}-${{ matrix.target }}
           path: devo-${{ github.ref_name }}-${{ matrix.target }}.*
 
-  # ── Desktop app builds ───────────────────────────────────────────────────
-  desktop:
-    name: Build desktop ${{ matrix.platform }} ${{ matrix.arch }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            platform: mac
-            arch: arm64
-            target: aarch64-apple-darwin
-            rg_target: aarch64-apple-darwin
-            script: package:mac:arm64
-          - os: macos-latest
-            platform: mac
-            arch: x64
-            target: x86_64-apple-darwin
-            rg_target: x86_64-apple-darwin
-            script: package:mac:x64
-          - os: windows-latest
-            platform: windows
-            arch: x64
-            target: x86_64-pc-windows-msvc
-            rg_target: x86_64-pc-windows-msvc
-            script: package:win:x64
-          - os: windows-latest
-            platform: windows
-            arch: arm64
-            target: aarch64-pc-windows-msvc
-            rg_target: aarch64-pc-windows-msvc
-            script: package:win:arm64
-          - os: ubuntu-latest
-            platform: linux
-            arch: x64
-            target: x86_64-unknown-linux-musl
-            rg_target: x86_64-unknown-linux-musl
-            script: package:linux:x64
-          - os: ubuntu-latest
-            platform: linux
-            arch: arm64
-            target: aarch64-unknown-linux-musl
-            rg_target: aarch64-unknown-linux-gnu
-            script: package:linux:arm64
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: desktop-${{ matrix.target }}
-
-      - uses: mlugg/setup-zig@v2
-        if: runner.os == 'Linux'
-
-      - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@v2
-        if: runner.os == 'Linux'
-        with:
-          tool: cargo-zigbuild@0.22.3
-
+      # ── Desktop package (reuses the binary compiled above) ────────────────
       - uses: oven-sh/setup-bun@v2
+        if: matrix.package_desktop
 
       - name: Install Linux packaging dependencies
-        if: runner.os == 'Linux'
+        if: matrix.package_desktop && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm
 
       - name: Download ripgrep sidecar (Linux/macOS)
-        if: runner.os != 'Windows'
+        if: matrix.package_desktop && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -193,7 +173,7 @@ jobs:
           echo "DEVO_DESKTOP_RUNTIME_RG_BIN=$rg_bin" >> "$GITHUB_ENV"
 
       - name: Download ripgrep sidecar (Windows)
-        if: runner.os == 'Windows'
+        if: matrix.package_desktop && runner.os == 'Windows'
         shell: pwsh
         run: |
           $rgVersion = $env:RIPGREP_VERSION
@@ -214,18 +194,31 @@ jobs:
           "DEVO_DESKTOP_RUNTIME_RG_BIN=$($rg.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install desktop dependencies
+        if: matrix.package_desktop
         working-directory: apps/desktop
         run: bun install --frozen-lockfile
 
-      - name: Build desktop package
+      - name: Build desktop frontend
+        if: matrix.package_desktop
         working-directory: apps/desktop
-        run: bun run ${{ matrix.script }}
+        run: bun run build
+
+      - name: Stage desktop runtime from release binary
+        if: matrix.package_desktop
+        working-directory: apps/desktop
+        run: bun scripts/prepare-runtime.ts --target ${{ matrix.target }}
+
+      - name: Package desktop with electron-builder
+        if: matrix.package_desktop
+        working-directory: apps/desktop
+        run: bunx electron-builder ${{ matrix.electron_args }} --config electron-builder.yml --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - uses: actions/upload-artifact@v4
+        if: matrix.package_desktop
         with:
-          name: devo-desktop-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
+          name: devo-desktop-${{ github.ref_name }}-${{ matrix.desktop_platform }}-${{ matrix.desktop_arch }}
           path: |
             apps/desktop/release/*.AppImage
             apps/desktop/release/*.blockmap
@@ -239,7 +232,7 @@ jobs:
   # ── Create GitHub Release ──────────────────────────────────────────────
   release:
     name: Create Release
-    needs: [build, desktop]
+    needs: [build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

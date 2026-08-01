@@ -413,9 +413,6 @@ fn alias_map(registered: &HashSet<&str>) -> HashMap<String, String> {
     insert_alias(&mut aliases, registered, "file_search", "find");
     insert_alias(&mut aliases, registered, "rg", "grep");
     insert_alias(&mut aliases, registered, "ripgrep", "grep");
-    insert_alias(&mut aliases, registered, "semantic-search", "code_search");
-    insert_alias(&mut aliases, registered, "semantic_search", "code_search");
-    insert_alias(&mut aliases, registered, "semble", "code_search");
     insert_alias(&mut aliases, registered, "fetch-url", "fetch_url");
     insert_alias(&mut aliases, registered, "urlfetch", "fetch_url");
     insert_alias(&mut aliases, registered, "websearch", "web_search");
@@ -457,7 +454,6 @@ fn default_preloaded_tools() -> BTreeSet<String> {
         "read",
         "find",
         "grep",
-        "code_search",
         "ls",
         "write",
         "apply_patch",
@@ -837,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_search_does_not_resolve_code_search_alias_when_unregistered() {
+    fn tool_search_does_not_resolve_removed_code_search_alias() {
         let mut loaded = LoadedDeferredTools::default();
         let tools = vec![
             tool("read", "Read a file."),
@@ -851,7 +847,7 @@ mod tests {
             &mut loaded,
             &DeferredLoadingConfig::default(),
         )
-        .expect_err("unregistered code_search alias should not resolve");
+        .expect_err("removed code_search alias should not resolve");
 
         assert_eq!(
             err,

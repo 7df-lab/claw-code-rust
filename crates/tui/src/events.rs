@@ -491,13 +491,30 @@ pub(crate) enum WorkerEvent {
     SubagentMonitor { event: SubagentMonitorEvent },
     /// Current known skills were listed from the server.
     SkillsListed {
-        /// Pre-rendered skill summary shown in the bottom panel.
-        body: String,
         /// Structured skill metadata used by the composer `@skill` popup.
         skills: Vec<SkillMetadata>,
-        /// Whether this list should be rendered into the transcript.
-        show_in_transcript: bool,
+        /// Full skill list used by the interactive `/skills` picker.
+        picker_skills: Vec<crate::skills_picker::SkillPickerEntry>,
+        /// Whether `/skills` should open the interactive picker.
+        open_picker: bool,
     },
+    /// MCP server runtime statuses from `mcp/list`.
+    McpServersListed {
+        servers: Vec<devo_protocol::canonical::rpc_admin::McpServerInfo>,
+    },
+    /// Tools for one MCP server from `mcp/tools`.
+    McpToolsListed {
+        name: String,
+        tools: Vec<devo_protocol::canonical::rpc_admin::McpToolEntry>,
+    },
+    /// MCP enable/disable applied via `mcp/set_enabled`.
+    McpServerEnabled {
+        name: String,
+        enabled: bool,
+        servers: Vec<devo_protocol::canonical::rpc_admin::McpServerInfo>,
+    },
+    /// MCP enable/disable failed.
+    McpServerEnableFailed { name: String, message: String },
     /// ACP-native available commands changed for the active session.
     AcpAvailableCommandsUpdated {
         /// Commands advertised through `session/update`.

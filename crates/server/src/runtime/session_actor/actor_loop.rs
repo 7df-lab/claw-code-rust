@@ -120,7 +120,7 @@ pub(super) async fn run_session_actor(
                 let tool_registry = state
                     .tool_registry
                     .clone()
-                    .unwrap_or_else(|| Arc::clone(&state.runtime_context.registry));
+                    .unwrap_or_else(|| state.runtime_context.tool_registry());
                 let _ = reply.send(ShellExecContextSnapshot {
                     permission_mode: state.core.config.permission_mode,
                     permission_profile: state.core.config.permission_profile.clone(),
@@ -472,6 +472,9 @@ pub(super) async fn run_session_actor(
             } => {
                 state.tool_registry = tool_registry;
                 let _ = reply.send(());
+            }
+            SessionCommand::GetRuntimeContext { reply } => {
+                let _ = reply.send(Arc::clone(&state.runtime_context));
             }
             SessionCommand::GetResumeSnapshot { reply } => {
                 let pending_texts = state

@@ -210,7 +210,6 @@ stdio 示例：
 ```toml
 [mcp]
 auto_start = true
-refresh_on_config_reload = true
 
 [[mcp.servers]]
 id = "filesystem"
@@ -255,7 +254,7 @@ url = "https://example.com/mcp/sse"
 
 字段说明：
 
-- `auto_start` 与 `refresh_on_config_reload` 默认均为 `true`。
+- `auto_start` 默认为 `true`。运行中会话的 MCP 启用/禁用通过 `mcp/set_enabled`（TUI `/mcps`）即时生效。
 - `startup_policy` 控制已启用服务器的启动时机：`eager` 在启动阶段启动，`lazy`
   首次使用时启动，`manual` 仅按显式请求启动。
 - stdio 下，`env` 提供字面量值，`env_vars` 列出从本地环境继承的变量名；
@@ -274,4 +273,30 @@ url = "https://example.com/mcp/sse"
 合并行为：`[mcp]` 与其他表一样按字段合并，但 `servers` 是数组。项目级的
 `[[mcp.servers]]` 列表会整体替换用户级列表，而不是按 `id` 合并。
 
-可在 TUI 中用 `/mcp list` 验证配置。
+### CLI 管理
+
+用 `devo mcp` 管理用户级 MCP 服务器（`~/.devo/config.toml`）：
+
+```bash
+# Stdio（`--` 后为 command + args）
+devo mcp add time -- docker run -i --rm mcp/time
+
+# Streamable HTTP（`--transport http` 写入 kind = "streamable_http"）
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+
+# 旧版 SSE
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+
+devo mcp list
+devo mcp enable time
+devo mcp disable time
+devo mcp remove time
+```
+
+CLI `devo mcp enable|disable` 会写入用户 `config.toml`（离线配置）。已在运行的
+交互会话通过 TUI `/mcps`（`mcp/set_enabled` RPC）即时启用/禁用。
+
+可在 TUI 中用 `/mcps`（交互式列表 → 详情 → 工具；Enable/Disable 会持久化配置并为
+下一回合应用管理器与工具注册表）验证配置。客户端也可调用 `mcp/list`、
+`mcp/tools`、`mcp/set_enabled`。也可用 `devo mcp add|list|remove|enable|disable`
+管理用户级配置。

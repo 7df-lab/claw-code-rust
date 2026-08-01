@@ -655,6 +655,19 @@ impl SessionHandle {
         reply_rx.await.is_ok()
     }
 
+    pub(crate) async fn runtime_context(
+        &self,
+    ) -> Option<Arc<crate::session_context::SessionRuntimeContext>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if !self
+            .send(SessionCommand::GetRuntimeContext { reply: reply_tx })
+            .await
+        {
+            return None;
+        }
+        reply_rx.await.ok()
+    }
+
     pub(crate) async fn resume_snapshot(&self) -> Option<super::snapshots::SessionResumeSnapshot> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if !self

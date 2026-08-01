@@ -88,7 +88,10 @@ pub(crate) async fn run_prompt(
 
     let registry = {
         let mcp_manager = std::sync::Arc::new(RmcpMcpManager::new(
-            app_config.mcp.clone(),
+            app_config
+                .mcp
+                .clone()
+                .with_code_search_workspace_cwd(cwd.clone()),
             app_config.mcp_oauth_credentials_store.unwrap_or_default(),
         ));
         let tool_plan = ToolPlanConfig::from_app_config(&app_config);

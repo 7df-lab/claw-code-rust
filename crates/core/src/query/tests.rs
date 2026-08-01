@@ -271,6 +271,84 @@ fn model_tool_result_truncation_preserves_utf8_boundaries() {
 }
 
 #[test]
+fn model_visible_shell_mixed_content_uses_text_only_once() {
+    use super::serialize_tool_content_for_model;
+    use crate::tools::ToolContent;
+
+    let stream = "hello\nworld".to_string();
+    let content = ToolContent::Mixed {
+        text: Some(stream.clone()),
+        json: Some(serde_json::json!({
+            "command": "echo hello",
+            "exit": 0,
+            "cwd": "/tmp",
+            "description": "say hello",
+        })),
+    };
+
+    let model = serialize_tool_content_for_model(content.clone(), Some("shell_command"));
+    let truncated = truncate_tool_result_for_model(
+        model.clone(),
+        Some("shell_command"),
+        TruncationPolicyConfig::bytes(10_000).into(),
+    );
+
+    assert_eq!(model, stream);
+    assert_eq!(truncated, stream);
+    assert_eq!(model.matches("hello").count(), 1);
+    assert!(!truncated.contains("\"exit\""));
+    assert!(!truncated.contains("\"command\""));
+    assert_eq!(
+        serialize_tool_content_for_model(content, Some("bash")),
+        stream
+    );
+}
+
+#[test]
+fn model_visible_webfetch_mixed_content_keeps_image_json() {
+    use super::serialize_tool_content_for_model;
+    use crate::tools::ToolContent;
+
+    let content = ToolContent::Mixed {
+        text: Some("Image fetched successfully".into()),
+        json: Some(serde_json::json!({
+            "title": "https://example.com/a.png (image/png)",
+            "mime": "image/png",
+            "image_base64": "abc123",
+        })),
+    };
+
+    let model = serialize_tool_content_for_model(content, Some("webfetch"));
+    assert!(model.contains("Image fetched successfully"));
+    assert!(model.contains("image_base64"));
+    assert!(model.contains("abc123"));
+}
+
+#[test]
+fn model_visible_read_mixed_content_omits_preview_json() {
+    use super::serialize_tool_content_for_model;
+    use crate::tools::ToolContent;
+
+    let file_body = "line one\nline two\nline three".to_string();
+    let text =
+        format!("<path>/tmp/a.rs</path>\n<type>file</type>\n<content>\n{file_body}\n</content>");
+    let content = ToolContent::Mixed {
+        text: Some(text.clone()),
+        json: Some(serde_json::json!({
+            "preview": "line one\nline two\nline three",
+            "truncated": false,
+            "loaded": [],
+        })),
+    };
+
+    let model = serialize_tool_content_for_model(content, Some("read"));
+    assert_eq!(model, text);
+    assert_eq!(model.matches("line one").count(), 1);
+    assert!(!model.contains("\"preview\""));
+    assert!(!model.contains("\"truncated\""));
+}
+
+#[test]
 fn model_tool_result_truncation_preserves_agent_coordination_results() {
     let content = "abcdefghijklmnopqrstuvwxyz".to_string();
 

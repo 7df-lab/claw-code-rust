@@ -9,11 +9,12 @@ mod tests {
 
     #[test]
     fn mcp_slash_command_parses_and_is_listed() {
+        assert_eq!("mcps".parse::<SlashCommand>(), Ok(SlashCommand::Mcp));
         assert_eq!("mcp".parse::<SlashCommand>(), Ok(SlashCommand::Mcp));
         assert!(
             built_in_slash_commands()
                 .iter()
-                .any(|(name, command)| *name == "mcp" && *command == SlashCommand::Mcp)
+                .any(|(name, command)| *name == "mcps" && *command == SlashCommand::Mcp)
         );
     }
 

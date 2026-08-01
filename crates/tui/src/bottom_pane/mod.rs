@@ -14,13 +14,10 @@ use devo_protocol::user_input::TextElement;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
-use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
-use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
-use unicode_width::UnicodeWidthStr;
 
 mod approval_overlay;
 pub(crate) mod bottom_pane_view;
@@ -31,6 +28,7 @@ mod custom_prompt_view;
 mod footer;
 mod input_mode;
 pub(crate) mod list_selection_view;
+mod model_picker;
 mod paste_burst;
 mod pending_thread_approvals;
 pub(crate) mod popup_consts;
@@ -52,6 +50,10 @@ use chat_composer::ChatComposerConfig;
 use chat_composer::InputResult as ComposerInputResult;
 pub(crate) use custom_prompt_view::CustomPromptView;
 pub(crate) use input_mode::InputMode;
+pub(crate) use model_picker::ModelPickerEffortOption;
+pub(crate) use model_picker::ModelPickerEntry;
+pub(crate) use model_picker::ModelPickerSelection;
+use model_picker::ModelPickerView;
 pub(crate) use proposed_plan_actions_view::ProposedPlanActionsView;
 
 use crate::app_command::AppCommand;
@@ -188,20 +190,12 @@ pub(crate) enum InputResult {
     },
     ModelSelected {
         model: String,
+        reasoning_effort: Option<String>,
     },
     ThemeSelected {
         name: String,
     },
     None,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ModelPickerEntry {
-    pub(crate) selection_value: String,
-    pub(crate) display_name: String,
-    pub(crate) description: Option<String>,
-    pub(crate) right_hint: Option<String>,
-    pub(crate) is_current: bool,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -737,19 +731,19 @@ impl BottomPane {
         self.view_stack.last().map(std::convert::AsRef::as_ref)
     }
 
-    /// Children for an open bottom-pane view: optional status, composer, then
-    /// the view below — matching `@` / `/` composer popups.
+    /// Children for an open bottom-pane view: optional status, optionally the
+    /// composer, then the view. Views that [`BottomPaneView::replaces_composer`]
+    /// occupy the input area instead of stacking below a draft.
     fn active_view_layout_children<'a>(
         &'a self,
         view: &'a dyn BottomPaneView,
-        include_composer: bool,
     ) -> Vec<&'a dyn Renderable> {
         let mut children: Vec<&dyn Renderable> = Vec::with_capacity(4);
         if let Some(status) = &self.status {
             children.push(&STATUS_SEPARATOR);
             children.push(status);
         }
-        if include_composer {
+        if !view.replaces_composer() {
             children.push(&self.composer);
         }
         children.push(view);
@@ -791,8 +785,11 @@ impl BottomPane {
             let selected_model = view.take_model_selection();
             let selected_theme = view.take_theme_selection();
             self.request_redraw();
-            if let Some(model) = selected_model {
-                return InputResult::ModelSelected { model };
+            if let Some(selection) = selected_model {
+                return InputResult::ModelSelected {
+                    model: selection.model,
+                    reasoning_effort: selection.reasoning_effort,
+                };
             }
             if let Some(name) = selected_theme {
                 return InputResult::ThemeSelected { name };
@@ -1017,7 +1014,7 @@ impl Renderable for BottomPane {
             return;
         }
         if let Some(view) = self.active_view() {
-            let children = self.active_view_layout_children(view, /*include_composer*/ true);
+            let children = self.active_view_layout_children(view);
             self.render_children(area, buf, &children);
             return;
         }
@@ -1044,7 +1041,7 @@ impl Renderable for BottomPane {
 
     fn desired_height(&self, width: u16) -> u16 {
         if let Some(view) = self.active_view() {
-            let children = self.active_view_layout_children(view, /*include_composer*/ true);
+            let children = self.active_view_layout_children(view);
             return self.desired_children_height(width, &children);
         }
         let mut children: Vec<&dyn Renderable> = Vec::with_capacity(5);
@@ -1068,8 +1065,9 @@ impl Renderable for BottomPane {
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         if let Some(view) = self.active_view() {
-            // Include composer for vertical offset (view sits below it), but skip
-            // its caret so an unfocused draft does not steal focus from the panel.
+            // When the view stacks below the composer, include composer height for
+            // vertical offset but skip its caret so an unfocused draft does not
+            // steal focus. Views that replace the composer start at the input area.
             let mut y = area.y;
             if let Some(status) = &self.status {
                 for child in [&STATUS_SEPARATOR as &dyn Renderable, status] {
@@ -1077,7 +1075,9 @@ impl Renderable for BottomPane {
                     y = y.saturating_add(height);
                 }
             }
-            y = y.saturating_add(self.composer.desired_height(area.width));
+            if !view.replaces_composer() {
+                y = y.saturating_add(self.composer.desired_height(area.width));
+            }
             let view_area = Rect::new(area.x, y, area.width, area.bottom().saturating_sub(y))
                 .intersection(area);
             return view.cursor_pos(view_area);
@@ -1099,134 +1099,6 @@ impl Renderable for BottomPane {
         children.push(&self.pending_thread_approvals);
         children.push(&self.composer);
         self.child_cursor_pos(area, &children)
-    }
-}
-
-struct ModelPickerView {
-    entries: Vec<ModelPickerEntry>,
-    selection: usize,
-    complete: bool,
-    selected_model: Option<String>,
-    accent_color: Color,
-}
-
-impl ModelPickerView {
-    fn new(entries: Vec<ModelPickerEntry>, accent_color: Color) -> Self {
-        let selection = entries
-            .iter()
-            .position(|entry| entry.is_current)
-            .unwrap_or(0);
-        Self {
-            entries,
-            selection,
-            complete: false,
-            selected_model: None,
-            accent_color,
-        }
-    }
-
-    fn move_selection(&mut self, delta: isize) {
-        if self.entries.is_empty() {
-            self.selection = 0;
-        } else {
-            self.selection =
-                (self.selection as isize + delta).rem_euclid(self.entries.len() as isize) as usize;
-        }
-    }
-
-    fn accept(&mut self) {
-        self.selected_model = self
-            .entries
-            .get(self.selection)
-            .map(|entry| entry.selection_value.clone());
-        self.complete = true;
-    }
-
-    fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for (index, entry) in self.entries.iter().enumerate() {
-            let is_selected = index == self.selection;
-            let marker = if entry.is_current {
-                "●"
-            } else if is_selected {
-                "›"
-            } else {
-                " "
-            };
-            let marker_style = if entry.is_current {
-                Style::default().fg(self.accent_color).bold()
-            } else {
-                Style::default()
-            };
-            let label_style = if is_selected {
-                Style::default().fg(self.accent_color).bold()
-            } else if !entry.is_current {
-                Style::default().dim()
-            } else {
-                Style::default()
-            };
-            let mut title_spans = vec![
-                Span::styled(marker.to_string(), marker_style),
-                Span::raw(" "),
-                Span::styled(entry.display_name.clone(), label_style),
-            ];
-            if let Some(right_hint) = entry
-                .right_hint
-                .as_deref()
-                .map(str::trim)
-                .filter(|right_hint| !right_hint.is_empty())
-            {
-                let title_width = Line::from(title_spans.clone()).width();
-                let right_hint_width = UnicodeWidthStr::width(right_hint);
-                let padding = usize::from(width)
-                    .saturating_sub(title_width + right_hint_width)
-                    .max(2);
-                title_spans.push(Span::raw(" ".repeat(padding)));
-                title_spans.push(Span::styled(right_hint.to_string(), Style::default().dim()));
-            }
-            lines.push(Line::from(title_spans));
-            if let Some(description) = entry.description.as_deref()
-                && !description.trim().is_empty()
-            {
-                lines.push(Line::from(format!("    {description}")).dim());
-            }
-        }
-        lines
-    }
-}
-
-impl BottomPaneView for ModelPickerView {
-    fn handle_key_event(&mut self, key_event: KeyEvent) {
-        match key_event.code {
-            KeyCode::Esc => self.complete = true,
-            KeyCode::Up => self.move_selection(-1),
-            KeyCode::Down => self.move_selection(1),
-            KeyCode::Enter => self.accept(),
-            _ => {}
-        }
-    }
-
-    fn is_complete(&self) -> bool {
-        self.complete
-    }
-
-    fn on_ctrl_c(&mut self) -> CancellationEvent {
-        self.complete = true;
-        CancellationEvent::Handled
-    }
-
-    fn take_model_selection(&mut self) -> Option<String> {
-        self.selected_model.take()
-    }
-}
-
-impl Renderable for ModelPickerView {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        Paragraph::new(self.render_lines(area.width)).render(area, buf);
-    }
-
-    fn desired_height(&self, width: u16) -> u16 {
-        u16::try_from(self.render_lines(width).len()).unwrap_or(u16::MAX)
     }
 }
 
@@ -1335,5 +1207,42 @@ mod tests {
             // Selection views may not expose a caret; None is fine.
             assert_eq!(cursor, None);
         }
+    }
+
+    #[test]
+    fn model_picker_replaces_composer_input_area() {
+        let mut pane = test_bottom_pane();
+        let draft = "draft should not appear while model picker is open";
+        pane.set_text_content(draft.to_string(), Vec::new(), Vec::new());
+
+        pane.open_model_picker(vec![ModelPickerEntry {
+            selection_value: "gpt".to_string(),
+            display_name: "GPT".to_string(),
+            right_hint: Some("OpenAI".to_string()),
+            is_current: true,
+            effort_options: vec![ModelPickerEffortOption {
+                label: "High".to_string(),
+                value: "high".to_string(),
+            }],
+            selected_effort: Some("high".to_string()),
+        }]);
+
+        let picker_height = pane.desired_height(/*width*/ 80);
+        assert!(picker_height > 0);
+
+        let rendered = render_bottom_pane(&pane, /*width*/ 80);
+        assert!(rendered.contains("GPT"), "model row missing:\n{rendered}");
+        assert!(
+            !rendered.contains(draft),
+            "composer draft should be hidden while model picker replaces input:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("[High]") || rendered.contains("High"),
+            "effort chips missing:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("Reasoning"),
+            "effort strip should not show Reasoning label:\n{rendered}"
+        );
     }
 }

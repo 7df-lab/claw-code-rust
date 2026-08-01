@@ -2,6 +2,7 @@ use crate::render::renderable::Renderable;
 use crossterm::event::KeyEvent;
 
 use super::CancellationEvent;
+use super::ModelPickerSelection;
 
 /// Trait implemented by every view that can be shown in the bottom pane.
 pub(crate) trait BottomPaneView: Renderable {
@@ -27,12 +28,18 @@ pub(crate) trait BottomPaneView: Renderable {
         None
     }
 
-    fn take_model_selection(&mut self) -> Option<String> {
+    fn take_model_selection(&mut self) -> Option<ModelPickerSelection> {
         None
     }
 
     fn take_theme_selection(&mut self) -> Option<String> {
         None
+    }
+
+    /// When true, the view replaces the composer input area instead of stacking
+    /// below a visible draft.
+    fn replaces_composer(&self) -> bool {
+        false
     }
 
     /// Handle Ctrl-C while this view is active.

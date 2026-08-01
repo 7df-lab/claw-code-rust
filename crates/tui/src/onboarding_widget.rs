@@ -45,8 +45,11 @@ use crate::onboarding_viewport::render_lines_with_anchor;
 use crate::onboarding_viewport::render_lines_with_fixed_footer;
 use crate::render::renderable::Renderable;
 use crate::tui::frame_requester::FrameRequester;
+use crate::ui_consts::FOOTER_INDENT_COLS;
 
 const SPINNER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(80);
+/// Left inset for onboarding list rows, matching `/model` / composer gutters.
+const LIST_LEFT_PAD: usize = FOOTER_INDENT_COLS;
 const VALIDATION_FAILED_ACTIONS: [&str; 4] = [
     "Add model anyway",
     "Retry with current settings",
@@ -1599,13 +1602,14 @@ impl OnboardingWidget {
     fn render_footer(lines: &mut Vec<Line<'static>>, primary: &str, secondary: &str) {
         lines.push(Line::from(""));
         if secondary.is_empty() {
-            lines.push(Line::from(vec![Span::styled(
-                primary.to_string(),
-                Style::default().dim(),
-            )]));
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(LIST_LEFT_PAD)),
+                Span::styled(primary.to_string(), Style::default().dim()),
+            ]));
             return;
         }
         lines.push(Line::from(vec![
+            Span::raw(" ".repeat(LIST_LEFT_PAD)),
             Span::styled(primary.to_string(), Style::default().dim()),
             Span::styled("  ·  ", Style::default().dim()),
             Span::styled(secondary.to_string(), Style::default().dim()),
@@ -1618,19 +1622,20 @@ impl OnboardingWidget {
         description: Option<String>,
         is_selected: bool,
     ) {
-        let marker = if is_selected { ">" } else { " " };
+        let marker = if is_selected { "›" } else { " " };
         let marker_style = if is_selected {
             Style::default().cyan().bold()
         } else {
             Style::default().dim()
         };
         let label_style = if is_selected {
-            Style::default().bold()
+            Style::default().cyan().bold().underlined()
         } else {
             Style::default()
         };
 
         lines.push(Line::from(vec![
+            Span::raw(" ".repeat(LIST_LEFT_PAD)),
             Span::styled(marker.to_string(), marker_style),
             Span::raw(" "),
             Span::styled(label, label_style),
@@ -1638,10 +1643,18 @@ impl OnboardingWidget {
 
         if let Some(description) = description {
             lines.push(Line::from(vec![
-                Span::styled("  ", Style::default().dim()),
+                Span::raw(" ".repeat(LIST_LEFT_PAD + 2)),
                 Span::styled(description, Style::default().dim()),
             ]));
         }
+    }
+
+    fn scroll_overflow_line() -> Line<'static> {
+        // Align with option labels: LIST_LEFT_PAD + marker + following space.
+        Line::from(vec![
+            Span::raw(" ".repeat(LIST_LEFT_PAD + 2)),
+            Span::styled("…".to_string(), Style::default().dim()),
+        ])
     }
 
     fn render_inline_setup_header(lines: &mut Vec<Line<'static>>, model: &str) {
@@ -1884,14 +1897,14 @@ impl OnboardingWidget {
             Style::default().dim()
         };
         let label_style = if is_selected {
-            Style::default().bold()
+            Style::default().cyan().bold().underlined()
         } else {
             Style::default()
         };
 
         lines.push(Line::from(vec![
             Span::styled("| ", Style::default().cyan().bold()),
-            Span::styled(if is_selected { ">" } else { " " }, marker_style),
+            Span::styled(if is_selected { "›" } else { " " }, marker_style),
             Span::raw(" "),
             Span::styled(label.to_string(), label_style),
         ]));
@@ -2085,8 +2098,13 @@ impl OnboardingWidget {
         let scroll_offset = state
             .scroll_top
             .min(filtered_indices.len().saturating_sub(max_visible));
+        let has_more_above = scroll_offset > 0;
+        let has_more_below = scroll_offset + max_visible < filtered_indices.len();
         let mut anchor = None;
 
+        if has_more_above {
+            lines.push(Self::scroll_overflow_line());
+        }
         for (vis_idx, &actual_idx) in filtered_indices
             .iter()
             .enumerate()
@@ -2096,12 +2114,13 @@ impl OnboardingWidget {
             if let Some(item) = items.get(actual_idx) {
                 let is_selected = state.selected_idx == Some(vis_idx);
                 let start = lines.len();
-                let description = if item.display_name == item.slug {
-                    None
-                } else {
-                    Some(item.display_name.clone())
-                };
-                Self::render_option_row(&mut lines, item.slug.clone(), description, is_selected);
+                // Slug-only rows: display_name is used for filtering, not shown.
+                Self::render_option_row(
+                    &mut lines,
+                    item.slug.clone(),
+                    /*description*/ None,
+                    is_selected,
+                );
                 if is_selected {
                     anchor = Some(ViewportAnchor {
                         start,
@@ -2109,6 +2128,9 @@ impl OnboardingWidget {
                     });
                 }
             }
+        }
+        if has_more_below {
+            lines.push(Self::scroll_overflow_line());
         }
 
         let mut footer_lines = Vec::new();
@@ -2135,7 +2157,7 @@ impl OnboardingWidget {
 
         let byte_pos = Self::byte_index_for_char(input, cursor_pos);
         lines.push(Line::from(vec![
-            Span::styled("> ", Style::default().cyan()),
+            Span::styled("› ", Style::default().cyan()),
             Span::styled(
                 format!("{}▌{}", &input[..byte_pos], &input[byte_pos..]),
                 Style::default(),
@@ -2442,7 +2464,6 @@ impl Renderable for OnboardingWidget {
     fn desired_height(&self, _width: u16) -> u16 {
         match &self.state {
             OnboardingState::ModelSelection {
-                items,
                 state,
                 filtered_indices,
                 ..
@@ -2451,15 +2472,12 @@ impl Renderable for OnboardingWidget {
                 let scroll_offset = state
                     .scroll_top
                     .min(filtered_indices.len().saturating_sub(max_visible));
-                let option_rows = filtered_indices
-                    .iter()
-                    .skip(scroll_offset)
-                    .take(max_visible)
-                    .filter_map(|idx| items.get(*idx))
-                    .map(|item| if item.display_name == item.slug { 1 } else { 2 })
-                    .sum::<u16>()
-                    .max(1);
-                option_rows + 9
+                let has_more_above = scroll_offset > 0;
+                let has_more_below = scroll_offset + max_visible < filtered_indices.len();
+                let option_rows = u16::try_from(max_visible).unwrap_or(u16::MAX).max(1);
+                let overflow_rows = u16::from(has_more_above) + u16::from(has_more_below);
+                // title + hint + blank + filter + blank + options + overflow + footer spacing
+                option_rows + overflow_rows + 9
             }
             OnboardingState::CustomModelSlug { .. } => 8,
             OnboardingState::ProviderSelection { items, .. } => items.len() as u16 * 2 + 6,

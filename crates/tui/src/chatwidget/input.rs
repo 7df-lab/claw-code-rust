@@ -31,7 +31,6 @@ use devo_protocol::CollaborationMode;
 
 use super::ChatWidget;
 use super::ExternalEditorState;
-use super::PickerMode;
 use super::UserMessage;
 
 impl ChatWidget {
@@ -171,10 +170,12 @@ impl ChatWidget {
                 }
                 self.handle_slash_command(command, argument);
             }
-            InputResult::ModelSelected { model } => match self.picker_mode.take() {
-                Some(PickerMode::ReasoningEffort) => self.apply_reasoning_effort_selection(model),
-                _ => self.handle_model_picker_selection(model),
-            },
+            InputResult::ModelSelected {
+                model,
+                reasoning_effort,
+            } => {
+                self.handle_model_picker_selection(model, reasoning_effort);
+            }
             InputResult::ThemeSelected { name } => {
                 self.apply_theme_selection(name);
             }
@@ -236,7 +237,7 @@ impl ChatWidget {
             AppEvent::Redraw => self.frame_requester.schedule_frame(),
             AppEvent::SubmitUserInput { text } => self.submit_text(text),
             AppEvent::ModelSelected { model } => {
-                self.handle_model_picker_selection(model);
+                self.handle_model_picker_selection(model, None);
             }
             AppEvent::ThemeSelected { name } => {
                 self.apply_theme_selection(name);

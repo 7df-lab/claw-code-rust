@@ -7600,7 +7600,6 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
     widget.handle_app_event(AppEvent::ModelSelected {
         model: "second-model".to_string(),
     });
-    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     widget.submit_text("hello".to_string());
 
     assert_eq!(widget.current_model(), Some(&alt_model));
@@ -7635,7 +7634,10 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
 }
 
 #[test]
-fn model_selection_with_reasoning_effort_support_waits_for_second_step() {
+/// Trace: L2-DES-TUI-CMD-002
+/// Verifies: selecting a reasoning-capable model via AppEvent applies model and
+/// default effort in one step (no second picker).
+fn model_selection_with_reasoning_effort_support_applies_default_immediately() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
         slug: "test-model".to_string(),
@@ -7677,10 +7679,6 @@ fn model_selection_with_reasoning_effort_support_waits_for_second_step() {
     });
 
     assert_eq!(widget.current_model(), Some(&alt_model));
-    assert!(app_event_rx.try_recv().is_err());
-
-    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
     assert_eq!(
         app_event_rx
             .try_recv()

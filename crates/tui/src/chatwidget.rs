@@ -221,19 +221,6 @@ enum DotStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PickerMode {
-    Model,
-    ReasoningEffort,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PendingModelSelection {
-    selection: String,
-    display_name: String,
-    reasoning_effort_selection: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingApprovalRequest {
     session_id: devo_protocol::SessionId,
@@ -284,8 +271,6 @@ pub(crate) struct ChatWidget {
     resume_browser_loading: bool,
     resuming_session: bool,
     subagent_monitor: SubagentMonitorState,
-    picker_mode: Option<PickerMode>,
-    pending_model_selection: Option<PendingModelSelection>,
     theme_set: ThemeSet,
     active_theme_name: String,
     collapse_reasoning: bool,
@@ -523,8 +508,6 @@ impl ChatWidget {
             resume_browser_loading: false,
             resuming_session: false,
             subagent_monitor: SubagentMonitorState::default(),
-            picker_mode: None,
-            pending_model_selection: None,
             theme_set,
             active_theme_name,
             collapse_reasoning: initial_collapse_reasoning,

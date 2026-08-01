@@ -12,6 +12,7 @@ use ratatui::text::Line;
 
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
+use crate::bottom_pane::ModelPickerEffortOption;
 use crate::bottom_pane::ModelPickerEntry;
 use crate::bottom_pane::list_selection_view::ListSelectionView;
 use crate::bottom_pane::list_selection_view::SelectionViewParams;
@@ -19,8 +20,6 @@ use crate::events::SavedModelEntry;
 use crate::history_cell;
 
 use super::ChatWidget;
-use super::PendingModelSelection;
-use super::PickerMode;
 use super::permission_preset_items;
 use super::permission_preset_label;
 use super::reasoning_effort;
@@ -323,49 +322,50 @@ impl ChatWidget {
     }
 
     pub(super) fn open_model_picker(&mut self) {
-        self.picker_mode = Some(PickerMode::Model);
-        self.pending_model_selection = None;
+        let session_effort = self.reasoning_effort_selection.clone();
         let entries = self
             .saved_models
             .iter()
-            .map(|entry| ModelPickerEntry {
-                selection_value: Self::saved_model_selection_value(entry).to_string(),
-                display_name: self.saved_model_display_label(entry),
-                description: None,
-                right_hint: Self::saved_model_provider_name(entry),
-                is_current: self.saved_model_entry_is_current(entry),
+            .map(|entry| {
+                let model = self.model_for_saved_entry(entry);
+                let effort_entries = reasoning_effort::reasoning_effort_entries_for_model(
+                    &model,
+                    session_effort.as_deref(),
+                );
+                let selected_effort = effort_entries
+                    .iter()
+                    .find(|option| option.is_current)
+                    .map(|option| option.value.clone());
+                ModelPickerEntry {
+                    selection_value: Self::saved_model_selection_value(entry).to_string(),
+                    display_name: self.saved_model_display_label(entry),
+                    right_hint: Self::saved_model_provider_name(entry),
+                    is_current: self.saved_model_entry_is_current(entry),
+                    effort_options: effort_entries
+                        .into_iter()
+                        .map(|option| ModelPickerEffortOption {
+                            label: option.label,
+                            value: option.value,
+                        })
+                        .collect(),
+                    selected_effort,
+                }
             })
             .collect();
         self.bottom_pane.open_model_picker(entries);
         self.set_status_message("Select a model");
     }
 
-    pub(super) fn handle_model_picker_selection(&mut self, slug: String) {
+    pub(super) fn handle_model_picker_selection(
+        &mut self,
+        slug: String,
+        reasoning_effort: Option<String>,
+    ) {
         if let Some(entry) = self.saved_model_entry_for_selection(&slug).cloned() {
             let selected_model = self.apply_saved_model_entry_to_session(&entry);
-            let reasoning_effort_selection =
-                reasoning_effort::current_reasoning_effort_selection_for_model(
-                    &selected_model,
-                    self.reasoning_effort_selection.as_deref(),
-                );
-            self.pending_model_selection = Some(PendingModelSelection {
-                selection: Self::saved_model_selection_value(&entry).to_string(),
-                display_name: self.saved_model_display_label(&entry),
-                reasoning_effort_selection: reasoning_effort_selection.clone(),
-            });
-            self.reasoning_effort_selection = reasoning_effort_selection;
-            self.refresh_header_box();
-
-            if selected_model
-                .effective_reasoning_capability()
-                .options()
-                .is_empty()
-            {
-                self.finalize_pending_model_selection();
-                return;
-            }
-
-            self.open_reasoning_effort_picker();
+            let display_name = self.saved_model_display_label(&entry);
+            let selection = Self::saved_model_selection_value(&entry).to_string();
+            self.apply_model_and_effort(selection, display_name, &selected_model, reasoning_effort);
             return;
         }
 
@@ -379,34 +379,47 @@ impl ChatWidget {
             return;
         };
 
-        let reasoning_effort_selection =
-            reasoning_effort::current_reasoning_effort_selection_for_model(
-                &selected_model,
-                self.reasoning_effort_selection.as_deref(),
-            );
-        self.pending_model_selection = Some(PendingModelSelection {
-            selection: selected_model.slug.clone(),
-            display_name: selected_model.display_name.clone(),
-            reasoning_effort_selection: reasoning_effort_selection.clone(),
-        });
         self.current_model_binding_id = None;
         self.session.model_binding_id = None;
         self.session.provider = Some(selected_model.provider);
         self.session.model = Some(selected_model.clone());
         self.session.request_model = None;
-        self.reasoning_effort_selection = reasoning_effort_selection;
+        let display_name = selected_model.display_name.clone();
+        let selection = selected_model.slug.clone();
+        self.apply_model_and_effort(selection, display_name, &selected_model, reasoning_effort);
+    }
+
+    fn apply_model_and_effort(
+        &mut self,
+        selection: String,
+        display_name: String,
+        model: &Model,
+        reasoning_effort: Option<String>,
+    ) {
+        self.reasoning_effort_selection =
+            if model.effective_reasoning_capability().options().is_empty() {
+                None
+            } else {
+                reasoning_effort::current_reasoning_effort_selection_for_model(
+                    model,
+                    reasoning_effort
+                        .as_deref()
+                        .or(self.reasoning_effort_selection.as_deref()),
+                )
+            };
+        self.session.reasoning_effort = model
+            .resolve_reasoning_effort_selection(self.reasoning_effort_selection.as_deref())
+            .effective_reasoning_effort;
         self.refresh_header_box();
-
-        if selected_model
-            .effective_reasoning_capability()
-            .options()
-            .is_empty()
-        {
-            self.finalize_pending_model_selection();
-            return;
-        }
-
-        self.open_reasoning_effort_picker();
+        self.app_event_tx
+            .send(AppEvent::Command(AppCommand::override_turn_context(
+                /*cwd*/ None,
+                Some(selection),
+                Some(self.reasoning_effort_selection.clone()),
+                /*sandbox*/ None,
+                /*approval_policy*/ None,
+            )));
+        self.set_status_message(format!("Model set to {display_name}"));
     }
 
     pub(super) fn open_theme_picker(&mut self) {
@@ -605,35 +618,13 @@ impl ChatWidget {
         self.set_status_message(format!("Model set to {slug}"));
     }
 
-    pub(super) fn open_reasoning_effort_picker(&mut self) {
-        self.picker_mode = Some(PickerMode::ReasoningEffort);
-        let entries = self.reasoning_effort_entries();
-        if entries.is_empty() {
-            self.set_status_message("Reasoning effort unsupported");
-            return;
-        }
-        let model_entries = entries
-            .into_iter()
-            .map(|entry| ModelPickerEntry {
-                selection_value: entry.value,
-                display_name: entry.label,
-                description: Some(entry.description),
-                right_hint: None,
-                is_current: entry.is_current,
-            })
-            .collect();
-        self.bottom_pane.open_model_picker(model_entries);
-        self.set_status_message("Select reasoning effort");
-    }
-
     pub(super) fn apply_reasoning_effort_selection(&mut self, value: String) {
         self.reasoning_effort_selection = Some(value.clone());
-        if let Some(pending) = self.pending_model_selection.as_mut() {
-            pending.reasoning_effort_selection = Some(value);
-            self.finalize_pending_model_selection();
-            return;
+        if let Some(model) = self.session.model.as_ref() {
+            self.session.reasoning_effort = model
+                .resolve_reasoning_effort_selection(Some(value.as_str()))
+                .effective_reasoning_effort;
         }
-
         self.refresh_header_box();
         self.app_event_tx
             .send(AppEvent::Command(AppCommand::override_turn_context(
@@ -644,24 +635,5 @@ impl ChatWidget {
                 /*approval_policy*/ None,
             )));
         self.set_status_message(format!("Reasoning effort set to {value}"));
-    }
-
-    pub(super) fn finalize_pending_model_selection(&mut self) {
-        let Some(pending) = self.pending_model_selection.take() else {
-            return;
-        };
-
-        self.picker_mode = None;
-        self.reasoning_effort_selection = pending.reasoning_effort_selection.clone();
-        self.refresh_header_box();
-        self.app_event_tx
-            .send(AppEvent::Command(AppCommand::override_turn_context(
-                /*cwd*/ None,
-                Some(pending.selection.clone()),
-                Some(self.reasoning_effort_selection.clone()),
-                /*sandbox*/ None,
-                /*approval_policy*/ None,
-            )));
-        self.set_status_message(format!("Model set to {}", pending.display_name));
     }
 }

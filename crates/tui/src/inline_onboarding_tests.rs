@@ -149,16 +149,36 @@ fn model_selection_footer_stays_visible_in_short_viewport() {
         widget.handle_key_event(press_key(KeyCode::Down));
     }
 
-    let rows = rendered_rows(&widget, 80, 8).join("\n");
+    let height = widget.desired_height(80);
+    let rows = rendered_rows(&widget, 80, height).join("\n");
     assert!(
         rows.contains("model-10"),
         "expected selected model in:\n{rows}"
+    );
+    assert!(
+        rows.contains('…'),
+        "expected scroll overflow marker in:\n{rows}"
+    );
+    assert!(
+        !rows.contains("Model 10 Display Name"),
+        "display name subtitle should not render:\n{rows}"
     );
     assert!(
         rows.contains("Enter select  ·  Esc cancel"),
         "expected fixed onboarding footer in:\n{rows}"
     );
     assert!(!rows.contains("Complete onboarding to start chatting"));
+
+    // Short viewports still keep selection + footer visible (overflow markers may clip).
+    let short = rendered_rows(&widget, 80, 8).join("\n");
+    assert!(
+        short.contains("model-10"),
+        "expected selected model in short viewport:\n{short}"
+    );
+    assert!(
+        short.contains("Enter select  ·  Esc cancel"),
+        "expected fixed onboarding footer in short viewport:\n{short}"
+    );
 }
 
 #[test]

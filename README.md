@@ -50,20 +50,18 @@ runtime behavior, and workspace execution under your control.
   onboarding and daily coding, or the CLI/TUI for terminal-native automation,
   remote shells, and scriptable workflows.
 - **Built for agent runtime extensibility** - MCP servers, reusable skills,
-  local semantic code search, auditable sessions, permissions, and multi-agent
-  flows are runtime features rather than one-off prompts.
+  auditable sessions, permissions, and multi-agent flows are runtime features
+  rather than one-off prompts.
 
 ## Features
 
-- **Built-in semantic code search** - Runs a local CPU code-embedding model and
-  combines dense retrieval with BM25 keyword matching, reducing code-search
-  context compared with grep/find-only agent.
 - **Model-neutral provider runtime** - Use provider/model bindings for
   OpenAI-compatible, Anthropic-compatible, DeepSeek, Qwen, Kimi, GLM, MiniMax,
   Xiaomi MiMo, OpenRouter, or local endpoints.
 - **MCP support** - Connect external tools and context through
-  [Model Context Protocol](https://modelcontextprotocol.io/) servers. See
-  [Configuration](./docs/configuration.md#mcp-servers) for setup.
+  [Model Context Protocol](https://modelcontextprotocol.io/) servers. Add and
+  manage servers from the CLI with `devo mcp add|list|enable|disable|remove`
+  (see [Configuration](./docs/configuration.md#mcp-servers)).
 - **Skill support** - Package repeatable workflows, instructions, scripts, and
   references as reusable [Agent Skills](https://agentskills.io/).
 - **Long-running task support** - Let Devo manage context automatically across
@@ -82,6 +80,11 @@ runtime behavior, and workspace execution under your control.
   context-window usage where providers expose them.
 - **Lightweight Rust runtime** - Built in Rust with low memory overhead and a
   compact local runtime.
+- **Built-in semantic code search (MCP)** - Optional bundled MCP server
+  (`code_search` / `devo-code-search-mcp`), **disabled by default**. Runs a
+  local CPU code-embedding model and combines dense retrieval with BM25 keyword
+  matching to reduce code-search context versus grep/find-only agents. Enable
+  with `devo mcp enable code_search` or TUI `/mcps`.
 
 ## Tested Models
 

@@ -49,20 +49,18 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
   日常の coding を行い、端末ネイティブな自動化、remote shell、scriptable workflow が
   必要なときは CLI/TUI を使えます。
 - **Agent Runtime として拡張可能** - MCP server、再利用可能な skills、
-  ローカルのセマンティックコード検索、監査可能なセッション、権限管理、
-  マルチエージェント flow は、一回限りの prompt ではなくランタイム機能です。
+  監査可能なセッション、権限管理、マルチエージェント flow は、一回限りの
+  prompt ではなくランタイム機能です。
 
 ## 機能
 
-- **組み込みのセマンティックコード検索** - ローカル CPU のコード埋め込みモデルを実行し、
-  dense retrieval と BM25 キーワードマッチングを組み合わせることで、grep/find のみに頼るエージェントより
-  コード検索のコンテキストを削減します。
 - **Model-neutral provider runtime** - provider/model binding により、OpenAI 互換、
   Anthropic 互換、DeepSeek、Qwen、Kimi、GLM、MiniMax、Xiaomi MiMo、
   OpenRouter、またはローカルエンドポイントを利用できます。
 - **MCP サポート** - [Model Context Protocol](https://modelcontextprotocol.io/)
-  サーバーを通じて外部ツールとコンテキストを接続できます。設定方法は
-  [設定](./docs/configuration.ja.md#mcp-サーバー) を参照してください。
+  サーバーを通じて外部ツールとコンテキストを接続できます。CLI で
+  `devo mcp add|list|enable|disable|remove` により追加・管理できます（
+  [設定](./docs/configuration.ja.md#mcp-サーバー) を参照）。
 - **Skill サポート** - 再利用可能なワークフロー、手順、スクリプト、参照資料を
   [Agent Skills](https://agentskills.io/) としてパッケージ化できます。
 - **長時間タスクのサポート** - 複数ターンにまたがる作業でも Devo が自動的にコンテキストを管理し、
@@ -76,6 +74,11 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
 - **コストとコンテキストの可視化** - プロバイダーが提供する場合、入力/出力 token、cached token、
   コンテキストウィンドウ使用量を表示します。
 - **軽量な Rust ランタイム** - Rust で構築され、メモリ使用量が小さく、コンパクトなローカルランタイムを備えます。
+- **組み込みセマンティックコード検索（MCP）** - 同梱のオプション MCP サーバー
+  （`code_search` / `devo-code-search-mcp`）。**既定では無効**です。ローカル CPU の
+  コード埋め込みモデルを実行し、dense retrieval と BM25 を組み合わせて、grep/find
+  のみのエージェントよりコード検索コンテキストを削減します。
+  `devo mcp enable code_search` または TUI `/mcps` で有効化します。
 
 ## 検証済みモデル
 

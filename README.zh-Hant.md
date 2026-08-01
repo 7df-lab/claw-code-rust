@@ -45,19 +45,18 @@ Desktop 體驗、終端機工作流以及工作區執行邊界的團隊。
   可以指向內部端點，不依賴託管式 agent 服務。
 - **Desktop 與終端機雙入口** - 用 Desktop app 完成可視化上手和日常編碼，也可以在需要
   終端機原生自動化、遠端 shell 或腳本化流程時使用 CLI/TUI。
-- **面向 Agent Runtime 擴展** - MCP server、可重用 skills、本地語義程式碼搜尋、
-  可稽核會話、權限控制和多 agent 流程都是執行階段能力，不是一次性 prompt。
+- **面向 Agent Runtime 擴展** - MCP server、可重用 skills、可稽核會話、權限控制
+  和多 agent 流程都是執行階段能力，不是一次性 prompt。
 
 ## 功能
 
-- **內建語義程式碼搜尋** - 執行本地 CPU 程式碼嵌入模型，並結合密集檢索
-  與 BM25 關鍵字比對，相比僅使用 grep/find 的代理減少程式碼搜尋上下文。
 - **模型中立的 provider runtime** - 透過 provider/model 綁定接入 OpenAI 相容、
   Anthropic 相容、DeepSeek、Qwen、Kimi、GLM、MiniMax、Xiaomi MiMo、
   OpenRouter 或本地端點。
 - **MCP 支援** - 透過
   [Model Context Protocol](https://modelcontextprotocol.io/) 伺服器連接外部工具和上下文。
-  配置方式見 [配置](./docs/configuration.zh-Hant.md#mcp-伺服器)。
+  可用 CLI 管理：`devo mcp add|list|enable|disable|remove`（見
+  [配置](./docs/configuration.zh-Hant.md#mcp-伺服器)）。
 - **Skill 支援** - 將可重複工作流程、說明、腳本和參考資料打包成可重用的
   [Agent Skills](https://agentskills.io/)。
 - **長時間任務支援** - 讓 Devo 在多輪工作中自動管理上下文，避免任務變長後丟失脈絡。
@@ -70,6 +69,10 @@ Desktop 體驗、終端機工作流以及工作區執行邊界的團隊。
 - **成本和上下文可見性** - 在供應商支援時顯示輸入/輸出 token、快取 token
   和上下文視窗用量。
 - **輕量級 Rust 執行階段** - 使用 Rust 建構，記憶體開銷低，本地執行階段緊湊。
+- **內建語義程式碼搜尋（MCP）** - 可選的捆綁 MCP 伺服器（`code_search` /
+  `devo-code-search-mcp`），**預設關閉**。在本地 CPU 執行程式碼嵌入模型，並結合
+  密集檢索與 BM25 關鍵字比對，相比僅用 grep/find 的代理減少程式碼搜尋上下文。用
+  `devo mcp enable code_search` 或 TUI `/mcps` 啟用。
 
 ## 已測試模型
 

@@ -355,7 +355,7 @@ The bottom pane is the user-facing input area. It contains:
 | Module | Purpose |
 |--------|---------|
 | `history_cell.rs` | `HistoryCell`: the display unit for transcript entries. Supports user messages, assistant messages (with reasoning), tool calls, startup headers, and animation ticks. Handles inline rendering for the main viewport and transcript rendering for the pager overlay. |
-| `tool_result_cell.rs` | Compact inline display for completed tool outputs. Limits preview to 5 rows; full output available in the transcript pager. |
+| `tool_result_cell.rs` | Compact inline display for completed tool outputs. Limits preview to 3 rows; full output available in the transcript pager. |
 
 ### Execution Display — `exec_cell/`
 

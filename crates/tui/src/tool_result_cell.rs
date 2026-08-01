@@ -11,8 +11,8 @@ use crate::exec_cell::truncated_tool_output_preview;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 
-const INLINE_OUTPUT_PREVIEW_ROWS: usize = 5;
-const INLINE_OUTPUT_PREVIEW_LINE_LIMIT: usize = 5;
+const INLINE_OUTPUT_PREVIEW_ROWS: usize = 3;
+const INLINE_OUTPUT_PREVIEW_LINE_LIMIT: usize = 2;
 
 #[derive(Debug)]
 pub(crate) struct ToolResultCell {
@@ -165,10 +165,9 @@ mod tests {
         assert!(inline.contains("line 1"));
         assert!(inline.contains("line 2"));
         assert!(inline.contains("ctrl + t to view transcript"));
-        assert!(inline.contains("line 7"));
-        assert!(inline.contains("line 8"));
         assert!(!inline.contains("line 3"));
-        assert!(!inline.contains("line 6"));
+        assert!(!inline.contains("line 7"));
+        assert!(!inline.contains("line 8"));
         assert!(transcript.contains("line 5"));
         assert!(transcript.contains("line 8"));
     }

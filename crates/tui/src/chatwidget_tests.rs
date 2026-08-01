@@ -8368,12 +8368,8 @@ fn transcript_overlay_lines_include_full_completed_tool_output() {
         "inline output should include the transcript hint when truncated: {inline}"
     );
     assert!(
-        inline.contains("line 7") && inline.contains("line 8"),
-        "inline output should include the tail of the preview: {inline}"
-    );
-    assert!(
-        !inline.contains("line 3") && !inline.contains("line 6"),
-        "inline output should stay compact: {inline}"
+        !inline.contains("line 3") && !inline.contains("line 7") && !inline.contains("line 8"),
+        "inline output should keep only the head plus fold hint: {inline}"
     );
     assert!(
         transcript.contains("line 5") && transcript.contains("line 8"),

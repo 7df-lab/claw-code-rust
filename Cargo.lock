@@ -2128,6 +2128,7 @@ dependencies = [
  "diffy",
  "fs2",
  "futures",
+ "lru",
  "pretty_assertions",
  "rusqlite",
  "serde",

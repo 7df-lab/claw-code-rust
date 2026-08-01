@@ -141,7 +141,7 @@ check_interval_hours = 48
                 include_instructions: Some(true),
                 config: Vec::new(),
             },
-            experimental: ExperimentalConfig { code_search: true },
+            experimental: ExperimentalConfig::default(),
             mcp_oauth_credentials_store: Some(OAuthCredentialsStoreMode::default()),
             mcp: super::McpConfig::default(),
             tools: ToolsConfig::default(),
@@ -441,11 +441,14 @@ pattern = "deploy"
 }
 
 #[test]
-fn default_app_config_enables_code_search() {
-    assert_eq!(
-        AppConfig::default().experimental,
-        ExperimentalConfig { code_search: true }
-    );
+fn default_app_config_includes_disabled_code_search_mcp_server() {
+    let mcp = AppConfig::default().mcp;
+    let server = mcp
+        .servers
+        .iter()
+        .find(|record| record.id.0 == super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID)
+        .expect("bundled code_search server");
+    assert!(!server.enabled);
 }
 
 #[test]
@@ -548,77 +551,47 @@ fn loader_rejects_empty_server_auth_name_when_enabled() {
 }
 
 #[test]
-fn loader_accepts_experimental_code_search_kebab_key() {
-    let root = unique_temp_dir("config-experimental-kebab");
+fn loader_ignores_legacy_experimental_code_search_keys() {
+    let root = unique_temp_dir("config-experimental-legacy");
     let home = root.join("home").join(".devo");
     std::fs::create_dir_all(&home).expect("home config dir");
     std::fs::write(
         home.join("config.toml"),
-        "[experimental]\ncode-search = true\n",
+        "[experimental]\ncode-search = true\ncode_search = false\n",
     )
     .expect("write user config");
 
     let loader = FileSystemAppConfigLoader::new(home);
     let config = loader.load(None).expect("load config");
 
-    assert_eq!(
-        config.experimental,
-        ExperimentalConfig { code_search: true }
-    );
+    assert_eq!(config.experimental, ExperimentalConfig::default());
+    let server = config
+        .mcp
+        .servers
+        .iter()
+        .find(|record| record.id.0 == super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID)
+        .expect("bundled code_search server");
+    assert!(!server.enabled);
 
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn loader_accepts_experimental_code_search_snake_alias() {
-    let root = unique_temp_dir("config-experimental-snake");
+fn loader_ensures_bundled_code_search_mcp_when_servers_list_is_empty() {
+    let root = unique_temp_dir("config-bundled-mcp-ensure");
     let home = root.join("home").join(".devo");
     std::fs::create_dir_all(&home).expect("home config dir");
-    std::fs::write(
-        home.join("config.toml"),
-        "[experimental]\ncode_search = true\n",
-    )
-    .expect("write user config");
+    std::fs::write(home.join("config.toml"), "[mcp]\nservers = []\n").expect("write user config");
 
     let loader = FileSystemAppConfigLoader::new(home);
     let config = loader.load(None).expect("load config");
 
+    assert_eq!(config.mcp.servers.len(), 1);
     assert_eq!(
-        config.experimental,
-        ExperimentalConfig { code_search: true }
+        config.mcp.servers[0].id.0,
+        super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID
     );
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn loader_merges_experimental_config_in_normal_precedence_order() {
-    let root = unique_temp_dir("config-experimental-merge");
-    let home = root.join("home").join(".devo");
-    let workspace = root.join("workspace");
-    std::fs::create_dir_all(&home).expect("home config dir");
-    std::fs::create_dir_all(workspace.join(".devo")).expect("workspace config dir");
-    std::fs::write(
-        home.join("config.toml"),
-        "[experimental]\ncode-search = false\n",
-    )
-    .expect("write user config");
-    std::fs::write(
-        workspace.join(".devo").join("config.toml"),
-        "[experimental]\ncode-search = true\n",
-    )
-    .expect("write project config");
-    let cli_overrides: toml::Value = "[experimental]\ncode-search = false\n"
-        .parse()
-        .expect("parse cli overrides");
-
-    let loader = FileSystemAppConfigLoader::new(home).with_cli_overrides(cli_overrides);
-    let config = loader.load(Some(&workspace)).expect("load config");
-
-    assert_eq!(
-        config.experimental,
-        ExperimentalConfig { code_search: false }
-    );
+    assert!(!config.mcp.servers[0].enabled);
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1404,9 +1377,22 @@ level = "warn"
     let user_config = std::fs::read_to_string(home.join("config.toml")).expect("read user config");
     assert!(user_config.contains("check_on_startup"));
     assert!(user_config.contains("level"));
+    let server_ids: Vec<&str> = store
+        .mcp_servers()
+        .iter()
+        .map(|server| server.id.0.as_str())
+        .collect();
+    assert!(server_ids.contains(&"time"));
+    assert!(server_ids.contains(&"hello"));
+    assert!(server_ids.contains(&"legacy"));
+    assert!(server_ids.contains(&super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID));
     assert_eq!(
-        store.mcp_servers(),
-        &[stdio_record.clone(), http_record, sse_record]
+        store
+            .mcp_servers()
+            .iter()
+            .find(|server| server.id.0 == "time")
+            .expect("time server"),
+        &stdio_record
     );
 
     store
@@ -1430,14 +1416,15 @@ level = "warn"
     );
 
     let reloaded = AppConfigStore::load(home, /*workspace_root*/ None).expect("reload");
-    assert_eq!(
-        reloaded
-            .mcp_servers()
-            .iter()
-            .map(|server| server.id.0.as_str())
-            .collect::<Vec<_>>(),
-        vec!["time", "legacy"]
-    );
+    let reloaded_ids: Vec<&str> = reloaded
+        .mcp_servers()
+        .iter()
+        .map(|server| server.id.0.as_str())
+        .collect();
+    assert!(reloaded_ids.contains(&"time"));
+    assert!(reloaded_ids.contains(&"legacy"));
+    assert!(reloaded_ids.contains(&super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID));
+    assert!(!reloaded_ids.contains(&"hello"));
     assert!(
         !reloaded
             .mcp_servers()

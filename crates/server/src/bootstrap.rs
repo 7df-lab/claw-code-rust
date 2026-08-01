@@ -195,7 +195,9 @@ pub async fn run_server_process(
     );
 
     let mcp_manager: Arc<dyn devo_core::McpManager> = Arc::new(RmcpMcpManager::new(
-        config.mcp.clone(),
+        config.mcp.clone().with_code_search_workspace_cwd(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        ),
         config.mcp_oauth_credentials_store.unwrap_or_default(),
     ));
     let tool_plan = ToolPlanConfig::from_app_config(&config);

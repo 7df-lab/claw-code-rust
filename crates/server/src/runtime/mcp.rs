@@ -104,11 +104,9 @@ impl ServerRuntime {
             }
         };
 
-        if needs_refresh {
-            if let Err(error) = manager.refresh(&server_id).await {
-                // Still try to return whatever tools we have after a failed refresh.
-                tracing::warn!(server = %server_id, error = %error, "mcp/tools refresh failed");
-            }
+        if needs_refresh && let Err(error) = manager.refresh(&server_id).await {
+            // Still try to return whatever tools we have after a failed refresh.
+            tracing::warn!(server = %server_id, error = %error, "mcp/tools refresh failed");
         }
 
         match manager.statuses().await {

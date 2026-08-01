@@ -111,7 +111,7 @@ pub fn tool_summary(name: &str, input: &serde_json::Value, cwd: &Path) -> String
             let rel = make_relative(cwd, path);
             format!("grep: '{pattern}' in {rel}")
         }
-        "code_search" => {
+        "code_search" | "mcp__code_search__code_search" => {
             let operation = string_arg(input, "operation", "search");
             match operation {
                 "find_related" => {

@@ -93,19 +93,27 @@ jobs:
 
       - name: Build release binary (Linux)
         if: runner.os == 'Linux'
-        run: cargo zigbuild --release --target ${{ matrix.target }} -p devo-cli
+        run: |
+          cargo zigbuild --release --target ${{ matrix.target }} -p devo-cli
+          cargo zigbuild --release --target ${{ matrix.target }} -p devo-code-search-mcp
 
       - name: Build release binary (macOS)
         if: runner.os == 'macOS'
-        run: cargo build --release --target ${{ matrix.target }} -p devo-cli
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p devo-cli
+          cargo build --release --target ${{ matrix.target }} -p devo-code-search-mcp
 
       - name: Build release binary (Windows)
         if: runner.os == 'Windows'
-        run: cargo build --release --target ${{ matrix.target }} -p devo-cli
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p devo-cli
+          cargo build --release --target ${{ matrix.target }} -p devo-code-search-mcp
 
       - name: Strip symbols (macOS)
         if: runner.os == 'macOS'
-        run: strip target/${{ matrix.target }}/release/devo${{ matrix.ext }}
+        run: |
+          strip target/${{ matrix.target }}/release/devo${{ matrix.ext }}
+          strip target/${{ matrix.target }}/release/devo-code-search-mcp${{ matrix.ext }}
 
       # ── CLI archive (skipped for desktop-only targets) ────────────────────
       - name: Prepare CLI staging directory
@@ -115,6 +123,7 @@ jobs:
           staging=devo-${{ github.ref_name }}-${{ matrix.target }}
           mkdir -p "$staging"
           cp target/${{ matrix.target }}/release/devo${{ matrix.ext }} "$staging/"
+          cp target/${{ matrix.target }}/release/devo-code-search-mcp${{ matrix.ext }} "$staging/"
           cp README.md LICENSE "$staging/" 2>/dev/null || true
           echo "STAGING=$staging" >> "$GITHUB_ENV"
 

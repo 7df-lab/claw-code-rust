@@ -662,6 +662,7 @@ impl AppConfigLoader for FileSystemAppConfigLoader {
                     message: source.to_string(),
                 })?;
         config.provider = provider_config;
+        config.mcp.ensure_bundled_servers();
         validate_app_config(&config)?;
         Ok(config)
     }

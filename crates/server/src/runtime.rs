@@ -135,7 +135,6 @@ mod acp_fs;
 mod active_turn;
 mod agents;
 mod approval;
-mod code_index_warmup;
 mod command_exec;
 mod connection;
 mod control_requests;
@@ -224,7 +223,6 @@ pub struct ServerRuntime {
         Mutex<HashMap<devo_protocol::ReferenceSearchId, reference_search::ReferenceSearchState>>,
     /// Live client-owned shell/process sessions.
     command_exec_manager: command_exec::CommandExecManager,
-    code_index_warmup: code_index_warmup::CodeIndexWarmup,
     /// Turn-scoped workspace baselines captured at actual execution start.
     active_workspace_baselines: Mutex<HashMap<TurnId, ActiveWorkspaceBaseline>>,
     /// Short-lived, connection-bound P4d rollback plans.
@@ -380,7 +378,6 @@ impl ServerRuntime {
             subagent_usage: Mutex::new(subagent_usage::SubagentUsageState::default()),
             reference_searches: Mutex::new(HashMap::new()),
             command_exec_manager: command_exec::CommandExecManager::new(),
-            code_index_warmup: code_index_warmup::CodeIndexWarmup::new(),
             active_workspace_baselines: Mutex::new(HashMap::new()),
             restore_plans: Mutex::new(HashMap::new()),
             title_generation_in_flight: Mutex::new(HashSet::new()),

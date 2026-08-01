@@ -224,6 +224,23 @@ is one entry in the `servers` array, and its `transport` table selects how Devo
 connects. Supported transports are `stdio`, `streamable_http`, and the deprecated
 `sse`.
 
+Devo also presets a bundled, disabled-by-default semantic search server:
+
+```toml
+[[mcp.servers]]
+id = "code_search"
+display_name = "Code Search"
+enabled = false
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["devo-code-search-mcp"]
+```
+
+Enable it with `devo mcp enable code_search` (or `/mcps` in the TUI). The
+`devo-code-search-mcp` binary is installed next to `devo`.
+
 Stdio example:
 
 ```toml

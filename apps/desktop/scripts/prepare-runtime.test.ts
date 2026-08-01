@@ -45,6 +45,7 @@ describe("prepare-runtime helpers", () => {
 		mkdirSync(targetDir, { recursive: true })
 		mkdirSync(desktopDir, { recursive: true })
 		writeFileSync(join(targetDir, "devo"), "")
+		writeFileSync(join(targetDir, "devo-code-search-mcp"), "")
 
 		expect(() =>
 			stageRuntime({
@@ -62,11 +63,14 @@ describe("prepare-runtime helpers", () => {
 		const root = mkdtempSync(join(tmpdir(), "devo-runtime-test-"))
 		const desktopDir = join(root, "desktop")
 		const sourceDir = join(root, "source")
+		const releaseDir = join(root, "target", "release")
 		const devoBin = join(sourceDir, "devo")
 		const rgBin = join(sourceDir, "rg")
 		mkdirSync(sourceDir, { recursive: true })
+		mkdirSync(releaseDir, { recursive: true })
 		writeFileSync(devoBin, "devo")
 		writeFileSync(rgBin, "rg")
+		writeFileSync(join(releaseDir, "devo-code-search-mcp"), "mcp")
 
 		stageRuntime({
 			desktopDir,
@@ -78,9 +82,14 @@ describe("prepare-runtime helpers", () => {
 
 		expect({
 			devo: readFileSync(join(desktopDir, "resources", "runtime", "bin", "devo"), "utf8"),
+			mcp: readFileSync(
+				join(desktopDir, "resources", "runtime", "bin", "devo-code-search-mcp"),
+				"utf8",
+			),
 			rg: readFileSync(join(desktopDir, "resources", "runtime", "bin", "rg"), "utf8"),
 		}).toEqual({
 			devo: "devo",
+			mcp: "mcp",
 			rg: "rg",
 		})
 	})

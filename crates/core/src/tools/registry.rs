@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-#[cfg(feature = "code-search")]
-use devo_code_search::CodeSearchService;
 use devo_protocol::ToolDefinition;
 
 use crate::contracts::ToolContext;
@@ -29,8 +27,6 @@ pub struct ToolRegistry {
     pub(crate) spec_search_text: HashMap<String, String>,
     pub(crate) unified_exec_store: Option<Arc<ProcessStore>>,
     pub(crate) loaded_deferred_tools: Arc<Mutex<LoadedDeferredTools>>,
-    #[cfg(feature = "code-search")]
-    code_search_service: Option<Arc<CodeSearchService>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,8 +46,6 @@ impl ToolRegistry {
             spec_search_text: HashMap::new(),
             unified_exec_store: None,
             loaded_deferred_tools: Arc::new(Mutex::new(LoadedDeferredTools::default())),
-            #[cfg(feature = "code-search")]
-            code_search_service: None,
         }
     }
 
@@ -115,10 +109,6 @@ impl ToolRegistry {
         let mut registry = ToolRegistry::new();
         registry.unified_exec_store = self.unified_exec_store.clone();
         registry.loaded_deferred_tools = Arc::clone(&self.loaded_deferred_tools);
-        #[cfg(feature = "code-search")]
-        {
-            registry.code_search_service = self.code_search_service.clone();
-        }
 
         for spec in &self.specs {
             if !names.iter().any(|name| *name == spec.name) {
@@ -184,11 +174,6 @@ impl ToolRegistry {
 
     pub fn loaded_deferred_tools(&self) -> Arc<Mutex<LoadedDeferredTools>> {
         Arc::clone(&self.loaded_deferred_tools)
-    }
-
-    #[cfg(feature = "code-search")]
-    pub fn code_search_service(&self) -> Option<Arc<CodeSearchService>> {
-        self.code_search_service.clone()
     }
 
     pub fn effective_deferred_loading_config(
@@ -339,8 +324,6 @@ pub struct ToolRegistryBuilder {
     spec_search_text: HashMap<String, String>,
     unified_exec_store: Option<Arc<ProcessStore>>,
     loaded_deferred_tools: Arc<Mutex<LoadedDeferredTools>>,
-    #[cfg(feature = "code-search")]
-    code_search_service: Option<Arc<CodeSearchService>>,
 }
 
 impl ToolRegistryBuilder {
@@ -353,8 +336,6 @@ impl ToolRegistryBuilder {
             spec_search_text: HashMap::new(),
             unified_exec_store: None,
             loaded_deferred_tools: Arc::new(Mutex::new(LoadedDeferredTools::default())),
-            #[cfg(feature = "code-search")]
-            code_search_service: None,
         }
     }
 
@@ -385,11 +366,6 @@ impl ToolRegistryBuilder {
 
     pub fn set_loaded_deferred_tools(&mut self, loaded_tools: Arc<Mutex<LoadedDeferredTools>>) {
         self.loaded_deferred_tools = loaded_tools;
-    }
-
-    #[cfg(feature = "code-search")]
-    pub fn set_code_search_service(&mut self, service: Arc<CodeSearchService>) {
-        self.code_search_service = Some(service);
     }
 
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -433,8 +409,6 @@ impl ToolRegistryBuilder {
             spec_search_text: self.spec_search_text,
             unified_exec_store: self.unified_exec_store,
             loaded_deferred_tools: self.loaded_deferred_tools,
-            #[cfg(feature = "code-search")]
-            code_search_service: self.code_search_service,
         }
     }
 }

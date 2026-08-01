@@ -4008,7 +4008,7 @@ fn pretty_tool_call_summary(tool_name: &str, input: &serde_json::Value) -> Optio
                 None => Some(format!("Search {query}")),
             }
         }
-        "code_search" => {
+        "code_search" | "mcp__code_search__code_search" => {
             let query = input
                 .get("query")
                 .and_then(serde_json::Value::as_str)
@@ -4226,7 +4226,7 @@ fn tool_call_started_actions(
             ),
         ];
     }
-    if payload.tool_name == "code_search" {
+    if payload.tool_name == "code_search" || payload.tool_name == "mcp__code_search__code_search" {
         return code_search_command_action_from_parameters("code_search", &payload.parameters)
             .into_iter()
             .collect();
@@ -4248,9 +4248,11 @@ fn tool_call_updated_actions(
         "find" | "glob" => find_command_action_from_parameters(summary, &payload.parameters)
             .into_iter()
             .collect(),
-        "code_search" => code_search_command_action_from_parameters(summary, &payload.parameters)
-            .into_iter()
-            .collect(),
+        "code_search" | "mcp__code_search__code_search" => {
+            code_search_command_action_from_parameters(summary, &payload.parameters)
+                .into_iter()
+                .collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -4416,7 +4418,9 @@ fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
                 None => Some(pattern.to_string()),
             }
         }
-        "code_search" => Some(code_search_summary_from_input(input)),
+        "code_search" | "mcp__code_search__code_search" => {
+            Some(code_search_summary_from_input(input))
+        }
         "webfetch" | "web_fetch" | "web-fetch" | "fetch_url" | "fetch-url" => web_fetch_url(input),
         "web_search" | "websearch" | "web-search" => web_search_query(input),
         "lsp" => {

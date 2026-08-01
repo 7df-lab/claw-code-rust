@@ -8,6 +8,7 @@
 set -eu
 
 APP="devo"
+CODE_SEARCH_MCP_APP="devo-code-search-mcp"
 REPO="7df-lab/devo"
 RG_APP="rg"
 RG_REPO="BurntSushi/ripgrep"
@@ -470,13 +471,20 @@ check_version() {
 
 find_extracted_binary() {
     search_dir="$1"
-    found_binary="$(find "$search_dir" -name "$APP" -type f | sed -n '1p')"
+    binary_name="${2:-$APP}"
+    found_binary="$(find "$search_dir" -name "$binary_name" -type f | sed -n '1p')"
 
     if [ -z "$found_binary" ]; then
-        die "Failed to locate the ${APP} binary inside the downloaded archive"
+        die "Failed to locate the ${binary_name} binary inside the downloaded archive"
     fi
 
     printf '%s\n' "$found_binary"
+}
+
+find_extracted_optional_binary() {
+    search_dir="$1"
+    binary_name="$2"
+    find "$search_dir" -name "$binary_name" -type f | sed -n '1p'
 }
 
 find_extracted_rg_binary() {
@@ -521,9 +529,16 @@ download_and_install() {
     tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
 
     extracted_binary="$(find_extracted_binary "$tmp_dir")"
+    extracted_mcp_binary="$(find_extracted_optional_binary "$tmp_dir" "$CODE_SEARCH_MCP_APP")"
 
     mkdir -p "$install_dir"
     install -m 755 "$extracted_binary" "${install_dir}/${APP}"
+    if [ -n "$extracted_mcp_binary" ]; then
+        install -m 755 "$extracted_mcp_binary" "${install_dir}/${CODE_SEARCH_MCP_APP}"
+        print_message info "${MUTED}Installed ${NC}${CODE_SEARCH_MCP_APP}${MUTED} sidecar${NC}"
+    else
+        print_message warning "Optional ${CODE_SEARCH_MCP_APP} binary was not found in the archive."
+    fi
 
     rm -rf "$tmp_dir"
     trap - EXIT INT TERM
@@ -678,9 +693,14 @@ install_offline_devo() {
 
     tar -xzf "$archive_path" -C "$tmp_dir"
     extracted_binary="$(find_extracted_binary "$tmp_dir")"
+    extracted_mcp_binary="$(find_extracted_optional_binary "$tmp_dir" "$CODE_SEARCH_MCP_APP")"
 
     mkdir -p "$install_dir"
     install -m 755 "$extracted_binary" "${install_dir}/${APP}"
+    if [ -n "$extracted_mcp_binary" ]; then
+        install -m 755 "$extracted_mcp_binary" "${install_dir}/${CODE_SEARCH_MCP_APP}"
+        print_message info "${MUTED}Installed ${NC}${CODE_SEARCH_MCP_APP}${MUTED} sidecar${NC}"
+    fi
 
     rm -rf "$tmp_dir"
     trap - EXIT INT TERM

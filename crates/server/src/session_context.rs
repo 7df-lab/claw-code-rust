@@ -159,15 +159,22 @@ impl SessionRuntimeContext {
             .is_operationally_equivalent_to(&inherited_config.provider)
             || config.provider_http != inherited_config.provider_http;
         let (registry, mcp_manager) = if !has_provider_configuration
-            && config.mcp.servers.is_empty()
+            && !config.mcp.servers.iter().any(|record| record.enabled)
         {
             (
                 Arc::clone(&inherited_context.registry),
                 Arc::clone(&inherited_context.mcp_manager),
             )
         } else {
+            let workspace_cwd = workspace_root
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let mcp_config = config
+                .mcp
+                .clone()
+                .with_code_search_workspace_cwd(workspace_cwd);
             let mcp_manager: Arc<dyn McpManager> = Arc::new(RmcpMcpManager::new(
-                config.mcp.clone(),
+                mcp_config,
                 config.mcp_oauth_credentials_store.unwrap_or_default(),
             ));
             let tool_plan = ToolPlanConfig::from_app_config(&config);

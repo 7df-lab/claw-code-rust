@@ -1,7 +1,5 @@
 mod agent;
 mod apply_patch;
-#[cfg(feature = "code-search")]
-mod code_search;
 mod edit;
 mod exec_command;
 mod file_change_metadata;
@@ -24,8 +22,6 @@ mod websearch;
 
 pub(crate) use agent::register_agent_tools;
 pub use apply_patch::ApplyPatchHandler;
-#[cfg(feature = "code-search")]
-pub use code_search::CodeSearchHandler;
 pub use edit::EditHandler;
 pub use exec_command::{ExecCommandHandler, WriteStdinHandler};
 pub use file_write::WriteHandler;
@@ -119,7 +115,7 @@ fn build_registry_from_builder(
     handlers: Vec<(ToolHandlerKind, String)>,
     mut builder: ToolRegistryBuilder,
     mcp_handlers: Vec<(String, Arc<dyn ToolHandler>)>,
-    config: &ToolPlanConfig,
+    _config: &ToolPlanConfig,
 ) -> crate::registry::ToolRegistry {
     let process_store = Arc::new(ProcessStore::new());
     let background_tasks = Arc::new(crate::tools::background_tasks::BackgroundTaskStore::new(
@@ -136,25 +132,6 @@ fn build_registry_from_builder(
 
     for (kind, name) in handlers {
         let handler: Arc<dyn ToolHandler> = match kind {
-            #[cfg(feature = "code-search")]
-            ToolHandlerKind::CodeSearch => {
-                let service = Arc::new(
-                    devo_code_search::CodeSearchService::production_with_network_proxy(
-                        devo_network_proxy::NetworkProxyConfig {
-                            proxy_url: config.network_proxy.clone(),
-                            no_proxy: config.network_no_proxy.clone(),
-                        },
-                    ),
-                );
-                builder.set_code_search_service(Arc::clone(&service));
-                Arc::new(CodeSearchHandler::with_service(service))
-            }
-            // When the `code-search` feature is disabled the planner never emits
-            // this handler kind (see registry_plan), so the arm is unreachable.
-            #[cfg(not(feature = "code-search"))]
-            ToolHandlerKind::CodeSearch => {
-                unreachable!("code_search handler requested but `code-search` feature is disabled")
-            }
             ToolHandlerKind::ShellCommand => Arc::new(ShellCommandHandler::new()),
             ToolHandlerKind::Read => Arc::new(ReadHandler::new()),
             ToolHandlerKind::Write => Arc::new(WriteHandler::new()),
@@ -225,27 +202,6 @@ mod tests {
         assert!(registry.spec("bash").is_none());
         assert!(registry.get("shell_command").is_some());
         assert!(registry.get("bash").is_some());
-    }
-
-    #[cfg(feature = "code-search")]
-    #[test]
-    fn registry_exposes_the_code_search_handlers_shared_service() {
-        let registry = build_registry_from_plan(&ToolPlanConfig::default());
-
-        assert!(registry.get("code_search").is_some());
-        assert!(registry.code_search_service().is_some());
-    }
-
-    #[cfg(feature = "code-search")]
-    #[test]
-    fn registry_has_no_code_search_service_when_the_tool_is_disabled() {
-        let registry = build_registry_from_plan(&ToolPlanConfig {
-            code_search: false,
-            ..ToolPlanConfig::default()
-        });
-
-        assert!(registry.get("code_search").is_none());
-        assert!(registry.code_search_service().is_none());
     }
 
     #[test]

@@ -194,7 +194,7 @@ pub(super) fn command_display_from_input(tool_name: &str, input: &serde_json::Va
                 format!("grep {pattern} in {path}")
             }
         }
-        "code_search" => code_search_display_from_input(input),
+        "code_search" | "mcp__code_search__code_search" => code_search_display_from_input(input),
         _ => String::new(),
     }
 }

@@ -441,6 +441,11 @@ function Install-DevoOffline {
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Copy-Item -Path $exe.FullName -Destination (Join-Path $InstallDir "devo.exe") -Force
+
+    $mcpExe = Get-ChildItem -Recurse -Filter "devo-code-search-mcp.exe" -Path $devoTmpDir | Select-Object -First 1
+    if ($mcpExe) {
+        Copy-Item -Path $mcpExe.FullName -Destination (Join-Path $InstallDir "devo-code-search-mcp.exe") -Force
+    }
 }
 
 function Install-RipgrepSidecarOffline {
@@ -571,6 +576,14 @@ function Main {
 
                 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
                 Copy-Item -Path $exe.FullName -Destination (Join-Path $installDir "devo.exe") -Force
+
+                $mcpExe = Get-ChildItem -Recurse -Filter "devo-code-search-mcp.exe" -Path $tmpDir | Select-Object -First 1
+                if ($mcpExe) {
+                    Copy-Item -Path $mcpExe.FullName -Destination (Join-Path $installDir "devo-code-search-mcp.exe") -Force
+                    Write-Host "Installed code_search MCP sidecar"
+                } else {
+                    Write-Host "Optional devo-code-search-mcp.exe was not found in the archive."
+                }
             }
             Install-RipgrepSidecar -InstallDir $installDir -TempRoot $tmpDir
             Install-CodeSearchModel -TempRoot $tmpDir

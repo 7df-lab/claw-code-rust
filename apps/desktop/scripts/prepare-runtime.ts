@@ -45,8 +45,22 @@ export function defaultDevoSourcePath({
 	return join(repoRoot, ...targetParts, runtimeBinaryName("devo", platformForTargetTriple(targetTriple, platform)))
 }
 
+export function defaultCodeSearchMcpSourcePath({
+	repoRoot,
+	targetTriple,
+	platform = process.platform,
+}: DefaultSourcePathOptions): string {
+	const targetParts = targetTriple ? ["target", targetTriple, "release"] : ["target", "release"]
+	return join(
+		repoRoot,
+		...targetParts,
+		runtimeBinaryName("devo-code-search-mcp", platformForTargetTriple(targetTriple, platform)),
+	)
+}
+
 export function stageRuntime(options: StageRuntimeOptions): void {
 	const devoSource = options.devoBin ?? defaultDevoSourcePath(options)
+	const codeSearchMcpSource = defaultCodeSearchMcpSourcePath(options)
 	const targetPlatform = platformForTargetTriple(options.targetTriple, options.platform ?? process.platform)
 	const rgOverride = options.rgBin ?? optionalPath(process.env.DEVO_DESKTOP_RUNTIME_RG_BIN)
 
@@ -74,6 +88,9 @@ export function stageRuntime(options: StageRuntimeOptions): void {
 	if (!existsSync(devoSource)) {
 		throw new Error(`Devo runtime binary not found at ${devoSource}`)
 	}
+	if (!existsSync(codeSearchMcpSource)) {
+		throw new Error(`code_search MCP binary not found at ${codeSearchMcpSource}`)
+	}
 	if (!rgSource || !existsSync(rgSource)) {
 		throw new Error("ripgrep sidecar not found. Install rg or pass --rg-bin <path>.")
 	}
@@ -83,11 +100,17 @@ export function stageRuntime(options: StageRuntimeOptions): void {
 	mkdirSync(runtimeBinDir, { recursive: true })
 
 	const devoDest = join(runtimeBinDir, runtimeBinaryName("devo", targetPlatform))
+	const codeSearchMcpDest = join(
+		runtimeBinDir,
+		runtimeBinaryName("devo-code-search-mcp", targetPlatform),
+	)
 	const rgDest = join(runtimeBinDir, runtimeBinaryName("rg", targetPlatform))
 	copyExecutable(devoSource, devoDest, targetPlatform)
+	copyExecutable(codeSearchMcpSource, codeSearchMcpDest, targetPlatform)
 	copyExecutable(rgSource, rgDest, targetPlatform)
 
 	console.log(`Prepared Desktop runtime: ${devoDest}`)
+	console.log(`Prepared code_search MCP sidecar: ${codeSearchMcpDest}`)
 	console.log(`Prepared ripgrep sidecar: ${rgDest}`)
 }
 

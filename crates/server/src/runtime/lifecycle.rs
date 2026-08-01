@@ -263,7 +263,6 @@ impl ServerRuntime {
     /// Completes deferred (in-progress) items for all active turns and
     /// persists interrupted turn records. Called on graceful shutdown.
     pub async fn shutdown(self: &Arc<Self>) {
-        self.code_index_warmup.shutdown();
         self.command_exec_manager.terminate_all().await;
         let session_handles = self.list_session_handles().await;
 

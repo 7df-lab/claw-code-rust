@@ -114,6 +114,14 @@ pub struct SessionMetadata {
     /// composer (Plan vs Build) without waiting for the next turn start.
     #[serde(default)]
     pub collaboration_mode: CollaborationMode,
+    /// Session override for the absolute effective context window (tokens).
+    ///
+    /// When set, clients should treat this as the effective Settings Hub /
+    /// compaction-threshold value on resume (clamped to the model
+    /// `context_window`). Absent means use the model-derived
+    /// `effective_context_window()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -292,6 +300,29 @@ pub struct SessionCompactParams {
     pub session_id: SessionId,
 }
 
+/// Persists a global compaction token limit and hot-applies it to live sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCompactionUpdateParams {
+    pub session_id: SessionId,
+    /// Absolute global compaction threshold in tokens. Written to user
+    /// `config.toml` as `compaction_token_limit`. Values above a session model's
+    /// `context_window` are clamped when applied to that session.
+    pub effective_context_window: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCompactionUpdateResult {
+    pub session_id: SessionId,
+    /// Applied absolute window for this session after clamp.
+    pub effective_context_window: u64,
+    /// Model default (`effective_context_window()`, clamped) used as recommended.
+    pub recommended_token_limit: u64,
+    /// Raw model context window used for clamp.
+    pub context_window_tokens: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct SessionForkParams {
     pub session_id: SessionId,
@@ -444,6 +475,7 @@ mod tests {
             last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: CollaborationMode::Plan,
+            effective_context_window: None,
         };
 
         let json = serde_json::to_string(&metadata).expect("serialize");

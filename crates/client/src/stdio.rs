@@ -184,6 +184,13 @@ impl StdioServerClient {
         self.core.session_permissions_update(params).await
     }
 
+    pub async fn session_compaction_update(
+        &mut self,
+        params: SessionCompactionUpdateParams,
+    ) -> Result<SessionCompactionUpdateResult> {
+        self.core.session_compaction_update(params).await
+    }
+
     pub async fn session_sandbox_profile_update(
         &mut self,
         params: SessionSandboxProfileUpdateParams,
@@ -698,6 +705,7 @@ mod tests {
             last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
         };
         assert_eq!(session, expected);
 
@@ -791,6 +799,7 @@ mod tests {
                 last_context_occupancy: None,
                 status: SessionRuntimeStatus::Idle,
                 collaboration_mode: Default::default(),
+                effective_context_window: None,
             }]
         );
 
@@ -842,6 +851,7 @@ mod tests {
             last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
         };
         let mut stdout_lines = BufReader::new(stdout).lines();
 

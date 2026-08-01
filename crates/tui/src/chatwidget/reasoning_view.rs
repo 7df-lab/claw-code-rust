@@ -4,6 +4,7 @@
 //! main transcript viewport.
 
 use std::path::Path;
+use std::path::PathBuf;
 
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -14,10 +15,127 @@ use crate::bottom_pane::list_selection_view::SelectionItem;
 use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::ReasoningViewportMode;
+use crate::history_cell::collapse_consecutive_blank_lines;
 use crate::markdown::append_markdown;
+use crate::wrapping::RtOptions;
+use crate::wrapping::adaptive_wrap_lines;
 
-/// Live streaming window when reasoning view is collapsed.
+/// Maximum *visual* terminal rows for collapsed reasoning body content.
+///
+/// Counted after wrap, not by markdown/logical newlines — a single long
+/// paragraph that wraps to many rows still counts toward this budget.
 pub(super) const COLLAPSED_REASONING_LIVE_LINES: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CollapsedReasoningMode {
+    /// Streaming: keep the latest wrapped rows in the live viewport.
+    Live,
+    /// Committed: short bodies stay full; longer bodies compact to Thought.
+    Completed,
+}
+
+/// Width-aware collapsed reasoning cell.
+///
+/// Truncates by wrapped visual height so one long logical line cannot expand
+/// past [`COLLAPSED_REASONING_LIVE_LINES`] rows in the main viewport.
+#[derive(Debug)]
+struct CollapsedReasoningCell {
+    content: String,
+    cwd: PathBuf,
+    heading: String,
+    heading_style: Style,
+    text_style: Style,
+    initial_prefix: Line<'static>,
+    subsequent_prefix: Line<'static>,
+    mode: CollapsedReasoningMode,
+}
+
+impl CollapsedReasoningCell {
+    fn body_lines(&self) -> Vec<Line<'static>> {
+        let mut body_lines = Vec::new();
+        append_markdown(
+            &self.content,
+            /*width*/ None,
+            Some(self.cwd.as_path()),
+            &mut body_lines,
+        );
+        for line in &mut body_lines {
+            line.spans = line
+                .spans
+                .iter()
+                .cloned()
+                .map(|span| span.patch_style(self.text_style))
+                .collect();
+        }
+        body_lines
+    }
+
+    fn wrap_body_with_heading(&self, width: u16) -> Vec<Line<'static>> {
+        let mut body_lines = self.body_lines();
+        if let Some(first_line) = body_lines.first_mut() {
+            first_line.spans.insert(
+                0,
+                Span::styled(self.heading.clone(), self.heading_style),
+            );
+        }
+        collapse_consecutive_blank_lines(adaptive_wrap_lines(
+            &body_lines,
+            RtOptions::new(width as usize)
+                .initial_indent(self.initial_prefix.clone())
+                .subsequent_indent(self.subsequent_prefix.clone()),
+        ))
+    }
+
+    fn take_last_visual_rows(mut lines: Vec<Line<'static>>, max_rows: usize) -> Vec<Line<'static>> {
+        if lines.len() > max_rows {
+            lines = lines.split_off(lines.len() - max_rows);
+        }
+        lines
+    }
+
+    fn compact_lines(&self, width: u16) -> Vec<Line<'static>> {
+        history_cell::ReasoningSummaryCell::new(
+            String::new(),
+            self.content.clone(),
+            &self.cwd,
+            ReasoningViewportMode::Compact,
+        )
+        .display_lines(width)
+    }
+}
+
+impl HistoryCell for CollapsedReasoningCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let wrapped = self.wrap_body_with_heading(width);
+        match self.mode {
+            CollapsedReasoningMode::Live => {
+                let mut lines =
+                    Self::take_last_visual_rows(wrapped, COLLAPSED_REASONING_LIVE_LINES);
+                lines.push(history_cell::reasoning_transcript_hint_line());
+                lines
+            }
+            CollapsedReasoningMode::Completed => {
+                if wrapped.len() <= COLLAPSED_REASONING_LIVE_LINES {
+                    let mut lines = wrapped;
+                    lines.push(history_cell::reasoning_transcript_hint_line());
+                    lines
+                } else {
+                    self.compact_lines(width)
+                }
+            }
+        }
+    }
+
+    fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        history_cell::ReasoningSummaryCell::new(
+            String::new(),
+            self.content.clone(),
+            &self.cwd,
+            ReasoningViewportMode::Full,
+        )
+        .transcript_lines(width)
+    }
+}
 
 pub(super) fn reasoning_view_items(collapse_reasoning: bool) -> Vec<SelectionItem> {
     [(true, "Collapsed"), (false, "Full")]
@@ -43,10 +161,32 @@ pub(super) fn reasoning_view_label(collapse_reasoning: bool) -> &'static str {
     }
 }
 
+/// Live streaming cell for collapsed reasoning (latest visual rows only).
+pub(super) fn collapsed_reasoning_live_cell(
+    content: String,
+    cwd: &Path,
+    status_heading: &str,
+    status_heading_style: Style,
+    reasoning_text_style: Style,
+    dot_prefix: Line<'static>,
+) -> Box<dyn HistoryCell> {
+    Box::new(CollapsedReasoningCell {
+        content,
+        cwd: cwd.to_path_buf(),
+        heading: status_heading.to_string(),
+        heading_style: status_heading_style,
+        text_style: reasoning_text_style,
+        initial_prefix: dot_prefix,
+        subsequent_prefix: "  ".into(),
+        mode: CollapsedReasoningMode::Live,
+    })
+}
+
 /// Build the committed reasoning cell for collapsed mode.
 ///
-/// Short reasoning stays fully visible. Longer reasoning becomes a one-line
-/// Thought summary in the main viewport, with the full body kept for Ctrl+T.
+/// Short reasoning (≤ [`COLLAPSED_REASONING_LIVE_LINES`] *visual* rows after
+/// wrap) stays fully visible. Longer reasoning becomes a one-line Thought
+/// summary in the main viewport, with the full body kept for Ctrl+T.
 pub(super) fn collapsed_reasoning_history_cell(
     content: String,
     cwd: &Path,
@@ -55,34 +195,14 @@ pub(super) fn collapsed_reasoning_history_cell(
     reasoning_text_style: Style,
     dot_prefix: Line<'static>,
 ) -> Box<dyn HistoryCell> {
-    let mut body_lines = Vec::new();
-    append_markdown(&content, /*width*/ None, Some(cwd), &mut body_lines);
-    for line in &mut body_lines {
-        line.spans = line
-            .spans
-            .iter()
-            .cloned()
-            .map(|span| span.patch_style(reasoning_text_style))
-            .collect();
-    }
-
-    if body_lines.len() <= COLLAPSED_REASONING_LIVE_LINES {
-        if let Some(first_line) = body_lines.first_mut() {
-            first_line.spans.insert(
-                0,
-                Span::styled(status_heading.to_string(), status_heading_style),
-            );
-        }
-        body_lines.push(history_cell::reasoning_transcript_hint_line());
-        return Box::new(history_cell::AgentMessageCell::new_ai_response_with_prefix(
-            body_lines, dot_prefix, "  ", false,
-        ));
-    }
-
-    Box::new(history_cell::ReasoningSummaryCell::new(
-        String::new(),
+    Box::new(CollapsedReasoningCell {
         content,
-        cwd,
-        ReasoningViewportMode::Compact,
-    ))
+        cwd: cwd.to_path_buf(),
+        heading: status_heading.to_string(),
+        heading_style: status_heading_style,
+        text_style: reasoning_text_style,
+        initial_prefix: dot_prefix,
+        subsequent_prefix: "  ".into(),
+        mode: CollapsedReasoningMode::Completed,
+    })
 }

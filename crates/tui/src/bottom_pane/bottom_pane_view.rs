@@ -36,13 +36,33 @@ pub(crate) trait BottomPaneView: Renderable {
         None
     }
 
+    /// Refresh Settings Hub rows when nested editors change current values.
+    fn update_settings_hub_snapshot(
+        &mut self,
+        _snapshot: super::settings_hub_view::SettingsHubSnapshot,
+    ) -> bool {
+        false
+    }
+
+    /// Refresh an open `/status` panel when occupancy or session totals change.
+    fn update_status_panel(
+        &mut self,
+        _occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+        _session: super::SessionTokenTotals,
+    ) -> bool {
+        false
+    }
+
+    /// Propagate the active UI accent into open views (for example Settings Hub tabs).
+    fn set_accent_color(&mut self, _color: ratatui::style::Color) {}
+
     /// When true, the view replaces the composer input area instead of stacking
     /// below a visible draft.
     ///
     /// Background rule: views that replace the composer (`true`) must paint the
     /// shared menu surface ([`super::selection_popup_common::render_menu_surface`]).
     /// Stacked overlays (`false`) may also paint it when they need panel chrome
-    /// (for example `/context`); otherwise they stay visually light so the draft
+    /// (for example `/status`); otherwise they stay visually light so the draft
     /// input remains the primary surface.
     fn replaces_composer(&self) -> bool {
         false

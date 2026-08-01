@@ -1,9 +1,9 @@
-//! Read-only context occupancy panel for `/context`.
+//! Read-only status panel opened by `/status`.
 //!
-//! Shows effective window usage, category shares from [`ContextOccupancy`],
-//! and session-cumulative input / output / cache totals. Stacks below the
-//! composer (does not replace the input) and paints the shared menu-surface
-//! background. Esc (or Enter) dismisses the panel.
+//! Shows cwd / permissions, effective window usage with category shares from
+//! [`ContextOccupancy`], and session-cumulative input / output / cache totals.
+//! Stacks below the composer (does not replace the input) and paints the shared
+//! menu-surface background. Esc (or Enter) dismisses the panel.
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -28,7 +28,8 @@ use super::selection_popup_common::menu_surface_padding_height;
 use super::selection_popup_common::render_menu_surface;
 
 const BAR_WIDTH: usize = 28;
-const SESSION_LABEL_WIDTH: usize = 10;
+const META_LABEL_WIDTH: usize = 12;
+const TOTALS_LABEL_WIDTH: usize = 10;
 const CATEGORY_COUNT: usize = 5;
 
 /// Session-cumulative token accounting shown beneath window occupancy.
@@ -49,19 +50,41 @@ impl SessionTokenTotals {
     }
 }
 
+/// Snapshot of session fields shown above context occupancy.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct StatusPanelSnapshot {
+    pub(crate) cwd: String,
+    pub(crate) permissions_label: String,
+}
+
 pub(crate) struct ContextOccupancyView {
     occupancy: Option<ContextOccupancy>,
     session: SessionTokenTotals,
+    status: StatusPanelSnapshot,
     complete: bool,
 }
 
 impl ContextOccupancyView {
-    pub(crate) fn new(occupancy: Option<ContextOccupancy>, session: SessionTokenTotals) -> Self {
+    pub(crate) fn new(
+        occupancy: Option<ContextOccupancy>,
+        session: SessionTokenTotals,
+        status: StatusPanelSnapshot,
+    ) -> Self {
         Self {
             occupancy,
             session,
+            status,
             complete: false,
         }
+    }
+
+    pub(crate) fn update_snapshot(
+        &mut self,
+        occupancy: Option<ContextOccupancy>,
+        session: SessionTokenTotals,
+    ) {
+        self.occupancy = occupancy;
+        self.session = session;
     }
 
     fn dismiss(&mut self) {
@@ -82,16 +105,20 @@ impl ContextOccupancyView {
         let occupancy = self.occupancy_or_zero();
 
         lines.push(Line::from(Span::styled(
-            "Context Usage",
+            "Status".to_string(),
             Style::default().bold(),
         )));
+        lines.push(Line::from(""));
+        lines.extend(status_meta_lines(&self.status));
+        lines.push(Line::from(""));
+        lines.push(section_title("Context Usage"));
         lines.push(Line::from(""));
         lines.extend(window_summary_lines(&occupancy));
         lines.push(Line::from(""));
         lines.extend(category_lines(&occupancy));
         lines.push(Line::from(""));
-        lines.push(section_title("Session"));
-        lines.extend(session_lines(self.session));
+        lines.push(section_title("Token Usage"));
+        lines.extend(totals_lines(self.session));
         lines.push(Line::from(""));
         lines.push(self.footer_line());
         lines
@@ -106,14 +133,24 @@ impl ContextOccupancyView {
     }
 
     fn content_height(&self) -> u16 {
-        // title + blank + summary + bar + blank + categories + blank + Session
-        // + input + output + cache + blank + footer
+        // Status + blank + cwd + permissions + blank + Context Usage + blank +
+        // summary + bar + blank + categories + blank + Token Usage + input + output +
+        // cache + blank + footer
         u16::try_from(
             1usize
-                .saturating_add(4)
+                .saturating_add(1)
+                .saturating_add(2)
+                .saturating_add(1)
+                .saturating_add(1)
+                .saturating_add(1)
+                .saturating_add(2)
+                .saturating_add(1)
                 .saturating_add(CATEGORY_COUNT)
-                .saturating_add(5)
-                .saturating_add(2),
+                .saturating_add(1)
+                .saturating_add(1)
+                .saturating_add(3)
+                .saturating_add(1)
+                .saturating_add(1),
         )
         .unwrap_or(u16::MAX)
     }
@@ -121,6 +158,24 @@ impl ContextOccupancyView {
 
 fn section_title(title: &str) -> Line<'static> {
     Line::from(Span::styled(title.to_string(), Style::default().bold()))
+}
+
+fn status_meta_lines(status: &StatusPanelSnapshot) -> Vec<Line<'static>> {
+    vec![
+        meta_line("cwd", status.cwd.clone()),
+        meta_line("permissions", status.permissions_label.clone()),
+    ]
+}
+
+fn meta_line(label: &str, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{label:<META_LABEL_WIDTH$}"),
+            Style::default().dim(),
+        ),
+        Span::raw("  "),
+        Span::raw(value),
+    ])
 }
 
 fn window_summary_lines(occupancy: &ContextOccupancy) -> Vec<Line<'static>> {
@@ -180,14 +235,14 @@ fn display_categories(occupancy: &ContextOccupancy) -> Vec<ContextCategoryUsage>
         .collect()
 }
 
-fn session_lines(session: SessionTokenTotals) -> Vec<Line<'static>> {
+fn totals_lines(session: SessionTokenTotals) -> Vec<Line<'static>> {
     let cache_pct = session.cache_hit_percent();
     vec![
         metric_line("↑ input", format_tokens(session.input as u64)),
         metric_line("↓ output", format_tokens(session.output as u64)),
         Line::from(vec![
             Span::styled(
-                format!("{:<SESSION_LABEL_WIDTH$}", "cache"),
+                format!("{:<TOTALS_LABEL_WIDTH$}", "cache"),
                 Style::default().dim(),
             ),
             Span::raw("  "),
@@ -203,7 +258,7 @@ fn session_lines(session: SessionTokenTotals) -> Vec<Line<'static>> {
 fn metric_line(label: &str, value: String) -> Line<'static> {
     Line::from(vec![
         Span::styled(
-            format!("{label:<SESSION_LABEL_WIDTH$}"),
+            format!("{label:<TOTALS_LABEL_WIDTH$}"),
             Style::default().dim(),
         ),
         Span::raw("  "),
@@ -272,6 +327,15 @@ impl BottomPaneView for ContextOccupancyView {
         self.complete
     }
 
+    fn update_status_panel(
+        &mut self,
+        occupancy: Option<ContextOccupancy>,
+        session: SessionTokenTotals,
+    ) -> bool {
+        self.update_snapshot(occupancy, session);
+        true
+    }
+
     fn on_ctrl_c(&mut self) -> CancellationEvent {
         self.dismiss();
         CancellationEvent::Handled
@@ -298,27 +362,39 @@ mod tests {
 
     use super::*;
 
+    fn sample_status() -> StatusPanelSnapshot {
+        StatusPanelSnapshot {
+            cwd: "/tmp/project".to_string(),
+            permissions_label: "default".to_string(),
+        }
+    }
+
     #[test]
     fn empty_state_renders_zeroed_layout() {
-        let view = ContextOccupancyView::new(None, SessionTokenTotals::default());
+        let view = ContextOccupancyView::new(None, SessionTokenTotals::default(), sample_status());
         let text = view
             .render_lines(80)
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(text.contains("Status"));
+        assert!(text.contains("cwd"));
+        assert!(text.contains("/tmp/project"));
+        assert!(text.contains("permissions"));
+        assert!(text.contains("default"));
         assert!(text.contains("Context Usage"));
         assert!(text.contains("0 / 0"));
         assert!(text.contains("base"));
         assert!(text.contains("conversation"));
-        assert!(text.contains("Session"));
+        assert!(text.contains("Token Usage"));
+        assert!(!text.lines().any(|line| line.trim() == "Session"));
         assert!(text.contains("↑ input"));
         assert!(text.contains("esc close"));
-        assert!(!text.contains("No occupancy data yet"));
     }
 
     #[test]
-    fn session_totals_render_without_cache_bar() {
+    fn totals_render_without_session_heading() {
         let view = ContextOccupancyView::new(
             None,
             SessionTokenTotals {
@@ -326,6 +402,7 @@ mod tests {
                 output: 10_000,
                 cache_read: 82_000,
             },
+            sample_status(),
         );
         let text = view
             .render_lines(100)
@@ -333,19 +410,19 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Session"));
+        assert!(text.contains("Token Usage"));
+        assert!(!text.lines().any(|line| line.trim() == "Session"));
         assert!(text.contains("↑ input"));
         assert!(text.contains("↓ output"));
         assert!(text.contains("124.0k"));
         assert!(text.contains("10.0k"));
         assert!(text.contains("82.0k"));
         assert!(text.contains("66% of input"));
-        assert!(!text.contains("Window"));
         assert!(text.contains("Context Usage"));
     }
 
     #[test]
-    fn populated_occupancy_and_session_render_together() {
+    fn populated_occupancy_and_status_render_together() {
         let occupancy = ContextOccupancy::from_category_tokens(
             /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 5_000,
             /*tools_builtin*/ 20_000, /*tools_mcp*/ 15_000, /*conversation*/ 50_000,
@@ -357,6 +434,7 @@ mod tests {
                 output: 2_000,
                 cache_read: 25_000,
             },
+            sample_status(),
         );
         let text = view
             .render_lines(100)
@@ -364,14 +442,13 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(text.contains("Status"));
         assert!(text.contains("Context Usage"));
-        assert!(!text.contains("Window"));
         assert!(text.contains("base"));
         assert!(text.contains("conversation"));
-        assert!(text.contains("Session"));
+        assert!(text.contains("Token Usage"));
         assert!(text.contains("50% of input"));
         assert!(text.contains('▰'));
-        // Category rows keep tokens + percent, but not per-category bars.
         let base_line = text
             .lines()
             .find(|line| line.contains("base"))
@@ -383,23 +460,25 @@ mod tests {
 
     #[test]
     fn esc_and_enter_dismiss() {
-        let mut view = ContextOccupancyView::new(None, SessionTokenTotals::default());
+        let mut view =
+            ContextOccupancyView::new(None, SessionTokenTotals::default(), sample_status());
         assert!(!view.is_complete());
         view.handle_key_event(KeyEvent::from(KeyCode::Enter));
         assert_eq!(view.is_complete(), true);
 
-        let mut view = ContextOccupancyView::new(None, SessionTokenTotals::default());
+        let mut view =
+            ContextOccupancyView::new(None, SessionTokenTotals::default(), sample_status());
         view.handle_key_event(KeyEvent::from(KeyCode::Esc));
         assert_eq!(view.is_complete(), true);
     }
 
     #[test]
     fn stacks_under_composer_with_menu_surface_padding() {
-        let view = ContextOccupancyView::new(None, SessionTokenTotals::default());
+        let view = ContextOccupancyView::new(None, SessionTokenTotals::default(), sample_status());
         assert!(!view.replaces_composer());
         assert_eq!(
             view.desired_height(/*width*/ 80),
-            menu_surface_padding_height().saturating_add(17)
+            menu_surface_padding_height().saturating_add(22)
         );
     }
 }

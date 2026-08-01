@@ -29,6 +29,11 @@ use crate::state::turn::TurnState;
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub token_budget: TokenBudget,
+    /// Session-scoped absolute effective context window override.
+    /// When set, turn starts merge this into the model-derived budget so hot
+    /// updates are not wiped by `TurnConfig::token_budget()`. Clamped to the
+    /// active model `context_window` at resolve time.
+    pub effective_context_window_override: Option<usize>,
     pub permission_mode: PermissionMode,
     pub permission_profile: RuntimePermissionProfile,
     pub agents_md: AgentsMdConfig,
@@ -61,6 +66,7 @@ impl Default for SessionConfig {
             RuntimePermissionProfile::from_preset(PermissionPreset::Default, cwd);
         Self {
             token_budget: TokenBudget::default(),
+            effective_context_window_override: None,
             permission_mode: permission_profile.permission_mode(),
             permission_profile,
             agents_md: AgentsMdConfig::default(),
@@ -123,6 +129,24 @@ impl From<HashMap<String, String>> for ProviderRequestModelMap {
 impl TurnConfig {
     pub fn token_budget(&self) -> TokenBudget {
         TokenBudget::for_model(&self.model)
+    }
+
+    /// Builds the turn token budget, applying a session effective-context
+    /// override when present so hot updates survive turn start reassignment.
+    ///
+    /// Resolved value is `min(override, model.context_window)` and is written to
+    /// both `TokenBudget.context_window` and `auto_compact_token_limit`.
+    pub fn token_budget_for_session(
+        &self,
+        effective_context_window_override: Option<usize>,
+    ) -> TokenBudget {
+        let mut budget = self.token_budget();
+        if let Some(limit) = effective_context_window_override {
+            let resolved = limit.min(self.model.context_window as usize).max(1);
+            budget.context_window = resolved;
+            budget.auto_compact_token_limit = Some(resolved);
+        }
+        budget
     }
 
     pub fn new(model: Model, reasoning_effort_selection: Option<String>) -> Self {

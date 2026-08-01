@@ -435,6 +435,18 @@ pub(super) async fn run_session_actor(
                 state.turn_approval_cache = crate::execution::ApprovalGrantCache::default();
                 let _ = reply.send(());
             }
+            SessionCommand::ApplyEffectiveContextWindow { limit, reply } => {
+                state.core.config.effective_context_window_override = Some(limit);
+                state.core.config.token_budget.context_window = limit;
+                state.core.config.token_budget.auto_compact_token_limit = Some(limit);
+                state.config.effective_context_window_override = Some(limit);
+                state.config.token_budget.context_window = limit;
+                state.config.token_budget.auto_compact_token_limit = Some(limit);
+                // Applied window is session-local runtime state derived from the
+                // global config preference; do not persist as a session override.
+                state.summary.effective_context_window = Some(limit as u64);
+                let _ = reply.send(Ok(()));
+            }
             SessionCommand::ApplySandboxProfile { profile, reply } => {
                 // Validation only; approval caches are intentionally preserved:
                 // the sandbox profile does not widen tool permissions.

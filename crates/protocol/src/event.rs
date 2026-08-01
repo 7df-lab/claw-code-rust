@@ -219,6 +219,13 @@ pub struct SessionStatusChangedPayload {
     pub status: SessionRuntimeStatus,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEffectiveContextWindowUpdatedPayload {
+    pub session_id: SessionId,
+    pub effective_context_window: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionCompactionFailedPayload {
     pub session_id: SessionId,
@@ -395,6 +402,7 @@ pub enum ServerEvent {
     SessionCompactionCompleted(SessionEventPayload),
     SessionCompactionFailed(SessionCompactionFailedPayload),
     SessionStatusChanged(SessionStatusChangedPayload),
+    SessionEffectiveContextWindowUpdated(SessionEffectiveContextWindowUpdatedPayload),
     SessionArchived(SessionEventPayload),
     SessionUnarchived(SessionEventPayload),
     SessionClosed(SessionEventPayload),
@@ -444,6 +452,7 @@ impl ServerEvent {
             Self::SessionDeleted(payload) => Some(payload.session_id),
             Self::SessionCompactionFailed(payload) => Some(payload.session_id),
             Self::SessionStatusChanged(payload) => Some(payload.session_id),
+            Self::SessionEffectiveContextWindowUpdated(payload) => Some(payload.session_id),
             Self::TurnStarted(payload)
             | Self::TurnCompleted(payload)
             | Self::TurnInterrupted(payload)
@@ -483,6 +492,9 @@ impl ServerEvent {
             Self::SessionCompactionCompleted(_) => "session/compaction/completed",
             Self::SessionCompactionFailed(_) => "session/compaction/failed",
             Self::SessionStatusChanged(_) => "session/status/changed",
+            Self::SessionEffectiveContextWindowUpdated(_) => {
+                "session/effective_context_window/updated"
+            }
             Self::SessionArchived(_) => "session/archived",
             Self::SessionUnarchived(_) => "session/unarchived",
             Self::SessionClosed(_) => "session/closed",

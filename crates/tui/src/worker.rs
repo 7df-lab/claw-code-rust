@@ -362,6 +362,9 @@ enum OperationCommand {
     UpdatePermissions {
         preset: devo_protocol::PermissionPreset,
     },
+    UpdateEffectiveContextWindow {
+        effective_context_window: u64,
+    },
     UpdateSandboxProfile {
         profile: String,
     },
@@ -787,6 +790,17 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
+    pub(crate) fn update_effective_context_window(
+        &self,
+        effective_context_window: u64,
+    ) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::UpdateEffectiveContextWindow {
+                effective_context_window,
+            })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
     pub(crate) fn update_sandbox_profile(&self, profile: String) -> Result<()> {
         self.command_tx
             .send(OperationCommand::UpdateSandboxProfile { profile })
@@ -930,6 +944,7 @@ async fn run_worker_inner(
                     loaded_item_count: resumed.loaded_item_count,
                     pending_texts: resumed.pending_texts,
                     collaboration_mode: resumed.session.collaboration_mode,
+                    effective_context_window: resumed.session.effective_context_window,
                 });
                 if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
                     let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
@@ -1752,6 +1767,7 @@ async fn run_worker_inner(
                                             loaded_item_count: result.loaded_item_count,
                                             pending_texts: result.pending_texts,
                                             collaboration_mode: result.session.collaboration_mode,
+                                            effective_context_window: result.session.effective_context_window,
         });
                                         if let Some(occupancy) = result.session.last_context_occupancy.clone() {
                                             let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
@@ -1990,6 +2006,7 @@ async fn run_worker_inner(
                                             loaded_item_count: result.loaded_item_count,
                                             pending_texts: result.pending_texts,
                                             collaboration_mode: result.session.collaboration_mode,
+                                            effective_context_window: result.session.effective_context_window,
         });
                                         if let Some(occupancy) = result.session.last_context_occupancy.clone() {
                                             let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
@@ -2097,6 +2114,7 @@ async fn run_worker_inner(
                                                     loaded_item_count: resumed.loaded_item_count,
                                                     pending_texts: resumed.pending_texts,
                                                     collaboration_mode: resumed.session.collaboration_mode,
+                                                    effective_context_window: resumed.session.effective_context_window,
         });
                                                 if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
                                                     let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
@@ -2298,6 +2316,35 @@ async fn run_worker_inner(
                                         prompt_token_estimate: total_input_tokens,
                                         last_query_input_tokens,
                                     });
+                                }
+                            }
+                            Some(OperationCommand::UpdateEffectiveContextWindow {
+                                effective_context_window,
+                            }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                match client
+                                    .session_compaction_update(
+                                        devo_server::SessionCompactionUpdateParams {
+                                            session_id: active_session_id,
+                                            effective_context_window,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        let _ = event_tx.send(WorkerEvent::EffectiveContextWindowUpdated {
+                                            effective_context_window: result.effective_context_window,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::InterruptFailed {
+                                            message: format!(
+                                                "Failed to update compaction threshold: {error}"
+                                            ),
+                                        });
+                                    }
                                 }
                             }
                             Some(OperationCommand::UpdateSandboxProfile { profile }) => {
@@ -2903,6 +2950,20 @@ async fn run_worker_inner(
                                                     title,
                                                 });
                                             }
+                                    }
+                                    "session/effective_context_window/updated" => {
+                                        if let ServerEvent::SessionEffectiveContextWindowUpdated(
+                                            payload,
+                                        ) = event
+                                            && session_id == Some(payload.session_id)
+                                        {
+                                            let _ = event_tx.send(
+                                                WorkerEvent::EffectiveContextWindowUpdated {
+                                                    effective_context_window: payload
+                                                        .effective_context_window,
+                                                },
+                                            );
+                                        }
                                     }
                                     "session/compaction/started" => {
                                         if let ServerEvent::SessionCompactionStarted(_) = event {
@@ -6203,6 +6264,7 @@ mod tests {
             last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
         }
     }
 
@@ -6660,6 +6722,7 @@ mod tests {
             last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
         };
         let entry = SessionListEntry {
             session_id: summary.session_id,
@@ -6706,6 +6769,7 @@ mod tests {
             last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
         };
         let entry = SessionListEntry {
             session_id: summary.session_id,

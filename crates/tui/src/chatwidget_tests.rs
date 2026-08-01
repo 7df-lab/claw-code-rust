@@ -716,6 +716,7 @@ fn session_switched_clears_resume_blocking_state() {
         loaded_item_count: 0,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     assert!(!widget.is_resuming_session_for_test());
@@ -2847,6 +2848,7 @@ fn session_switch_restores_plan_mode_and_proposed_plan_actions() {
         loaded_item_count: 1,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Plan,
+        effective_context_window: None,
     });
 
     assert_eq!(
@@ -2915,6 +2917,7 @@ fn session_switch_restores_plan_turn_summary_label() {
         loaded_item_count: 2,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Plan,
+        effective_context_window: None,
     });
 
     assert_eq!(
@@ -2982,6 +2985,7 @@ fn session_switch_after_implement_stays_in_build_without_plan_actions() {
         loaded_item_count: 2,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     assert_eq!(
@@ -3137,6 +3141,7 @@ fn session_switch_restores_plan_metadata_into_progress() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     assert_eq!(widget.last_plan_progress_for_test(), Some((1, 2)));
@@ -3188,6 +3193,7 @@ fn session_switch_restores_explored_metadata_into_history() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -3252,6 +3258,7 @@ fn session_switch_restores_edited_metadata_into_history() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -3324,6 +3331,7 @@ fn session_switch_merges_consecutive_explored_items() {
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -3382,6 +3390,7 @@ fn session_switch_restores_error_via_tool_result_cell_style() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -3464,6 +3473,7 @@ fn rich_session_restore_orders_terminal_error_before_single_failed_footer() {
         loaded_item_count: 4,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -3542,6 +3552,7 @@ fn live_and_resume_error_share_same_rendering_chain() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
     let resume_blob = scrollback_plain_lines(&resume_widget.drain_scrollback_lines(80))
         .into_iter()
@@ -4215,6 +4226,7 @@ fn session_switch_restores_header_and_spacing_before_user_input() {
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let committed_lines = widget.drain_scrollback_lines(80);
@@ -4305,6 +4317,7 @@ fn restored_user_spacing_matches_live_turn_batch_spacing() {
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
     let restored_rows = scrollback_plain_lines(&restored_widget.drain_scrollback_lines(80));
 
@@ -4379,6 +4392,7 @@ fn rich_session_switch_restores_user_spacing_before_assistant_response() {
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let committed_rows = scrollback_plain_lines(&widget.drain_scrollback_lines(80));
@@ -5800,6 +5814,7 @@ fn restored_reasoning_text_is_visible_in_transcript() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let scrollback = widget.drain_scrollback_lines(80);
@@ -6292,6 +6307,7 @@ fn session_switch_updates_session_identity_projection() {
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     assert_eq!(widget.current_cwd(), resumed_cwd.as_path());
@@ -6336,6 +6352,7 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let idle_summary = widget.status_summary_text();
@@ -6415,6 +6432,7 @@ fn session_compacted_updates_context_bar_to_compacted_prompt_estimate() {
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     widget.handle_worker_event(crate::events::WorkerEvent::SessionCompacted {
@@ -6464,6 +6482,7 @@ fn usage_updated_keeps_context_bar_on_last_query_not_cumulative_totals() {
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let idle_summary = widget.status_summary_text();
@@ -6856,7 +6875,7 @@ fn session_compaction_live_rows_use_live_prefix_cols() {
     assert!(
         started_history
             .iter()
-            .any(|line| line.starts_with(&format!("{live_prefix}Compaction started"))),
+            .any(|line| line.starts_with(&format!("{live_prefix}▌ Compaction started"))),
         "context compaction start should be visible in history:\n{}",
         started_history.join("\n")
     );
@@ -6882,7 +6901,7 @@ fn session_compaction_live_rows_use_live_prefix_cols() {
     assert!(
         history
             .iter()
-            .any(|line| { line.starts_with(&format!("{live_prefix}Context compacted")) }),
+            .any(|line| { line.starts_with(&format!("{live_prefix}▌ Context compacted")) }),
         "compaction completion history should align with live prefix:\n{}",
         history.join("\n")
     );
@@ -6910,6 +6929,51 @@ fn session_compaction_live_rows_use_live_prefix_cols() {
         "compaction failure history should align with live prefix:\n{}",
         history.join("\n")
     );
+}
+
+#[test]
+fn context_compaction_completed_clears_compacting_status_indicator() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    // Mid-turn auto-compaction: start → item completed (no SessionCompacted).
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: TurnId::new(),
+    });
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionCompactionStarted);
+    let rows = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(rows.contains("Compacting session"), "rows:\n{rows}");
+
+    widget.handle_worker_event(crate::events::WorkerEvent::ContextCompactionCompleted {
+        title: "Context compacted".to_string(),
+    });
+    let rows = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(!rows.contains("Compacting session"), "rows:\n{rows}");
+    assert!(rows.contains("Working"), "rows:\n{rows}");
+
+    // Standalone compaction (no active turn): item completed should hide indicator.
+    let (mut widget, _app_event_rx) = widget_with_model(
+        Model {
+            slug: "test-model".to_string(),
+            display_name: "Test Model".to_string(),
+            ..Model::default()
+        },
+        PathBuf::from("."),
+    );
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionCompactionStarted);
+    widget.handle_worker_event(crate::events::WorkerEvent::ContextCompactionCompleted {
+        title: "Context compacted".to_string(),
+    });
+    let rows = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(!rows.contains("Compacting session"), "rows:\n{rows}");
 }
 
 #[test]
@@ -7609,6 +7673,7 @@ fn session_switch_sets_active_agent_footer_label() {
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let rows = rendered_rows(&widget, 160, 16);
@@ -7652,6 +7717,7 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
     widget.add_to_history(crate::history_cell::new_info_event(
         "old session line".to_string(),
@@ -8194,6 +8260,87 @@ fn collapsed_reasoning_live_view_keeps_only_latest_lines() {
 }
 
 #[test]
+fn collapsed_reasoning_live_view_caps_wrapped_visual_rows() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = ChatWidget::new_with_app_event(ChatWidgetInit {
+        frame_requester: FrameRequester::test_dummy(),
+        app_event_tx: AppEventSender::new(app_event_tx),
+        initial_session: TuiSessionState::new(PathBuf::from("."), Some(model)),
+        initial_reasoning_effort_selection: None,
+        initial_permission_preset: PermissionPreset::Default,
+        initial_sandbox_profile: Some("workspace".to_string()),
+        initial_user_message: None,
+        enhanced_keys_supported: true,
+        is_first_run: false,
+        available_models: Vec::new(),
+        saved_models: Vec::new(),
+        show_model_onboarding: false,
+        exit_after_onboarding: false,
+        startup_tooltip_override: None,
+        initial_theme_name: None,
+        initial_collapse_reasoning: true,
+    });
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: Default::default(),
+    });
+    // One logical line that wraps to many visual rows at a narrow width.
+    let long_line = "word ".repeat(80);
+    widget.handle_worker_event(crate::events::WorkerEvent::ReasoningDelta(long_line));
+
+    let width = 40u16;
+    let live_lines = widget.active_viewport_lines_for_test(width);
+    let body_rows = live_lines
+        .iter()
+        .filter(|line| {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            !text.contains("ctrl + t to view transcript")
+        })
+        .count();
+    assert!(
+        body_rows <= 3,
+        "collapsed live view should cap wrapped visual rows to 3, got {body_rows}:\n{}",
+        live_lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let live = live_lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        live.contains("ctrl + t to view transcript"),
+        "collapsed live reasoning should still hint Ctrl+T:\n{live}"
+    );
+}
+
+#[test]
 fn collapsed_short_reasoning_stays_full_after_completion() {
     let model = Model {
         slug: "test-model".to_string(),
@@ -8242,6 +8389,66 @@ fn collapsed_short_reasoning_stays_full_after_completion() {
     assert!(
         scrollback.contains("ctrl + t to view transcript"),
         "collapsed short reasoning should hint Ctrl+T:\n{scrollback}"
+    );
+}
+
+#[test]
+fn collapsed_wrapping_reasoning_compacts_after_completion() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = ChatWidget::new_with_app_event(ChatWidgetInit {
+        frame_requester: FrameRequester::test_dummy(),
+        app_event_tx: AppEventSender::new(app_event_tx),
+        initial_session: TuiSessionState::new(PathBuf::from("."), Some(model)),
+        initial_reasoning_effort_selection: None,
+        initial_permission_preset: PermissionPreset::Default,
+        initial_sandbox_profile: Some("workspace".to_string()),
+        initial_user_message: None,
+        enhanced_keys_supported: true,
+        is_first_run: false,
+        available_models: Vec::new(),
+        saved_models: Vec::new(),
+        show_model_onboarding: false,
+        exit_after_onboarding: false,
+        startup_tooltip_override: None,
+        initial_theme_name: None,
+        initial_collapse_reasoning: true,
+    });
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: Default::default(),
+    });
+    // Single logical paragraph that wraps past the collapsed visual budget.
+    let long_thought = format!("alpha {}", "word ".repeat(80).trim());
+    widget.handle_worker_event(crate::events::WorkerEvent::ReasoningDelta(
+        long_thought.clone(),
+    ));
+    widget.handle_worker_event(crate::events::WorkerEvent::ReasoningCompleted(
+        long_thought.clone(),
+    ));
+
+    let width = 40u16;
+    let scrollback = scrollback_plain_lines(&widget.drain_scrollback_lines(width)).join("\n");
+    assert!(
+        scrollback.contains("Thought ·"),
+        "wrapping collapsed reasoning should compact to Thought summary:\n{scrollback}"
+    );
+    assert!(
+        scrollback.contains('…') || scrollback.contains("ctrl + t to view transcript"),
+        "wrapping collapsed reasoning should truncate or hint transcript:\n{scrollback}"
+    );
+    // Full body must not appear as multi-row Thought: content.
+    assert!(
+        !scrollback.contains("Thought:"),
+        "wrapping collapsed reasoning should not keep the full Thought: body:\n{scrollback}"
     );
 }
 
@@ -8732,6 +8939,7 @@ fn restored_session_transcript_overlay_preserves_paired_tool_io() {
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
@@ -8799,6 +9007,7 @@ fn legacy_restored_session_without_tool_io_keeps_existing_tool_result_rendering(
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
@@ -10066,6 +10275,7 @@ fn session_switch_without_rich_edited_metadata_degrades_to_tool_result_path() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -10122,6 +10332,7 @@ fn session_switch_restores_added_file_content_in_edited_block() {
         loaded_item_count: 1,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -10178,6 +10389,7 @@ fn session_switch_without_rich_edited_metadata_still_restores_edited_block() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");

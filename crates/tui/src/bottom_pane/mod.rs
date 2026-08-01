@@ -24,6 +24,7 @@ pub(crate) mod bottom_pane_view;
 mod chat_composer;
 mod chat_composer_history;
 mod command_popup;
+mod compaction_threshold_view;
 mod context_occupancy_view;
 mod custom_prompt_view;
 mod delete_session_confirm_view;
@@ -41,6 +42,7 @@ mod reference_popup;
 mod request_user_input_overlay;
 pub(crate) mod scroll_state;
 mod selection_popup_common;
+mod settings_hub_view;
 pub(crate) mod slash_commands;
 pub(crate) mod textarea;
 mod theme_picker;
@@ -51,8 +53,13 @@ pub(crate) use approval_overlay::ApprovalOverlayRequest;
 pub(crate) use chat_composer::ChatComposer;
 use chat_composer::ChatComposerConfig;
 use chat_composer::InputResult as ComposerInputResult;
+pub(crate) use compaction_threshold_view::CompactionThresholdSnapshot;
+use compaction_threshold_view::CompactionThresholdView;
+pub(crate) use compaction_threshold_view::format_token_limit;
+pub(crate) use compaction_threshold_view::recommended_compaction_token_limit;
 use context_occupancy_view::ContextOccupancyView;
 pub(crate) use context_occupancy_view::SessionTokenTotals;
+pub(crate) use context_occupancy_view::StatusPanelSnapshot;
 pub(crate) use custom_prompt_view::CustomPromptView;
 pub(crate) use delete_session_confirm_view::DeleteSessionConfirmView;
 pub(crate) use horizontal_chip_strip::HorizontalChipStrip;
@@ -62,6 +69,9 @@ pub(crate) use model_picker::ModelPickerEntry;
 pub(crate) use model_picker::ModelPickerSelection;
 use model_picker::ModelPickerView;
 pub(crate) use proposed_plan_actions_view::ProposedPlanActionsView;
+pub(crate) use settings_hub_view::SettingsHubSnapshot;
+pub(crate) use settings_hub_view::SettingsHubTab;
+use settings_hub_view::SettingsHubView;
 
 use crate::app_command::AppCommand;
 use crate::app_command::InputHistoryDirection;
@@ -291,6 +301,9 @@ impl BottomPane {
     pub(crate) fn set_accent_color(&mut self, color: Color) {
         self.accent_color = color;
         self.composer.set_accent_color(color);
+        for view in &mut self.view_stack {
+            view.set_accent_color(color);
+        }
         self.request_redraw();
     }
     pub(crate) fn input_mode(&self) -> InputMode {
@@ -308,6 +321,14 @@ impl BottomPane {
 
     fn cycle_input_mode(&mut self) {
         self.set_input_mode(self.input_mode.next());
+    }
+
+    pub(crate) fn cycle_build_plan_mode(&mut self) {
+        let next = match self.input_mode {
+            InputMode::Build => InputMode::Plan,
+            InputMode::Plan | InputMode::Shell => InputMode::Build,
+        };
+        self.set_input_mode(next);
     }
 
     pub(crate) fn set_skill_mentions(&mut self, skills: Option<Vec<SkillMetadata>>) {
@@ -497,12 +518,15 @@ impl BottomPane {
         self.push_view(Box::new(ModelPickerView::new(entries, self.accent_color)));
     }
 
-    pub(crate) fn open_context_occupancy(
+    pub(crate) fn open_status_panel(
         &mut self,
         occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
         session: SessionTokenTotals,
+        status: StatusPanelSnapshot,
     ) {
-        self.push_view(Box::new(ContextOccupancyView::new(occupancy, session)));
+        self.push_view(Box::new(ContextOccupancyView::new(
+            occupancy, session, status,
+        )));
     }
 
     pub(crate) fn open_theme_picker(
@@ -514,6 +538,55 @@ impl BottomPane {
             themes,
             current_name,
         )));
+    }
+
+    pub(crate) fn open_settings_hub(&mut self, snapshot: SettingsHubSnapshot) {
+        self.push_view(Box::new(SettingsHubView::new(
+            snapshot,
+            self.app_event_tx.clone(),
+            self.accent_color,
+        )));
+    }
+
+    pub(crate) fn open_settings_hub_on_tab(
+        &mut self,
+        snapshot: SettingsHubSnapshot,
+        tab: settings_hub_view::SettingsHubTab,
+    ) {
+        self.push_view(Box::new(
+            SettingsHubView::new(snapshot, self.app_event_tx.clone(), self.accent_color)
+                .with_tab(tab),
+        ));
+    }
+
+    pub(crate) fn open_compaction_threshold(&mut self, snapshot: CompactionThresholdSnapshot) {
+        self.push_view(Box::new(CompactionThresholdView::new(
+            snapshot,
+            self.app_event_tx.clone(),
+            self.accent_color,
+        )));
+    }
+
+    pub(crate) fn refresh_settings_hub(&mut self, snapshot: SettingsHubSnapshot) {
+        for view in self.view_stack.iter_mut().rev() {
+            if view.update_settings_hub_snapshot(snapshot.clone()) {
+                self.request_redraw();
+                break;
+            }
+        }
+    }
+
+    pub(crate) fn refresh_status_panel(
+        &mut self,
+        occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+        session: SessionTokenTotals,
+    ) {
+        for view in self.view_stack.iter_mut().rev() {
+            if view.update_status_panel(occupancy.clone(), session) {
+                self.request_redraw();
+                break;
+            }
+        }
     }
 
     pub(crate) fn open_popup_view(&mut self, view: Box<dyn BottomPaneView>) {
@@ -1272,12 +1345,16 @@ mod tests {
         pane.set_text_content(draft.to_string(), Vec::new(), Vec::new());
         let composer_only_height = pane.desired_height(/*width*/ 80);
 
-        pane.open_context_occupancy(
+        pane.open_status_panel(
             None,
             SessionTokenTotals {
                 input: 1_000,
                 output: 100,
                 cache_read: 500,
+            },
+            StatusPanelSnapshot {
+                cwd: "/tmp/project".to_string(),
+                permissions_label: "Default".to_string(),
             },
         );
 
@@ -1293,12 +1370,20 @@ mod tests {
             "composer draft should stay visible:\n{rendered}"
         );
         assert!(
-            rendered.contains("Context Usage"),
-            "context panel title missing:\n{rendered}"
+            rendered.contains("Status"),
+            "status panel title missing:\n{rendered}"
         );
         assert!(
-            rendered.contains("Session"),
-            "session section missing:\n{rendered}"
+            rendered.contains("Context Usage"),
+            "context usage section missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Token Usage"),
+            "token usage section missing:\n{rendered}"
+        );
+        assert!(
+            !rendered.lines().any(|line| line.trim() == "Session"),
+            "Session heading should be gone:\n{rendered}"
         );
         let draft_row = rendered
             .lines()
@@ -1306,11 +1391,11 @@ mod tests {
             .expect("missing composer draft");
         let panel_row = rendered
             .lines()
-            .position(|line| line.contains("Context Usage"))
-            .expect("missing context title");
+            .position(|line| line.contains("Status"))
+            .expect("missing status title");
         assert!(
             panel_row > draft_row,
-            "context panel should render below composer; draft_row={draft_row} panel_row={panel_row}\n{rendered}"
+            "status panel should render below composer; draft_row={draft_row} panel_row={panel_row}\n{rendered}"
         );
     }
 }

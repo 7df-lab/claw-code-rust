@@ -81,6 +81,7 @@ fn session_record(n: u128) -> SessionRecord {
         title_state: SessionTitleState::Final(SessionTitleFinalSource::ModelGenerated),
         sandbox_policy: "workspace-write".into(),
         approval_mode: "on-request".into(),
+        effective_context_window: None,
         tokens_used: 12345,
         first_user_message: Some("Fix the flaky test".into()),
         archived_at: None,

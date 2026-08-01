@@ -94,6 +94,9 @@ pub(crate) enum AppCommand {
     UpdatePermissions {
         preset: devo_protocol::PermissionPreset,
     },
+    UpdateEffectiveContextWindow {
+        effective_context_window: u64,
+    },
     UpdateSandboxProfile {
         profile: String,
     },
@@ -188,6 +191,9 @@ pub(crate) enum AppCommandView<'a> {
     },
     UpdatePermissions {
         preset: devo_protocol::PermissionPreset,
+    },
+    UpdateEffectiveContextWindow {
+        effective_context_window: u64,
     },
     UpdateSandboxProfile {
         profile: &'a str,
@@ -390,6 +396,7 @@ impl AppCommand {
             Self::ApprovalRespond { .. } => "approval_respond",
             Self::RequestUserInputRespond { .. } => "request_user_input_respond",
             Self::UpdatePermissions { .. } => "update_permissions",
+            Self::UpdateEffectiveContextWindow { .. } => "update_effective_context_window",
             Self::UpdateSandboxProfile { .. } => "update_sandbox_profile",
             Self::BrowseInputHistory { .. } => "browse_input_history",
             Self::SwitchSession { .. } => "switch_session",
@@ -478,6 +485,11 @@ impl AppCommand {
             Self::UpdatePermissions { preset, .. } => {
                 AppCommandView::UpdatePermissions { preset: *preset }
             }
+            Self::UpdateEffectiveContextWindow {
+                effective_context_window,
+            } => AppCommandView::UpdateEffectiveContextWindow {
+                effective_context_window: *effective_context_window,
+            },
             Self::UpdateSandboxProfile { profile } => {
                 AppCommandView::UpdateSandboxProfile { profile }
             }

@@ -482,14 +482,25 @@ impl ChatWidget {
         if item.kind != devo_protocol::SessionHistoryItemKind::ToolResult {
             return None;
         }
+        if let Some(SessionHistoryMetadata::Edited { changes }) = &item.metadata {
+            return (!changes.is_empty()).then(|| changes.clone());
+        }
         let lower_title = item.title.to_ascii_lowercase();
+        let body_for_parse = item
+            .tool_io
+            .as_ref()
+            .and_then(|tool_io| tool_io.output.as_ref())
+            .map(ToString::to_string)
+            .filter(|text| text.contains("\"files\"") || text.contains("\"diff\""))
+            .unwrap_or_else(|| item.body.clone());
         if !lower_title.contains("apply_patch")
             && !lower_title.contains("write")
-            && !item.body.contains("\"files\"")
+            && !lower_title.contains("edit")
+            && !body_for_parse.contains("\"files\"")
         {
             return None;
         }
-        let value: serde_json::Value = serde_json::from_str(&item.body).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&body_for_parse).ok()?;
         let files = value.get("files")?.as_array()?;
         let diff = value
             .get("diff")
@@ -524,7 +535,12 @@ impl ChatWidget {
                         .unwrap_or_else(|| "\n".repeat(deletions as usize)),
                 },
                 "update" | "move" => devo_protocol::protocol::FileChange::Update {
-                    unified_diff: diff.clone(),
+                    unified_diff: file
+                        .get("diff")
+                        .or_else(|| file.get("patch"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| diff.clone()),
                     old_text: file
                         .get("oldContent")
                         .or_else(|| file.get("preContent"))

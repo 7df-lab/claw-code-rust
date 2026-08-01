@@ -1298,6 +1298,7 @@ impl ChatWidget {
                 self.last_query_input_tokens = 0;
                 self.prompt_token_estimate = 0;
                 self.last_context_occupancy = None;
+                self.effective_context_window = None;
                 if should_append_header {
                     self.push_session_header(/*is_first_run*/ false, None);
                 } else {
@@ -1326,6 +1327,7 @@ impl ChatWidget {
                 loaded_item_count,
                 pending_texts,
                 collaboration_mode,
+                effective_context_window,
             } => {
                 self.resume_browser_loading = false;
                 self.finish_session_resume();
@@ -1357,6 +1359,7 @@ impl ChatWidget {
                 self.last_query_input_tokens = last_query_input_tokens;
                 self.prompt_token_estimate = prompt_token_estimate;
                 self.last_context_occupancy = None;
+                self.effective_context_window = effective_context_window;
                 if !self.rebuild_restored_session_history_from_rich_items(
                     &rich_history_items,
                     loaded_item_count,
@@ -1441,6 +1444,11 @@ impl ChatWidget {
                 ));
                 self.set_status_message("Session deleted");
             }
+            WorkerEvent::EffectiveContextWindowUpdated {
+                effective_context_window,
+            } => {
+                self.note_effective_context_window_updated(effective_context_window);
+            }
             WorkerEvent::SessionCompactionStarted => {
                 if self.status_message != "Session compaction in progress" {
                     self.add_to_history(history_cell::new_live_aligned_info_event(
@@ -1480,6 +1488,16 @@ impl ChatWidget {
                 self.set_status_message("Session compacted");
             }
             WorkerEvent::ContextCompactionCompleted { title: _ } => {
+                // Mid-turn auto-compaction only emits item lifecycle events (not
+                // session/compaction/completed). Clear the compacting indicator here.
+                if self.active_turn_id.is_some() {
+                    if let Some(status) = self.bottom_pane.status_widget_mut() {
+                        status.update_header("Working".to_string());
+                    }
+                } else {
+                    self.busy = false;
+                    self.bottom_pane.set_task_running(false);
+                }
                 if self.status_message != "Session compacted"
                     && self.status_message != "Context compacted"
                 {

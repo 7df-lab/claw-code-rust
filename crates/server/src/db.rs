@@ -57,6 +57,10 @@ pub struct SessionStats {
     pub total_tokens: usize,
     pub total_cache_creation_tokens: usize,
     pub total_cache_read_tokens: usize,
+    /// Latest **model-query** input tokens (not cumulative turn usage).
+    ///
+    /// Used for hydrate / diagnostics. Must not be confused with turn-aggregate
+    /// `TurnMetadata.usage`, which sums every completed leg in a multi-tool turn.
     pub last_input_tokens: usize,
     pub turn_count: usize,
     pub prompt_token_estimate: usize,
@@ -1158,6 +1162,9 @@ fn parse_session_metadata_row(
         last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
+        // Applied compaction window is resolved from AppConfig at session
+        // hydrate / create time; DB list rows do not persist it.
+        effective_context_window: None,
     })
 }
 
@@ -1444,6 +1451,7 @@ mod tests {
             last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
         }
     }
 

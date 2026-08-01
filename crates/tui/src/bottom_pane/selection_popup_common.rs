@@ -84,7 +84,7 @@ pub(crate) const fn menu_surface_padding_height() -> u16 {
 ///
 /// Background rule (see [`super::bottom_pane_view::BottomPaneView::replaces_composer`]):
 /// views that **replace** the composer must paint this surface. Stacked overlays
-/// may also use it when they need a distinct panel chrome (for example `/context`
+/// may also use it when they need a distinct panel chrome (for example `/status`
 /// and selection-style confirmations).
 pub(crate) fn render_menu_surface(area: Rect, buf: &mut Buffer) -> Rect {
     if area.is_empty() {

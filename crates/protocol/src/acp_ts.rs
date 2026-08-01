@@ -256,6 +256,9 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<ApprovalsReviewer>(&cfg, &mut output);
     push_decl::<SessionPermissionsUpdateParams>(&cfg, &mut output);
     push_decl::<SessionPermissionsUpdateResult>(&cfg, &mut output);
+    push_decl::<SessionCompactionUpdateParams>(&cfg, &mut output);
+    push_decl::<SessionCompactionUpdateResult>(&cfg, &mut output);
+    push_decl::<SessionEffectiveContextWindowUpdatedPayload>(&cfg, &mut output);
     push_decl::<SessionSandboxProfileUpdateParams>(&cfg, &mut output);
     push_decl::<SessionSandboxProfileUpdateResult>(&cfg, &mut output);
 
@@ -640,6 +643,9 @@ fn register_devo_protocol_schemas(
     schema::<SessionMetadataUpdateResult>(schemas);
     schema::<SessionPermissionsUpdateParams>(schemas);
     schema::<SessionPermissionsUpdateResult>(schemas);
+    schema::<SessionCompactionUpdateParams>(schemas);
+    schema::<SessionCompactionUpdateResult>(schemas);
+    schema::<SessionEffectiveContextWindowUpdatedPayload>(schemas);
     schema::<SessionSandboxProfileUpdateParams>(schemas);
     schema::<SessionSandboxProfileUpdateResult>(schemas);
     schema::<SessionTitleUpdateParams>(schemas);
@@ -766,6 +772,14 @@ fn register_devo_protocol_schemas(
     devo_method::<SessionPermissionsUpdateParams, SessionPermissionsUpdateResult>(
         methods,
         ClientMethod::SessionPermissionsUpdate,
+    );
+    devo_method::<SessionCompactionUpdateParams, SessionCompactionUpdateResult>(
+        methods,
+        ClientMethod::SessionCompactionUpdate,
+    );
+    devo_notification::<SessionEffectiveContextWindowUpdatedPayload>(
+        methods,
+        "session/effective_context_window/updated",
     );
     devo_method::<SessionSandboxProfileUpdateParams, SessionSandboxProfileUpdateResult>(
         methods,

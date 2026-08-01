@@ -166,6 +166,15 @@ impl WebSocketServerClient {
             .await
     }
 
+    pub async fn session_compaction_update(
+        &mut self,
+        params: SessionCompactionUpdateParams,
+    ) -> Result<SessionCompactionUpdateResult> {
+        self.core
+            .request_devo("session/compaction/update", params)
+            .await
+    }
+
     pub async fn session_sandbox_profile_update(
         &mut self,
         params: SessionSandboxProfileUpdateParams,

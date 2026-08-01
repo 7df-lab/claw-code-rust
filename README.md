@@ -280,16 +280,6 @@ Contributions are welcome while the project is still early:
 
 Open an issue or pull request to discuss changes.
 
-## Star History
-
-<a href="https://www.star-history.com/?repos=7df-lab%2Fdevo&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&theme=dark&legend=top-left&sealed_token=MnUnrvz2y0jVX7ra8V0X5Z6AvrYDpTndpzZkHP-0ilm9g4EpwuNEvvmJfE8I2qMI8tDhAkn5a2T5dks7vIrGvP1eVw3ov01-m4_l7zJyWuuAFP-f4MSHSvyRJVhkhWmoioiwBNutxCcNuvDtZkufcwHISOkZglpGH7tZhIZDj-ITupTBDzZmBVfI-_DU" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left&sealed_token=MnUnrvz2y0jVX7ra8V0X5Z6AvrYDpTndpzZkHP-0ilm9g4EpwuNEvvmJfE8I2qMI8tDhAkn5a2T5dks7vIrGvP1eVw3ov01-m4_l7zJyWuuAFP-f4MSHSvyRJVhkhWmoioiwBNutxCcNuvDtZkufcwHISOkZglpGH7tZhIZDj-ITupTBDzZmBVfI-_DU" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left&sealed_token=MnUnrvz2y0jVX7ra8V0X5Z6AvrYDpTndpzZkHP-0ilm9g4EpwuNEvvmJfE8I2qMI8tDhAkn5a2T5dks7vIrGvP1eVw3ov01-m4_l7zJyWuuAFP-f4MSHSvyRJVhkhWmoioiwBNutxCcNuvDtZkufcwHISOkZglpGH7tZhIZDj-ITupTBDzZmBVfI-_DU" />
- </picture>
-</a>
-
 ## License
 
 This project is licensed under the [MIT License](./LICENSE).

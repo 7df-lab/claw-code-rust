@@ -62,9 +62,16 @@ impl ServerRuntime {
                     core.total_tokens = stats.total_tokens;
                     core.total_cache_creation_tokens = stats.total_cache_creation_tokens;
                     core.total_cache_read_tokens = stats.total_cache_read_tokens;
-                    core.last_input_tokens = stats.last_input_tokens;
-                    core.last_turn_tokens = core.last_turn_tokens.max(stats.last_input_tokens);
                     core.prompt_token_estimate = stats.prompt_token_estimate;
+                    // Align auto-compact pressure with UI / occupancy tip. Never
+                    // inflate `last_turn_tokens` with turn-cumulative DB values —
+                    // `last_input_tokens` is latest-query input only.
+                    if let Some(occupancy) = stats.last_context_occupancy.as_ref() {
+                        core.last_turn_tokens = occupancy.total_tokens as usize;
+                    }
+                    if stats.last_input_tokens > 0 {
+                        core.last_input_tokens = stats.last_input_tokens;
+                    }
                 }
                 if let Some(occupancy) = stats.last_context_occupancy {
                     runtime_session.summary.last_query_total_tokens =

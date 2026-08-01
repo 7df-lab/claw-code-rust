@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use devo_core::ItemId;
+use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::events::TextItemKind;
@@ -540,6 +541,21 @@ impl ChatWidget {
             return None;
         }
 
+        if self.collapse_reasoning {
+            // Width-aware live window: cap by wrapped visual rows, not logical
+            // newlines, so one long paragraph cannot blow past the budget.
+            return Some(super::reasoning_view::collapsed_reasoning_live_cell(
+                item.raw_text.clone(),
+                &self.session.cwd,
+                "Thinking: ",
+                Self::reasoning_heading_style(),
+                // Keep live reasoning undimmed so the in-flight cell stays
+                // colorful; completed Thought cells apply the muted style.
+                Style::default(),
+                Self::reasoning_dot_prefix(item.status),
+            ));
+        }
+
         let mut body_lines = Vec::new();
         append_markdown(
             &item.raw_text,
@@ -549,20 +565,11 @@ impl ChatWidget {
         );
         // Keep live reasoning content undimmed so the in-flight cell stays
         // colorful; completed Thought cells apply the muted style instead.
-        if self.collapse_reasoning
-            && body_lines.len() > super::reasoning_view::COLLAPSED_REASONING_LIVE_LINES
-        {
-            let start = body_lines.len() - super::reasoning_view::COLLAPSED_REASONING_LIVE_LINES;
-            body_lines = body_lines.split_off(start);
-        }
         if let Some(first_line) = body_lines.first_mut() {
             first_line.spans.insert(
                 0,
                 Span::styled("Thinking: ", Self::reasoning_heading_style()),
             );
-        }
-        if self.collapse_reasoning {
-            body_lines.push(history_cell::reasoning_transcript_hint_line());
         }
         Some(Box::new(
             history_cell::AgentMessageCell::new_ai_response_with_prefix(

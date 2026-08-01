@@ -273,6 +273,8 @@ pub(crate) struct ChatWidget {
     subagent_monitor: SubagentMonitorState,
     theme_set: ThemeSet,
     active_theme_name: String,
+    /// Monotonic epoch used to coalesce rapid theme-driven transcript reloads.
+    theme_reload_epoch: u64,
     collapse_reasoning: bool,
     resume_browser_last_height: Cell<u16>,
     turn_count: usize,
@@ -298,6 +300,8 @@ pub(crate) struct ChatWidget {
     pending_proposed_plan_actions: bool,
     permission_preset: devo_protocol::PermissionPreset,
     sandbox_profile: Option<String>,
+    /// Applied auto-compaction threshold for the active session (clamped to model).
+    effective_context_window: Option<u64>,
     busy: bool,
     selection_mode: bool,
     selected_user_cell_index: Option<usize>,
@@ -511,6 +515,7 @@ impl ChatWidget {
             subagent_monitor: SubagentMonitorState::default(),
             theme_set,
             active_theme_name,
+            theme_reload_epoch: 0,
             collapse_reasoning: initial_collapse_reasoning,
             resume_browser_last_height: Cell::new(0),
             turn_count: 0,
@@ -536,6 +541,7 @@ impl ChatWidget {
             pending_proposed_plan_actions: false,
             permission_preset: initial_permission_preset,
             sandbox_profile: initial_sandbox_profile,
+            effective_context_window: None,
             busy: false,
             selection_mode: false,
             selected_user_cell_index: None,

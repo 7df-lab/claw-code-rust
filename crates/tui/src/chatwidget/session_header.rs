@@ -240,20 +240,27 @@ impl ChatWidget {
 
     /// Context length for the status bar.
     ///
-    /// Prefers the latest [`ContextOccupancy`] snapshot (same source as
-    /// `/context`). Falls back to the latest query display total against the
-    /// model's **effective** context window.
+    /// `used` follows the latest query display total from `TurnUsageUpdated` so
+    /// the bar moves mid-turn. The denominator prefers the live session
+    /// effective-context override (Settings › Compaction threshold), then the
+    /// occupancy snapshot window, then the model effective window. Occupancy
+    /// `total_tokens` is only a fallback when no last-query usage has arrived
+    /// yet (for example a hydrate that set occupancy alone).
     pub(super) fn context_usage(&self) -> Option<(usize, usize, usize)> {
-        if let Some(occupancy) = self.last_context_occupancy.as_ref() {
-            let used = occupancy.total_tokens as usize;
-            let total = occupancy.context_window_tokens as usize;
-            let percent = Self::usage_percent(used, total);
-            return Some((used, total, percent));
-        }
-
-        let model = self.session.model.as_ref()?;
-        let total = model.effective_context_window() as usize;
-        let used = self.last_query_total_tokens;
+        let total = if let Some(limit) = self.effective_context_window {
+            limit as usize
+        } else if let Some(occupancy) = self.last_context_occupancy.as_ref() {
+            occupancy.context_window_tokens as usize
+        } else {
+            self.session.model.as_ref()?.effective_context_window() as usize
+        };
+        let used = if self.last_query_total_tokens > 0 {
+            self.last_query_total_tokens
+        } else if let Some(occupancy) = self.last_context_occupancy.as_ref() {
+            occupancy.total_tokens as usize
+        } else {
+            0
+        };
         let percent = Self::usage_percent(used, total);
         Some((used, total, percent))
     }
@@ -644,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn context_usage_prefers_occupancy_snapshot() {
+    fn context_usage_uses_last_query_with_occupancy_window() {
         let mut widget = widget_for_summary_bench();
         widget.last_query_total_tokens = 99_000;
         widget.last_context_occupancy = Some(ContextOccupancy::from_category_tokens(
@@ -652,11 +659,76 @@ mod tests {
             /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 6_700,
         ));
 
-        assert_eq!(widget.context_usage(), Some((16_700, 996_147, 2)));
+        // Mid-turn TurnUsageUpdated advances last_query while occupancy lags
+        // until turn finalize; the status bar must follow last_query.
+        assert_eq!(widget.context_usage(), Some((99_000, 996_147, 10)));
         assert_eq!(
             widget.status_summary_text(),
-            "Test Model  ▱▱▱▱▱▱▱▱▱▱ 2% 16.7k/996.1k"
+            "Test Model  ▰▱▱▱▱▱▱▱▱▱ 10% 99.0k/996.1k"
         );
+    }
+
+    #[test]
+    fn context_usage_prefers_session_effective_window_over_occupancy() {
+        let mut widget = widget_for_summary_bench();
+        widget.last_query_total_tokens = 50_000;
+        widget.last_context_occupancy = Some(ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 996_147, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
+        ));
+        widget.effective_context_window = Some(250_000);
+
+        assert_eq!(widget.context_usage(), Some((50_000, 250_000, 20)));
+        assert!(widget.status_summary_text().contains("50.0k/250.0k"));
+    }
+
+    #[test]
+    fn effective_context_window_update_rewrites_occupancy_and_status_bar() {
+        let mut widget = widget_for_summary_bench();
+        widget.last_query_total_tokens = 50_000;
+        widget.last_context_occupancy = Some(ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 996_147, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
+        ));
+
+        assert_eq!(widget.context_usage(), Some((50_000, 996_147, 5)));
+
+        widget.note_effective_context_window_updated(250_000);
+
+        assert_eq!(widget.effective_context_window, Some(250_000));
+        assert_eq!(
+            widget
+                .last_context_occupancy
+                .as_ref()
+                .map(|o| o.context_window_tokens),
+            Some(250_000)
+        );
+        assert_eq!(widget.context_usage(), Some((50_000, 250_000, 20)));
+        assert!(widget.status_summary_text().contains("50.0k/250.0k"));
+    }
+
+    #[test]
+    fn usage_updated_moves_context_bar_even_when_occupancy_is_stale() {
+        let mut widget = widget_for_summary_bench();
+        widget.last_query_total_tokens = 16_700;
+        widget.last_context_occupancy = Some(ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 190_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 6_700,
+        ));
+        assert_eq!(widget.context_usage(), Some((16_700, 190_000, 9)));
+
+        widget.handle_worker_event(crate::events::WorkerEvent::UsageUpdated {
+            total_input_tokens: 550,
+            total_output_tokens: 110,
+            total_tokens: 660,
+            total_cache_read_tokens: 60,
+            last_query_total_tokens: 48_000,
+            last_query_input_tokens: 40_000,
+        });
+
+        assert_eq!(widget.last_query_total_tokens, 48_000);
+        assert_eq!(widget.context_usage(), Some((48_000, 190_000, 25)));
+        assert!(widget.status_summary_text().contains("48.0k/190.0k"));
     }
 
     #[test]

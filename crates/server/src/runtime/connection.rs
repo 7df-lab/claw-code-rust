@@ -321,6 +321,9 @@ impl ServerRuntime {
             Some(ClientMethod::SessionPermissionsUpdate) => {
                 Some(self.handle_session_permissions_update(id?, params).await)
             }
+            Some(ClientMethod::SessionCompactionUpdate) => {
+                Some(self.handle_session_compaction_update(id?, params).await)
+            }
             // update the session's sandbox profile for spawned commands
             Some(ClientMethod::SessionSandboxProfileUpdate) => Some(
                 self.handle_session_sandbox_profile_update(id?, params)
@@ -1218,6 +1221,7 @@ fn outbound_delivery_policy(event: &ServerEvent) -> OutboundDeliveryPolicy {
         | ServerEvent::SessionCompactionCompleted(_)
         | ServerEvent::SessionCompactionFailed(_)
         | ServerEvent::SessionStatusChanged(_)
+        | ServerEvent::SessionEffectiveContextWindowUpdated(_)
         | ServerEvent::SessionArchived(_)
         | ServerEvent::SessionUnarchived(_)
         | ServerEvent::SessionClosed(_)

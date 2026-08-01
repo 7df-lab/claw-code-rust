@@ -183,13 +183,17 @@ effective_context_window_percent = 90
 ```toml
 theme = "aurora"
 collapse_reasoning = true
+compaction_token_limit = 250000
 ```
 
-- `theme` 選擇 TUI 配色主題（也可透過 `/theme` 設定）。
+- `theme` 選擇 TUI 配色主題（也可透過 Settings › Appearance 設定）。
 - `collapse_reasoning` 控制推理顯示（也可透過 `/show-reasoning` 設定）：
   - `true`（預設）：串流輸出時只顯示最新 3 行；結束後短推理完整保留，較長推理摺疊為
     一行 `Thought · …` 摘要（完整文字仍可在 Ctrl+T 檢視）。
   - `false`：串流輸出與結束後都顯示完整推理。
+- `compaction_token_limit` 為全域自動壓縮絕對 token 閾值（也可透過 Settings ›
+  Compaction threshold 設定）。設定後，每個 session 會將此值 clamp 到當前模型的
+  `context_window`；未設定時沿用模型有效上下文窗口。
 
 ### 從 `models.json` 遷移
 

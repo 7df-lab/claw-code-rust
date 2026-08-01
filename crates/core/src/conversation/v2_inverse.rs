@@ -270,6 +270,7 @@ impl V2InverseProjector {
             },
             sandbox_policy: session.settings.sandbox_profile.clone().unwrap_or_default(),
             approval_mode: approval_mode.into(),
+            effective_context_window: session.settings.effective_context_window,
             tokens_used: session
                 .usage
                 .legacy

@@ -163,6 +163,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
                 | ServerEvent::SessionCompactionCompleted(_)
                 | ServerEvent::SessionCompactionFailed(_)
                 | ServerEvent::SessionStatusChanged(_)
+                | ServerEvent::SessionEffectiveContextWindowUpdated(_)
                 | ServerEvent::SessionArchived(_)
                 | ServerEvent::SessionUnarchived(_)
                 | ServerEvent::SessionClosed(_)

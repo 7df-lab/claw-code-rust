@@ -92,6 +92,12 @@ pub struct AppConfig {
     pub project_root_markers: Vec<String>,
     /// User-level settings remembered per project key.
     pub projects: BTreeMap<String, ProjectConfig>,
+    /// Global absolute auto-compaction token limit.
+    ///
+    /// When set, sessions clamp this value to each model's `context_window`.
+    /// When unset, sessions use the model effective context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_token_limit: Option<u64>,
 }
 
 /// Settings remembered for one project.
@@ -184,6 +190,7 @@ impl Default for AppConfig {
             },
             project_root_markers: vec![".git".into()],
             projects: BTreeMap::new(),
+            compaction_token_limit: None,
         }
     }
 }
@@ -369,6 +376,36 @@ impl AppConfigStore {
         }
 
         write_provider_config(target_config_file, &config)?;
+
+        self.config = self
+            .loader
+            .load(self.workspace_root.as_deref())
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(())
+    }
+
+    /// Persists the global compaction token limit and refreshes effective config.
+    pub fn set_compaction_token_limit(&mut self, limit: u64) -> anyhow::Result<()> {
+        if limit == 0 {
+            anyhow::bail!("compaction_token_limit must be at least 1");
+        }
+
+        let target_config_file = self.user_config_file.as_path();
+        if let Some(parent) = target_config_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut document = read_provider_config_document(target_config_file)?;
+        let document = ensure_toml_table(&mut document);
+        let limit_i64 = i64::try_from(limit).map_err(|_| {
+            anyhow::anyhow!("compaction_token_limit is too large to store in config.toml")
+        })?;
+        document.insert(
+            "compaction_token_limit".to_string(),
+            toml::Value::Integer(limit_i64),
+        );
+
+        let data = toml::to_string_pretty(&document)?;
+        write_atomic(target_config_file, data.as_bytes())?;
 
         self.config = self
             .loader

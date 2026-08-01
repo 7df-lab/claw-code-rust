@@ -170,6 +170,10 @@ pub(crate) enum SessionCommand {
         profile: devo_safety::RuntimePermissionProfile,
         reply: oneshot::Sender<()>,
     },
+    ApplyEffectiveContextWindow {
+        limit: usize,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     ApplySandboxProfile {
         profile: String,
         reply: oneshot::Sender<Result<String, String>>,

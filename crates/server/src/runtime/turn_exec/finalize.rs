@@ -230,11 +230,17 @@ impl ServerRuntime {
         state.summary.total_cache_creation_tokens = session_total_cache_creation_tokens;
         state.summary.total_cache_read_tokens = session_total_cache_read_tokens;
         state.summary.prompt_token_estimate = session_prompt_token_estimate;
+        let last_input_for_stats = latest_query_usage
+            .as_ref()
+            .map(|usage| usage.input_tokens as usize)
+            .unwrap_or(session_last_input_tokens);
         if let Some(usage) = latest_query_usage {
             // Context length uses latest-query display total, not session
             // cumulative total_input/output/tokens.
             state.summary.last_query_usage = Some(usage.clone());
             state.summary.last_query_total_tokens = usage.display_total_tokens();
+            state.core.last_input_tokens = usage.input_tokens as usize;
+            state.core.last_turn_tokens = usage.display_total_tokens();
             if let Some(raw) = state.core.raw_context_breakdown {
                 let window = effective_context_window_tokens(state, self);
                 let occupancy = super::super::context_occupancy::occupancy_from_raw(
@@ -242,6 +248,7 @@ impl ServerRuntime {
                     raw,
                     usage.display_total_tokens() as u64,
                 );
+                state.core.last_turn_tokens = occupancy.total_tokens as usize;
                 state.summary.last_context_occupancy = Some(occupancy);
             }
         }
@@ -257,11 +264,9 @@ impl ServerRuntime {
                 total_tokens: session_total_tokens,
                 total_cache_creation_tokens: session_total_cache_creation_tokens,
                 total_cache_read_tokens: session_total_cache_read_tokens,
-                last_input_tokens: final_turn
-                    .usage
-                    .as_ref()
-                    .map(|usage| usage.input_tokens as usize)
-                    .unwrap_or(session_last_input_tokens),
+                // Persist latest-query input only — turn-aggregate usage would
+                // inflate auto-compact after resume via hydrate.
+                last_input_tokens: last_input_for_stats,
                 turn_count: state.summary.updated_at.timestamp() as usize,
                 prompt_token_estimate: session_prompt_token_estimate,
                 last_context_occupancy: state.summary.last_context_occupancy.clone(),
@@ -470,29 +475,41 @@ impl ServerRuntime {
 }
 
 fn effective_context_window_tokens(state: &SessionActorState, runtime: &ServerRuntime) -> u64 {
-    if let Some(model) = state
+    let model = state
         .core
         .latest_turn_context
         .as_ref()
         .map(|context| &context.model)
-    {
-        return u64::from(model.effective_context_window());
-    }
-    state
-        .summary
-        .model
-        .as_deref()
-        .and_then(|slug| runtime.deps.model_catalog.get(slug))
-        .map(|model| u64::from(model.effective_context_window()))
         .or_else(|| {
             state
-                .core
-                .config
-                .token_budget
-                .auto_compact_token_limit
-                .map(|limit| limit as u64)
-        })
-        .unwrap_or(0)
+                .summary
+                .model
+                .as_deref()
+                .and_then(|slug| runtime.deps.model_catalog.get(slug))
+        });
+    let Some(model) = model else {
+        return state
+            .core
+            .config
+            .effective_context_window_override
+            .or(state.core.config.token_budget.auto_compact_token_limit)
+            .map(|limit| limit as u64)
+            .unwrap_or(0);
+    };
+    let global = runtime
+        .deps
+        .config_store
+        .lock()
+        .expect("app config store mutex should not be poisoned")
+        .effective_config()
+        .compaction_token_limit;
+    // Live session override (from a hot global apply) wins; otherwise resolve
+    // from the global preference / model default.
+    if let Some(limit) = state.core.config.effective_context_window_override {
+        let model_window = u64::from(model.context_window.max(1));
+        return (limit as u64).min(model_window).max(1);
+    }
+    crate::runtime::context_occupancy::resolved_compaction_limit(global, model)
 }
 
 fn append_terminal_history_items(

@@ -16,7 +16,7 @@ pub enum SlashCommand {
     Rename,
     Delete,
     Status,
-    Context,
+    Settings,
     Permissions,
     ShowReasoning,
     Clear,
@@ -29,7 +29,7 @@ pub enum SlashCommand {
 impl SlashCommand {
     pub fn description(self) -> &'static str {
         match self {
-            SlashCommand::Theme => "switch the UI theme",
+            SlashCommand::Theme => "open appearance settings to switch the UI theme",
             SlashCommand::Model => "choose the active model",
             SlashCommand::Skills => "browse available skills",
             SlashCommand::Mcp => "browse MCP servers",
@@ -38,8 +38,8 @@ impl SlashCommand {
             SlashCommand::New => "start a new chat",
             SlashCommand::Rename => "rename the current session",
             SlashCommand::Delete => "delete the current session and start a new one",
-            SlashCommand::Status => "show current session configuration and token usage",
-            SlashCommand::Context => "show context window occupancy by category",
+            SlashCommand::Status => "show cwd, permissions, and context window occupancy",
+            SlashCommand::Settings => "open session and appearance settings",
             SlashCommand::Permissions => {
                 "choose what Devo is allowed to do (also sets the OS sandbox)"
             }
@@ -68,7 +68,7 @@ impl SlashCommand {
             SlashCommand::Rename => "rename",
             SlashCommand::Delete => "delete",
             SlashCommand::Status => "status",
-            SlashCommand::Context => "context",
+            SlashCommand::Settings => "settings",
             SlashCommand::Permissions => "permissions",
             SlashCommand::ShowReasoning => "show-reasoning",
             SlashCommand::Clear => "clear",
@@ -100,7 +100,7 @@ impl SlashCommand {
             | SlashCommand::New
             | SlashCommand::Delete
             | SlashCommand::Status
-            | SlashCommand::Context
+            | SlashCommand::Settings
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning
             | SlashCommand::Clear
@@ -120,6 +120,7 @@ impl SlashCommand {
                 | SlashCommand::Delete
                 | SlashCommand::Resume
                 | SlashCommand::Permissions
+                | SlashCommand::Settings
         )
     }
 
@@ -140,7 +141,7 @@ impl SlashCommand {
             | SlashCommand::Rename
             | SlashCommand::Delete
             | SlashCommand::Status
-            | SlashCommand::Context
+            | SlashCommand::Settings
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning
             | SlashCommand::Clear
@@ -165,8 +166,9 @@ impl FromStr for SlashCommand {
             "new" => Ok(Self::New),
             "rename" => Ok(Self::Rename),
             "delete" => Ok(Self::Delete),
-            "status" => Ok(Self::Status),
-            "context" => Ok(Self::Context),
+            // `/context` remains a soft alias for the status panel.
+            "status" | "context" => Ok(Self::Status),
+            "settings" => Ok(Self::Settings),
             "permissions" | "approvals" => Ok(Self::Permissions),
             "show-reasoning" | "reasoning-view" => Ok(Self::ShowReasoning),
             "clear" => Ok(Self::Clear),
@@ -181,7 +183,6 @@ impl FromStr for SlashCommand {
 
 pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
     vec![
-        ("theme", SlashCommand::Theme),
         ("model", SlashCommand::Model),
         ("skills", SlashCommand::Skills),
         ("mcps", SlashCommand::Mcp),
@@ -191,7 +192,7 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         ("rename", SlashCommand::Rename),
         ("delete", SlashCommand::Delete),
         ("status", SlashCommand::Status),
-        ("context", SlashCommand::Context),
+        ("settings", SlashCommand::Settings),
         ("permissions", SlashCommand::Permissions),
         ("show-reasoning", SlashCommand::ShowReasoning),
         ("clear", SlashCommand::Clear),
@@ -265,6 +266,7 @@ mod tests {
         assert!(!SlashCommand::Exit.available_over_acp());
         assert!(!SlashCommand::Rename.available_over_acp());
         assert!(!SlashCommand::Delete.available_over_acp());
+        assert!(!SlashCommand::Settings.available_over_acp());
     }
 
     #[test]
@@ -273,25 +275,60 @@ mod tests {
         assert!(!SlashCommand::Permissions.available_during_task());
         assert!(!SlashCommand::Theme.available_during_task());
         assert!(!SlashCommand::Delete.available_during_task());
+        assert!(!SlashCommand::Settings.available_during_task());
         assert!(SlashCommand::Status.available_during_task());
-        assert!(SlashCommand::Context.available_during_task());
         assert!(SlashCommand::Goal.available_during_task());
         assert!(SlashCommand::Rename.available_during_task());
     }
 
     #[test]
-    fn context_slash_command_parses_and_is_available_during_task() {
-        assert_eq!("context".parse::<SlashCommand>(), Ok(SlashCommand::Context));
-        assert!(SlashCommand::Context.available_during_task());
-        assert!(!SlashCommand::Context.available_over_acp());
-        assert_eq!(
-            SlashCommand::Context.description(),
-            "show context window occupancy by category"
+    fn theme_slash_command_is_hidden_alias_for_settings() {
+        assert_eq!("theme".parse::<SlashCommand>(), Ok(SlashCommand::Theme));
+        assert!(!SlashCommand::Theme.available_during_task());
+        assert!(
+            !built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "theme")
         );
         assert!(
             built_in_slash_commands()
                 .iter()
-                .any(|(name, command)| *name == "context" && *command == SlashCommand::Context)
+                .any(|(name, command)| *name == "settings" && *command == SlashCommand::Settings)
+        );
+    }
+
+    #[test]
+    fn status_slash_command_parses_and_context_is_alias() {
+        assert_eq!("status".parse::<SlashCommand>(), Ok(SlashCommand::Status));
+        assert_eq!("context".parse::<SlashCommand>(), Ok(SlashCommand::Status));
+        assert!(SlashCommand::Status.available_during_task());
+        assert!(!SlashCommand::Status.available_over_acp());
+        assert_eq!(
+            SlashCommand::Status.description(),
+            "show cwd, permissions, and context window occupancy"
+        );
+        assert!(
+            built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "status" && *command == SlashCommand::Status)
+        );
+        assert!(
+            !built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "context")
+        );
+    }
+
+    #[test]
+    fn settings_slash_command_parses_and_is_unavailable_during_task() {
+        assert_eq!(
+            "settings".parse::<SlashCommand>(),
+            Ok(SlashCommand::Settings)
+        );
+        assert!(!SlashCommand::Settings.available_during_task());
+        assert_eq!(
+            SlashCommand::Settings.description(),
+            "open session and appearance settings"
         );
     }
 

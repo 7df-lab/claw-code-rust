@@ -58,6 +58,9 @@ pub struct SessionRecord {
     pub sandbox_policy: String,
     /// The active approval mode description for the session.
     pub approval_mode: String,
+    /// Session override for the absolute effective context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_context_window: Option<u64>,
     /// The last observed aggregate token count for the session.
     pub tokens_used: i64,
     /// The first user message stored for preview or title derivation.
@@ -573,6 +576,7 @@ mod tests {
             title_state: SessionTitleState::Unset,
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
+            effective_context_window: None,
             tokens_used: 0,
             first_user_message: None,
             archived_at: None,
@@ -1188,6 +1192,7 @@ mod tests {
             title_state: SessionTitleState::Provisional,
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
+            effective_context_window: None,
             tokens_used: 100,
             first_user_message: Some("hello".into()),
             archived_at: None,

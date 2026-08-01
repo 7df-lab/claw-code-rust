@@ -126,7 +126,20 @@ impl ServerRuntime {
             last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
         };
+        let global_compaction_limit = runtime_context
+            .config_store
+            .lock()
+            .expect("app config store mutex should not be poisoned")
+            .effective_config()
+            .compaction_token_limit;
+        let applied_compaction_limit = crate::runtime::context_occupancy::resolved_compaction_limit(
+            global_compaction_limit,
+            &initial_turn_config.model,
+        );
+        let mut summary = summary;
+        summary.effective_context_window = Some(applied_compaction_limit);
         if let Some(record) = &record
             && let Err(error) = self.rollout_store.append_session_meta(record)
         {
@@ -136,10 +149,14 @@ impl ServerRuntime {
                 format!("failed to persist session metadata: {error}"),
             );
         }
-        let core_session = runtime_context.new_session_state(
+        let mut core_session = runtime_context.new_session_state(
             session_id,
             params.cwd.clone(),
             params.additional_directories.clone(),
+        );
+        crate::runtime::context_occupancy::apply_resolved_compaction_limit(
+            &mut core_session.config,
+            applied_compaction_limit as usize,
         );
         let config = core_session.config.clone();
         let pending_turn_queue = Arc::clone(&core_session.pending_turn_queue);
@@ -379,6 +396,161 @@ impl ServerRuntime {
             },
         })
         .expect("serialize session/permissions/update response")
+    }
+
+    pub(crate) async fn handle_session_compaction_update(
+        &self,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: SessionCompactionUpdateParams = match serde_json::from_value(params) {
+            Ok(params) => params,
+            Err(error) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    format!("invalid session/compaction/update params: {error}"),
+                );
+            }
+        };
+        if params.effective_context_window == 0 {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InvalidParams,
+                "effectiveContextWindow must be at least 1",
+            );
+        }
+        let Some(session_handle) = self.session(params.session_id).await else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session does not exist",
+            );
+        };
+        let _state_change_guard = session_handle.lock_state_change().await;
+        let Some(summary) = session_handle.summary().await else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session does not exist",
+            );
+        };
+        let model = {
+            let runtime_context = session_handle.runtime_context().await;
+            let catalog = runtime_context
+                .as_ref()
+                .map(|context| Arc::clone(&context.model_catalog));
+            summary
+                .model
+                .as_deref()
+                .and_then(|slug| {
+                    catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.get(slug).cloned())
+                        .or_else(|| self.deps.model_catalog.get(slug).cloned())
+                })
+                .or_else(|| {
+                    summary.model_binding_id.as_deref().and_then(|binding| {
+                        catalog
+                            .as_ref()
+                            .and_then(|catalog| catalog.get(binding).cloned())
+                            .or_else(|| self.deps.model_catalog.get(binding).cloned())
+                    })
+                })
+        };
+        let Some(model) = model else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InvalidParams,
+                "session model is unavailable for compaction update",
+            );
+        };
+        let context_window_tokens = u64::from(model.context_window.max(1));
+        let recommended_token_limit =
+            u64::from(model.effective_context_window()).min(context_window_tokens);
+
+        {
+            let mut store = self
+                .deps
+                .config_store
+                .lock()
+                .expect("app config store mutex should not be poisoned");
+            if let Err(error) = store.set_compaction_token_limit(params.effective_context_window) {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InternalError,
+                    format!("failed to persist compaction_token_limit: {error}"),
+                );
+            }
+        }
+        self.deps.invalidate_workspace_contexts();
+
+        let global = Some(params.effective_context_window);
+        let handles = self.list_session_handles().await;
+        for handle in handles {
+            let Some(session_summary) = handle.summary().await else {
+                continue;
+            };
+            let runtime_context = handle.runtime_context().await;
+            let catalog = runtime_context
+                .as_ref()
+                .map(|context| Arc::clone(&context.model_catalog));
+            let Some(session_model) = session_summary
+                .model
+                .as_deref()
+                .and_then(|slug| {
+                    catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.get(slug).cloned())
+                        .or_else(|| self.deps.model_catalog.get(slug).cloned())
+                })
+                .or_else(|| {
+                    session_summary
+                        .model_binding_id
+                        .as_deref()
+                        .and_then(|binding| {
+                            catalog
+                                .as_ref()
+                                .and_then(|catalog| catalog.get(binding).cloned())
+                                .or_else(|| self.deps.model_catalog.get(binding).cloned())
+                        })
+                })
+            else {
+                continue;
+            };
+            let applied = crate::runtime::context_occupancy::resolved_compaction_limit(
+                global,
+                &session_model,
+            );
+            match handle
+                .apply_effective_context_window(applied as usize)
+                .await
+            {
+                Some(Ok(())) => {
+                    self.broadcast_event(ServerEvent::SessionEffectiveContextWindowUpdated(
+                        SessionEffectiveContextWindowUpdatedPayload {
+                            session_id: session_summary.session_id,
+                            effective_context_window: applied,
+                        },
+                    ))
+                    .await;
+                }
+                Some(Err(_)) | None => continue,
+            }
+        }
+
+        let applied = crate::runtime::context_occupancy::resolved_compaction_limit(global, &model);
+
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: SessionCompactionUpdateResult {
+                session_id: params.session_id,
+                effective_context_window: applied,
+                recommended_token_limit,
+                context_window_tokens,
+            },
+        })
+        .expect("serialize session/compaction/update response")
     }
 
     pub(crate) async fn handle_session_sandbox_profile_update(
@@ -1106,6 +1278,7 @@ impl ServerRuntime {
             last_context_occupancy: cut_occupancy.clone(),
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: core_session.collaboration_mode,
+            effective_context_window: None,
         };
         drop(source_core_session);
 

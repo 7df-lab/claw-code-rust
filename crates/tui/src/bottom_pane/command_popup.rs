@@ -325,7 +325,6 @@ mod tests {
         assert_eq!(
             cmds,
             vec![
-                "theme",
                 "model",
                 "skills",
                 "mcps",
@@ -335,6 +334,7 @@ mod tests {
                 "rename",
                 "delete",
                 "status",
+                "settings",
                 "permissions",
                 "show-reasoning",
                 "clear",

@@ -496,6 +496,34 @@ impl ChatWidget {
             None,
         ));
         self.set_status_message(format!("Permissions updated to {label}"));
+        self.refresh_settings_hub_if_open();
+    }
+
+    pub(crate) fn note_effective_context_window_updated(&mut self, effective_context_window: u64) {
+        self.effective_context_window = Some(effective_context_window);
+        if let Some(occupancy) = self.last_context_occupancy.as_mut() {
+            occupancy.context_window_tokens = effective_context_window;
+        }
+        let label = crate::bottom_pane::format_token_limit(effective_context_window);
+        self.add_to_history(history_cell::new_info_event(
+            format!("Compaction threshold updated to {label}"),
+            None,
+        ));
+        self.set_status_message(format!("Compaction threshold updated to {label}"));
+        self.sync_bottom_pane_summary();
+        self.refresh_status_panel_if_open();
+        self.refresh_settings_hub_if_open();
+    }
+
+    fn refresh_status_panel_if_open(&mut self) {
+        self.bottom_pane.refresh_status_panel(
+            self.last_context_occupancy.clone(),
+            crate::bottom_pane::SessionTokenTotals {
+                input: self.total_input_tokens,
+                output: self.total_output_tokens,
+                cache_read: self.total_cache_read_tokens,
+            },
+        );
     }
 
     pub(crate) fn note_sandbox_profile_updated(&mut self, profile: String) {
@@ -510,6 +538,10 @@ impl ChatWidget {
 
     pub(super) fn apply_theme_selection(&mut self, name: String) {
         if let Some(theme) = self.theme_set.find(&name).cloned() {
+            if self.active_theme_name == name {
+                self.refresh_settings_hub_if_open();
+                return;
+            }
             self.active_theme_name = name.clone();
             self.bottom_pane.set_accent_color(theme.accent_color);
             let _ = crate::onboarding::save_theme_selection(&name);
@@ -523,16 +555,155 @@ impl ChatWidget {
                 ));
             }
             self.set_status_message(format!("Theme set to {name}"));
+            self.refresh_settings_hub_if_open();
             // Header/logo are flushed into terminal scrollback. Reset the flush
             // cursor and ask the host to clear the managed inline area so the
             // next draw re-emits transcript lines with the new accent.
             if self.next_history_flush_index > 0 {
                 self.next_history_flush_index = 0;
-                self.app_event_tx.send(AppEvent::ReloadInlineTranscript);
+                self.schedule_debounced_inline_transcript_reload();
             } else {
                 self.frame_requester.schedule_frame();
             }
         }
+    }
+
+    pub(super) fn cycle_theme(&mut self, direction: crate::app_event::SettingsCycleDirection) {
+        let themes = &self.theme_set.themes;
+        if themes.is_empty() {
+            return;
+        }
+        let current = themes
+            .iter()
+            .position(|theme| theme.name == self.active_theme_name)
+            .unwrap_or(0);
+        let next = match direction {
+            crate::app_event::SettingsCycleDirection::Next => (current + 1) % themes.len(),
+            crate::app_event::SettingsCycleDirection::Previous => {
+                if current == 0 {
+                    themes.len() - 1
+                } else {
+                    current - 1
+                }
+            }
+        };
+        let name = themes[next].name.clone();
+        self.apply_theme_selection(name);
+    }
+
+    fn schedule_debounced_inline_transcript_reload(&mut self) {
+        self.theme_reload_epoch = self.theme_reload_epoch.wrapping_add(1);
+        let epoch = self.theme_reload_epoch;
+        let tx = self.app_event_tx.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                    tx.send(crate::app_event::AppEvent::FlushDebouncedThemeReload { epoch });
+                });
+            }
+            Err(_) => {
+                // Unit tests may lack a Tokio runtime; reload immediately.
+                tx.send(crate::app_event::AppEvent::ReloadInlineTranscript);
+            }
+        }
+    }
+
+    pub(super) fn flush_debounced_theme_reload(&mut self, epoch: u64) {
+        if epoch != self.theme_reload_epoch {
+            return;
+        }
+        self.app_event_tx
+            .send(crate::app_event::AppEvent::ReloadInlineTranscript);
+    }
+
+    pub(super) fn open_settings_hub(&mut self) {
+        let snapshot = self.settings_hub_snapshot();
+        self.bottom_pane.open_settings_hub(snapshot);
+        self.set_status_message("Settings");
+    }
+
+    pub(super) fn open_settings_hub_appearance(&mut self) {
+        let snapshot = self.settings_hub_snapshot();
+        self.bottom_pane
+            .open_settings_hub_on_tab(snapshot, crate::bottom_pane::SettingsHubTab::Appearance);
+        self.set_status_message("Settings");
+    }
+
+    pub(super) fn open_compaction_threshold_picker(&mut self) {
+        let snapshot = self.compaction_threshold_snapshot();
+        self.bottom_pane.open_compaction_threshold(snapshot);
+        self.set_status_message("Select compaction threshold");
+    }
+
+    pub(super) fn refresh_settings_hub_if_open(&mut self) {
+        let snapshot = self.settings_hub_snapshot();
+        self.bottom_pane.refresh_settings_hub(snapshot);
+    }
+
+    fn settings_hub_snapshot(&self) -> crate::bottom_pane::SettingsHubSnapshot {
+        crate::bottom_pane::SettingsHubSnapshot {
+            model_label: self
+                .session
+                .model
+                .as_ref()
+                .map(|model| model.slug.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
+            permissions_label: permission_preset_label(self.permission_preset).to_string(),
+            mode: self.current_turn_mode,
+            compaction_threshold_label: crate::bottom_pane::format_token_limit(
+                self.effective_compaction_threshold_tokens(),
+            ),
+            theme_label: self.active_theme_name.clone(),
+            reasoning_view_label: super::reasoning_view::reasoning_view_label(
+                self.collapse_reasoning,
+            )
+            .to_string(),
+        }
+    }
+
+    fn compaction_threshold_snapshot(&self) -> crate::bottom_pane::CompactionThresholdSnapshot {
+        let model = self.session.model.as_ref();
+        let context_window_tokens = model
+            .map(|model| u64::from(model.context_window.max(1)))
+            .unwrap_or(1);
+        let model_effective = model
+            .map(|model| u64::from(model.effective_context_window()))
+            .unwrap_or(context_window_tokens);
+        let recommended_token_limit = crate::bottom_pane::recommended_compaction_token_limit(
+            context_window_tokens,
+            model_effective,
+        );
+        // Current / hub label follow the applied (model-clamped) window so they
+        // stay consistent with the status bar. The stored global preference is
+        // kept separately for picker memory when this client initiated an update.
+        let current_token_limit = self
+            .effective_context_window
+            .unwrap_or(model_effective)
+            .min(context_window_tokens)
+            .max(1);
+        crate::bottom_pane::CompactionThresholdSnapshot {
+            model_label: model
+                .map(|model| model.slug.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
+            context_window_tokens,
+            recommended_token_limit,
+            current_token_limit,
+        }
+    }
+
+    fn effective_compaction_threshold_tokens(&self) -> u64 {
+        let model = self.session.model.as_ref();
+        let model_window = model
+            .map(|model| u64::from(model.context_window.max(1)))
+            .unwrap_or(u64::MAX);
+        let model_effective = model
+            .map(|model| u64::from(model.effective_context_window()))
+            .unwrap_or(1);
+        self.effective_context_window
+            .unwrap_or(model_effective)
+            .min(model_window)
+            .max(1)
     }
 
     pub(super) fn active_accent_color(&self) -> Color {

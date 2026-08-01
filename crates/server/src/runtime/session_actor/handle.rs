@@ -600,6 +600,24 @@ impl SessionHandle {
         reply_rx.await.is_ok()
     }
 
+    /// Hot-updates the session auto-compaction token limit.
+    pub(crate) async fn apply_effective_context_window(
+        &self,
+        limit: usize,
+    ) -> Option<Result<(), String>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if !self
+            .send(SessionCommand::ApplyEffectiveContextWindow {
+                limit,
+                reply: reply_tx,
+            })
+            .await
+        {
+            return None;
+        }
+        reply_rx.await.ok()
+    }
+
     /// Applies a new sandbox profile to the session. Returns `None` when the
     /// session actor is gone, `Some(Err(..))` when the profile name is invalid
     /// (state is left unchanged), and `Some(Ok(name))` with the canonical

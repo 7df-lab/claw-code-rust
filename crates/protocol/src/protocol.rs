@@ -64,6 +64,7 @@ pub enum ClientMethod {
     SessionFork,
     SessionRollback,
     SessionCompact,
+    SessionCompactionUpdate,
     SkillsList,
     SkillsChanged,
     SkillsSetEnabled,
@@ -137,6 +138,7 @@ impl ClientMethod {
             Self::SessionFork => "session/fork",
             Self::SessionRollback => "session/rollback",
             Self::SessionCompact => "session/compact",
+            Self::SessionCompactionUpdate => "session/compaction/update",
             Self::SkillsList => "skills/list",
             Self::SkillsChanged => "skills/changed",
             Self::SkillsSetEnabled => "skills/set_enabled",
@@ -208,6 +210,7 @@ impl ClientMethod {
             "session/fork" => Self::SessionFork,
             "session/rollback" => Self::SessionRollback,
             "session/compact" => Self::SessionCompact,
+            "session/compaction/update" => Self::SessionCompactionUpdate,
             "skills/list" => Self::SkillsList,
             "skills/changed" => Self::SkillsChanged,
             "skills/set_enabled" => Self::SkillsSetEnabled,
@@ -776,6 +779,14 @@ mod tests {
         assert_eq!(
             ClientMethod::SessionSandboxProfileUpdate.as_str(),
             "session/sandbox_profile/update"
+        );
+        assert_eq!(
+            ClientMethod::SessionCompactionUpdate.as_str(),
+            "session/compaction/update"
+        );
+        assert_eq!(
+            ClientMethod::parse("session/compaction/update"),
+            Some(ClientMethod::SessionCompactionUpdate)
         );
     }
 }

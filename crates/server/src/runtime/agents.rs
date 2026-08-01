@@ -170,6 +170,11 @@ impl ServerRuntime {
             last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: parent_summary.effective_context_window.or_else(|| {
+                parent_config
+                    .effective_context_window_override
+                    .map(|limit| limit as u64)
+            }),
         };
         let child_session = RuntimeSession {
             runtime_context,

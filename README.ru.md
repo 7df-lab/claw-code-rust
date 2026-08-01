@@ -281,16 +281,6 @@ Devo runtime.
 
 Откройте issue или pull request, чтобы обсудить изменения.
 
-## История звезд
-
-<a href="https://www.star-history.com/?repos=7df-lab%2Fdevo&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left" />
- </picture>
-</a>
-
 ## Лицензия
 
 Проект распространяется по [MIT License](./LICENSE).

@@ -613,6 +613,8 @@ pub(crate) enum WorkerEvent {
         pending_texts: Vec<String>,
         /// Collaboration mode restored from the resumed session metadata.
         collaboration_mode: CollaborationMode,
+        /// Session auto-compaction token limit override, when one is set.
+        effective_context_window: Option<u64>,
     },
     /// The current session title changed.
     SessionRenamed {
@@ -625,6 +627,11 @@ pub(crate) enum WorkerEvent {
     SessionDeleted {
         /// The deleted session identifier.
         session_id: String,
+    },
+    /// Server confirmed a compaction-threshold hot update.
+    EffectiveContextWindowUpdated {
+        /// Absolute token threshold applied for the active session (model-clamped).
+        effective_context_window: u64,
     },
     /// The active session or its context-compaction transcript item started compaction.
     SessionCompactionStarted,

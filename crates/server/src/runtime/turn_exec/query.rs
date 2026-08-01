@@ -60,7 +60,8 @@ impl ServerRuntime {
             }
             super::super::TurnInputMode::HiddenGoalContinuation { goal } => Some(goal.clone()),
         };
-        state.core.config.token_budget = turn_config.token_budget();
+        state.core.config.token_budget = turn_config
+            .token_budget_for_session(state.core.config.effective_context_window_override);
         state.core.collaboration_mode = collaboration_mode;
         state.summary.collaboration_mode = collaboration_mode;
         if let Some(goal) = turn_goal {

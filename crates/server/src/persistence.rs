@@ -171,6 +171,7 @@ impl RolloutStore {
             title_state,
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
+            effective_context_window: None,
             tokens_used: 0,
             first_user_message: None,
             archived_at: None,
@@ -1056,6 +1057,27 @@ struct ReplayState {
     last_activity_at: Option<chrono::DateTime<Utc>>,
 }
 
+/// Auto-compact / status pressure restored on resume.
+///
+/// Prefers post-compaction (or tip) occupancy so a prior large query total cannot
+/// re-trigger compaction after the context was already reduced. Falls back to
+/// latest-query display total, then the reconstituted prompt estimate.
+fn resume_context_pressure_tokens(
+    occupancy: Option<&devo_protocol::canonical::item::ContextOccupancy>,
+    latest_query_usage: Option<&devo_protocol::TurnUsage>,
+    prompt_token_estimate: usize,
+) -> (usize, usize) {
+    let last_turn_tokens = occupancy
+        .map(|occupancy| occupancy.total_tokens as usize)
+        .or_else(|| latest_query_usage.map(devo_protocol::TurnUsage::display_total_tokens))
+        .unwrap_or(prompt_token_estimate);
+    let last_input_tokens = latest_query_usage
+        .map(|usage| usage.input_tokens as usize)
+        .or_else(|| occupancy.map(|occupancy| occupancy.total_tokens as usize))
+        .unwrap_or(prompt_token_estimate);
+    (last_turn_tokens, last_input_tokens)
+}
+
 impl ReplayState {
     fn apply_line(&mut self, line: RolloutLine) -> Result<()> {
         match line {
@@ -1332,16 +1354,13 @@ impl ReplayState {
             devo_protocol::approx_tokens_from_byte_count(prompt_bytes)
                 .try_into()
                 .unwrap_or(usize::MAX);
-        core_session.last_input_tokens = self
-            .latest_query_usage
-            .as_ref()
-            .map(|usage| usage.input_tokens as usize)
-            .unwrap_or(core_session.prompt_token_estimate);
-        core_session.last_turn_tokens = self
-            .latest_query_usage
-            .as_ref()
-            .map(devo_protocol::TurnUsage::display_total_tokens)
-            .unwrap_or(core_session.prompt_token_estimate);
+        let (last_turn_tokens, last_input_tokens) = resume_context_pressure_tokens(
+            self.latest_context_occupancy.as_ref(),
+            self.latest_query_usage.as_ref(),
+            core_session.prompt_token_estimate,
+        );
+        core_session.last_input_tokens = last_input_tokens;
+        core_session.last_turn_tokens = last_turn_tokens;
         let pending_turn_queue = std::sync::Arc::clone(&core_session.pending_turn_queue);
         let steer_input_queue = std::sync::Arc::clone(&core_session.steer_input_queue);
         let summary_model_selection = self
@@ -1394,6 +1413,24 @@ impl ReplayState {
         record.model_binding_id = turn_config.model_binding_id.clone();
         record.reasoning_effort_selection = summary_reasoning_effort_selection.clone();
 
+        let global_compaction_limit = runtime_context
+            .config_store
+            .lock()
+            .expect("app config store mutex should not be poisoned")
+            .effective_config()
+            .compaction_token_limit;
+        let applied_compaction_limit = crate::runtime::context_occupancy::resolved_compaction_limit(
+            global_compaction_limit,
+            &turn_config.model,
+        );
+        // Apply before wrapping in Mutex so resume never needs to lock a
+        // single-owner Arc that `from_runtime_session` later unwraps.
+        // Prefer the global config preference; ignore legacy session overrides.
+        crate::runtime::context_occupancy::apply_resolved_compaction_limit(
+            &mut core_session.config,
+            applied_compaction_limit as usize,
+        );
+
         let summary = SessionMetadata {
             session_id: record.id,
             cwd: record.cwd.clone(),
@@ -1432,6 +1469,7 @@ impl ReplayState {
             last_context_occupancy: self.latest_context_occupancy.clone(),
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: core_session.collaboration_mode,
+            effective_context_window: Some(applied_compaction_limit),
         };
 
         let config = core_session.config.clone();
@@ -2229,6 +2267,9 @@ pub(crate) fn session_metadata_from_record(
             .as_ref()
             .map(|context| context.collaboration_mode)
             .unwrap_or_default(),
+        // Do not revive legacy session-record overrides. Applied window comes
+        // from AppConfig when the session is hydrated into a RuntimeSession.
+        effective_context_window: None,
     }
 }
 
@@ -2542,6 +2583,50 @@ mod tests {
             )))
             .expect("compaction");
         assert_eq!(replay.latest_context_occupancy, Some(compact_occupancy));
+    }
+
+    #[test]
+    fn resume_context_pressure_prefers_compaction_occupancy_over_large_query() {
+        use pretty_assertions::assert_eq;
+
+        use devo_protocol::TurnUsage;
+        use devo_protocol::canonical::item::ContextOccupancy;
+
+        let occupancy = ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 250_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
+        );
+        let usage = TurnUsage {
+            input_tokens: 300_000,
+            output_tokens: 20_000,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            reasoning_output_tokens: None,
+            total_tokens: Some(320_000),
+        };
+
+        let (last_turn, last_input) = super::resume_context_pressure_tokens(
+            Some(&occupancy),
+            Some(&usage),
+            /*prompt_token_estimate*/ 12_000,
+        );
+        assert_eq!(last_turn, 50_000);
+        assert_eq!(last_input, 300_000);
+
+        let (last_turn, last_input) = super::resume_context_pressure_tokens(
+            /*occupancy*/ None,
+            Some(&usage),
+            /*prompt_token_estimate*/ 12_000,
+        );
+        assert_eq!(last_turn, 320_000);
+        assert_eq!(last_input, 300_000);
+
+        let (last_turn, last_input) = super::resume_context_pressure_tokens(
+            /*occupancy*/ None, /*latest_query_usage*/ None,
+            /*prompt_token_estimate*/ 12_000,
+        );
+        assert_eq!(last_turn, 12_000);
+        assert_eq!(last_input, 12_000);
     }
 
     #[test]
@@ -2975,6 +3060,7 @@ mod tests {
                 last_context_occupancy: None,
                 status: SessionRuntimeStatus::Idle,
                 collaboration_mode: Default::default(),
+                effective_context_window: None,
             },
             None,
         )
@@ -3131,6 +3217,54 @@ mod tests {
         assert_eq!(history_items.len(), 2);
         assert_eq!(history_items[0].title, "read /tmp/test.txt");
         assert_eq!(history_items[1].title, "read output");
+    }
+
+    #[test]
+    fn replay_nameless_edit_tool_result_still_emits_edited_metadata() {
+        // edit is LiveOnly: start is not persisted, so resume only sees ToolResult
+        // with tool_name lost by the v2 canonical schema. Structured output must
+        // still produce Edited metadata for transcript restore.
+        let mut messages = Vec::new();
+        let mut history_items = Vec::new();
+        let mut tool_names_by_id = HashMap::new();
+
+        apply_turn_item(
+            &mut messages,
+            &mut history_items,
+            &mut tool_names_by_id,
+            &TurnKind::Regular,
+            TurnItem::ToolResult(ToolResultItem {
+                tool_call_id: "call-edit".to_string(),
+                tool_name: None,
+                output: serde_json::json!({
+                    "diff": "diff --git a/foo.txt b/foo.txt\n--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n",
+                    "files": [{
+                        "path": "foo.txt",
+                        "kind": "update",
+                        "diff": "--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n",
+                        "oldContent": "old\n",
+                        "postContent": "new\n",
+                        "additions": 1,
+                        "deletions": 1
+                    }],
+                    "output": "edited foo.txt"
+                }),
+                display_content: Some("edited foo.txt".to_string()),
+                is_error: false,
+            }),
+        );
+
+        assert_eq!(history_items.len(), 1);
+        assert_eq!(history_items[0].body, "edited foo.txt");
+        let Some(devo_protocol::SessionHistoryMetadata::Edited { changes }) =
+            &history_items[0].metadata
+        else {
+            panic!(
+                "expected Edited metadata, got {:?}",
+                history_items[0].metadata
+            );
+        };
+        assert!(changes.contains_key(&PathBuf::from("foo.txt")));
     }
 
     #[test]
@@ -3311,6 +3445,7 @@ mod tests {
                     title_state: SessionTitleState::Unset,
                     sandbox_policy: "workspace-write".into(),
                     approval_mode: "on-request".into(),
+                    effective_context_window: None,
                     tokens_used: 0,
                     first_user_message: None,
                     archived_at: None,
@@ -3432,6 +3567,7 @@ mod tests {
                     title_state: SessionTitleState::Unset,
                     sandbox_policy: "workspace-write".into(),
                     approval_mode: "on-request".into(),
+                    effective_context_window: None,
                     tokens_used: 0,
                     first_user_message: None,
                     archived_at: None,
@@ -3539,6 +3675,7 @@ mod tests {
                     title_state: SessionTitleState::Unset,
                     sandbox_policy: "workspace-write".into(),
                     approval_mode: "on-request".into(),
+                    effective_context_window: None,
                     tokens_used: 0,
                     first_user_message: None,
                     archived_at: None,

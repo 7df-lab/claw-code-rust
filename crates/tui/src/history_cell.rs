@@ -1434,7 +1434,11 @@ pub(crate) fn new_live_aligned_info_event(
     message: String,
     hint: Option<String>,
 ) -> PlainHistoryCell {
-    let mut line = vec![" ".repeat(LIVE_PREFIX_COLS as usize).into(), message.into()];
+    let mut line = vec![
+        " ".repeat(LIVE_PREFIX_COLS as usize).into(),
+        "▌ ".dim().into(),
+        message.into(),
+    ];
     if let Some(hint) = hint {
         line.push(" ".into());
         line.push(hint.dark_gray());

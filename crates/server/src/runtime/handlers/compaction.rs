@@ -477,12 +477,47 @@ impl ServerRuntime {
                         let compacted_prompt_token_estimate =
                             conversation_tokens.try_into().unwrap_or(usize::MAX);
                         core_session.prompt_token_estimate = compacted_prompt_token_estimate;
-                        let window = runtime_session
+                        let global = self
+                            .deps
+                            .config_store
+                            .lock()
+                            .expect("app config store mutex should not be poisoned")
+                            .effective_config()
+                            .compaction_token_limit;
+                        let model = runtime_session
                             .summary
                             .model
                             .as_deref()
-                            .and_then(|slug| self.deps.model_catalog.get(slug))
-                            .map(|model| u64::from(model.effective_context_window()))
+                            .and_then(|slug| {
+                                runtime_session
+                                    .runtime_context
+                                    .model_catalog
+                                    .get(slug)
+                                    .or_else(|| self.deps.model_catalog.get(slug))
+                            })
+                            .or_else(|| {
+                                runtime_session
+                                    .summary
+                                    .model_binding_id
+                                    .as_deref()
+                                    .and_then(|binding| {
+                                        runtime_session
+                                            .runtime_context
+                                            .model_catalog
+                                            .get(binding)
+                                            .or_else(|| self.deps.model_catalog.get(binding))
+                                    })
+                            });
+                        let window = runtime_session
+                            .summary
+                            .effective_context_window
+                            .or_else(|| {
+                                model.map(|model| {
+                                    super::super::context_occupancy::resolved_compaction_limit(
+                                        global, model,
+                                    )
+                                })
+                            })
                             .unwrap_or(0);
                         let occupancy = super::super::context_occupancy::occupancy_after_compaction(
                             window,
@@ -490,6 +525,11 @@ impl ServerRuntime {
                             conversation_tokens,
                             core_session.raw_context_breakdown,
                         );
+                        // Keep auto-compact pressure on the post-compact tip so
+                        // resume / next query do not re-trigger from pre-compact
+                        // latest-query totals.
+                        core_session.last_turn_tokens = occupancy.total_tokens as usize;
+                        core_session.last_input_tokens = compacted_prompt_token_estimate;
                         (
                             core_session.total_input_tokens,
                             core_session.total_output_tokens,
@@ -523,7 +563,7 @@ impl ServerRuntime {
                             .summary
                             .total_cache_creation_tokens,
                         total_cache_read_tokens: runtime_session.summary.total_cache_read_tokens,
-                        last_input_tokens: 0,
+                        last_input_tokens: runtime_session.summary.prompt_token_estimate,
                         turn_count: runtime_session.summary.updated_at.timestamp() as usize,
                         prompt_token_estimate: runtime_session.summary.prompt_token_estimate,
                         last_context_occupancy: runtime_session

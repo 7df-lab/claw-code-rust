@@ -982,7 +982,8 @@ fn handle_worker_event(
         | WorkerEvent::GoalOperationFailed { .. }
         | WorkerEvent::BtwStarted { .. }
         | WorkerEvent::BtwCompleted { .. }
-        | WorkerEvent::BtwFailed { .. } => {}
+        | WorkerEvent::BtwFailed { .. }
+        | WorkerEvent::EffectiveContextWindowUpdated { .. } => {}
     }
     if matches!(&worker_event, WorkerEvent::SessionsListed { .. }) {
         loop_state.resume_browser_pending = false;
@@ -1087,6 +1088,11 @@ fn handle_app_command(
             worker.update_sandbox_profile(implied_sandbox.to_string())?;
             chat_widget.note_permissions_updated(*preset);
             chat_widget.note_sandbox_profile_updated(implied_sandbox.to_string());
+        }
+        AppCommand::UpdateEffectiveContextWindow {
+            effective_context_window,
+        } => {
+            worker.update_effective_context_window(*effective_context_window)?;
         }
         AppCommand::UpdateSandboxProfile { profile } => {
             worker.update_sandbox_profile(profile.clone())?;

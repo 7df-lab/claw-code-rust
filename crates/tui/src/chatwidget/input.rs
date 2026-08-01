@@ -244,6 +244,30 @@ impl ChatWidget {
             }
             AppEvent::CollapseReasoningSelected { collapsed } => {
                 self.apply_collapse_reasoning(collapsed);
+                self.refresh_settings_hub_if_open();
+            }
+            AppEvent::SettingsOpenModel => {
+                self.open_model_picker();
+            }
+            AppEvent::SettingsOpenPermissions => {
+                self.open_permissions_picker();
+            }
+            AppEvent::SettingsOpenReasoning => {
+                self.open_reasoning_view_picker();
+            }
+            AppEvent::SettingsOpenCompaction => {
+                self.open_compaction_threshold_picker();
+            }
+            AppEvent::SettingsCycleMode => {
+                self.bottom_pane.cycle_build_plan_mode();
+                self.current_turn_mode = self.bottom_pane.input_mode();
+                self.refresh_settings_hub_if_open();
+            }
+            AppEvent::SettingsCycleTheme { direction } => {
+                self.cycle_theme(direction);
+            }
+            AppEvent::FlushDebouncedThemeReload { epoch } => {
+                self.flush_debounced_theme_reload(epoch);
             }
             AppEvent::McpOpenServerList => {
                 self.open_mcp_server_list();

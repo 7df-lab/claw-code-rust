@@ -848,6 +848,7 @@ async fn resume_normalizes_historical_default_reasoning_effort() -> Result<()> {
             ),
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
+            effective_context_window: None,
             tokens_used: 0,
             first_user_message: None,
             archived_at: None,
@@ -993,6 +994,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         ),
         sandbox_policy: "workspace-write".into(),
         approval_mode: "on-request".into(),
+        effective_context_window: None,
         tokens_used: 0,
         first_user_message: Some("failing prompt".into()),
         archived_at: None,
@@ -2840,5 +2842,6 @@ fn sample_indexed_session(
         last_context_occupancy: None,
         status: devo_protocol::SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
+        effective_context_window: None,
     }
 }

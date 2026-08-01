@@ -42,15 +42,34 @@ impl ServerRuntime {
             );
         };
 
-        let occupancy = summary.last_context_occupancy.unwrap_or_else(|| {
-            let window = summary
+        let occupancy = if let Some(occupancy) = summary.last_context_occupancy {
+            occupancy
+        } else {
+            let global = self
+                .deps
+                .config_store
+                .lock()
+                .expect("app config store mutex should not be poisoned")
+                .effective_config()
+                .compaction_token_limit;
+            let model = summary
                 .model
                 .as_deref()
                 .and_then(|slug| self.deps.model_catalog.get(slug))
-                .map(|model| u64::from(model.effective_context_window()))
-                .unwrap_or(0);
+                .or_else(|| {
+                    summary
+                        .model_binding_id
+                        .as_deref()
+                        .and_then(|binding| self.deps.model_catalog.get(binding))
+                });
+            let window = match model {
+                Some(model) => {
+                    crate::runtime::context_occupancy::resolved_compaction_limit(global, model)
+                }
+                None => global.unwrap_or(0),
+            };
             ContextOccupancy::empty(window)
-        });
+        };
 
         serde_json::to_value(SuccessResponse {
             id: request_id,

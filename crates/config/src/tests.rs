@@ -19,6 +19,13 @@ use super::HookShell;
 use super::HooksConfig;
 use super::LogRotation;
 use super::LoggingConfig;
+use super::McpOutputLimits;
+use super::McpRootsPolicy;
+use super::McpServerId;
+use super::McpServerRecord;
+use super::McpStartupPolicy;
+use super::McpTransportConfig;
+use super::McpTrustPolicy;
 use super::ModelBindingConfig;
 use super::ModelOverrideConfig;
 use super::OAuthCredentialsStoreMode;
@@ -1300,6 +1307,145 @@ fn loader_rejects_invalid_update_check_interval() {
         result,
         Err(super::AppConfigError::Validation { .. })
     ));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn mcp_upsert_remove_enable_round_trip_preserves_unrelated_sections() {
+    let root = unique_temp_dir("mcp-upsert-roundtrip");
+    let home = root.join("home").join(".devo");
+    std::fs::create_dir_all(&home).expect("home config dir");
+    std::fs::write(
+        home.join("config.toml"),
+        r#"
+[updates]
+enabled = true
+check_on_startup = false
+check_interval_hours = 12
+
+[logging]
+level = "warn"
+"#,
+    )
+    .expect("write user config");
+
+    let mut store =
+        AppConfigStore::load(home.clone(), /*workspace_root*/ None).expect("load store");
+    let stdio_record = McpServerRecord {
+        id: McpServerId("time".to_string()),
+        display_name: "time".to_string(),
+        transport: McpTransportConfig::Stdio {
+            command: vec![
+                "docker".to_string(),
+                "run".to_string(),
+                "-i".to_string(),
+                "--rm".to_string(),
+                "mcp/time".to_string(),
+            ],
+            cwd: None,
+            env: BTreeMap::new(),
+            env_vars: Vec::new(),
+        },
+        startup_policy: McpStartupPolicy::Lazy,
+        enabled: true,
+        trust_policy: McpTrustPolicy::User,
+        allowed_capabilities: Vec::new(),
+        roots_policy: McpRootsPolicy::None,
+        output_limits: McpOutputLimits::default(),
+        auth_ref: None,
+    };
+    store
+        .upsert_mcp_server(stdio_record.clone())
+        .expect("upsert stdio");
+
+    let http_record = McpServerRecord {
+        id: McpServerId("hello".to_string()),
+        display_name: "hello".to_string(),
+        transport: McpTransportConfig::StreamableHttp {
+            url: "http://localhost:8080/mcp".to_string(),
+            auth: None,
+            http_headers: BTreeMap::new(),
+            env_http_headers: BTreeMap::new(),
+        },
+        startup_policy: McpStartupPolicy::Lazy,
+        enabled: true,
+        trust_policy: McpTrustPolicy::User,
+        allowed_capabilities: Vec::new(),
+        roots_policy: McpRootsPolicy::None,
+        output_limits: McpOutputLimits::default(),
+        auth_ref: None,
+    };
+    store
+        .upsert_mcp_server(http_record.clone())
+        .expect("upsert http");
+
+    let sse_record = McpServerRecord {
+        id: McpServerId("legacy".to_string()),
+        display_name: "legacy".to_string(),
+        transport: McpTransportConfig::Sse {
+            url: "https://example.com/mcp/sse".to_string(),
+            auth: None,
+            http_headers: BTreeMap::new(),
+            env_http_headers: BTreeMap::new(),
+        },
+        startup_policy: McpStartupPolicy::Lazy,
+        enabled: true,
+        trust_policy: McpTrustPolicy::User,
+        allowed_capabilities: Vec::new(),
+        roots_policy: McpRootsPolicy::None,
+        output_limits: McpOutputLimits::default(),
+        auth_ref: None,
+    };
+    store
+        .upsert_mcp_server(sse_record.clone())
+        .expect("upsert sse");
+
+    let user_config = std::fs::read_to_string(home.join("config.toml")).expect("read user config");
+    assert!(user_config.contains("check_on_startup"));
+    assert!(user_config.contains("level"));
+    assert_eq!(
+        store.mcp_servers(),
+        &[stdio_record.clone(), http_record, sse_record]
+    );
+
+    store
+        .set_mcp_server_enabled("time", /*enabled*/ false)
+        .expect("disable");
+    assert!(
+        !store
+            .mcp_servers()
+            .iter()
+            .find(|server| server.id.0 == "time")
+            .expect("time server")
+            .enabled
+    );
+
+    store.remove_mcp_server("hello").expect("remove hello");
+    assert!(
+        store
+            .mcp_servers()
+            .iter()
+            .all(|server| server.id.0 != "hello")
+    );
+
+    let reloaded = AppConfigStore::load(home, /*workspace_root*/ None).expect("reload");
+    assert_eq!(
+        reloaded
+            .mcp_servers()
+            .iter()
+            .map(|server| server.id.0.as_str())
+            .collect::<Vec<_>>(),
+        vec!["time", "legacy"]
+    );
+    assert!(
+        !reloaded
+            .mcp_servers()
+            .iter()
+            .find(|server| server.id.0 == "time")
+            .expect("time server")
+            .enabled
+    );
 
     let _ = std::fs::remove_dir_all(root);
 }

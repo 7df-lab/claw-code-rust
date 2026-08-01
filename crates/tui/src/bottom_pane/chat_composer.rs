@@ -1317,6 +1317,28 @@ impl ChatComposer {
         self.sync_popups();
     }
 
+    /// Insert `display` as a highlighted atomic chip bound to a model-facing value.
+    ///
+    /// `display` must be a mention-shaped token (e.g. `@get_current_time`) so the
+    /// existing submit/history mention machinery can restore and expand it.
+    pub(crate) fn insert_bound_element(&mut self, display: &str, binding_path: &str) {
+        let Some(mention) = Self::mention_name_from_insert_text(display) else {
+            self.insert_str(display);
+            self.insert_str(" ");
+            return;
+        };
+        let id = self.textarea.insert_element(display);
+        self.mention_bindings.insert(
+            id,
+            ComposerMentionBinding {
+                mention,
+                path: binding_path.to_string(),
+            },
+        );
+        self.textarea.insert_str(" ");
+        self.sync_popups();
+    }
+
     /// Handle a key event coming from the main UI.
     pub fn handle_key_event(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
         if !self.input_enabled {

@@ -111,8 +111,9 @@ pub(crate) async fn execute_shell_command(
 }
 
 // TODO: Preview truncation belongs on the client, not the server. Move
-// `preview` (and callers that stuff truncated text into tool metadata) to
-// the client side so the server returns full output / structured metadata.
+// `preview` (used today for short command metadata) and any remaining
+// display-oriented shortening to the client so the server returns full
+// stream text plus structured metadata without duplicating output.
 pub(crate) fn preview(text: &str) -> String {
     if text.len() <= MAX_METADATA_LENGTH {
         return text.to_string();

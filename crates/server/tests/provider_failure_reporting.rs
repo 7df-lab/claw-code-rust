@@ -387,6 +387,7 @@ fn build_runtime(
             provider,
             provider_router,
             Arc::new(ToolRegistry::new()),
+            devo_server::empty_mcp_manager(),
             "default-model".to_string(),
             Arc::new(PresetModelCatalog::new(vec![Model {
                 slug: "default-model".to_string(),

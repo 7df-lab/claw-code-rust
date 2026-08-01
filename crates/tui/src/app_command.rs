@@ -113,6 +113,23 @@ pub(crate) enum AppCommand {
     ForkAtUserTurn {
         user_turn_index: u32,
     },
+    /// Request MCP server runtime statuses (`mcp/list`).
+    ListMcpServers,
+    /// Request tools for one MCP server (`mcp/tools`).
+    ListMcpTools {
+        name: String,
+    },
+    /// Persist enable/disable for one MCP server in user config.
+    SetMcpServerEnabled {
+        name: String,
+        enabled: bool,
+    },
+    /// Persistently enable or disable one skill by `SKILL.md` path.
+    SetSkillEnabled {
+        path: PathBuf,
+        enabled: bool,
+        name: String,
+    },
 }
 
 #[allow(dead_code)]
@@ -371,6 +388,10 @@ impl AppCommand {
             Self::DeleteSession => "delete_session",
             Self::RollbackToUserTurn { .. } => "rollback_to_user_turn",
             Self::ForkAtUserTurn { .. } => "fork_at_user_turn",
+            Self::ListMcpServers => "list_mcp_servers",
+            Self::ListMcpTools { .. } => "list_mcp_tools",
+            Self::SetMcpServerEnabled { .. } => "set_mcp_server_enabled",
+            Self::SetSkillEnabled { .. } => "set_skill_enabled",
         }
     }
 
@@ -465,6 +486,10 @@ impl AppCommand {
             Self::ForkAtUserTurn { user_turn_index } => AppCommandView::ThreadRollback {
                 num_turns: *user_turn_index,
             },
+            Self::ListMcpServers
+            | Self::ListMcpTools { .. }
+            | Self::SetMcpServerEnabled { .. }
+            | Self::SetSkillEnabled { .. } => AppCommandView::ReloadUserConfig,
         }
     }
 

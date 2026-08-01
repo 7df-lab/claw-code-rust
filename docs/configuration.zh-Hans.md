@@ -274,4 +274,26 @@ url = "https://example.com/mcp/sse"
 合并行为：`[mcp]` 与其他表一样按字段合并，但 `servers` 是数组。项目级的
 `[[mcp.servers]]` 列表会整体替换用户级列表，而不是按 `id` 合并。
 
-可在 TUI 中用 `/mcp list` 验证配置。
+### CLI 管理
+
+用 `devo mcp` 管理用户级 MCP 服务器（`~/.devo/config.toml`）：
+
+```bash
+# Stdio（`--` 后为 command + args）
+devo mcp add time -- docker run -i --rm mcp/time
+
+# Streamable HTTP（`--transport http` 写入 kind = "streamable_http"）
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+
+# 旧版 SSE
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+
+devo mcp list
+devo mcp enable time
+devo mcp disable time
+devo mcp remove time
+```
+
+CLI 修改在下次启动 Devo（或配置重载）后生效，不会热更新已在运行的交互会话。
+
+可在 TUI 中用 `/mcps`（交互式列表 → 详情 → 工具；Enable/Disable 仅写配置，运行时可能需重启会话）验证配置。客户端也可调用 `mcp/list` / `mcp/tools` RPC。也可用 `devo mcp add|list|remove|enable|disable` 管理用户级配置。

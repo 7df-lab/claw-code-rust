@@ -39,6 +39,7 @@ pub mod markdown_render;
 mod markdown_stream;
 #[cfg(test)]
 mod mcp_command_tests;
+mod mcp_picker;
 mod mcp_servers;
 #[cfg(test)]
 mod model_display_tests;
@@ -52,6 +53,7 @@ mod read_display;
 mod render;
 mod shell_output;
 mod shimmer;
+mod skills_picker;
 mod slash_command;
 mod startup_header;
 mod startup_logo_cell;

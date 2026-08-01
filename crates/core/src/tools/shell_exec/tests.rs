@@ -238,6 +238,17 @@ async fn execute_shell_command_success_metadata_is_mixed() {
         } => {
             assert!(text.contains("metadata_test"));
             assert_eq!(metadata["description"], "metadata test");
+            assert!(metadata.get("output").is_none());
+            assert_eq!(
+                ToolContent::Mixed {
+                    text: Some(text.clone()),
+                    json: Some(metadata.clone()),
+                }
+                .text_for_model()
+                .matches("metadata_test")
+                .count(),
+                1
+            );
         }
         content => panic!("expected mixed success output, got {content:?}"),
     }

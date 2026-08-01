@@ -133,9 +133,7 @@ impl ChatWidget {
             }
             SlashCommand::Mcp => {
                 self.app_event_tx
-                    .send(AppEvent::Command(AppCommand::RunUserShellCommand {
-                        command: "mcp list".to_string(),
-                    }));
+                    .send(AppEvent::Command(AppCommand::ListMcpServers));
                 self.set_status_message("Loading MCP servers");
             }
             SlashCommand::Skills => {

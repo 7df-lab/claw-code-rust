@@ -18,9 +18,29 @@ pub(super) fn tool_content_to_json(content: ToolContent) -> serde_json::Value {
     match content {
         ToolContent::Text(text) => serde_json::Value::String(text),
         ToolContent::Json(json) => json,
-        ToolContent::Mixed { text, json } => {
-            json.unwrap_or_else(|| serde_json::Value::String(text.unwrap_or_default()))
+        // Object metadata (shell_exec): keep the original object shape and only
+        // fill `output` from Mixed text when the producer omitted the duplicate.
+        ToolContent::Mixed {
+            text: Some(text),
+            json: Some(serde_json::Value::Object(mut map)),
+        } => {
+            map.entry("output".to_string())
+                .or_insert_with(|| serde_json::Value::String(text));
+            serde_json::Value::Object(map)
         }
+        // Preserve arrays/scalars/etc. exactly (e.g. hosted web_search hits).
+        ToolContent::Mixed {
+            text: _,
+            json: Some(json),
+        } => json,
+        ToolContent::Mixed {
+            text: Some(text),
+            json: None,
+        } => serde_json::Value::String(text),
+        ToolContent::Mixed {
+            text: None,
+            json: None,
+        } => serde_json::Value::Null,
     }
 }
 
@@ -437,4 +457,77 @@ pub(super) async fn emit_tool_result_item(
             .expect("serialize tool result payload"),
         )
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_content_to_json;
+    use devo_core::tools::ToolContent;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn mixed_object_fills_missing_output_from_text() {
+        let content = ToolContent::Mixed {
+            text: Some("hello\nworld".into()),
+            json: Some(serde_json::json!({
+                "command": "echo hello",
+                "exit": 0,
+            })),
+        };
+        assert_eq!(
+            tool_content_to_json(content),
+            serde_json::json!({
+                "command": "echo hello",
+                "exit": 0,
+                "output": "hello\nworld",
+            })
+        );
+    }
+
+    #[test]
+    fn mixed_object_preserves_existing_output() {
+        let content = ToolContent::Mixed {
+            text: Some("stream".into()),
+            json: Some(serde_json::json!({
+                "exit": 0,
+                "output": "already set",
+            })),
+        };
+        assert_eq!(
+            tool_content_to_json(content),
+            serde_json::json!({
+                "exit": 0,
+                "output": "already set",
+            })
+        );
+    }
+
+    #[test]
+    fn mixed_array_json_preserves_original_shape() {
+        let hits = serde_json::json!([
+            {"title": "a", "url": "https://a.example"},
+            {"title": "b", "url": "https://b.example"},
+        ]);
+        let content = ToolContent::Mixed {
+            text: Some("search summary".into()),
+            json: Some(hits.clone()),
+        };
+        assert_eq!(tool_content_to_json(content), hits);
+    }
+
+    #[test]
+    fn mixed_webfetch_image_object_keeps_image_fields() {
+        let content = ToolContent::Mixed {
+            text: Some("Image fetched successfully".into()),
+            json: Some(serde_json::json!({
+                "title": "https://example.com/a.png (image/png)",
+                "mime": "image/png",
+                "image_base64": "abc123",
+            })),
+        };
+        let json = tool_content_to_json(content);
+        assert_eq!(json["image_base64"], "abc123");
+        assert_eq!(json["mime"], "image/png");
+        assert_eq!(json["output"], "Image fetched successfully");
+    }
 }

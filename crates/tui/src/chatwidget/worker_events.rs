@@ -34,7 +34,6 @@ use super::ActiveToolCall;
 use super::ChatWidget;
 use super::DotStatus;
 use super::PendingApprovalRequest;
-use super::SKILLS_TRANSCRIPT_TITLE;
 use super::text_stream::ActiveTextItemId;
 
 fn format_retry_status_message(attempt: usize, backoff_ms: u64) -> String {
@@ -1176,15 +1175,25 @@ impl ChatWidget {
                 self.on_subagent_monitor_event(event);
             }
             WorkerEvent::SkillsListed {
-                body,
                 skills,
-                show_in_transcript,
+                picker_skills,
+                open_picker,
             } => {
                 self.bottom_pane.set_skill_mentions(Some(skills));
-                if show_in_transcript {
-                    self.add_padded_markdown_history(SKILLS_TRANSCRIPT_TITLE, &body);
-                    self.set_status_message("Skills loaded");
+                if open_picker {
+                    self.on_skills_listed_for_picker(picker_skills);
+                } else {
+                    self.skills_snapshot = Some(picker_skills);
+                    if let Some(name) = self.skills_reopen_detail.take() {
+                        self.open_skill_detail(&name);
+                    }
                 }
+            }
+            WorkerEvent::McpServersListed { servers } => {
+                self.on_mcp_servers_listed(servers);
+            }
+            WorkerEvent::McpToolsListed { name, tools } => {
+                self.on_mcp_tools_listed(name, tools);
             }
             WorkerEvent::AcpAvailableCommandsUpdated { commands } => {
                 self.acp_available_commands = commands;

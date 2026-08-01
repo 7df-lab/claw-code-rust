@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use crate::contracts::{
     ToolCallError, ToolContext, ToolProgressSender, ToolResult, ToolResultContent,
 };
+use crate::invocation::ToolContent;
 use crate::registry_plan::shell_command_tool_spec;
 use crate::shell_exec::{
     DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_TIMEOUT_MS, DEFAULT_YIELD_TIME_MS, ShellExecRequest,
@@ -13,9 +14,9 @@ use crate::tool_spec::ToolSpec;
 
 /// Tool adapter for `shell_command` (and the legacy `bash` alias).
 ///
-/// Parses model input and runs the command locally via [`execute_shell_command`].
-/// The ToolSpec comes from [`shell_command_tool_spec`] so the registry plan and
-/// handler share one schema.
+/// Parses model input and runs the command locally via the shell executor.
+/// The ToolSpec is built from the shared registry-plan schema so the plan and
+/// handler stay aligned.
 pub struct ShellCommandHandler {
     spec: ToolSpec,
 }
@@ -31,6 +32,14 @@ impl ShellCommandHandler {
         Self {
             spec: shell_command_tool_spec("shell_command"),
         }
+    }
+}
+
+fn tool_result_content(content: ToolContent) -> ToolResultContent {
+    match content {
+        ToolContent::Text(text) => ToolResultContent::Text(text),
+        ToolContent::Json(json) => ToolResultContent::Json(json),
+        ToolContent::Mixed { text, json } => ToolResultContent::Mixed { text, json },
     }
 }
 
@@ -95,15 +104,22 @@ impl ToolHandler for ShellCommandHandler {
         .map_err(|e| ToolCallError::ExecutionFailed(e.to_string()))?;
 
         let display = output.display_content;
-        let text = output.content.into_string();
+        let content = tool_result_content(output.content);
         let mut result = if output.is_error {
+            let message = match &content {
+                ToolResultContent::Text(text) => text.clone(),
+                ToolResultContent::Mixed { text, json } => text
+                    .clone()
+                    .unwrap_or_else(|| json.as_ref().map(ToString::to_string).unwrap_or_default()),
+                ToolResultContent::Json(json) => json.to_string(),
+            };
             ToolResult::error(
-                ToolResultContent::Text(text.clone()),
+                content,
                 "Command failed",
-                ToolCallError::ExecutionFailed(text),
+                ToolCallError::ExecutionFailed(message),
             )
         } else {
-            ToolResult::success(ToolResultContent::Text(text), "Command executed")
+            ToolResult::success(content, "Command executed")
         };
         result.display_content = display;
         Ok(result)

@@ -9,6 +9,7 @@ use super::file_change_metadata::file_mtime;
 use crate::contracts::{
     ToolCallError, ToolContext, ToolProgressSender, ToolResult, ToolResultContent,
 };
+use crate::invocation::ToolContent;
 use crate::json_schema::JsonSchema;
 use crate::read::{is_binary_file, missing_file_message, read_directory, read_file};
 use crate::tool_handler::ToolHandler;
@@ -119,8 +120,8 @@ impl ToolHandler for ReadHandler {
             let output = read_directory(&path, limit.unwrap_or(usize::MAX), offset.unwrap_or(1));
             let output = output.map_err(|e| ToolCallError::ExecutionFailed(format!("{e}")))?;
             let display = output.display_content;
-            let text = output.content.into_string();
-            let mut result = ToolResult::success(ToolResultContent::Text(text), "Directory read");
+            let mut result =
+                ToolResult::success(tool_result_content(output.content), "Directory read");
             result.display_content = display;
             return Ok(result);
         }
@@ -184,10 +185,17 @@ impl ToolHandler for ReadHandler {
         let output = read_file(&path, limit.unwrap_or(usize::MAX), offset.unwrap_or(1));
         let output = output.map_err(|e| ToolCallError::ExecutionFailed(format!("{e}")))?;
         let display = output.display_content;
-        let text = output.content.into_string();
-        let mut result = ToolResult::success(ToolResultContent::Text(text), "File read");
+        let mut result = ToolResult::success(tool_result_content(output.content), "File read");
         result.display_content = display;
         Ok(result)
+    }
+}
+
+fn tool_result_content(content: ToolContent) -> ToolResultContent {
+    match content {
+        ToolContent::Text(text) => ToolResultContent::Text(text),
+        ToolContent::Json(json) => ToolResultContent::Json(json),
+        ToolContent::Mixed { text, json } => ToolResultContent::Mixed { text, json },
     }
 }
 

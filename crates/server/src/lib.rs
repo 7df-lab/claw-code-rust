@@ -33,6 +33,7 @@ pub use client::*;
 pub use connection::*;
 pub use event::*;
 pub use execution::ServerRuntimeDependencies;
+pub use execution::empty_mcp_manager;
 pub use projection::*;
 pub use protocol::*;
 pub use provider_config::*;

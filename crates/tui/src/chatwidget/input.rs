@@ -244,10 +244,38 @@ impl ChatWidget {
             AppEvent::CollapseReasoningSelected { collapsed } => {
                 self.apply_collapse_reasoning(collapsed);
             }
+            AppEvent::McpOpenServerList => {
+                self.open_mcp_server_list();
+            }
+            AppEvent::McpOpenServerDetail { name } => {
+                self.open_mcp_server_detail(&name);
+            }
+            AppEvent::McpServerSelected { name } => {
+                self.open_mcp_server_detail(&name);
+            }
+            AppEvent::SkillOpenList => {
+                self.open_skills_list();
+            }
+            AppEvent::SkillSelected { name } => {
+                self.open_skill_detail(&name);
+            }
             AppEvent::ReasoningEffortSelected { value } => {
                 self.set_reasoning_effort_selection(value)
             }
             AppEvent::StatusMessageChanged { message } => self.set_status_message(message),
+            AppEvent::InsertComposerText { text, binding } => {
+                match binding {
+                    Some(path) => {
+                        self.bottom_pane.insert_composer_bound_text(&text, &path);
+                        self.set_status_message(format!("Inserted `{text}` into prompt"));
+                    }
+                    None => {
+                        self.bottom_pane.insert_composer_text(&text);
+                        self.set_status_message(format!("Inserted `{text}` into prompt"));
+                    }
+                }
+                self.frame_requester.schedule_frame();
+            }
             AppEvent::DebugSubagentStep { step } => self.apply_subagent_debug_step(step),
             AppEvent::HistoryEntryRequested { .. } => {
                 self.set_status_message("Persistent composer history is not available");
@@ -712,6 +740,25 @@ mod tests {
                     path: PathBuf::from("skills/deep-research/SKILL.md"),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn mcp_tool_chips_expand_to_flat_tool_names_in_text_item() {
+        let user_message = UserMessage {
+            text: "call @get_current_time please".to_string(),
+            mention_bindings: vec![MentionBinding {
+                mention: "get_current_time".to_string(),
+                path: "mcp__time__get_current_time".to_string(),
+            }],
+            ..UserMessage::default()
+        };
+
+        assert_eq!(
+            input_items_for_user_message(&user_message),
+            vec![InputItem::Text {
+                text: "call mcp__time__get_current_time please".to_string(),
+            }]
         );
     }
 }

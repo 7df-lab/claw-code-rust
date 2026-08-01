@@ -286,4 +286,6 @@ url = "https://example.com/mcp/sse"
 `servers` は配列です。したがって、workspace の `[[mcp.servers]]` リストは
 ユーザーレベルのリストを `id` 単位でマージせず置き換えます。
 
-TUI の `/mcp list` で設定を確認できます。
+TUI の `/mcps` で対話的に確認できます（一覧 → 詳細 → ツール。Enable/Disable は設定のみ更新し、実行時反映にはセッション再起動が必要な場合があります）。クライアントは `mcp/list` / `mcp/tools` RPC も利用できます。ユーザー設定 (`~/.devo/config.toml`) は
+`devo mcp add|list|remove|enable|disable` でも管理できます（`--transport stdio|http|sse`）。
+クライアントは `mcp/list` RPC でランタイム状態を取得できます。

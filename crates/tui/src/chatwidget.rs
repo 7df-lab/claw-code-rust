@@ -79,6 +79,10 @@ mod reasoning_effort;
 
 mod reasoning_view;
 
+mod mcp_picker;
+
+mod skills_picker;
+
 mod worker_events;
 
 use self::permission_presets::permission_preset_items;
@@ -91,7 +95,6 @@ use self::subagent_monitor::SubagentMonitorState;
 use self::text_stream::ActiveTextItem;
 
 pub(crate) const MCP_SERVERS_TRANSCRIPT_TITLE: &str = "⬡  MCP Servers";
-pub(crate) const SKILLS_TRANSCRIPT_TITLE: &str = "▦  Skills";
 
 #[cfg(test)]
 pub(crate) use self::reasoning_effort::ReasoningEffortListEntry;
@@ -316,6 +319,14 @@ pub(crate) struct ChatWidget {
     startup_header_mascot_frame_index: usize,
     startup_header_next_animation_at: Instant,
     next_seq: u64,
+    /// Merged config + runtime snapshot for the interactive `/mcps` flow.
+    mcp_servers_snapshot: Option<Vec<crate::mcp_picker::McpPickerServer>>,
+    /// After enable/disable, reopen this server's detail once list refreshes.
+    mcp_reopen_detail: Option<String>,
+    /// Snapshot for the interactive `/skills` flow.
+    skills_snapshot: Option<Vec<crate::skills_picker::SkillPickerEntry>>,
+    /// After enable/disable, reopen this skill's detail once list refreshes.
+    skills_reopen_detail: Option<String>,
 }
 
 impl ChatWidget {
@@ -547,6 +558,10 @@ impl ChatWidget {
             startup_header_mascot_frame_index: 0,
             startup_header_next_animation_at: Instant::now() + STARTUP_HEADER_ANIMATION_INTERVAL,
             next_seq: 0,
+            mcp_servers_snapshot: None,
+            mcp_reopen_detail: None,
+            skills_snapshot: None,
+            skills_reopen_detail: None,
         };
 
         // Model onboarding can inject additional startup UI before the first frame is drawn.

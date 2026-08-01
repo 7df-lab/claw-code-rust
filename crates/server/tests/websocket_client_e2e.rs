@@ -64,6 +64,7 @@ async fn websocket_server_client_drives_listener_session_and_notifications() -> 
             Arc::clone(&provider),
             Arc::new(SingleProviderRouter::new(provider)),
             Arc::new(ToolRegistry::new()),
+            devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::default()),
             Arc::new(ProviderVendorCatalog::default()),

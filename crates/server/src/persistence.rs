@@ -3601,6 +3601,7 @@ mod tests {
             Arc::clone(&provider),
             Arc::new(devo_provider::SingleProviderRouter::new(provider)),
             Arc::new(devo_core::tools::ToolRegistry::new()),
+            crate::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(devo_core::PresetModelCatalog::default()),
             Arc::new(devo_core::ProviderVendorCatalog::default()),

@@ -277,6 +277,12 @@ enum OperationCommand {
     ListSessions,
     /// Request a skills list from the server.
     ListSkills,
+    /// Request MCP server runtime statuses from the server.
+    ListMcpServers,
+    /// Request tools for one MCP server from the server.
+    ListMcpTools {
+        name: String,
+    },
     /// Request or update a server-backed composer reference search.
     ReferenceSearchRequested {
         query: String,
@@ -571,6 +577,20 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
+    /// Requests MCP server runtime statuses from the background worker.
+    pub(crate) fn list_mcp_servers(&self) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::ListMcpServers)
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Requests tools for one MCP server from the background worker.
+    pub(crate) fn list_mcp_tools(&self, name: String) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::ListMcpTools { name })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
     pub(crate) fn reference_search_requested(&self, query: String) -> Result<()> {
         self.command_tx
             .send(OperationCommand::ReferenceSearchRequested { query })
@@ -583,7 +603,6 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_skill_enabled(&self, path: PathBuf, enabled: bool) -> Result<()> {
         self.command_tx
             .send(OperationCommand::SetSkillEnabled { path, enabled })
@@ -1248,6 +1267,39 @@ async fn run_worker_inner(
                             Some(OperationCommand::ListSkills) => {
                                 if let Err(error) =
                                     emit_skills_list(&mut client, &session_cwd, event_tx, true).await
+                                {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: error.to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                }
+                            }
+                            Some(OperationCommand::ListMcpServers) => {
+                                if let Err(error) = emit_mcp_servers_list(&mut client, event_tx).await
+                                {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: error.to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                }
+                            }
+                            Some(OperationCommand::ListMcpTools { name }) => {
+                                if let Err(error) =
+                                    emit_mcp_tools_list(&mut client, name, event_tx).await
                                 {
                                     let _ = event_tx.send(WorkerEvent::TurnFailed {
                                         message: error.to_string(),
@@ -3086,7 +3138,7 @@ async fn emit_skills_list(
     client: &mut StdioServerClient,
     cwd: &Path,
     event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-    show_in_transcript: bool,
+    open_picker: bool,
 ) -> Result<()> {
     let result = tokio::time::timeout(
         Duration::from_secs(5),
@@ -3097,7 +3149,7 @@ async fn emit_skills_list(
     )
     .await
     .context("skills list request timed out")??;
-    emit_skills_list_result(result.skills, event_tx, show_in_transcript);
+    emit_skills_list_result(result.skills, event_tx, open_picker);
     Ok(())
 }
 
@@ -3130,19 +3182,57 @@ async fn emit_reference_search_update(
 fn emit_skills_list_result(
     skills: Vec<devo_server::SkillRecord>,
     event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-    show_in_transcript: bool,
+    open_picker: bool,
 ) {
-    let body = render_skill_list_body(&skills);
+    let picker_skills = skills
+        .iter()
+        .map(crate::skills_picker::skill_picker_entry_from_record)
+        .collect();
     let skills = skills
         .iter()
         .filter(|skill| skill.enabled)
         .map(skill_metadata_from_record)
         .collect();
     let _ = event_tx.send(WorkerEvent::SkillsListed {
-        body,
         skills,
-        show_in_transcript,
+        picker_skills,
+        open_picker,
     });
+}
+
+async fn emit_mcp_servers_list(
+    client: &mut StdioServerClient,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<()> {
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.mcp_list(devo_protocol::canonical::rpc_admin::McpListParams {}),
+    )
+    .await
+    .context("mcp list request timed out")??;
+    let _ = event_tx.send(WorkerEvent::McpServersListed {
+        servers: result.servers,
+    });
+    Ok(())
+}
+
+async fn emit_mcp_tools_list(
+    client: &mut StdioServerClient,
+    name: String,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<()> {
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        client
+            .mcp_tools(devo_protocol::canonical::rpc_admin::McpToolsParams { name: name.clone() }),
+    )
+    .await
+    .context("mcp tools request timed out")??;
+    let _ = event_tx.send(WorkerEvent::McpToolsListed {
+        name,
+        tools: result.tools,
+    });
+    Ok(())
 }
 
 fn render_skill_list_body(skills: &[devo_server::SkillRecord]) -> String {

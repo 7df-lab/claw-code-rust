@@ -125,7 +125,6 @@ pub(crate) async fn run_with_pipes(
                 Ok(FunctionToolOutput::success_with_metadata(
                     result_text.clone(),
                     json!({
-                        "output": preview(&result_text),
                         "command": command_preview,
                         "exit": status.code(),
                         "description": description,

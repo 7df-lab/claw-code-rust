@@ -142,6 +142,8 @@ pub(crate) struct SelectionViewParams {
     pub view_id: Option<&'static str>,
     pub title: Option<String>,
     pub subtitle: Option<String>,
+    /// Rich subtitle lines. When non-empty, used instead of [`Self::subtitle`].
+    pub subtitle_lines: Vec<Line<'static>>,
     pub footer_note: Option<Line<'static>>,
     pub footer_hint: Option<Line<'static>>,
     pub items: Vec<SelectionItem>,
@@ -184,6 +186,7 @@ impl Default for SelectionViewParams {
             view_id: None,
             title: None,
             subtitle: None,
+            subtitle_lines: Vec::new(),
             footer_note: None,
             footer_hint: None,
             items: Vec::new(),
@@ -254,14 +257,23 @@ impl ListSelectionView {
         accent_color: Color,
     ) -> Self {
         let mut header = params.header;
-        if params.title.is_some() || params.subtitle.is_some() {
-            let title = params.title.map(|title| Line::from(title.bold()));
-            let subtitle = params.subtitle.map(|subtitle| Line::from(subtitle.dim()));
-            header = Box::new(ColumnRenderable::with([
-                header,
-                Box::new(title),
-                Box::new(subtitle),
-            ]));
+        let has_subtitle = params.subtitle.is_some() || !params.subtitle_lines.is_empty();
+        if params.title.is_some() || has_subtitle {
+            let mut column = ColumnRenderable::new();
+            column.push(header);
+            if let Some(title) = params.title {
+                column.push(Line::from(title.bold()));
+            }
+            if !params.subtitle_lines.is_empty() {
+                for line in params.subtitle_lines {
+                    column.push(line);
+                }
+            } else if let Some(subtitle) = params.subtitle {
+                for line in subtitle.lines() {
+                    column.push(Line::from(line.to_string().dim()));
+                }
+            }
+            header = Box::new(column);
         }
         let mut s = Self {
             view_id: params.view_id,

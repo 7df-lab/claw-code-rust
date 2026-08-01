@@ -364,6 +364,8 @@ impl ServerRuntime {
             Some(ClientMethod::SkillsSetEnabled) => {
                 Some(self.handle_skills_set_enabled(id?, params).await)
             }
+            Some(ClientMethod::McpList) => Some(self.handle_mcp_list(id?, params).await),
+            Some(ClientMethod::McpTools) => Some(self.handle_mcp_tools(id?, params).await),
             // get the model catalog, aka the configured models list
             Some(ClientMethod::ModelCatalog) => Some(self.handle_model_catalog(id?, params).await),
             Some(ClientMethod::ModelConfig) => Some(self.handle_model_config(id?, params).await),
@@ -1473,6 +1475,7 @@ mod tests {
                 Arc::clone(&provider),
                 Arc::new(SingleProviderRouter::new(provider)),
                 Arc::new(ToolRegistry::new()),
+                crate::empty_mcp_manager(),
                 "test-model".to_string(),
                 Arc::new(PresetModelCatalog::default()),
                 Arc::new(ProviderVendorCatalog::default()),
@@ -1488,6 +1491,50 @@ mod tests {
                 )),
             ),
         )
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_returns_invalid_params_for_unknown_server() {
+        let temp = TempDir::new().expect("temp dir");
+        let runtime = build_runtime(temp.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 3,
+                    "method": "mcp/tools",
+                    "params": { "name": "missing-server" }
+                }),
+            )
+            .await
+            .expect("mcp/tools response");
+        let error: ErrorResponse = serde_json::from_value(response).expect("deserialize error");
+        assert_eq!(error.error.code, ProtocolErrorCode::InvalidParams);
+    }
+
+    #[tokio::test]
+    async fn mcp_list_returns_empty_servers_for_default_manager() {
+        let temp = TempDir::new().expect("temp dir");
+        let runtime = build_runtime(temp.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 2,
+                    "method": "mcp/list",
+                    "params": {}
+                }),
+            )
+            .await
+            .expect("mcp/list response");
+        let result: SuccessResponse<devo_protocol::canonical::rpc_admin::McpListResult> =
+            serde_json::from_value(response.clone()).expect("deserialize mcp/list");
+        assert_eq!(
+            result.result,
+            devo_protocol::canonical::rpc_admin::McpListResult { servers: vec![] }
+        );
     }
 
     fn assert_agent_message_chunk_update(

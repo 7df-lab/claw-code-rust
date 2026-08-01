@@ -274,4 +274,6 @@ url = "https://example.com/mcp/sse"
 合併行為：`[mcp]` 與其他表一樣依欄位合併，但 `servers` 是陣列。專案級的
 `[[mcp.servers]]` 列表會整體取代使用者級列表，而不是依 `id` 合併。
 
-可在 TUI 中用 `/mcp list` 驗證配置。
+可在 TUI 中用 `/mcps`（互動式清單 → 詳情 → 工具；Enable/Disable 僅寫設定，執行階段可能需重啟工作階段）驗證配置。也可用 `devo mcp add|list|remove|enable|disable`
+管理使用者級 `~/.devo/config.toml`（支援 `--transport stdio|http|sse`）。客戶端可呼叫
+`mcp/list` RPC 取得執行時狀態。

@@ -5,6 +5,7 @@ use anyhow::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 use devo_core::AppConfigLoader;
+use devo_core::AppConfigStore;
 use devo_core::FileSystemAppConfigLoader;
 use devo_protocol::Model;
 use devo_protocol::ModelCatalog;
@@ -952,6 +953,8 @@ fn handle_worker_event(
         | WorkerEvent::SubagentDiscovered { .. }
         | WorkerEvent::SubagentMonitor { .. }
         | WorkerEvent::SkillsListed { .. }
+        | WorkerEvent::McpServersListed { .. }
+        | WorkerEvent::McpToolsListed { .. }
         | WorkerEvent::AcpAvailableCommandsUpdated { .. }
         | WorkerEvent::AcpCurrentModeUpdated { .. }
         | WorkerEvent::AcpConfigOptionsUpdated { .. }
@@ -1255,6 +1258,61 @@ fn handle_app_command(
             loop_state.session_switch_pending = true;
             tui.replace_inline_session_ui()?;
             worker.fork_at_user_turn(*user_turn_index)?;
+        }
+        AppCommand::ListMcpServers => {
+            worker.list_mcp_servers()?;
+            chat_widget.set_status_message("Loading MCP servers");
+        }
+        AppCommand::ListMcpTools { name } => {
+            worker.list_mcp_tools(name.clone())?;
+            chat_widget.set_status_message(format!("Loading tools · {name}"));
+        }
+        AppCommand::SetMcpServerEnabled { name, enabled } => {
+            match find_devo_home()
+                .map_err(anyhow::Error::from)
+                .and_then(|home| {
+                    let mut store = AppConfigStore::load(home, Some(context.cwd))
+                        .map_err(anyhow::Error::from)?;
+                    store.set_mcp_server_enabled(name, *enabled)?;
+                    Ok(())
+                }) {
+                Ok(()) => {
+                    let action = if *enabled { "enabled" } else { "disabled" };
+                    chat_widget.set_mcp_reopen_detail(Some(name.clone()));
+                    chat_widget.set_status_message(format!(
+                        "MCP `{name}` {action} in config (restart session for live runtime)"
+                    ));
+                    worker.list_mcp_servers()?;
+                }
+                Err(error) => {
+                    chat_widget.add_to_history(crate::history_cell::new_error_event_with_hint(
+                        format!("Failed to update MCP server `{name}`: {error}"),
+                        Some("mcp enable/disable failed".to_string()),
+                    ));
+                    chat_widget.set_status_message(format!("Failed to update MCP `{name}`"));
+                }
+            }
+        }
+        AppCommand::SetSkillEnabled {
+            path,
+            enabled,
+            name,
+        } => {
+            chat_widget.set_skills_reopen_detail(Some(name.clone()));
+            match worker.set_skill_enabled(path.clone(), *enabled) {
+                Ok(()) => {
+                    let action = if *enabled { "enabled" } else { "disabled" };
+                    chat_widget.set_status_message(format!("Skill `{name}` {action}"));
+                }
+                Err(error) => {
+                    chat_widget.set_skills_reopen_detail(None);
+                    chat_widget.add_to_history(crate::history_cell::new_error_event_with_hint(
+                        format!("Failed to update skill `{name}`: {error}"),
+                        Some("skills set_enabled failed".to_string()),
+                    ));
+                    chat_widget.set_status_message(format!("Failed to update skill `{name}`"));
+                }
+            }
         }
     }
     Ok(())

@@ -116,7 +116,7 @@ export const landingCopy = {
             },
             {
               status: "yes",
-              evidence: "/mcp and mcp.json.",
+              evidence: "/mcps and mcp.json.",
             },
             {
               status: "yes",
@@ -498,7 +498,7 @@ export const landingCopy = {
             },
             {
               status: "yes",
-              evidence: "/mcp 与 mcp.json。",
+              evidence: "/mcps 与 mcp.json。",
             },
             {
               status: "yes",

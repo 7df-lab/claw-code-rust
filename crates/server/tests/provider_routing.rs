@@ -568,6 +568,7 @@ fn build_runtime_with_models(
             provider,
             provider_router,
             Arc::new(ToolRegistry::new()),
+            devo_server::empty_mcp_manager(),
             default_model.to_string(),
             Arc::new(PresetModelCatalog::new(models)),
             Arc::new(ProviderVendorCatalog::default()),

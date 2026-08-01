@@ -147,6 +147,7 @@ mod hooks;
 mod interaction_items;
 mod items;
 mod lifecycle;
+mod mcp;
 mod model_api;
 mod outbound;
 mod permission_decision;

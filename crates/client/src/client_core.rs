@@ -554,6 +554,20 @@ impl ServerClientCore {
         self.request_devo("skills/set_enabled", params).await
     }
 
+    pub(crate) async fn mcp_list(
+        &mut self,
+        params: devo_protocol::canonical::rpc_admin::McpListParams,
+    ) -> Result<devo_protocol::canonical::rpc_admin::McpListResult> {
+        self.request_devo("mcp/list", params).await
+    }
+
+    pub(crate) async fn mcp_tools(
+        &mut self,
+        params: devo_protocol::canonical::rpc_admin::McpToolsParams,
+    ) -> Result<devo_protocol::canonical::rpc_admin::McpToolsResult> {
+        self.request_devo("mcp/tools", params).await
+    }
+
     pub(crate) async fn model_catalog(
         &mut self,
         params: ModelCatalogParams,

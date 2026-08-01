@@ -297,4 +297,33 @@ Merge behavior: `[mcp]` is merged field-wise like other tables, but `servers` is
 an array. A project-level `[[mcp.servers]]` list therefore replaces the
 user-level list instead of merging by `id`.
 
-Verify the configuration in the TUI with `/mcp list`.
+### CLI management
+
+Manage user-level MCP servers (`~/.devo/config.toml`) with `devo mcp`:
+
+```bash
+# Stdio (command + args after --)
+devo mcp add time -- docker run -i --rm mcp/time
+devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
+
+# Streamable HTTP (`--transport http` writes kind = "streamable_http")
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
+
+# Legacy SSE
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+
+devo mcp list
+devo mcp enable time
+devo mcp disable time
+devo mcp remove time
+```
+
+CLI changes apply on the next Devo start (or config reload). They do not hot-reload
+an already-running interactive session.
+
+Verify configuration in the TUI with `/mcps` (interactive server list → detail →
+tools; Enable/Disable writes config only and may need a session restart for live
+runtime). Clients can also call the `mcp/list` / `mcp/tools` RPCs for runtime
+status and tool catalogs from the shared MCP manager. Use `devo mcp add|list|remove|enable|disable`
+for CLI management.

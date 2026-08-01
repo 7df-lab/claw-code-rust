@@ -200,6 +200,29 @@ async fn summarize_and_compact(
 
 const TOOL_RESULT_TRUNCATION_MARKER: &str = "\n...[truncated]";
 
+/// Tools that store the model-facing payload in Mixed `text` and put UI/protocol
+/// metadata in `json` (shell exit/cwd; read preview/truncated). Omit JSON from
+/// the prompt so the stream is not duplicated.
+fn tool_result_omits_mixed_json_for_model(tool_name: Option<&str>) -> bool {
+    matches!(tool_name, Some("shell_command" | "bash" | "read"))
+}
+
+fn serialize_tool_content_for_model(content: ToolContent, tool_name: Option<&str>) -> String {
+    if tool_result_omits_mixed_json_for_model(tool_name) {
+        content.text_for_model()
+    } else {
+        content.into_string()
+    }
+}
+
+fn tool_content_model_bytes(content: &ToolContent, tool_name: Option<&str>) -> usize {
+    if tool_result_omits_mixed_json_for_model(tool_name) {
+        content.text_for_model_byte_len()
+    } else {
+        content.into_string_byte_len()
+    }
+}
+
 fn truncate_tool_result_for_model(
     content: String,
     tool_name: Option<&str>,
@@ -304,17 +327,6 @@ fn is_injected_context_message(message: &RequestMessage) -> bool {
             | RequestContent::ToolUse { .. }
             | RequestContent::ToolResult { .. } => false,
         })
-}
-
-fn tool_content_model_bytes(content: &ToolContent) -> usize {
-    match content {
-        ToolContent::Text(text) => text.len(),
-        ToolContent::Json(json) => json.to_string().len(),
-        ToolContent::Mixed { text, json } => {
-            text.as_ref().map_or(0, String::len)
-                + json.as_ref().map_or(0, |json| json.to_string().len())
-        }
-    }
 }
 
 /// Agent loop orchestration: build request, stream, continue or run tools.
@@ -822,7 +834,12 @@ pub async fn query(
         let tool_error_count = results.iter().filter(|result| result.is_error).count();
         let tool_output_bytes = results
             .iter()
-            .map(|result| tool_content_model_bytes(&result.content))
+            .map(|result| {
+                let tool_name = tool_result_metadata
+                    .get(result.tool_use_id.as_str())
+                    .map(|(tool_name, _, _)| tool_name.as_str());
+                tool_content_model_bytes(&result.content, tool_name)
+            })
             .sum::<usize>();
         debug!(
             tool_calls = tool_calls.len(),
@@ -840,7 +857,7 @@ pub async fn query(
                 let tool_name = tool_result_metadata
                     .get(r.tool_use_id.as_str())
                     .map(|(tool_name, _, _)| tool_name.as_str());
-                let content_str = r.content.into_string();
+                let content_str = serialize_tool_content_for_model(r.content, tool_name);
                 let content =
                     truncate_tool_result_for_model(content_str, tool_name, truncation_policy);
                 ContentBlock::ToolResult {

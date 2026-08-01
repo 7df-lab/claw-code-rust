@@ -48,22 +48,19 @@ Devo предназначен для команд, которым нужен cod
 - **Один agent для Desktop и terminal** - Используйте Desktop app для
   визуального onboarding и повседневного coding, либо CLI/TUI для
   terminal-native automation, remote shell и scriptable workflows.
-- **Расширяемый agent runtime** - MCP servers, reusable skills, локальный
-  semantic code search, аудируемые сессии, permissions и multi-agent flows
-  являются возможностями runtime, а не одноразовыми prompt.
+- **Расширяемый agent runtime** - MCP servers, reusable skills, аудируемые
+  сессии, permissions и multi-agent flows являются возможностями runtime, а не
+  одноразовыми prompt.
 
 ## Возможности
 
-- **Встроенный семантический поиск по коду** - Запускает локальную CPU-модель
-  эмбеддингов кода и сочетает плотный поиск с BM25-поиском по ключевым словам,
-  сокращая объем контекста для поиска по коду по сравнению с агентами, которые
-  используют только grep/find.
 - **Модельно-нейтральный provider runtime** - Используйте provider/model bindings
   для OpenAI-совместимых, Anthropic-совместимых, DeepSeek, Qwen, Kimi, GLM,
   MiniMax, Xiaomi MiMo, OpenRouter или локальных endpoint.
 - **Поддержка MCP** - Подключайте внешние инструменты и контекст через серверы
-  [Model Context Protocol](https://modelcontextprotocol.io/). Настройка описана в
-  [Конфигурации](./docs/configuration.ru.md#mcp-серверы).
+  [Model Context Protocol](https://modelcontextprotocol.io/). Управляйте через
+  CLI: `devo mcp add|list|enable|disable|remove` (см.
+  [Конфигурацию](./docs/configuration.ru.md#mcp-серверы)).
 - **Поддержка Skill** - Упаковывайте повторяемые workflow, инструкции, скрипты
   и справочные материалы как переиспользуемые
   [Agent Skills](https://agentskills.io/).
@@ -83,6 +80,11 @@ Devo предназначен для команд, которым нужен cod
   cached token и использование context window там, где провайдеры это раскрывают.
 - **Легковесный Rust runtime** - Построен на Rust, с малым расходом памяти и
   компактным локальным runtime.
+- **Встроенный семантический поиск по коду (MCP)** - Опциональный bundled MCP
+  сервер (`code_search` / `devo-code-search-mcp`), **по умолчанию выключен**.
+  Запускает локальную CPU-модель эмбеддингов и сочетает dense retrieval с BM25,
+  сокращая контекст поиска по сравнению с агентами только на grep/find. Включите
+  через `devo mcp enable code_search` или TUI `/mcps`.
 
 ## Проверенные модели
 

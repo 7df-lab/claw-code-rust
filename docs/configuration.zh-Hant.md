@@ -205,6 +205,54 @@ Devo 透過使用者或工作區 `config.toml` 中的 `[mcp]` 設定
 `servers` 陣列中的一項，其 `transport` 表決定 Devo 的連線方式。支援的傳輸方式有
 `stdio`、`streamable_http` 和已棄用的 `sse`。
 
+可用編輯 `config.toml` 或 CLI（`devo mcp …`）設定 MCP。日常新增 / 啟用 / 停用 /
+刪除優先用 CLI；需要細調傳輸參數、環境變數或 header 時再改 TOML。
+
+### 捆綁的 `code_search`（預設關閉）
+
+Devo 會在 `devo` 旁邊安裝可選的語義搜尋 MCP 二進位。設定項在缺失時會自動注入，
+且保持 **disabled**，直到你明確啟用：
+
+```toml
+[[mcp.servers]]
+id = "code_search"
+display_name = "Code Search"
+enabled = false
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["devo-code-search-mcp"]
+```
+
+```bash
+devo mcp enable code_search
+# 或在互動工作階段：/mcps → Code Search → Enable
+```
+
+啟用後，模型側工具名稱為 `mcp__code_search__code_search`。
+
+### CLI 管理
+
+用 `devo mcp` 管理使用者級 MCP 伺服器（`~/.devo/config.toml`）：
+
+```bash
+devo mcp list
+devo mcp add time -- docker run -i --rm mcp/time
+devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+devo mcp enable time
+devo mcp disable time
+devo mcp remove time
+```
+
+CLI `enable|disable` 會寫入使用者 `config.toml`。已在執行的互動工作階段透過
+TUI `/mcps`（`mcp/set_enabled`）即時套用。
+
+### TOML 範例
+
 stdio 範例：
 
 ```toml
@@ -273,8 +321,5 @@ url = "https://example.com/mcp/sse"
 合併行為：`[mcp]` 與其他表一樣依欄位合併，但 `servers` 是陣列。專案級的
 `[[mcp.servers]]` 列表會整體取代使用者級列表，而不是依 `id` 合併。
 
-可在 TUI 中用 `/mcps`（互動式清單 → 詳情 → 工具；Enable/Disable 會寫入設定並透過
-`mcp/set_enabled` 即時套用到下一個回合）驗證配置。也可用
-`devo mcp add|list|remove|enable|disable` 管理使用者級 `~/.devo/config.toml`
-（支援 `--transport stdio|http|sse`）。客戶端可呼叫 `mcp/list`、`mcp/tools`、
-`mcp/set_enabled` RPC。
+可在 TUI 中用 `/mcps`（互動式清單 → 詳情 → 工具）驗證配置。客戶端可呼叫
+`mcp/list`、`mcp/tools`、`mcp/set_enabled` RPC。

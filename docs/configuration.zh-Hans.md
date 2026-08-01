@@ -205,6 +205,66 @@ Devo 通过用户或工作区 `config.toml` 中的 `[mcp]` 配置
 `servers` 数组中的一项，其 `transport` 表决定 Devo 的连接方式。支持的传输方式有
 `stdio`、`streamable_http` 和已弃用的 `sse`。
 
+可以用编辑 `config.toml` 或 CLI（`devo mcp …`）两种方式配置 MCP。日常的添加 /
+启用 / 禁用 / 删除优先用 CLI；需要细调传输参数、环境变量或 header 时再改 TOML。
+
+### 捆绑的 `code_search`（默认关闭）
+
+Devo 会在 `devo` 旁边安装可选的语义搜索 MCP 二进制。配置项在缺失时会自动注入，
+且保持 **disabled**，直到你显式启用：
+
+```toml
+[[mcp.servers]]
+id = "code_search"
+display_name = "Code Search"
+enabled = false
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["devo-code-search-mcp"]
+```
+
+```bash
+devo mcp enable code_search
+# 或在交互会话中：/mcps → Code Search → Enable
+```
+
+启用后，模型侧工具名为 `mcp__code_search__code_search`。
+
+### CLI 管理
+
+用 `devo mcp` 管理用户级 MCP 服务器（`~/.devo/config.toml`）：
+
+```bash
+# 列出已配置服务器
+devo mcp list
+
+# 添加 stdio 服务器（`--` 后为 command + args）
+devo mcp add time -- docker run -i --rm mcp/time
+devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
+
+# 添加 Streamable HTTP（`--transport http` 写入 kind = "streamable_http"）
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
+
+# 添加旧版 SSE
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+
+# 按 id 启用 / 禁用 / 删除
+devo mcp enable time
+devo mcp disable time
+devo mcp remove time
+```
+
+CLI `devo mcp enable|disable` 会写入用户 `config.toml`（离线配置）。已在运行的
+交互会话通过 TUI `/mcps`（`mcp/set_enabled` RPC）即时启用/禁用。
+
+可在 TUI 中用 `/mcps`（交互式列表 → 详情 → 工具）验证配置。客户端也可调用
+`mcp/list`、`mcp/tools`、`mcp/set_enabled`。
+
+### TOML 示例
+
 stdio 示例：
 
 ```toml
@@ -272,31 +332,3 @@ url = "https://example.com/mcp/sse"
 
 合并行为：`[mcp]` 与其他表一样按字段合并，但 `servers` 是数组。项目级的
 `[[mcp.servers]]` 列表会整体替换用户级列表，而不是按 `id` 合并。
-
-### CLI 管理
-
-用 `devo mcp` 管理用户级 MCP 服务器（`~/.devo/config.toml`）：
-
-```bash
-# Stdio（`--` 后为 command + args）
-devo mcp add time -- docker run -i --rm mcp/time
-
-# Streamable HTTP（`--transport http` 写入 kind = "streamable_http"）
-devo mcp add --transport http hello-mcp http://localhost:8080/mcp
-
-# 旧版 SSE
-devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
-
-devo mcp list
-devo mcp enable time
-devo mcp disable time
-devo mcp remove time
-```
-
-CLI `devo mcp enable|disable` 会写入用户 `config.toml`（离线配置）。已在运行的
-交互会话通过 TUI `/mcps`（`mcp/set_enabled` RPC）即时启用/禁用。
-
-可在 TUI 中用 `/mcps`（交互式列表 → 详情 → 工具；Enable/Disable 会持久化配置并为
-下一回合应用管理器与工具注册表）验证配置。客户端也可调用 `mcp/list`、
-`mcp/tools`、`mcp/set_enabled`。也可用 `devo mcp add|list|remove|enable|disable`
-管理用户级配置。

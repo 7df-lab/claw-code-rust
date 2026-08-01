@@ -224,7 +224,14 @@ is one entry in the `servers` array, and its `transport` table selects how Devo
 connects. Supported transports are `stdio`, `streamable_http`, and the deprecated
 `sse`.
 
-Devo also presets a bundled, disabled-by-default semantic search server:
+You can configure MCP either by editing `config.toml` or with the CLI
+(`devo mcp …`). Prefer the CLI for day-to-day add / enable / disable / remove;
+edit TOML when you need transport details, env vars, or headers.
+
+### Bundled `code_search` (disabled by default)
+
+Devo ships an optional semantic search MCP binary next to `devo`. The config
+entry is injected when missing and stays **disabled** until you enable it:
 
 ```toml
 [[mcp.servers]]
@@ -238,8 +245,47 @@ kind = "stdio"
 command = ["devo-code-search-mcp"]
 ```
 
-Enable it with `devo mcp enable code_search` (or `/mcps` in the TUI). The
-`devo-code-search-mcp` binary is installed next to `devo`.
+```bash
+devo mcp enable code_search
+# or, in an interactive session: /mcps → Code Search → Enable
+```
+
+When enabled, the model-facing tool name is `mcp__code_search__code_search`.
+The `devo-code-search-mcp` binary is installed next to `devo`.
+
+### CLI management
+
+Manage user-level MCP servers (`~/.devo/config.toml`) with `devo mcp`:
+
+```bash
+# List configured servers (effective / user config)
+devo mcp list
+
+# Add a stdio server (command + args after --)
+devo mcp add time -- docker run -i --rm mcp/time
+devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
+
+# Add Streamable HTTP (`--transport http` writes kind = "streamable_http")
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
+
+# Add legacy SSE
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+
+# Enable / disable / remove by server id
+devo mcp enable time
+devo mcp disable time
+devo mcp remove time
+```
+
+CLI `devo mcp enable|disable` writes user `config.toml` for offline use. An
+already-running interactive session applies enable/disable live through the TUI
+`/mcps` path (`mcp/set_enabled` RPC).
+
+Verify configuration in the TUI with `/mcps` (interactive server list → detail →
+tools). Clients can also call `mcp/list`, `mcp/tools`, and `mcp/set_enabled`.
+
+### TOML examples
 
 Stdio example:
 
@@ -312,35 +358,3 @@ Field notes:
 Merge behavior: `[mcp]` is merged field-wise like other tables, but `servers` is
 an array. A project-level `[[mcp.servers]]` list therefore replaces the
 user-level list instead of merging by `id`.
-
-### CLI management
-
-Manage user-level MCP servers (`~/.devo/config.toml`) with `devo mcp`:
-
-```bash
-# Stdio (command + args after --)
-devo mcp add time -- docker run -i --rm mcp/time
-devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
-
-# Streamable HTTP (`--transport http` writes kind = "streamable_http")
-devo mcp add --transport http hello-mcp http://localhost:8080/mcp
-devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
-
-# Legacy SSE
-devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
-
-devo mcp list
-devo mcp enable time
-devo mcp disable time
-devo mcp remove time
-```
-
-CLI `devo mcp enable|disable` writes user `config.toml` for offline use. An
-already-running interactive session applies enable/disable live through the TUI
-`/mcps` path (`mcp/set_enabled` RPC).
-
-Verify configuration in the TUI with `/mcps` (interactive server list → detail →
-tools; Enable/Disable persists config and applies the manager + tool registry
-for the next turn). Clients can also call `mcp/list`, `mcp/tools`, and
-`mcp/set_enabled`. Use `devo mcp add|list|remove|enable|disable` for CLI
-management.

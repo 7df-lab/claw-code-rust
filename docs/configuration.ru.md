@@ -222,6 +222,56 @@ Devo подключается к серверам [Model Context Protocol](https
 определяет способ подключения. Поддерживаются транспорты `stdio`,
 `streamable_http` и устаревший `sse`.
 
+Настраивать MCP можно правкой `config.toml` или через CLI (`devo mcp …`).
+Для повседневного add / enable / disable / remove предпочитайте CLI; TOML
+удобнее, когда нужны детали транспорта, env или заголовки.
+
+### Встроенный `code_search` (по умолчанию выключен)
+
+Devo устанавливает опциональный бинарник семантического поиска рядом с `devo`.
+Запись конфигурации подставляется при отсутствии и остается **disabled**, пока
+вы ее не включите:
+
+```toml
+[[mcp.servers]]
+id = "code_search"
+display_name = "Code Search"
+enabled = false
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["devo-code-search-mcp"]
+```
+
+```bash
+devo mcp enable code_search
+# или в интерактивной сессии: /mcps → Code Search → Enable
+```
+
+После включения модель видит инструмент как `mcp__code_search__code_search`.
+
+### Управление через CLI
+
+Пользовательские MCP-серверы (`~/.devo/config.toml`) управляются через `devo mcp`:
+
+```bash
+devo mcp list
+devo mcp add time -- docker run -i --rm mcp/time
+devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+devo mcp enable time
+devo mcp disable time
+devo mcp remove time
+```
+
+`enable|disable` пишет пользовательский `config.toml`. В уже запущенной
+интерактивной сессии изменение применяется через TUI `/mcps` (`mcp/set_enabled`).
+
+### Примеры TOML
+
 Пример stdio:
 
 ```toml
@@ -295,9 +345,5 @@ url = "https://example.com/mcp/sse"
 `servers` - это массив. Поэтому список `[[mcp.servers]]` уровня проекта заменяет
 пользовательский список целиком, а не сливает по `id`.
 
-Проверить конфигурацию можно в TUI командой `/mcps` (интерактивный список →
-детали → инструменты; Enable/Disable сохраняет конфиг и применяет
-`mcp/set_enabled` для следующего хода). Пользовательский `~/.devo/config.toml`
-также можно менять через `devo mcp add|list|remove|enable|disable`
-(`--transport stdio|http|sse`). Клиенты могут вызывать RPC `mcp/list`,
-`mcp/tools` и `mcp/set_enabled`.
+Проверить конфигурацию можно в TUI командой `/mcps`. Клиенты могут вызывать RPC
+`mcp/list`, `mcp/tools` и `mcp/set_enabled`.

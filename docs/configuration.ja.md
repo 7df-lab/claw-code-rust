@@ -214,6 +214,55 @@ Devo は、ユーザーまたは workspace の `config.toml` の `[mcp]` で設�
 各サーバーは `servers` 配列の 1 エントリで、`transport` テーブルが接続方式を
 決めます。対応トランスポートは `stdio`、`streamable_http`、非推奨の `sse` です。
 
+`config.toml` の編集、または CLI（`devo mcp …`）で設定できます。日常の追加 /
+有効化 / 無効化 / 削除は CLI を優先し、transport・env・header の細かい調整は
+TOML を編集してください。
+
+### 同梱の `code_search`（既定では無効）
+
+Devo は `devo` の隣にオプションのセマンティック検索 MCP バイナリを同梱します。
+設定エントリは欠落時に自動注入され、明示的に有効化するまで **disabled** のままです:
+
+```toml
+[[mcp.servers]]
+id = "code_search"
+display_name = "Code Search"
+enabled = false
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["devo-code-search-mcp"]
+```
+
+```bash
+devo mcp enable code_search
+# または対話セッションで: /mcps → Code Search → Enable
+```
+
+有効化後のモデル向けツール名は `mcp__code_search__code_search` です。
+
+### CLI 管理
+
+ユーザー級 MCP サーバー（`~/.devo/config.toml`）は `devo mcp` で管理します:
+
+```bash
+devo mcp list
+devo mcp add time -- docker run -i --rm mcp/time
+devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+devo mcp enable time
+devo mcp disable time
+devo mcp remove time
+```
+
+CLI の `enable|disable` はユーザー `config.toml` に書き込みます。実行中の対話
+セッションは TUI `/mcps`（`mcp/set_enabled`）でライブ適用されます。
+
+### TOML の例
+
 stdio の例:
 
 ```toml
@@ -285,8 +334,5 @@ url = "https://example.com/mcp/sse"
 `servers` は配列です。したがって、workspace の `[[mcp.servers]]` リストは
 ユーザーレベルのリストを `id` 単位でマージせず置き換えます。
 
-TUI の `/mcps` で対話的に確認できます（一覧 → 詳細 → ツール。Enable/Disable は
-設定を保存し、`mcp/set_enabled` で次ターンからライブ適用します）。クライアントは
-`mcp/list` / `mcp/tools` / `mcp/set_enabled` RPC も利用できます。ユーザー設定
-(`~/.devo/config.toml`) は `devo mcp add|list|remove|enable|disable` でも管理できます
-（`--transport stdio|http|sse`）。
+TUI の `/mcps`（一覧 → 詳細 → ツール）で確認できます。クライアントは
+`mcp/list` / `mcp/tools` / `mcp/set_enabled` RPC も利用できます。

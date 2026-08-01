@@ -250,6 +250,8 @@ pub struct SessionState {
     pub total_cache_creation_tokens: usize, // TODO: from Anthropic Messages API, indicate how many tokens utlized to create cache.
     pub total_cache_read_tokens: usize,     // TODO: same with `total_input_cached_tokens`.
     pub prompt_token_estimate: usize,
+    /// Latest assembled-request category estimate (before provider scaling).
+    pub raw_context_breakdown: Option<crate::RawContextBreakdown>,
     /// Input tokens reported by the model for the most recent turn.
     pub last_input_tokens: usize,
     /// Total context tokens reported by the model for the most recent turn.
@@ -290,6 +292,7 @@ impl SessionState {
             total_cache_creation_tokens: 0,
             total_cache_read_tokens: 0,
             prompt_token_estimate: 0,
+            raw_context_breakdown: None,
             last_input_tokens: 0,
             last_turn_tokens: 0,
             last_turn_interrupted: false,
@@ -318,6 +321,7 @@ impl SessionState {
             total_cache_creation_tokens: self.total_cache_creation_tokens,
             total_cache_read_tokens: self.total_cache_read_tokens,
             prompt_token_estimate: self.prompt_token_estimate,
+            raw_context_breakdown: self.raw_context_breakdown,
             last_input_tokens: self.last_input_tokens,
             last_turn_tokens: self.last_turn_tokens,
             last_turn_interrupted: self.last_turn_interrupted,

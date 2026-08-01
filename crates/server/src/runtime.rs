@@ -137,6 +137,8 @@ mod agents;
 mod approval;
 mod command_exec;
 mod connection;
+mod context_occupancy;
+mod context_usage;
 mod control_requests;
 mod goal_accounting;
 mod goal_continuation;

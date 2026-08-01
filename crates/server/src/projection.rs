@@ -456,6 +456,7 @@ impl SessionProjector for DefaultProjection {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status,
             collaboration_mode: session
                 .latest_turn_context

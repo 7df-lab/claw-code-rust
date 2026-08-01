@@ -185,6 +185,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         store.append_turn(&record, turn).expect("append turn");
         let item = build_item_record(

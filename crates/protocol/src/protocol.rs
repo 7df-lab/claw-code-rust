@@ -108,6 +108,7 @@ pub enum ClientMethod {
     McpList,
     McpTools,
     McpSetEnabled,
+    ContextUsageRead,
     // New Native API methods (canonical types; not part of the legacy
     // `_devo/*` alias surface).
     SessionTurnsList,
@@ -180,6 +181,7 @@ impl ClientMethod {
             Self::McpList => "mcp/list",
             Self::McpTools => "mcp/tools",
             Self::McpSetEnabled => "mcp/set_enabled",
+            Self::ContextUsageRead => "context/usage/read",
             Self::SessionTurnsList => "session/turns/list",
             Self::SessionItemsList => "session/items/list",
             Self::SessionRollbackPreview => "session/rollback/preview",
@@ -250,6 +252,7 @@ impl ClientMethod {
             "mcp/list" => Self::McpList,
             "mcp/tools" => Self::McpTools,
             "mcp/set_enabled" => Self::McpSetEnabled,
+            "context/usage/read" => Self::ContextUsageRead,
             "session/turns/list" => Self::SessionTurnsList,
             "session/items/list" => Self::SessionItemsList,
             "session/rollback/preview" => Self::SessionRollbackPreview,

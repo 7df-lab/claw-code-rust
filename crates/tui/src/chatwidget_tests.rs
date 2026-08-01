@@ -2058,7 +2058,7 @@ fn rename_slash_command_without_title_shows_usage() {
 }
 
 #[test]
-fn delete_slash_command_emits_delete_session() {
+fn delete_slash_command_requires_confirmation_before_emitting() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
@@ -2069,10 +2069,145 @@ fn delete_slash_command_emits_delete_session() {
     widget.handle_paste("/delete".to_string());
     widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert_eq!(
-        app_event_rx.try_recv().expect("delete command event"),
-        AppEvent::Command(AppCommand::DeleteSession)
+    assert!(
+        app_event_rx.try_recv().is_err(),
+        "delete should wait for confirmation"
     );
+    let rows = rendered_rows(&widget, 80, 16).join("\n");
+    assert!(
+        rows.contains("Delete session?"),
+        "expected delete confirmation:\n{rows}"
+    );
+    assert!(
+        rows.contains("[Cancel]") && rows.contains("Delete"),
+        "expected horizontal Cancel/Delete chips:\n{rows}"
+    );
+
+    // Select Delete with ←/→ then confirm.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app_event_rx.try_recv().expect("confirmed delete command"),
+        AppEvent::Command(AppCommand::DeleteSession { session_id: None })
+    );
+}
+
+#[test]
+fn delete_slash_command_esc_cancels_without_deleting() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_paste("/delete".to_string());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        rendered_rows(&widget, 80, 16)
+            .join("\n")
+            .contains("Delete session?"),
+        "expected delete confirmation open"
+    );
+
+    // Esc must dismiss even if Delete chip is selected.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    let rows = rendered_rows(&widget, 80, 16).join("\n");
+    assert!(
+        !rows.contains("Delete session?"),
+        "esc should dismiss delete confirmation:\n{rows}"
+    );
+    let mut saw_delete = false;
+    while let Ok(event) = app_event_rx.try_recv() {
+        if matches!(event, AppEvent::Command(AppCommand::DeleteSession { .. })) {
+            saw_delete = true;
+        }
+    }
+    assert!(!saw_delete, "esc must not emit delete");
+}
+
+#[test]
+fn resume_browser_delete_requires_confirmation() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    let target = SessionId::new();
+    let other = SessionId::new();
+    widget.open_resume_browser_for_test(vec![
+        crate::events::SessionListEntry {
+            session_id: target,
+            title: "Keep me".to_string(),
+            updated_at: "2026-05-18 10:00".to_string(),
+            is_active: false,
+        },
+        crate::events::SessionListEntry {
+            session_id: other,
+            title: "Other".to_string(),
+            updated_at: "2026-05-18 11:00".to_string(),
+            is_active: true,
+        },
+    ]);
+    // Active session is selected by default; move to the non-active row.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(widget.resume_browser_selection_for_test(), Some(0));
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert_eq!(
+        widget.resume_browser_pending_delete_for_test(),
+        Some(target)
+    );
+    assert!(app_event_rx.try_recv().is_err());
+
+    let rows = rendered_rows(&widget, 100, 16).join("\n");
+    assert!(
+        rows.contains("Delete \"Keep me\"?"),
+        "expected pending delete footer:\n{rows}"
+    );
+    assert!(
+        rows.contains("[Cancel]") && rows.contains("Delete"),
+        "expected horizontal Cancel/Delete chips:\n{rows}"
+    );
+    assert!(
+        rows.lines()
+            .any(|line| line.contains("[Cancel]") && line.starts_with("  [")),
+        "expected left-padded chip row:\n{rows}"
+    );
+    assert!(
+        rows.lines()
+            .any(|line| line.contains("Resume Session") && line.starts_with("  Resume")),
+        "expected left-padded Resume Session title:\n{rows}"
+    );
+    assert!(
+        !rows.contains("Devo Sessions"),
+        "block title Devo Sessions should be removed:\n{rows}"
+    );
+    assert!(rows.contains("choose"), "expected choose hint:\n{rows}");
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(widget.resume_browser_pending_delete_for_test(), None);
+    assert!(widget.is_resume_browser_open());
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    // Default Cancel: Enter dismisses confirm without deleting.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(widget.resume_browser_pending_delete_for_test(), None);
+    assert!(app_event_rx.try_recv().is_err());
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app_event_rx.try_recv().expect("delete command"),
+        AppEvent::Command(AppCommand::DeleteSession {
+            session_id: Some(target)
+        })
+    );
+    assert!(widget.is_resume_browser_open());
 }
 
 #[test]
@@ -5346,19 +5481,19 @@ fn paired_failed_turn_events_finalize_ui_once_in_order() {
     );
     let authoritative_summary = widget.status_summary_text();
     assert!(
-        authoritative_summary.contains("↑20"),
-        "summary should use TurnFinished input total: {authoritative_summary}"
+        !authoritative_summary.contains("↑"),
+        "status summary should omit session input totals: {authoritative_summary}"
     );
     assert!(
-        authoritative_summary.contains("cached 2 10%"),
-        "summary should use TurnFinished cache total: {authoritative_summary}"
+        !authoritative_summary.contains("cached"),
+        "status summary should omit cache totals: {authoritative_summary}"
     );
     assert!(
-        authoritative_summary.contains("↓4"),
-        "summary should use TurnFinished output total: {authoritative_summary}"
+        !authoritative_summary.contains("↓"),
+        "status summary should omit session output totals: {authoritative_summary}"
     );
     assert!(
-        authoritative_summary.contains("14/200k"),
+        authoritative_summary.contains("14/190.0k"),
         "summary should use TurnFinished latest-query total: {authoritative_summary}"
     );
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -6204,10 +6339,10 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
     });
 
     let idle_summary = widget.status_summary_text();
-    assert!(idle_summary.contains("↑12"));
-    assert!(idle_summary.contains("cached 4 33%"));
-    assert!(idle_summary.contains("↓18"));
-    assert!(idle_summary.contains("42/200k"));
+    assert!(!idle_summary.contains("↑"));
+    assert!(!idle_summary.contains("cached"));
+    assert!(!idle_summary.contains("↓"));
+    assert!(idle_summary.contains("42/190.0k"));
 
     widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
         model: "test-model".to_string(),
@@ -6227,9 +6362,9 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
     });
 
     let busy_summary = widget.status_summary_text();
-    assert!(busy_summary.contains("↑7"));
-    assert!(busy_summary.contains("cached 6 86%"));
-    assert!(busy_summary.contains("9/200k"));
+    assert!(!busy_summary.contains("↑"));
+    assert!(!busy_summary.contains("cached"));
+    assert!(busy_summary.contains("9/190.0k"));
 
     widget.handle_worker_event(crate::events::WorkerEvent::TurnFinished {
         stop_reason: "stop".to_string(),
@@ -6244,9 +6379,9 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
     });
 
     let finished_summary = widget.status_summary_text();
-    assert!(finished_summary.contains("↑19"));
-    assert!(finished_summary.contains("cached 6 32%"));
-    assert!(finished_summary.contains("9/200k"));
+    assert!(!finished_summary.contains("↑"));
+    assert!(!finished_summary.contains("cached"));
+    assert!(finished_summary.contains("9/190.0k"));
 }
 
 #[test]
@@ -6292,9 +6427,9 @@ fn session_compacted_updates_context_bar_to_compacted_prompt_estimate() {
     });
 
     let summary = widget.status_summary_text();
-    assert!(summary.contains("↑10k"));
-    assert!(summary.contains("1k/200k"));
-    assert!(!summary.contains("9k/200k"));
+    assert!(!summary.contains("↑"));
+    assert!(summary.contains("1.2k/190.0k"));
+    assert!(!summary.contains("9.0k/190.0k"));
 }
 
 #[test]
@@ -6332,9 +6467,9 @@ fn usage_updated_keeps_context_bar_on_last_query_not_cumulative_totals() {
     });
 
     let idle_summary = widget.status_summary_text();
-    assert!(idle_summary.contains("↑500"));
-    assert!(idle_summary.contains("42/200k"));
-    assert!(!idle_summary.contains("500/200k"));
+    assert!(!idle_summary.contains("↑"));
+    assert!(idle_summary.contains("42/190.0k"));
+    assert!(!idle_summary.contains("500/190.0k"));
 
     widget.handle_worker_event(crate::events::WorkerEvent::UsageUpdated {
         total_input_tokens: 550,
@@ -6346,9 +6481,9 @@ fn usage_updated_keeps_context_bar_on_last_query_not_cumulative_totals() {
     });
 
     let busy_summary = widget.status_summary_text();
-    assert!(busy_summary.contains("↑550"));
-    assert!(busy_summary.contains("48/200k"));
-    assert!(!busy_summary.contains("550/200k"));
+    assert!(!busy_summary.contains("↑"));
+    assert!(busy_summary.contains("48/190.0k"));
+    assert!(!busy_summary.contains("550/190.0k"));
 }
 
 #[test]
@@ -7507,10 +7642,10 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
     );
 
     let summary = widget.status_summary_text();
-    assert!(summary.contains("↑0"));
-    assert!(summary.contains("cached 0 0%"));
-    assert!(summary.contains("↓0"));
-    assert!(summary.contains("0/200k"));
+    assert!(!summary.contains("↑"));
+    assert!(!summary.contains("cached"));
+    assert!(!summary.contains("↓"));
+    assert!(summary.contains("0/190.0k"));
 
     let transcript_lines = scrollback_plain_lines(
         &widget
@@ -7553,7 +7688,7 @@ fn new_session_prepared_does_not_duplicate_startup_header_without_history() {
 
     let rows = rendered_rows(&widget, 80, 16);
     assert_eq!(rows.iter().filter(|row| row.contains("Devo")).count(), 1);
-    assert!(widget.status_summary_text().contains("cached 0 0%"));
+    assert!(!widget.status_summary_text().contains("cached"));
 }
 
 #[test]

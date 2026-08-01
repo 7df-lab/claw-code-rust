@@ -875,6 +875,7 @@ async fn resume_normalizes_historical_default_reasoning_effort() -> Result<()> {
             input_token_estimate: None,
             usage: None,
             latest_query_usage: None,
+            context_occupancy: None,
             stop_reason: None,
             failure_reason: None,
             error: None,
@@ -1019,6 +1020,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         input_token_estimate: None,
         usage: None,
         latest_query_usage: None,
+        context_occupancy: None,
         stop_reason: None,
         failure_reason: None,
         error: None,
@@ -2831,6 +2833,7 @@ fn sample_indexed_session(
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: devo_protocol::SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
     }

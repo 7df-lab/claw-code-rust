@@ -960,6 +960,7 @@ fn handle_worker_event(
         | WorkerEvent::AcpCurrentModeUpdated { .. }
         | WorkerEvent::AcpConfigOptionsUpdated { .. }
         | WorkerEvent::AcpUsageUpdated { .. }
+        | WorkerEvent::ContextUsageUpdated { .. }
         | WorkerEvent::ReferenceSearchUpdated { .. }
         | WorkerEvent::NewSessionPrepared { .. }
         | WorkerEvent::SessionRenamed { .. }
@@ -1220,8 +1221,8 @@ fn handle_app_command(
         AppCommand::RenameSession { title } => {
             worker.rename_session(title.clone())?;
         }
-        AppCommand::DeleteSession => {
-            worker.delete_session()?;
+        AppCommand::DeleteSession { session_id } => {
+            worker.delete_session(*session_id)?;
         }
         AppCommand::ShowGoal => {
             worker.show_goal()?;

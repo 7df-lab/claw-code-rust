@@ -156,7 +156,7 @@ fn model_selection_footer_stays_visible_in_short_viewport() {
         "expected selected model in:\n{rows}"
     );
     assert!(
-        rows.contains('…'),
+        rows.contains("↓ more") || rows.contains("↑ more"),
         "expected scroll overflow marker in:\n{rows}"
     );
     assert!(

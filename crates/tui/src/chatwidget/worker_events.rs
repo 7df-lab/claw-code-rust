@@ -918,6 +918,13 @@ impl ChatWidget {
                 self.last_query_total_tokens = last_query_total_tokens;
                 self.last_query_input_tokens = last_query_input_tokens;
                 self.prompt_token_estimate = last_query_input_tokens;
+                self.sync_bottom_pane_summary();
+                self.frame_requester.schedule_frame();
+            }
+            WorkerEvent::ContextUsageUpdated { occupancy } => {
+                self.last_query_total_tokens = occupancy.total_tokens as usize;
+                self.last_context_occupancy = Some(occupancy);
+                self.sync_bottom_pane_summary();
                 self.frame_requester.schedule_frame();
             }
             WorkerEvent::TurnFinished {
@@ -1290,6 +1297,7 @@ impl ChatWidget {
                 self.last_query_total_tokens = 0;
                 self.last_query_input_tokens = 0;
                 self.prompt_token_estimate = 0;
+                self.last_context_occupancy = None;
                 if should_append_header {
                     self.push_session_header(/*is_first_run*/ false, None);
                 } else {
@@ -1348,6 +1356,7 @@ impl ChatWidget {
                 self.last_query_total_tokens = last_query_total_tokens;
                 self.last_query_input_tokens = last_query_input_tokens;
                 self.prompt_token_estimate = prompt_token_estimate;
+                self.last_context_occupancy = None;
                 if !self.rebuild_restored_session_history_from_rich_items(
                     &rich_history_items,
                     loaded_item_count,
@@ -1425,6 +1434,7 @@ impl ChatWidget {
                 self.set_status_message("Session renamed");
             }
             WorkerEvent::SessionDeleted { session_id } => {
+                self.remove_session_from_resume_browser(&session_id);
                 self.add_to_history(history_cell::new_info_event(
                     format!("deleted session {session_id}"),
                     None,

@@ -73,19 +73,39 @@ pub struct SessionMetadata {
     /// the latest completed-query usage rather than rolling session totals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_query_usage: Option<TurnUsage>,
-    /// Legacy/derived projection of [`Self::last_query_usage`] display total.
+    /// Compatibility scalar for current context-window occupancy.
     ///
-    /// Prefer `last_query_usage` when available. When both are set, this should
-    /// equal `last_query_usage.display_total_tokens()`. Provider-reported
-    /// `total_tokens` is used when available; otherwise this falls back to
-    /// `input_tokens + output_tokens`.
+    /// Prefer [`Self::last_query_usage`] when available for provider query
+    /// accounting. Prefer [`Self::last_context_occupancy`] when available for
+    /// window occupancy (including category breakdown).
     ///
-    /// This value is refreshed on every completed model invoke so the UI can
-    /// show the latest completed-query usage after each request, and it remains
-    /// the persisted value used when a session is resumed. While a turn is in
-    /// flight, the UI may temporarily fall back to the live prompt estimate
-    /// instead.
+    /// When `last_context_occupancy` is set, this should equal
+    /// `last_context_occupancy.total_tokens` (a derived projection, not a
+    /// second independent counter). When occupancy is absent (for example
+    /// before the first completed query, or older resume payloads), this may
+    /// still carry a legacy scalar from `last_query_usage.display_total_tokens()`
+    /// or remain `0`.
+    ///
+    /// Kept for TUI status, resume, and existing `SessionMetadata` consumers
+    /// until they migrate to reading `last_context_occupancy.total_tokens`.
+    /// While a turn is in flight, the UI may temporarily fall back to the live
+    /// prompt estimate instead.
     pub last_query_total_tokens: usize,
+    /// Source of truth for context-window occupancy and category shares.
+    ///
+    /// Includes `total_tokens`, effective `context_window_tokens`, and
+    /// category breakdown (`base`, `skills`, `toolsBuiltin`, `toolsMcp`,
+    /// `conversation`). New clients should use this for occupancy reads
+    /// (`context/usage/read`, `context/usageUpdated`) rather than inventing a
+    /// second total.
+    ///
+    /// Refreshed on completed turn queries (categories scaled so they sum to
+    /// the latest provider query display total) and immediately after
+    /// successful compaction (conversation bucket replaced; other buckets
+    /// reused). When present, [`Self::last_query_total_tokens`] should mirror
+    /// `total_tokens` as a compatibility projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_context_occupancy: Option<crate::canonical::item::ContextOccupancy>,
     pub status: SessionRuntimeStatus,
     /// Collaboration mode restored from the latest completed turn context.
     ///
@@ -426,6 +446,7 @@ mod tests {
                 total_tokens: Some(21),
             }),
             last_query_total_tokens: 21,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: CollaborationMode::Plan,
         };

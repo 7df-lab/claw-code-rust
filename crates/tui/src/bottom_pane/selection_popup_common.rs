@@ -81,6 +81,11 @@ pub(crate) const fn menu_surface_padding_height() -> u16 {
 /// This keeps the surface treatment consistent across selection-style overlays
 /// (for example `/model`, approvals, and request-user-input). Callers should
 /// render all inner content in the returned rect, not the original area.
+///
+/// Background rule (see [`super::bottom_pane_view::BottomPaneView::replaces_composer`]):
+/// views that **replace** the composer must paint this surface. Stacked overlays
+/// may also use it when they need a distinct panel chrome (for example `/context`
+/// and selection-style confirmations).
 pub(crate) fn render_menu_surface(area: Rect, buf: &mut Buffer) -> Rect {
     if area.is_empty() {
         return area;

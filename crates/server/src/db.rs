@@ -9,6 +9,7 @@ use chrono::{TimeZone, Utc};
 use rusqlite::{Connection, params, types::Type};
 use serde_json;
 
+use devo_protocol::canonical::item::ContextOccupancy;
 use devo_protocol::{
     PendingInputId, PendingInputItem, PendingInputKind, SessionId, SessionMetadata,
     SessionRuntimeStatus, SessionTitleState,
@@ -59,6 +60,8 @@ pub struct SessionStats {
     pub last_input_tokens: usize,
     pub turn_count: usize,
     pub prompt_token_estimate: usize,
+    /// Latest context-window occupancy breakdown, when known.
+    pub last_context_occupancy: Option<ContextOccupancy>,
 }
 
 /// One derived event row before per-stream sequencing (08 §5).
@@ -140,7 +143,8 @@ impl Database {
                 total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 last_input_tokens INTEGER NOT NULL DEFAULT 0,
                 turn_count INTEGER NOT NULL DEFAULT 0,
-                prompt_token_estimate INTEGER NOT NULL DEFAULT 0
+                prompt_token_estimate INTEGER NOT NULL DEFAULT 0,
+                last_context_occupancy TEXT
             );
 
             CREATE TABLE IF NOT EXISTS pending_messages (
@@ -260,6 +264,13 @@ impl Database {
                 [],
             )
             .context("failed to backfill total_tokens column")?;
+        }
+        if !table_has_column(&conn, "session_stats", "last_context_occupancy")? {
+            conn.execute(
+                "ALTER TABLE session_stats ADD COLUMN last_context_occupancy TEXT",
+                [],
+            )
+            .context("failed to add last_context_occupancy column")?;
         }
         if !sessions_has_column(&conn, "rollout_path")? {
             conn.execute("ALTER TABLE sessions ADD COLUMN rollout_path TEXT", [])
@@ -729,12 +740,18 @@ impl Database {
 
     /// Inserts or updates session token statistics.
     pub fn update_stats(&self, id: &SessionId, stats: &SessionStats) -> Result<()> {
+        let occupancy_json = stats
+            .last_context_occupancy
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("failed to serialize last_context_occupancy")?;
         let conn = self.conn.lock().expect("database mutex poisoned");
         conn.execute(
             "INSERT INTO session_stats (session_id, total_input_tokens, total_output_tokens,
                 total_tokens, total_cache_creation_tokens, total_cache_read_tokens, last_input_tokens,
-                turn_count, prompt_token_estimate)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                turn_count, prompt_token_estimate, last_context_occupancy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(session_id) DO UPDATE SET
                 total_input_tokens = excluded.total_input_tokens,
                 total_output_tokens = excluded.total_output_tokens,
@@ -743,7 +760,8 @@ impl Database {
                 total_cache_read_tokens = excluded.total_cache_read_tokens,
                 last_input_tokens = excluded.last_input_tokens,
                 turn_count = excluded.turn_count,
-                prompt_token_estimate = excluded.prompt_token_estimate",
+                prompt_token_estimate = excluded.prompt_token_estimate,
+                last_context_occupancy = excluded.last_context_occupancy",
             params![
                 id.to_string(),
                 stats.total_input_tokens as i64,
@@ -754,6 +772,7 @@ impl Database {
                 stats.last_input_tokens as i64,
                 stats.turn_count as i64,
                 stats.prompt_token_estimate as i64,
+                occupancy_json,
             ],
         )
         .context("failed to update session stats")?;
@@ -765,10 +784,15 @@ impl Database {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let result = conn.query_row(
             "SELECT total_input_tokens, total_output_tokens, total_tokens, total_cache_creation_tokens,
-                    total_cache_read_tokens, last_input_tokens, turn_count, prompt_token_estimate
+                    total_cache_read_tokens, last_input_tokens, turn_count, prompt_token_estimate,
+                    last_context_occupancy
              FROM session_stats WHERE session_id = ?1",
             params![id.to_string()],
             |row| {
+                let occupancy_json: Option<String> = row.get(8)?;
+                let last_context_occupancy = occupancy_json.and_then(|json| {
+                    serde_json::from_str::<ContextOccupancy>(&json).ok()
+                });
                 Ok(SessionStats {
                     total_input_tokens: row.get::<_, i64>(0)? as usize,
                     total_output_tokens: row.get::<_, i64>(1)? as usize,
@@ -778,6 +802,7 @@ impl Database {
                     last_input_tokens: row.get::<_, i64>(5)? as usize,
                     turn_count: row.get::<_, i64>(6)? as usize,
                     prompt_token_estimate: row.get::<_, i64>(7)? as usize,
+                    last_context_occupancy,
                 })
             },
         );
@@ -1130,6 +1155,7 @@ fn parse_session_metadata_row(
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
     })
@@ -1415,6 +1441,7 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
         }
@@ -1514,6 +1541,7 @@ mod tests {
             last_input_tokens: 200,
             turn_count: 5,
             prompt_token_estimate: 800,
+            last_context_occupancy: None,
         };
         db.update_stats(&meta.session_id, &stats).expect("update");
 
@@ -1523,6 +1551,36 @@ mod tests {
         assert_eq!(retrieved.total_input_tokens, 1000);
         assert_eq!(retrieved.total_output_tokens, 500);
         assert_eq!(retrieved.turn_count, 5);
+    }
+
+    #[test]
+    fn update_and_get_stats_roundtrips_context_occupancy() {
+        let (db, _dir) = test_db();
+        let meta = sample_session("session-occupancy");
+        db.upsert_session(&meta, None).expect("upsert");
+
+        let occupancy = ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 5_000,
+            /*tools_builtin*/ 20_000, /*tools_mcp*/ 15_000, /*conversation*/ 50_000,
+        );
+        let stats = SessionStats {
+            total_input_tokens: 1000,
+            total_output_tokens: 500,
+            total_tokens: 1500,
+            total_cache_creation_tokens: 0,
+            total_cache_read_tokens: 200,
+            last_input_tokens: 1000,
+            turn_count: 2,
+            prompt_token_estimate: 100_000,
+            last_context_occupancy: Some(occupancy.clone()),
+        };
+        db.update_stats(&meta.session_id, &stats).expect("update");
+
+        let retrieved = db
+            .get_stats(&meta.session_id)
+            .expect("get")
+            .expect("stats row");
+        assert_eq!(retrieved.last_context_occupancy, Some(occupancy));
     }
 
     #[test]

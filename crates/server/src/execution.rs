@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -24,6 +25,7 @@ use devo_core::SkillError;
 #[cfg(test)]
 use devo_core::TurnConfig;
 use devo_core::TurnId;
+use devo_core::TurnRecord;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::ApprovalDecisionValue;
 use devo_protocol::PendingInputItem;
@@ -328,6 +330,8 @@ pub(crate) struct RuntimeSession {
     pub(crate) persisted_turn_items: Vec<PersistedTurnItem>,
     /// Latest compaction snapshot used to rebuild the model-facing prompt view.
     pub(crate) latest_compaction_snapshot: Option<devo_core::CompactionSnapshotLine>,
+    /// Completed turn records keyed by turn id (for fork/rollback occupancy cuts).
+    pub(crate) turn_records_by_id: HashMap<TurnId, TurnRecord>,
     /// Shared handle to the pending-turn queue owned by `core_session`.
     pub(crate) pending_turn_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
     /// Shared handle to the active-turn steer queue owned by `core_session`.

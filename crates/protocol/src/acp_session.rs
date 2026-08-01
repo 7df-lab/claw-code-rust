@@ -197,6 +197,7 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
         };

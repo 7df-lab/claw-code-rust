@@ -66,6 +66,11 @@ impl ServerRuntime {
                     core.last_turn_tokens = core.last_turn_tokens.max(stats.last_input_tokens);
                     core.prompt_token_estimate = stats.prompt_token_estimate;
                 }
+                if let Some(occupancy) = stats.last_context_occupancy {
+                    runtime_session.summary.last_query_total_tokens =
+                        occupancy.total_tokens as usize;
+                    runtime_session.summary.last_context_occupancy = Some(occupancy);
+                }
                 tracing::debug!(
                     session_id = %session_id,
                     "restored token stats from database"
@@ -83,6 +88,7 @@ impl ServerRuntime {
                     last_input_tokens: 0,
                     turn_count: 0,
                     prompt_token_estimate: runtime_session.summary.prompt_token_estimate,
+                    last_context_occupancy: runtime_session.summary.last_context_occupancy.clone(),
                 };
                 if let Err(err) = self.deps.db.update_stats(&session_id, &stats) {
                     tracing::warn!(

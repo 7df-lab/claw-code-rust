@@ -9,6 +9,9 @@ use ratatui::text::Line;
 use crate::app_command::AppCommand;
 use crate::app_command::GoalObjectiveMode;
 use crate::app_event::AppEvent;
+use crate::app_event_sender::AppEventSender;
+use crate::bottom_pane::DeleteSessionConfirmView;
+use crate::bottom_pane::SessionTokenTotals;
 use crate::get_git_diff::get_git_diff;
 use crate::history_cell;
 use crate::history_cell::PlainHistoryCell;
@@ -39,6 +42,7 @@ impl ChatWidget {
             | SlashCommand::Goal
             | SlashCommand::Exit
             | SlashCommand::Status
+            | SlashCommand::Context
             | SlashCommand::Clear
             | SlashCommand::ShowReasoning
             | SlashCommand::Rename
@@ -115,6 +119,17 @@ impl ChatWidget {
                 self.add_to_history(PlainHistoryCell::new(lines));
                 self.set_status_message("Session status shown");
             }
+            SlashCommand::Context => {
+                self.bottom_pane.open_context_occupancy(
+                    self.last_context_occupancy.clone(),
+                    SessionTokenTotals {
+                        input: self.total_input_tokens,
+                        output: self.total_output_tokens,
+                        cache_read: self.total_cache_read_tokens,
+                    },
+                );
+                self.set_status_message("Context occupancy shown");
+            }
             SlashCommand::Permissions => {
                 self.open_permissions_picker();
             }
@@ -171,9 +186,7 @@ impl ChatWidget {
                 self.set_status_message("Renaming session");
             }
             SlashCommand::Delete => {
-                self.app_event_tx
-                    .send(AppEvent::Command(AppCommand::delete_session()));
-                self.set_status_message("Deleting session");
+                self.show_delete_session_confirmation();
             }
             SlashCommand::Resume => {
                 self.resume_browser = None;
@@ -285,5 +298,22 @@ impl ChatWidget {
                 GoalObjectiveMode::ConfirmIfExists,
             )));
         self.set_status_message("Setting goal");
+    }
+
+    pub(super) fn show_delete_session_confirmation(&mut self) {
+        self.bottom_pane
+            .open_popup_view(Box::new(DeleteSessionConfirmView::new(
+                self.app_event_tx.clone(),
+                self.active_accent_color(),
+                Box::new(|tx: &AppEventSender| {
+                    tx.send(AppEvent::Command(AppCommand::delete_session()));
+                }),
+                Box::new(|tx: &AppEventSender| {
+                    tx.send(AppEvent::StatusMessageChanged {
+                        message: "Session unchanged".to_string(),
+                    });
+                }),
+            )));
+        self.set_status_message("Confirm session delete");
     }
 }

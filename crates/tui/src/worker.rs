@@ -322,8 +322,12 @@ enum OperationCommand {
     SwitchSession(SessionId),
     /// Rename the current active session.
     RenameSession(String),
-    /// Delete the current active session and prepare a fresh local session.
-    DeleteSession,
+    /// Delete a session. `None` deletes the current active session and starts a
+    /// fresh local session; `Some(id)` deletes that session id (and only resets
+    /// local state when it is the active one).
+    DeleteSession {
+        session_id: Option<SessionId>,
+    },
     /// Roll back the active session using the server-selected user-turn cut mode.
     RollbackUserTurn {
         user_turn_index: u32,
@@ -682,10 +686,10 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    /// Deletes the current active session and prepares a fresh local session.
-    pub(crate) fn delete_session(&self) -> Result<()> {
+    /// Deletes a session. When `session_id` is `None`, deletes the active session.
+    pub(crate) fn delete_session(&self, session_id: Option<SessionId>) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::DeleteSession)
+            .send(OperationCommand::DeleteSession { session_id })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -927,6 +931,9 @@ async fn run_worker_inner(
                     pending_texts: resumed.pending_texts,
                     collaboration_mode: resumed.session.collaboration_mode,
                 });
+                if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
+                    let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                }
                 model = resumed.session.model.clone().unwrap_or(model);
                 model_binding_id = resumed.session.model_binding_id.clone();
                 reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
@@ -1752,6 +1759,9 @@ async fn run_worker_inner(
                                             pending_texts: result.pending_texts,
                                             collaboration_mode: result.session.collaboration_mode,
         });
+                                        if let Some(occupancy) = result.session.last_context_occupancy.clone() {
+                                            let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                                        }
                                         model = result
                                             .session
                                             .model
@@ -1831,8 +1841,11 @@ async fn run_worker_inner(
                                     }
                                 }
                             }
-                            Some(OperationCommand::DeleteSession) => {
-                                let Some(active_session_id) = session_id else {
+                            Some(OperationCommand::DeleteSession {
+                                session_id: requested_session_id,
+                            }) => {
+                                let target_session_id = requested_session_id.or(session_id);
+                                let Some(target_session_id) = target_session_id else {
                                     let _ = event_tx.send(WorkerEvent::TurnFailed {
                                         message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
                                         hint: None,
@@ -1846,57 +1859,62 @@ async fn run_worker_inner(
                                     });
                                     continue;
                                 };
-                                match pause_active_goal_before_session_leave(
-                                    &mut client,
-                                    active_session_id,
-                                    active_turn_id,
-                                )
-                                .await
-                                {
-                                    Ok(()) => {}
-                                    Err(error) => {
-                                        emit_goal_leave_failure(event_tx, error);
-                                        continue;
+                                let deleting_active = session_id == Some(target_session_id);
+                                if deleting_active {
+                                    match pause_active_goal_before_session_leave(
+                                        &mut client,
+                                        target_session_id,
+                                        active_turn_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {}
+                                        Err(error) => {
+                                            emit_goal_leave_failure(event_tx, error);
+                                            continue;
+                                        }
                                     }
                                 }
                                 match client
                                     .session_delete(AcpDeleteSessionParams {
-                                        session_id: active_session_id,
+                                        session_id: target_session_id,
                                         meta: None,
                                     })
                                     .await
                                 {
                                     Ok(_) => {
                                         let _ = event_tx.send(WorkerEvent::SessionDeleted {
-                                            session_id: active_session_id.to_string(),
+                                            session_id: target_session_id.to_string(),
                                         });
-                                        active_turn_id = None;
-                                        session_id = None;
-                                        active_reference_search_id = None;
-                                        session_cwd = config.cwd.clone();
-                                        input_history_cursor = None;
-                                        turn_count = 0;
-                                        total_input_tokens = 0;
-                                        total_output_tokens = 0;
-                                        total_tokens = 0;
-                                        total_cache_read_tokens = 0;
-                                        last_query_total_tokens = 0;
-                                        last_query_input_tokens = 0;
-                                        has_authoritative_usage_totals = true;
-                                        let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
-                                            cwd: session_cwd.clone(),
-                                            model: model.clone(),
-                                            model_binding_id: model_binding_id.clone(),
-                                            reasoning_effort_selection: reasoning_effort_selection.clone(),
-                                            reasoning_effort: None,
-                                            active_agent_label: None,
-                                            last_query_total_tokens,
-                                            last_query_input_tokens,
-                                            total_cache_read_tokens,
-                                        });
-                                        let _ =
-                                            emit_skills_list(&mut client, &session_cwd, event_tx, false)
-                                                .await;
+                                        if deleting_active {
+                                            active_turn_id = None;
+                                            session_id = None;
+                                            active_reference_search_id = None;
+                                            session_cwd = config.cwd.clone();
+                                            input_history_cursor = None;
+                                            turn_count = 0;
+                                            total_input_tokens = 0;
+                                            total_output_tokens = 0;
+                                            total_tokens = 0;
+                                            total_cache_read_tokens = 0;
+                                            last_query_total_tokens = 0;
+                                            last_query_input_tokens = 0;
+                                            has_authoritative_usage_totals = true;
+                                            let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
+                                                cwd: session_cwd.clone(),
+                                                model: model.clone(),
+                                                model_binding_id: model_binding_id.clone(),
+                                                reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                                reasoning_effort: None,
+                                                active_agent_label: None,
+                                                last_query_total_tokens,
+                                                last_query_input_tokens,
+                                                total_cache_read_tokens,
+                                            });
+                                            let _ =
+                                                emit_skills_list(&mut client, &session_cwd, event_tx, false)
+                                                    .await;
+                                        }
                                     }
                                     Err(error) => {
                                         let _ = event_tx.send(WorkerEvent::TurnFailed {
@@ -1979,6 +1997,9 @@ async fn run_worker_inner(
                                             pending_texts: result.pending_texts,
                                             collaboration_mode: result.session.collaboration_mode,
         });
+                                        if let Some(occupancy) = result.session.last_context_occupancy.clone() {
+                                            let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                                        }
                                         model = result.session.model.clone().unwrap_or(model);
                                         model_binding_id = result.session.model_binding_id.clone();
                                         reasoning_effort_selection = result.session.reasoning_effort_selection.clone();
@@ -2083,6 +2104,9 @@ async fn run_worker_inner(
                                                     pending_texts: resumed.pending_texts,
                                                     collaboration_mode: resumed.session.collaboration_mode,
         });
+                                                if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
+                                                    let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                                                }
                                                 model = resumed.session.model.clone().unwrap_or(model);
                                                 model_binding_id = resumed.session.model_binding_id.clone();
                                                 reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
@@ -2722,6 +2746,17 @@ async fn run_worker_inner(
                                             });
                                         }
                                     }
+                                    "context/usageUpdated" => {
+                                        if let ServerEvent::ContextUsageUpdated(payload) = event {
+                                            if session_id.is_some_and(|id| id == payload.session_id) {
+                                                last_query_total_tokens =
+                                                    payload.occupancy.total_tokens as usize;
+                                                let _ = event_tx.send(WorkerEvent::ContextUsageUpdated {
+                                                    occupancy: payload.occupancy,
+                                                });
+                                            }
+                                        }
+                                    }
                                     "turn/failed" => {
                                         if let ServerEvent::TurnFailed(TurnFailedPayload { turn, error, .. }) = event {
                                             active_turn_id = None;
@@ -2886,16 +2921,20 @@ async fn run_worker_inner(
                                             total_tokens = payload.session.total_tokens;
                                             let (compacted_last_query_total, compacted_last_query_input) =
                                                 last_query_tokens_from_resume(&payload.session);
-                                            last_query_total_tokens = if payload.session.prompt_token_estimate > 0 {
-                                                payload.session.prompt_token_estimate
-                                            } else {
-                                                compacted_last_query_total
-                                            };
-                                            last_query_input_tokens = if payload.session.prompt_token_estimate > 0 {
-                                                payload.session.prompt_token_estimate
-                                            } else {
-                                                compacted_last_query_input
-                                            };
+                                            last_query_total_tokens = payload
+                                                .session
+                                                .last_context_occupancy
+                                                .as_ref()
+                                                .map(|occupancy| occupancy.total_tokens as usize)
+                                                .filter(|tokens| *tokens > 0)
+                                                .unwrap_or(compacted_last_query_total);
+                                            last_query_input_tokens = payload
+                                                .session
+                                                .last_context_occupancy
+                                                .as_ref()
+                                                .map(|occupancy| occupancy.total_tokens as usize)
+                                                .filter(|tokens| *tokens > 0)
+                                                .unwrap_or(compacted_last_query_input);
                                             let _ = event_tx.send(WorkerEvent::SessionCompacted {
                                                 total_input_tokens,
                                                 total_output_tokens,
@@ -6166,6 +6205,7 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
         }
@@ -6622,6 +6662,7 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
         };
@@ -6667,6 +6708,7 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
         };

@@ -1649,11 +1649,12 @@ impl OnboardingWidget {
         }
     }
 
-    fn scroll_overflow_line() -> Line<'static> {
+    fn scroll_overflow_line(more_above: bool) -> Line<'static> {
         // Align with option labels: LIST_LEFT_PAD + marker + following space.
+        let label = if more_above { "↑ more" } else { "↓ more" };
         Line::from(vec![
             Span::raw(" ".repeat(LIST_LEFT_PAD + 2)),
-            Span::styled("…".to_string(), Style::default().dim()),
+            Span::styled(label.to_string(), Style::default().dim()),
         ])
     }
 
@@ -2103,7 +2104,7 @@ impl OnboardingWidget {
         let mut anchor = None;
 
         if has_more_above {
-            lines.push(Self::scroll_overflow_line());
+            lines.push(Self::scroll_overflow_line(/*more_above*/ true));
         }
         for (vis_idx, &actual_idx) in filtered_indices
             .iter()
@@ -2130,7 +2131,7 @@ impl OnboardingWidget {
             }
         }
         if has_more_below {
-            lines.push(Self::scroll_overflow_line());
+            lines.push(Self::scroll_overflow_line(/*more_above*/ false));
         }
 
         let mut footer_lines = Vec::new();

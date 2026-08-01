@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -6,6 +7,7 @@ use devo_core::SessionConfig;
 use devo_core::SessionRecord;
 use devo_core::SessionState;
 use devo_core::TurnId;
+use devo_core::TurnRecord;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::SessionId;
 
@@ -79,6 +81,7 @@ pub(crate) struct SessionActorState {
     pub(crate) history_items: Vec<SessionHistoryItem>,
     pub(crate) persisted_turn_items: Vec<PersistedTurnItem>,
     pub(crate) latest_compaction_snapshot: Option<devo_core::CompactionSnapshotLine>,
+    pub(crate) turn_records_by_id: HashMap<TurnId, TurnRecord>,
     pub(crate) pending_turn_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
     pub(crate) steer_input_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
     pub(crate) agent_tool_policy: devo_protocol::AgentToolPolicy,
@@ -161,6 +164,7 @@ impl SessionActorState {
             history_items: session.history_items,
             persisted_turn_items: session.persisted_turn_items,
             latest_compaction_snapshot: session.latest_compaction_snapshot,
+            turn_records_by_id: session.turn_records_by_id,
             pending_turn_queue: session.pending_turn_queue,
             steer_input_queue: session.steer_input_queue,
             agent_tool_policy: session.agent_tool_policy,
@@ -191,6 +195,7 @@ impl SessionActorState {
             history_items: self.history_items.clone(),
             persisted_turn_items: self.persisted_turn_items.clone(),
             latest_compaction_snapshot: self.latest_compaction_snapshot.clone(),
+            turn_records_by_id: self.turn_records_by_id.clone(),
             pending_turn_queue: Arc::clone(&self.pending_turn_queue),
             steer_input_queue: Arc::clone(&self.steer_input_queue),
             agent_tool_policy: self.agent_tool_policy,

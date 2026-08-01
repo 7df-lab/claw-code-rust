@@ -38,6 +38,12 @@ pub(crate) trait BottomPaneView: Renderable {
 
     /// When true, the view replaces the composer input area instead of stacking
     /// below a visible draft.
+    ///
+    /// Background rule: views that replace the composer (`true`) must paint the
+    /// shared menu surface ([`super::selection_popup_common::render_menu_surface`]).
+    /// Stacked overlays (`false`) may also paint it when they need panel chrome
+    /// (for example `/context`); otherwise they stay visually light so the draft
+    /// input remains the primary surface.
     fn replaces_composer(&self) -> bool {
         false
     }

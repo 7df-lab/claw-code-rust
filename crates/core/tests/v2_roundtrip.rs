@@ -457,6 +457,7 @@ fn live_write_lines() -> Vec<RolloutLine> {
                 input_token_estimate: None,
                 usage: None,
                 latest_query_usage: None,
+                context_occupancy: None,
                 stop_reason: None,
                 failure_reason: None,
                 error: None,

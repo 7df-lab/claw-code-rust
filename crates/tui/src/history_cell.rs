@@ -30,6 +30,7 @@ use crate::startup_header::build_startup_header;
 use crate::style::user_message_style;
 use crate::text_formatting::truncate_text;
 use crate::theme::ThemeSet;
+use crate::ui_consts::ALERT_COLOR;
 use crate::ui_consts::LIVE_PREFIX_COLS;
 use crate::version::CLI_VERSION;
 use crate::wrapping::RtOptions;
@@ -1447,31 +1448,26 @@ pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
 }
 
 pub(crate) fn new_error_event_with_hint(message: String, hint: Option<String>) -> PlainHistoryCell {
-    // Use a hair space (U+200A) to create a subtle, near-invisible separation
-    // before the text. VS16 is intentionally omitted to keep spacing tighter
-    // in terminals like Ghostty.
-    let mut lines: Vec<Line<'static>> = vec![vec![format!("■ {message}").red()].into()];
-    if let Some(hint) = hint {
-        lines.push(vec!["  ".into(), hint.dark_gray()].into());
-    }
-    PlainHistoryCell { lines }
+    new_live_aligned_error_event_with_hint(message, hint)
 }
 
 pub(crate) fn new_live_aligned_error_event_with_hint(
     message: String,
     hint: Option<String>,
 ) -> PlainHistoryCell {
+    // Use a hair space (U+200A) to create a subtle, near-invisible separation
+    // before the text. VS16 is intentionally omitted to keep spacing tighter
+    // in terminals like Ghostty.
     let prefix = " ".repeat(LIVE_PREFIX_COLS as usize);
-    let mut lines: Vec<Line<'static>> =
-        vec![vec![prefix.into(), format!("■ {message}").red()].into()];
+    let mut lines: Vec<Line<'static>> = vec![
+        vec![
+            prefix.clone().into(),
+            format!("■ {message}").fg(ALERT_COLOR),
+        ]
+        .into(),
+    ];
     if let Some(hint) = hint {
-        lines.push(
-            vec![
-                " ".repeat(LIVE_PREFIX_COLS as usize).into(),
-                hint.dark_gray(),
-            ]
-            .into(),
-        );
+        lines.push(vec![prefix.into(), hint.dark_gray()].into());
     }
     PlainHistoryCell { lines }
 }
@@ -1914,5 +1910,36 @@ mod tests {
             rendered[0]
         );
         assert_eq!(rendered[1].trim(), REASONING_TRANSCRIPT_HINT);
+    }
+
+    #[test]
+    fn error_event_uses_orange_and_left_padding() {
+        use crate::ui_consts::ALERT_COLOR;
+        use crate::ui_consts::LIVE_PREFIX_COLS;
+
+        use super::new_error_event_with_hint;
+
+        let cell = new_error_event_with_hint(
+            "no active session exists yet; send a prompt or switch to a saved session first"
+                .to_string(),
+            /*hint*/ None,
+        );
+        let line = cell.display_lines(120).into_iter().next().expect("line");
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            text.starts_with(&" ".repeat(LIVE_PREFIX_COLS as usize)),
+            "expected left padding: {text:?}"
+        );
+        assert!(text.contains("■ no active session exists yet"));
+        assert!(
+            line.spans
+                .iter()
+                .any(|span| { span.content.contains('■') && span.style.fg == Some(ALERT_COLOR) }),
+            "expected orange alert color: {line:?}"
+        );
     }
 }

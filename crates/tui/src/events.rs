@@ -20,6 +20,7 @@ use devo_protocol::RequestUserInputQuestion;
 use devo_protocol::SessionHistoryItem;
 use devo_protocol::SessionRuntimeStatus;
 use devo_protocol::ThreadGoal;
+use devo_protocol::canonical::item::ContextOccupancy;
 use devo_protocol::parse_command::ParsedCommand;
 use devo_protocol::protocol::ExecCommandSource;
 use devo_protocol::protocol::FileChange;
@@ -375,6 +376,11 @@ pub(crate) enum WorkerEvent {
         last_query_input_tokens: usize,
         /// Estimated prompt tokens for the just-completed request.
         prompt_token_estimate: usize,
+    },
+    /// Live context-window occupancy breakdown for the active session.
+    ContextUsageUpdated {
+        /// Category occupancy anchored to the latest query display total.
+        occupancy: ContextOccupancy,
     },
     /// The interrupt request could not be delivered or accepted.
     InterruptFailed {

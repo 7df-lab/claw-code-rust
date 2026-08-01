@@ -24,8 +24,11 @@ pub(crate) mod bottom_pane_view;
 mod chat_composer;
 mod chat_composer_history;
 mod command_popup;
+mod context_occupancy_view;
 mod custom_prompt_view;
+mod delete_session_confirm_view;
 mod footer;
+mod horizontal_chip_strip;
 mod input_mode;
 pub(crate) mod list_selection_view;
 mod model_picker;
@@ -48,7 +51,11 @@ pub(crate) use approval_overlay::ApprovalOverlayRequest;
 pub(crate) use chat_composer::ChatComposer;
 use chat_composer::ChatComposerConfig;
 use chat_composer::InputResult as ComposerInputResult;
+use context_occupancy_view::ContextOccupancyView;
+pub(crate) use context_occupancy_view::SessionTokenTotals;
 pub(crate) use custom_prompt_view::CustomPromptView;
+pub(crate) use delete_session_confirm_view::DeleteSessionConfirmView;
+pub(crate) use horizontal_chip_strip::HorizontalChipStrip;
 pub(crate) use input_mode::InputMode;
 pub(crate) use model_picker::ModelPickerEffortOption;
 pub(crate) use model_picker::ModelPickerEntry;
@@ -490,6 +497,14 @@ impl BottomPane {
         self.push_view(Box::new(ModelPickerView::new(entries, self.accent_color)));
     }
 
+    pub(crate) fn open_context_occupancy(
+        &mut self,
+        occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+        session: SessionTokenTotals,
+    ) {
+        self.push_view(Box::new(ContextOccupancyView::new(occupancy, session)));
+    }
+
     pub(crate) fn open_theme_picker(
         &mut self,
         themes: &[crate::theme::Theme],
@@ -734,6 +749,10 @@ impl BottomPane {
     /// Children for an open bottom-pane view: optional status, optionally the
     /// composer, then the view. Views that [`BottomPaneView::replaces_composer`]
     /// occupy the input area instead of stacking below a draft.
+    ///
+    /// Those replacing views also paint a menu-surface background; stacked
+    /// views may paint one when they need panel chrome (see
+    /// `replaces_composer` docs).
     fn active_view_layout_children<'a>(
         &'a self,
         view: &'a dyn BottomPaneView,
@@ -1243,6 +1262,55 @@ mod tests {
         assert!(
             !rendered.contains("Reasoning"),
             "effort strip should not show Reasoning label:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn context_occupancy_stacks_below_composer_draft() {
+        let mut pane = test_bottom_pane();
+        let draft = "keep draft while context panel is open";
+        pane.set_text_content(draft.to_string(), Vec::new(), Vec::new());
+        let composer_only_height = pane.desired_height(/*width*/ 80);
+
+        pane.open_context_occupancy(
+            None,
+            SessionTokenTotals {
+                input: 1_000,
+                output: 100,
+                cache_read: 500,
+            },
+        );
+
+        let stacked_height = pane.desired_height(/*width*/ 80);
+        assert!(
+            stacked_height > composer_only_height,
+            "stacked height {stacked_height} should exceed composer-only {composer_only_height}"
+        );
+
+        let rendered = render_bottom_pane(&pane, /*width*/ 80);
+        assert!(
+            rendered.contains(draft),
+            "composer draft should stay visible:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Context Usage"),
+            "context panel title missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Session"),
+            "session section missing:\n{rendered}"
+        );
+        let draft_row = rendered
+            .lines()
+            .position(|line| line.contains(draft))
+            .expect("missing composer draft");
+        let panel_row = rendered
+            .lines()
+            .position(|line| line.contains("Context Usage"))
+            .expect("missing context title");
+        assert!(
+            panel_row > draft_row,
+            "context panel should render below composer; draft_row={draft_row} panel_row={panel_row}\n{rendered}"
         );
     }
 }

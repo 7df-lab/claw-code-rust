@@ -1027,6 +1027,7 @@ struct ReplayState {
     latest_turn: Option<TurnRecord>,
     latest_turn_metadata: Option<TurnMetadata>,
     latest_query_usage: Option<devo_protocol::TurnUsage>,
+    latest_context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
     turn_records_by_id: HashMap<TurnId, TurnRecord>,
     loaded_item_count: u64,
     next_item_seq: u64,
@@ -1105,6 +1106,9 @@ impl ReplayState {
                     self.last_turn_tokens = 0;
                     self.latest_query_usage = None;
                 }
+                if let Some(occupancy) = turn.context_occupancy.clone() {
+                    self.latest_context_occupancy = Some(occupancy);
+                }
                 self.latest_turn_metadata = Some(turn_metadata_from_record(&turn));
                 self.turn_kinds_by_id.insert(turn.id, turn.kind.clone());
                 if let Some(session_context) = turn.session_context.clone() {
@@ -1153,6 +1157,9 @@ impl ReplayState {
                 self.session_context_recorded = true;
             }
             RolloutLine::CompactionSnapshot(line) => {
+                if let Some(occupancy) = line.context_occupancy.clone() {
+                    self.latest_context_occupancy = Some(occupancy);
+                }
                 self.latest_compaction_snapshot = Some(*line);
             }
             RolloutLine::MessageEditRecorded(line) => {
@@ -1413,10 +1420,16 @@ impl ReplayState {
             prompt_token_estimate: core_session.prompt_token_estimate,
             last_query_usage: self.latest_query_usage.clone(),
             last_query_total_tokens: self
-                .latest_query_usage
+                .latest_context_occupancy
                 .as_ref()
-                .map(devo_protocol::TurnUsage::display_total_tokens)
+                .map(|occupancy| occupancy.total_tokens as usize)
+                .or_else(|| {
+                    self.latest_query_usage
+                        .as_ref()
+                        .map(devo_protocol::TurnUsage::display_total_tokens)
+                })
                 .unwrap_or(0),
+            last_context_occupancy: self.latest_context_occupancy.clone(),
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: core_session.collaboration_mode,
         };
@@ -1434,6 +1447,7 @@ impl ReplayState {
             history_items: replayed_history_items,
             persisted_turn_items: replayed_persisted_turn_items,
             latest_compaction_snapshot: self.latest_compaction_snapshot,
+            turn_records_by_id: self.turn_records_by_id,
             pending_turn_queue,
             steer_input_queue,
             agent_tool_policy: Default::default(),
@@ -1632,6 +1646,7 @@ impl ReplayState {
         self.last_input_tokens = 0;
         self.last_turn_tokens = 0;
         self.latest_query_usage = None;
+        self.latest_context_occupancy = None;
 
         for turn_id in &self.turn_order {
             let Some(turn) = self.turn_records_by_id.get(turn_id) else {
@@ -1655,6 +1670,16 @@ impl ReplayState {
                 self.last_turn_tokens = 0;
                 self.latest_query_usage = None;
             }
+            if let Some(occupancy) = turn.context_occupancy.clone() {
+                self.latest_context_occupancy = Some(occupancy);
+            }
+        }
+        if let Some(occupancy) = self
+            .latest_compaction_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.context_occupancy.clone())
+        {
+            self.latest_context_occupancy = Some(occupancy);
         }
     }
 
@@ -2197,6 +2222,7 @@ pub(crate) fn session_metadata_from_record(
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: record
             .latest_turn_context
@@ -2230,6 +2256,7 @@ pub(crate) fn build_turn_record(
     session_context: Option<devo_core::SessionContext>,
     turn_context: Option<devo_core::TurnContext>,
     latest_query_usage: Option<devo_core::TurnUsage>,
+    context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
 ) -> TurnRecord {
     TurnRecord {
         id: turn.turn_id,
@@ -2247,6 +2274,7 @@ pub(crate) fn build_turn_record(
         input_token_estimate: None,
         usage: turn.usage.clone(),
         latest_query_usage,
+        context_occupancy,
         stop_reason: turn.stop_reason.clone(),
         failure_reason: turn.failure_reason,
         error: None,
@@ -2446,6 +2474,77 @@ mod tests {
     }
 
     #[test]
+    fn replay_prefers_compaction_occupancy_over_prior_turn() {
+        use devo_protocol::TurnUsage;
+        use pretty_assertions::assert_eq;
+
+        let now = Utc.with_ymd_and_hms(2026, 7, 8, 10, 0, 0).unwrap();
+        let session_id = SessionId::new();
+        let turn_id = TurnId::new();
+        let mut replay = ReplayState::default();
+        let turn_occupancy = devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
+        );
+        let compact_occupancy =
+            devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+                /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
+                /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 8_000,
+            );
+
+        replay
+            .apply_line(RolloutLine::Turn(Box::new(TurnLine {
+                timestamp: now,
+                turn: TurnRecord {
+                    id: turn_id,
+                    session_id,
+                    sequence: 1,
+                    started_at: now,
+                    completed_at: Some(now),
+                    status: TurnStatus::Completed,
+                    kind: TurnKind::Regular,
+                    model: "test-model".into(),
+                    model_binding_id: None,
+                    reasoning_effort_selection: None,
+                    request_model: "test-model".into(),
+                    request_thinking: None,
+                    input_token_estimate: None,
+                    usage: None,
+                    latest_query_usage: Some(TurnUsage {
+                        input_tokens: 50,
+                        output_tokens: 5,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        total_tokens: Some(55),
+                    }),
+                    context_occupancy: Some(turn_occupancy.clone()),
+                    stop_reason: None,
+                    failure_reason: None,
+                    error: None,
+                    session_context: None,
+                    turn_context: None,
+                    schema_version: 4,
+                },
+            })))
+            .expect("turn");
+        assert_eq!(replay.latest_context_occupancy, Some(turn_occupancy));
+        replay
+            .apply_line(RolloutLine::CompactionSnapshot(Box::new(
+                CompactionSnapshotLine {
+                    timestamp: now,
+                    session_id,
+                    turn_id,
+                    summary_item_id: ItemId::new(),
+                    preserved_item_ids: Vec::new(),
+                    context_occupancy: Some(compact_occupancy.clone()),
+                },
+            )))
+            .expect("compaction");
+        assert_eq!(replay.latest_context_occupancy, Some(compact_occupancy));
+    }
+
+    #[test]
     fn replay_preserves_latest_query_usage_when_latest_turn_has_no_usage() {
         use devo_protocol::TurnUsage;
 
@@ -2480,6 +2579,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: Some(usage.clone()),
                     latest_query_usage: Some(usage.clone()),
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2508,6 +2608,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: Some(devo_protocol::TurnFailureReason::MaxTurnRequests),
                     error: None,
@@ -2558,6 +2659,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: Some(aggregate_usage),
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2603,6 +2705,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2691,6 +2794,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2868,6 +2972,7 @@ mod tests {
                 prompt_token_estimate: 0,
                 last_query_usage: None,
                 last_query_total_tokens: 0,
+                last_context_occupancy: None,
                 status: SessionRuntimeStatus::Idle,
                 collaboration_mode: Default::default(),
             },
@@ -3122,6 +3227,7 @@ mod tests {
                 turn_id: TurnId::new(),
                 summary_item_id,
                 preserved_item_ids: vec![preserved_item_id],
+                context_occupancy: None,
             },
         )
         .expect("prompt messages");
@@ -3237,6 +3343,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -3367,6 +3474,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -3473,6 +3581,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -3553,7 +3662,7 @@ mod tests {
                 .append_turn_deduped(
                     &record,
                     &mut session_context_recorded,
-                    super::build_turn_record(&metadata, None, None, None),
+                    super::build_turn_record(&metadata, None, None, None, None),
                     Some(session_context.clone()),
                 )
                 .expect("append deduped turn");
@@ -3690,7 +3799,7 @@ mod tests {
             .append_session_meta(&record)
             .expect("append session meta");
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         rollout_store
             .append_turn(&record, turn)
             .expect("append turn");
@@ -3742,7 +3851,7 @@ mod tests {
             .append_session_meta(&record)
             .expect("append session meta");
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         rollout_store
             .append_turn(&record, turn)
             .expect("append turn");
@@ -3865,7 +3974,7 @@ mod tests {
         store
             .append_turn(
                 &record,
-                super::build_turn_record(&metadata, None, None, None),
+                super::build_turn_record(&metadata, None, None, None, None),
             )
             .expect("append turn");
         let now = Utc::now();
@@ -3949,7 +4058,7 @@ mod tests {
 
         let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         let error = restarted_store
             .append_turn(&record, turn)
             .expect_err("append onto damaged history must fail");
@@ -3987,7 +4096,7 @@ mod tests {
 
         let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         restarted_store
             .append_turn(&record, turn)
             .expect("crash tail is tolerated");
@@ -4021,7 +4130,7 @@ mod tests {
             &[r#"{"v":2,"kind":"nope"}"#.to_string()],
         );
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         rollout_store
             .append_turn(&record, turn)
             .expect("append turn");
@@ -4093,7 +4202,7 @@ mod tests {
             })),
             RolloutLine::Turn(Box::new(TurnLine {
                 timestamp: Utc::now(),
-                turn: super::build_turn_record(&metadata, None, None, None),
+                turn: super::build_turn_record(&metadata, None, None, None, None),
             })),
             RolloutLine::Item(ItemLine {
                 timestamp: Utc::now(),
@@ -4194,7 +4303,7 @@ mod tests {
             .append_session_meta(&record)
             .expect("append session meta");
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         rollout_store
             .append_turn(&record, turn)
             .expect("append turn");

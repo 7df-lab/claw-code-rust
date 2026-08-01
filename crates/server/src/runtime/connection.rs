@@ -369,6 +369,9 @@ impl ServerRuntime {
             Some(ClientMethod::McpSetEnabled) => {
                 Some(self.handle_mcp_set_enabled(id?, params).await)
             }
+            Some(ClientMethod::ContextUsageRead) => {
+                Some(self.handle_context_usage_read(id?, params).await)
+            }
             // get the model catalog, aka the configured models list
             Some(ClientMethod::ModelCatalog) => Some(self.handle_model_catalog(id?, params).await),
             Some(ClientMethod::ModelConfig) => Some(self.handle_model_config(id?, params).await),
@@ -1205,6 +1208,7 @@ fn outbound_delivery_policy(event: &ServerEvent) -> OutboundDeliveryPolicy {
     match event {
         ServerEvent::ItemDelta { .. }
         | ServerEvent::TurnUsageUpdated(_)
+        | ServerEvent::ContextUsageUpdated(_)
         | ServerEvent::WorkspaceChangesUpdated(_)
         | ServerEvent::ReferenceSearchUpdated(_)
         | ServerEvent::CommandExecOutputDelta(_) => OutboundDeliveryPolicy::BestEffort,
@@ -2406,7 +2410,7 @@ mod tests {
                 stop_reason: None,
                 failure_reason: None,
             };
-            let turn = crate::persistence::build_turn_record(&metadata, None, None, None);
+            let turn = crate::persistence::build_turn_record(&metadata, None, None, None, None);
             rollout_store
                 .append_turn(&record, turn)
                 .expect("append turn");
@@ -2800,7 +2804,7 @@ mod tests {
             stop_reason: None,
             failure_reason: None,
         };
-        let turn = crate::persistence::build_turn_record(&metadata, None, None, None);
+        let turn = crate::persistence::build_turn_record(&metadata, None, None, None, None);
         store.append_turn(&record, turn).expect("append turn");
         for (seq, text) in [(1u64, "one"), (2, "two")] {
             let item = crate::persistence::build_item_record(

@@ -118,6 +118,7 @@ fn turn_record(n: u128, session: u128) -> TurnRecord {
             total_tokens: Some(150),
         }),
         latest_query_usage: None,
+        context_occupancy: None,
         stop_reason: None,
         failure_reason: None,
         error: None,
@@ -292,6 +293,7 @@ fn basic_session_lines() -> Vec<RolloutLine> {
             turn_id: turn_id(turn),
             summary_item_id: item_id(0xb9),
             preserved_item_ids: vec![item_id(0xb3), item_id(0xb4)],
+            context_occupancy: None,
         })),
         RolloutLine::SessionRollback(Box::new(SessionRollbackLine {
             timestamp: ts(32),

@@ -17,7 +17,8 @@ pub use event::QueryOptions;
 pub use event::QueryProviderRetryPhase;
 
 pub(crate) use event::emit_query_event;
-pub(crate) use prompt_estimate::estimate_request_prompt_tokens;
+pub use prompt_estimate::RawContextBreakdown;
+pub(crate) use prompt_estimate::estimate_request_context_breakdown;
 pub(crate) use provider_retry::ProviderRetryDecision;
 pub(crate) use provider_retry::provider_retry_decision;
 pub(crate) use provider_retry::wait_for_provider_retry;
@@ -608,7 +609,9 @@ pub async fn query(
             reasoning_effort: request_reasoning_effort,
             extra_body,
         };
-        session.prompt_token_estimate = estimate_request_prompt_tokens(&request);
+        let breakdown = estimate_request_context_breakdown(&request);
+        session.prompt_token_estimate = breakdown.total().try_into().unwrap_or(usize::MAX);
+        session.raw_context_breakdown = Some(breakdown);
         debug!(
             prompt_source_messages = prompt_source_message_count,
             prompt_source_items = prompt_source_item_count,

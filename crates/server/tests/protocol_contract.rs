@@ -276,6 +276,7 @@ fn turn_projection_preserves_turn_status_vocabulary() {
         input_token_estimate: None,
         usage: None,
         latest_query_usage: None,
+        context_occupancy: None,
         stop_reason: None,
         failure_reason: None,
         error: None,
@@ -364,6 +365,7 @@ fn session_title_updated_event_serializes_expected_kind() {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
         },
@@ -401,6 +403,7 @@ fn session_compaction_events_serialize_expected_kinds() {
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
     };

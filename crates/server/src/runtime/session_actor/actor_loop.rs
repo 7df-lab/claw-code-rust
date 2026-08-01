@@ -546,6 +546,7 @@ pub(super) async fn run_session_actor(
                             None,
                             state.core.latest_turn_context.clone(),
                             None,
+                            None,
                         ),
                         state.core.session_context.clone(),
                     )

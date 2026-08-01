@@ -9,6 +9,8 @@ use serde::Serialize;
 use ts_rs::Config;
 use ts_rs::TS;
 
+use crate::canonical::rpc_admin::ContextUsageReadParams;
+use crate::canonical::rpc_admin::ContextUsageReadResult;
 use crate::canonical::rpc_admin::McpListParams;
 use crate::canonical::rpc_admin::McpListResult;
 use crate::canonical::rpc_admin::McpServerInfo;
@@ -293,6 +295,8 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<McpToolsResult>(&cfg, &mut output);
     push_decl::<McpSetEnabledParams>(&cfg, &mut output);
     push_decl::<McpSetEnabledResult>(&cfg, &mut output);
+    push_decl::<ContextUsageReadParams>(&cfg, &mut output);
+    push_decl::<ContextUsageReadResult>(&cfg, &mut output);
 
     push_decl::<ProviderWireApi>(&cfg, &mut output);
     push_decl::<InputModality>(&cfg, &mut output);
@@ -663,6 +667,8 @@ fn register_devo_protocol_schemas(
     schema::<McpToolsResult>(schemas);
     schema::<McpSetEnabledParams>(schemas);
     schema::<McpSetEnabledResult>(schemas);
+    schema::<ContextUsageReadParams>(schemas);
+    schema::<ContextUsageReadResult>(schemas);
     schema::<ModelCatalogParams>(schemas);
     schema::<ModelCatalogResult>(schemas);
     schema::<ModelConfigParams>(schemas);
@@ -790,6 +796,10 @@ fn register_devo_protocol_schemas(
     devo_method::<McpListParams, McpListResult>(methods, ClientMethod::McpList);
     devo_method::<McpToolsParams, McpToolsResult>(methods, ClientMethod::McpTools);
     devo_method::<McpSetEnabledParams, McpSetEnabledResult>(methods, ClientMethod::McpSetEnabled);
+    devo_method::<ContextUsageReadParams, ContextUsageReadResult>(
+        methods,
+        ClientMethod::ContextUsageRead,
+    );
     devo_method::<ModelCatalogParams, ModelCatalogResult>(methods, ClientMethod::ModelCatalog);
     devo_method::<ModelConfigParams, ModelConfigResult>(methods, ClientMethod::ModelConfig);
     devo_method::<ModelConfigSetParams, ModelConfigResult>(methods, ClientMethod::ModelConfigSet);

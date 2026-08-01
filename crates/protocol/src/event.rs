@@ -189,6 +189,12 @@ pub struct TurnUsageUpdatedPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextUsageUpdatedPayload {
+    pub session_id: SessionId,
+    pub occupancy: crate::canonical::item::ContextOccupancy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCallStatusUpdatedPayload {
     pub session_id: SessionId,
     pub turn_id: TurnId,
@@ -400,6 +406,7 @@ pub enum ServerEvent {
     TurnPlanUpdated(TurnPlanUpdatedPayload),
     TurnDiffUpdated(TurnEventPayload),
     TurnUsageUpdated(TurnUsageUpdatedPayload),
+    ContextUsageUpdated(ContextUsageUpdatedPayload),
     TurnProviderRetryStatus(TurnProviderRetryStatusPayload),
     WorkspaceChangesUpdated(WorkspaceChangesUpdatedPayload),
     ToolCallStatusUpdated(ToolCallStatusUpdatedPayload),
@@ -444,6 +451,7 @@ impl ServerEvent {
             Self::TurnFailed(payload) => Some(payload.session_id),
             Self::TurnPlanUpdated(payload) => Some(payload.session_id),
             Self::TurnUsageUpdated(payload) => Some(payload.session_id),
+            Self::ContextUsageUpdated(payload) => Some(payload.session_id),
             Self::TurnProviderRetryStatus(payload) => Some(payload.session_id),
             Self::WorkspaceChangesUpdated(payload) => Some(payload.session_id),
             Self::ToolCallStatusUpdated(payload) => Some(payload.session_id),
@@ -486,6 +494,7 @@ impl ServerEvent {
             Self::TurnPlanUpdated(_) => "turn/plan/updated",
             Self::TurnDiffUpdated(_) => "turn/diff/updated",
             Self::TurnUsageUpdated(_) => "turn/usage/updated",
+            Self::ContextUsageUpdated(_) => "context/usageUpdated",
             Self::TurnProviderRetryStatus(_) => "turn/provider_retry_status",
             Self::WorkspaceChangesUpdated(_) => "workspace/changes/updated",
             Self::ToolCallStatusUpdated(_) => "tool_call/status_updated",
@@ -522,6 +531,7 @@ impl ServerEvent {
             }
             Self::ItemDelta { payload, .. } => payload.context.seq = seq,
             Self::TurnUsageUpdated(_)
+            | Self::ContextUsageUpdated(_)
             | Self::TurnProviderRetryStatus(_)
             | Self::WorkspaceChangesUpdated(_)
             | Self::ToolCallStatusUpdated(_)

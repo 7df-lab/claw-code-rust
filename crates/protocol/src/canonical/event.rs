@@ -25,7 +25,7 @@ use super::ids::SubscriptionId;
 use super::ids::TurnId;
 use super::item::ApprovalDecision;
 use super::item::CompactionTrigger;
-use super::item::ContextUsage;
+use super::item::ContextOccupancy;
 use super::item::ItemEnvelope;
 use super::item::SpawnedWorkState;
 use super::queue::QueueChange;
@@ -222,7 +222,7 @@ pub enum ServerNotification {
     #[serde(rename = "context/usageUpdated")]
     ContextUsageUpdated {
         session_id: SessionId,
-        usage: ContextUsage,
+        occupancy: ContextOccupancy,
     },
     #[serde(rename = "context/compactionStarted")]
     ContextCompactionStarted {

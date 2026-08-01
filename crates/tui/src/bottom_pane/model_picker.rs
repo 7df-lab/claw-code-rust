@@ -3,6 +3,9 @@
 //! Shows a vertically scrollable model list with a horizontal reasoning-effort
 //! strip below it. Up/Down (and j/k) move the model selection; Left/Right cycle
 //! effort for the focused model; Enter applies both in one step.
+//!
+//! Replaces the composer input area, so it paints the shared menu-surface
+//! background — see [`BottomPaneView::replaces_composer`].
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -21,15 +24,16 @@ use unicode_width::UnicodeWidthStr;
 use crate::key_hint;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::renderable::Renderable;
-use crate::ui_consts::FOOTER_INDENT_COLS;
 
 use super::CancellationEvent;
 use super::bottom_pane_view::BottomPaneView;
 use super::popup_consts::MAX_POPUP_ROWS;
 use super::scroll_state::ScrollState;
+use super::selection_popup_common::menu_surface_padding_height;
+use super::selection_popup_common::render_menu_surface;
 
-/// Left inset matching composer / other live content.
-const LEFT_PAD: usize = FOOTER_INDENT_COLS;
+/// Marker column + following space before the model name.
+const MARKER_COLS: usize = 2;
 
 /// One reasoning-effort chip shown in the horizontal strip.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,7 +215,7 @@ impl ModelPickerView {
     /// Width of the name cell (display name + optional ` ‹`), shared so provider
     /// hints start in one column like a two-column table.
     fn name_column_width(&self, total_width: u16) -> usize {
-        let prefix_width = LEFT_PAD + 2; // padding + marker + space
+        let prefix_width = MARKER_COLS; // marker + space
         let gap_width = 2;
         // Reserve a modest amount for the provider column when present.
         let has_any_provider = self.entries.iter().any(|entry| {
@@ -286,7 +290,6 @@ impl ModelPickerView {
         let name_col = self.name_column_width(width);
         let mut name_width = UnicodeWidthStr::width(entry.display_name.as_str());
         let mut title_spans = vec![
-            Span::raw(" ".repeat(LEFT_PAD)),
             Span::styled(marker.to_string(), marker_style),
             Span::raw(" "),
             Span::styled(entry.display_name.clone(), label_style),
@@ -315,11 +318,12 @@ impl ModelPickerView {
         truncate_line_with_ellipsis_if_overflow(Line::from(title_spans), usize::from(width))
     }
 
-    fn scroll_overflow_line(&self) -> Line<'static> {
-        // Align with model names: LEFT_PAD + marker column + following space.
+    fn scroll_overflow_line(&self, more_above: bool) -> Line<'static> {
+        // Align with model names: marker column + following space.
+        let label = if more_above { "↑ more" } else { "↓ more" };
         Line::from(vec![
-            Span::raw(" ".repeat(LEFT_PAD + 2)),
-            Span::styled("…".to_string(), Style::default().dim()),
+            Span::raw(" ".repeat(MARKER_COLS)),
+            Span::styled(label.to_string(), Style::default().dim()),
         ])
     }
 
@@ -329,14 +333,14 @@ impl ModelPickerView {
             return None;
         }
 
-        let available = usize::from(width).saturating_sub(LEFT_PAD);
+        let available = usize::from(width);
         let window = effort_window(
             &entry.effort_options,
             self.effort_selection.as_deref(),
             available,
         );
 
-        let mut spans = vec![Span::raw(" ".repeat(LEFT_PAD))];
+        let mut spans = Vec::new();
         if window.show_left_more {
             spans.push(Span::styled("‹ ".to_string(), Style::default().dim()));
         }
@@ -369,7 +373,6 @@ impl ModelPickerView {
             .current_entry()
             .is_some_and(|entry| !entry.effort_options.is_empty());
         let mut spans = vec![
-            Span::raw(" ".repeat(LEFT_PAD)),
             key_hint::plain(KeyCode::Up).into(),
             Span::raw("/"),
             key_hint::plain(KeyCode::Down).into(),
@@ -400,7 +403,7 @@ impl ModelPickerView {
         let visible = self.visible_rows();
 
         if self.has_more_above() {
-            lines.push(self.scroll_overflow_line());
+            lines.push(self.scroll_overflow_line(/*more_above*/ true));
         }
         if visible > 0 {
             let start = self.state.scroll_top;
@@ -412,7 +415,7 @@ impl ModelPickerView {
             }
         }
         if self.has_more_below() {
-            lines.push(self.scroll_overflow_line());
+            lines.push(self.scroll_overflow_line(/*more_above*/ false));
         }
 
         if let Some(effort_line) = self.render_effort_line(width) {
@@ -581,6 +584,7 @@ impl BottomPaneView for ModelPickerView {
     }
 
     fn replaces_composer(&self) -> bool {
+        // Replaces the input → paint menu-surface background in `render`.
         true
     }
 
@@ -596,11 +600,15 @@ impl BottomPaneView for ModelPickerView {
 
 impl Renderable for ModelPickerView {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        Paragraph::new(self.render_lines(area.width)).render(area, buf);
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+        let content_area = render_menu_surface(area, buf);
+        Paragraph::new(self.render_lines(content_area.width)).render(content_area, buf);
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
-        self.computed_height()
+        menu_surface_padding_height().saturating_add(self.computed_height())
     }
 }
 
@@ -646,11 +654,14 @@ mod tests {
         let mut view = ModelPickerView::new(entries, Color::Cyan);
 
         assert_eq!(view.visible_rows(), MAX_POPUP_ROWS);
-        // 8 models + more-below + blank + footer
-        assert_eq!(view.desired_height(80), MAX_POPUP_ROWS as u16 + 3);
+        // 8 models + more-below + blank + footer, plus menu-surface padding
+        assert_eq!(
+            view.desired_height(80),
+            menu_surface_padding_height() + MAX_POPUP_ROWS as u16 + 3
+        );
         assert_eq!(
             view.render_lines(80).len(),
-            usize::from(view.desired_height(80))
+            usize::from(view.computed_height())
         );
 
         for _ in 0..10 {
@@ -664,7 +675,10 @@ mod tests {
         // Near the end: may still have more below depending on scroll window.
         let lines = view.render_lines(80);
         assert!(
-            lines.iter().any(|line| line.to_string().contains('…')),
+            lines
+                .iter()
+                .any(|line| line.to_string().contains("↓ more")
+                    || line.to_string().contains("↑ more")),
             "expected scroll overflow marker:\n{}",
             lines
                 .iter()
@@ -672,7 +686,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-        assert_eq!(lines.len(), usize::from(view.desired_height(80)));
+        assert_eq!(lines.len(), usize::from(view.computed_height()));
     }
 
     #[test]
@@ -770,7 +784,7 @@ mod tests {
         assert!(
             at_top.iter().any(|line| {
                 let text = line.to_string();
-                text.contains('…') && text.starts_with("    …")
+                text.contains("↓ more") && text.starts_with("  ↓ more")
             }),
             "overflow marker should align under model names:\n{}",
             at_top
@@ -789,8 +803,8 @@ mod tests {
         assert!(
             at_bottomish
                 .iter()
-                .any(|line| line.to_string().contains('…')),
-            "expected overflow marker near bottom"
+                .any(|line| line.to_string().contains("↑ more")),
+            "expected upper overflow marker near bottom"
         );
     }
 
@@ -898,13 +912,13 @@ mod tests {
         assert!(!effort.contains("Reasoning"));
         assert!(effort.contains("[Low]") || effort.contains("Low"));
         assert!(
-            effort.starts_with("  "),
-            "effort line should have left padding: {effort:?}"
+            effort.starts_with('[') || effort.starts_with('L') || effort.starts_with('‹'),
+            "effort line should start at content edge (menu surface supplies inset): {effort:?}"
         );
     }
 
     #[test]
-    fn content_lines_have_left_padding() {
+    fn content_lines_use_menu_surface_inset_without_extra_left_pad() {
         let view = ModelPickerView::new(
             vec![entry(
                 "gpt",
@@ -923,9 +937,23 @@ mod tests {
             .expect("effort line")
             .to_string();
         let footer = lines.last().expect("footer").to_string();
-        assert!(model.starts_with("  "), "model row: {model:?}");
-        assert!(effort.starts_with("  "), "effort row: {effort:?}");
-        assert!(footer.starts_with("  "), "footer: {footer:?}");
+        // Marker (›/ /·) then name — no extra FOOTER_INDENT on top of menu surface.
+        assert!(
+            model.starts_with('›') || model.starts_with(' ') || model.starts_with('·'),
+            "model row: {model:?}"
+        );
+        assert!(
+            !model.starts_with("  ›") && !model.starts_with("   "),
+            "model row should not double-pad: {model:?}"
+        );
+        assert!(
+            effort.starts_with('[') || effort.starts_with('O'),
+            "effort row: {effort:?}"
+        );
+        assert!(
+            !footer.starts_with("  "),
+            "footer should not double-pad: {footer:?}"
+        );
     }
 
     #[test]

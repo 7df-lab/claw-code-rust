@@ -108,6 +108,7 @@ impl ServerRuntime {
             | SlashCommand::Rename
             | SlashCommand::Delete
             | SlashCommand::Status
+            | SlashCommand::Context
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning
             | SlashCommand::Clear

@@ -167,6 +167,7 @@ impl ServerRuntime {
             prompt_token_estimate: core_session.prompt_token_estimate,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
         };
@@ -182,6 +183,7 @@ impl ServerRuntime {
             history_items: rebuilt_history_items,
             persisted_turn_items: stable_items,
             latest_compaction_snapshot: None,
+            turn_records_by_id: std::collections::HashMap::new(),
             pending_turn_queue,
             steer_input_queue,
             agent_tool_policy: effective_tool_policy,

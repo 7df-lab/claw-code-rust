@@ -161,6 +161,10 @@ Durable usage records should not store prompt content, response content, credent
 
 The durable session JSONL file remains the source of truth for usage summaries that affect session inspection. Trace-mode stream records are diagnostic artifacts and should be stored under observability retention policy rather than treated as transcript content.
 
+### Per-turn context occupancy snapshots
+
+Category occupancy (`ContextOccupancy`) for `/context` and related projections should be stored on each completed `TurnRecord` and on `CompactionSnapshotLine` when compaction runs. Resume/replay takes the latest turn or compaction occupancy as the session tip; fork and rollback cuts must read the cut-turn (or an applicable compaction snapshot whose `turn_id` is still kept), not the source session tip. Session-level `session_stats.last_context_occupancy` may cache the tip for fast hydrate, but rollout remains authoritative for history cuts. Forked sessions reset cumulative token totals to a new ledger while preserving cut-point occupancy and last-query usage.
+
 ## Server-Client Usage Projection
 
 Clients should receive safe usage projections through the server-client protocol.
@@ -233,6 +237,42 @@ Adapter responsibilities:
 - Apply redaction before writing content-bearing trace records.
 
 Provider adapters should not calculate monetary cost unless a later requirement defines provider pricing inputs and billing rules.
+
+## Context Occupancy Breakdown
+
+Clients can read category-level context-window occupancy through
+`context/usage/read` and the `context/usageUpdated` event.
+
+Occupancy snapshot fields:
+
+| Field | Meaning |
+|---|---|
+| `totalTokens` | Current occupied tokens for the effective context window. |
+| `contextWindowTokens` | Effective context window (`context_window * percent / 100`). |
+| `categories[]` | Ordered category shares with `id`, `tokens`, and `shareBps`. |
+
+Category ids:
+
+| Id | Contents |
+|---|---|
+| `base` | System prompt (including mode introductions); AGENTS.md / workspace instructions; environment, language, collaboration/context-change metadata; related instruction updates. |
+| `skills` | Available-skills listing and skill injection / skill-tool content. |
+| `toolsBuiltin` | Non-MCP tool schemas plus hosted tools. |
+| `toolsMcp` | MCP tool schemas (`mcp__*` names). |
+| `conversation` | Remaining messages: dialogue, tool calls/results, compaction summary, and other non-base/skills fragments. |
+
+Update rules:
+
+- After a completed turn query, scale the latest assembled-request byte estimates
+  so category tokens sum exactly to the latest provider query display total
+  (`total_tokens` when reported, otherwise `input_tokens + output_tokens`).
+- After successful compaction, refresh immediately:
+  `conversation` becomes the post-compact prompt-message estimate (summary plus
+  preserved suffix); `base` / `skills` / `toolsBuiltin` / `toolsMcp` keep the
+  previous occupancy buckets; `totalTokens` is their sum.
+- Do not expose separate `source` / `measured` fields; turn occupancy is
+  anchored to the latest provider query, and post-compact occupancy is the
+  refresh formula above until the next query completes.
 
 ## Diagnostic Examples
 

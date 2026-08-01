@@ -220,6 +220,7 @@ impl LegacyProjector {
                     .iter()
                     .map(|id| legacy_uuid(id).map(ItemId::from_legacy_uuid))
                     .collect::<Result<_, _>>()?,
+                context_occupancy: line.context_occupancy.clone(),
             }]),
             RolloutLine::MessageEditRecorded(line) => {
                 let record = &line.record;
@@ -424,6 +425,7 @@ impl LegacyProjector {
                 request_thinking: record.request_thinking.clone(),
                 input_token_estimate: record.input_token_estimate,
                 latest_query_usage: record.latest_query_usage.clone(),
+                context_occupancy: record.context_occupancy.clone(),
                 stop_reason: record.stop_reason.clone(),
                 failure_reason: record.failure_reason,
             })),

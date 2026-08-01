@@ -235,6 +235,15 @@ impl ServerRuntime {
             // cumulative total_input/output/tokens.
             state.summary.last_query_usage = Some(usage.clone());
             state.summary.last_query_total_tokens = usage.display_total_tokens();
+            if let Some(raw) = state.core.raw_context_breakdown {
+                let window = effective_context_window_tokens(state, self);
+                let occupancy = super::super::context_occupancy::occupancy_from_raw(
+                    window,
+                    raw,
+                    usage.display_total_tokens() as u64,
+                );
+                state.summary.last_context_occupancy = Some(occupancy);
+            }
         }
         state.core.total_input_tokens = session_total_input_tokens;
         state.core.total_output_tokens = session_total_output_tokens;
@@ -255,6 +264,7 @@ impl ServerRuntime {
                     .unwrap_or(session_last_input_tokens),
                 turn_count: state.summary.updated_at.timestamp() as usize,
                 prompt_token_estimate: session_prompt_token_estimate,
+                last_context_occupancy: state.summary.last_context_occupancy.clone(),
             };
             if let Err(err) = self.deps.db.update_stats(&session_id, &stats) {
                 tracing::warn!(
@@ -360,8 +370,17 @@ impl ServerRuntime {
         let record = state.record.clone();
         let turn_context = state.core.latest_turn_context.clone();
         let session_context = state.core.session_context.clone();
-        let mut turn_record = build_turn_record(final_turn, None, turn_context, latest_query_usage);
+        let mut turn_record = build_turn_record(
+            final_turn,
+            None,
+            turn_context,
+            latest_query_usage,
+            state.summary.last_context_occupancy.clone(),
+        );
         turn_record.error = terminal_error;
+        state
+            .turn_records_by_id
+            .insert(turn_record.id, turn_record.clone());
         if let Some(record) = record
             && let Err(error) = self.rollout_store.append_turn_deduped(
                 &record,
@@ -438,7 +457,42 @@ impl ServerRuntime {
             },
         ))
         .await;
+        if let Some(occupancy) = state.summary.last_context_occupancy.clone() {
+            self.broadcast_event(crate::ServerEvent::ContextUsageUpdated(
+                crate::ContextUsageUpdatedPayload {
+                    session_id,
+                    occupancy,
+                },
+            ))
+            .await;
+        }
     }
+}
+
+fn effective_context_window_tokens(state: &SessionActorState, runtime: &ServerRuntime) -> u64 {
+    if let Some(model) = state
+        .core
+        .latest_turn_context
+        .as_ref()
+        .map(|context| &context.model)
+    {
+        return u64::from(model.effective_context_window());
+    }
+    state
+        .summary
+        .model
+        .as_deref()
+        .and_then(|slug| runtime.deps.model_catalog.get(slug))
+        .map(|model| u64::from(model.effective_context_window()))
+        .or_else(|| {
+            state
+                .core
+                .config
+                .token_budget
+                .auto_compact_token_limit
+                .map(|limit| limit as u64)
+        })
+        .unwrap_or(0)
 }
 
 fn append_terminal_history_items(

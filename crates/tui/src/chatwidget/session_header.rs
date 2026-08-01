@@ -240,20 +240,32 @@ impl ChatWidget {
 
     /// Context length for the status bar.
     ///
-    /// Uses the latest completed query's display total (`input_tokens +
-    /// output_tokens`, or provider `total_tokens` when available). This is
-    /// **not** the session cumulative `total_input_tokens`.
+    /// Prefers the latest [`ContextOccupancy`] snapshot (same source as
+    /// `/context`). Falls back to the latest query display total against the
+    /// model's **effective** context window.
     pub(super) fn context_usage(&self) -> Option<(usize, usize, usize)> {
+        if let Some(occupancy) = self.last_context_occupancy.as_ref() {
+            let used = occupancy.total_tokens as usize;
+            let total = occupancy.context_window_tokens as usize;
+            let percent = Self::usage_percent(used, total);
+            return Some((used, total, percent));
+        }
+
         let model = self.session.model.as_ref()?;
-        let total = model.context_window as usize;
+        let total = model.effective_context_window() as usize;
         let used = self.last_query_total_tokens;
-        let capped_used = used.min(total);
-        let percent = if total == 0 {
+        let percent = Self::usage_percent(used, total);
+        Some((used, total, percent))
+    }
+
+    fn usage_percent(used: usize, total: usize) -> usize {
+        if total == 0 {
             0
         } else {
-            capped_used.saturating_mul(100) / total
-        };
-        Some((used, total, percent))
+            ((used as f64 / total as f64) * 100.0)
+                .clamp(0.0, 100.0)
+                .round() as usize
+        }
     }
 
     pub(super) fn format_compact_token_count(value: usize) -> String {
@@ -267,7 +279,7 @@ impl ChatWidget {
             write!(rendered, "{:.1}M", value as f64 / 1_000_000.0)
                 .expect("writing to String should not fail");
         } else if value >= 1_000 {
-            write!(rendered, "{:.0}k", value as f64 / 1_000.0)
+            write!(rendered, "{:.1}k", value as f64 / 1_000.0)
                 .expect("writing to String should not fail");
         } else {
             write!(rendered, "{value}").expect("writing to String should not fail");
@@ -297,37 +309,14 @@ impl ChatWidget {
         write!(rendered, " {pct}%").expect("writing to String should not fail");
     }
 
-    pub(super) fn percent_of(numerator: usize, denominator: usize) -> usize {
-        if denominator == 0 {
-            0
-        } else {
-            (numerator.saturating_mul(100) + denominator / 2) / denominator
-        }
-    }
-
     pub(super) fn session_summary_text(&self) -> String {
         self.session_summary_text_with_context(/*include_context*/ true)
     }
 
     fn session_summary_text_with_context(&self, include_context: bool) -> String {
         let model = self.model_display_name();
-        let reasoning_effort_selection = self
-            .display_reasoning_effort_selection()
-            .unwrap_or_else(|| "default".to_string());
-        let cached_input_percent =
-            Self::percent_of(self.total_cache_read_tokens, self.total_input_tokens);
-
-        let mut summary =
-            String::with_capacity(model.len() + reasoning_effort_selection.len() + 96);
+        let mut summary = String::with_capacity(model.len().saturating_add(48));
         summary.push_str(model);
-        summary.push(' ');
-        summary.push_str(&reasoning_effort_selection);
-        summary.push_str("  ↑");
-        Self::push_compact_token_count(&mut summary, self.total_input_tokens);
-        summary.push_str("  (cached ");
-        Self::push_compact_token_count(&mut summary, self.total_cache_read_tokens);
-        write!(summary, " {cached_input_percent}%)  ↓").expect("writing to String should not fail");
-        Self::push_compact_token_count(&mut summary, self.total_output_tokens);
 
         if include_context && let Some((used, total, _percent)) = self.context_usage() {
             summary.push_str("  ");
@@ -543,14 +532,15 @@ impl ChatWidget {
 
 #[cfg(test)]
 mod tests {
+    use std::hint::black_box;
     use std::path::PathBuf;
     use std::time::Instant;
 
     use devo_protocol::PermissionPreset;
     use devo_protocol::ReasoningCapability;
     use devo_protocol::ReasoningEffort;
+    use devo_protocol::canonical::item::ContextOccupancy;
     use pretty_assertions::assert_eq;
-    use std::hint::black_box;
     use tokio::sync::mpsc;
 
     use crate::app_event_sender::AppEventSender;
@@ -629,8 +619,9 @@ mod tests {
 
         let summary = widget.status_summary_text();
 
+        assert_eq!(summary.contains("high"), false);
         assert_eq!(summary.contains("default"), false);
-        assert_eq!(summary.starts_with("deepseek-v4-flash high"), true);
+        assert_eq!(summary.starts_with("deepseek-v4-flash"), true);
     }
 
     #[test]
@@ -639,7 +630,7 @@ mod tests {
 
         assert_eq!(
             widget.status_summary_text(),
-            "Test Model default  ↑124k  (cached 82k 66%)  ↓10k  ▰▰▰▰▰▰▰▰▱▱ 79% 157k/200k"
+            "Test Model  ▰▰▰▰▰▰▰▰▱▱ 83% 157.0k/190.0k"
         );
     }
 
@@ -649,7 +640,23 @@ mod tests {
         widget.last_query_input_tokens = 7;
         widget.last_query_total_tokens = 9;
 
-        assert_eq!(widget.context_usage(), Some((9, 200_000, 0)));
+        assert_eq!(widget.context_usage(), Some((9, 190_000, 0)));
+    }
+
+    #[test]
+    fn context_usage_prefers_occupancy_snapshot() {
+        let mut widget = widget_for_summary_bench();
+        widget.last_query_total_tokens = 99_000;
+        widget.last_context_occupancy = Some(ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 996_147, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 6_700,
+        ));
+
+        assert_eq!(widget.context_usage(), Some((16_700, 996_147, 2)));
+        assert_eq!(
+            widget.status_summary_text(),
+            "Test Model  ▱▱▱▱▱▱▱▱▱▱ 2% 16.7k/996.1k"
+        );
     }
 
     #[test]
@@ -673,7 +680,7 @@ mod tests {
         assert_eq!(widget.last_query_total_tokens, 48);
         assert_eq!(widget.last_query_input_tokens, 35);
         assert_eq!(widget.prompt_token_estimate, 35);
-        assert_eq!(widget.context_usage(), Some((48, 200_000, 0)));
+        assert_eq!(widget.context_usage(), Some((48, 190_000, 0)));
     }
 
     #[test]

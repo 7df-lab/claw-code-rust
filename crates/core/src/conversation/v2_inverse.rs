@@ -127,6 +127,7 @@ impl V2InverseProjector {
                 turn_id,
                 summary_item_id,
                 preserved_item_ids,
+                context_occupancy,
                 ..
             } => Ok(vec![RolloutLine::CompactionSnapshot(Box::new(
                 CompactionSnapshotLine {
@@ -138,6 +139,7 @@ impl V2InverseProjector {
                         .iter()
                         .map(legacy_item_id)
                         .collect::<Result<_, _>>()?,
+                    context_occupancy: context_occupancy.clone(),
                 },
             ))]),
             RolloutLineV2::SessionRollback {
@@ -361,6 +363,7 @@ impl V2InverseProjector {
             input_token_estimate: extras.and_then(|extras| extras.input_token_estimate),
             usage,
             latest_query_usage: extras.and_then(|extras| extras.latest_query_usage.clone()),
+            context_occupancy: extras.and_then(|extras| extras.context_occupancy.clone()),
             stop_reason: extras.and_then(|extras| extras.stop_reason.clone()),
             failure_reason: extras.and_then(|extras| extras.failure_reason),
             error,

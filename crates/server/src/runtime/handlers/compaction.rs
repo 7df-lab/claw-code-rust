@@ -191,7 +191,10 @@ impl ServerRuntime {
                         compacted_total_cache_creation_tokens,
                         compacted_total_cache_read_tokens,
                         compacted_prompt_token_estimate,
+                        compacted_occupancy,
                     ) = {
+                        let previous_occupancy =
+                            runtime_session.summary.last_context_occupancy.clone();
                         let mut core_session = runtime_session.core_session.lock().await;
                         core_session.set_prompt_messages(new_messages);
                         let prompt_bytes = core_session
@@ -201,11 +204,23 @@ impl ServerRuntime {
                                 serde_json::to_string(message).map_or(0, |json| json.len())
                             })
                             .sum::<usize>();
+                        let conversation_tokens = approx_tokens_from_byte_count(prompt_bytes);
                         let compacted_prompt_token_estimate =
-                            approx_tokens_from_byte_count(prompt_bytes)
-                                .try_into()
-                                .unwrap_or(usize::MAX);
+                            conversation_tokens.try_into().unwrap_or(usize::MAX);
                         core_session.prompt_token_estimate = compacted_prompt_token_estimate;
+                        let window = runtime_session
+                            .summary
+                            .model
+                            .as_deref()
+                            .and_then(|slug| self.deps.model_catalog.get(slug))
+                            .map(|model| u64::from(model.effective_context_window()))
+                            .unwrap_or(0);
+                        let occupancy = super::super::context_occupancy::occupancy_after_compaction(
+                            window,
+                            previous_occupancy.as_ref(),
+                            conversation_tokens,
+                            core_session.raw_context_breakdown,
+                        );
                         (
                             core_session.total_input_tokens,
                             core_session.total_output_tokens,
@@ -213,6 +228,7 @@ impl ServerRuntime {
                             core_session.total_cache_creation_tokens,
                             core_session.total_cache_read_tokens,
                             compacted_prompt_token_estimate,
+                            occupancy,
                         )
                     };
                     runtime_session.summary.total_input_tokens = compacted_total_input_tokens;
@@ -223,6 +239,36 @@ impl ServerRuntime {
                     runtime_session.summary.total_cache_read_tokens =
                         compacted_total_cache_read_tokens;
                     runtime_session.summary.prompt_token_estimate = compacted_prompt_token_estimate;
+                    runtime_session.summary.last_query_total_tokens =
+                        compacted_occupancy.total_tokens as usize;
+                    runtime_session.summary.last_context_occupancy =
+                        Some(compacted_occupancy.clone());
+                }
+
+                if !runtime_session.summary.ephemeral {
+                    let stats = crate::db::SessionStats {
+                        total_input_tokens: runtime_session.summary.total_input_tokens,
+                        total_output_tokens: runtime_session.summary.total_output_tokens,
+                        total_tokens: runtime_session.summary.total_tokens,
+                        total_cache_creation_tokens: runtime_session
+                            .summary
+                            .total_cache_creation_tokens,
+                        total_cache_read_tokens: runtime_session.summary.total_cache_read_tokens,
+                        last_input_tokens: 0,
+                        turn_count: runtime_session.summary.updated_at.timestamp() as usize,
+                        prompt_token_estimate: runtime_session.summary.prompt_token_estimate,
+                        last_context_occupancy: runtime_session
+                            .summary
+                            .last_context_occupancy
+                            .clone(),
+                    };
+                    if let Err(err) = self.deps.db.update_stats(&session_id, &stats) {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %err,
+                            "failed to persist compaction token stats to database"
+                        );
+                    }
                 }
 
                 if let Some(turn_id) = runtime_session
@@ -283,6 +329,10 @@ impl ServerRuntime {
                                 turn_id,
                                 summary_item_id: item_id,
                                 preserved_item_ids: preserved_item_ids.clone(),
+                                context_occupancy: runtime_session
+                                    .summary
+                                    .last_context_occupancy
+                                    .clone(),
                             });
                         runtime_session.persisted_turn_items.push(
                             crate::execution::PersistedTurnItem {
@@ -345,6 +395,15 @@ impl ServerRuntime {
                     )
                     .await;
                     tracing::info!(session_id = %session_id, "session compaction completed with replacement");
+                    if let Some(occupancy) = summary.last_context_occupancy.clone() {
+                        self.broadcast_event(ServerEvent::ContextUsageUpdated(
+                            crate::ContextUsageUpdatedPayload {
+                                session_id,
+                                occupancy,
+                            },
+                        ))
+                        .await;
+                    }
                     self.broadcast_event(ServerEvent::SessionCompactionCompleted(
                         SessionEventPayload { session: summary },
                     ))
@@ -362,6 +421,15 @@ impl ServerRuntime {
                     .await;
                 drop(state_change_guard);
                 tracing::info!(session_id = %session_id, "session compaction completed with replacement");
+                if let Some(occupancy) = summary.last_context_occupancy.clone() {
+                    self.broadcast_event(ServerEvent::ContextUsageUpdated(
+                        crate::ContextUsageUpdatedPayload {
+                            session_id,
+                            occupancy,
+                        },
+                    ))
+                    .await;
+                }
                 self.broadcast_event(ServerEvent::SessionCompactionCompleted(
                     SessionEventPayload { session: summary },
                 ))

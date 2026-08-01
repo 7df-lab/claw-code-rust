@@ -122,6 +122,12 @@ pub struct TurnRecord {
     /// have been performed for tools, retries, or delegated work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_query_usage: Option<TurnUsage>,
+    /// Context-window occupancy snapshot after this turn's latest model query.
+    ///
+    /// Used by resume/fork/rollback to restore category occupancy at a cut
+    /// turn rather than copying the session tip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
     /// The terminal provider/model stop reason, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<StopReason>,
@@ -426,6 +432,9 @@ pub struct CompactionSnapshotLine {
     pub summary_item_id: ItemId,
     /// The pre-existing item ids that remain after compaction, in prompt order.
     pub preserved_item_ids: Vec<ItemId>,
+    /// Post-compaction context occupancy, when computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
 }
 
 /// Stores an append-only rollback marker for a session rollout.
@@ -673,6 +682,35 @@ mod tests {
     }
 
     #[test]
+    fn turn_record_roundtrips_context_occupancy() {
+        use pretty_assertions::assert_eq;
+
+        let occupancy = devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 5_000,
+            /*tools_builtin*/ 20_000, /*tools_mcp*/ 15_000, /*conversation*/ 50_000,
+        );
+        let mut turn = make_test_turn(TurnStatus::Completed);
+        turn.context_occupancy = Some(occupancy.clone());
+        let json = serde_json::to_string(&turn).expect("serialize");
+        let restored: TurnRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.context_occupancy, Some(occupancy));
+    }
+
+    #[test]
+    fn turn_record_reads_legacy_record_without_context_occupancy() {
+        let expected = make_test_turn(TurnStatus::Completed);
+        let mut value = serde_json::to_value(&expected).expect("serialize value");
+        value
+            .as_object_mut()
+            .expect("turn json object")
+            .remove("context_occupancy");
+
+        let restored: TurnRecord = serde_json::from_value(value).expect("deserialize legacy");
+        assert_eq!(restored.context_occupancy, None);
+        assert_eq!(restored, expected);
+    }
+
+    #[test]
     fn turn_cannot_transition_from_completed_to_running() {
         // Per L3-BEH-CORE-001 §4: Completed → Running is ILLEGAL
         let completed = TurnStatus::Completed;
@@ -900,6 +938,7 @@ mod tests {
                 turn_id: turn.id,
                 summary_item_id: item.id,
                 preserved_item_ids: vec![item.id],
+                context_occupancy: None,
             })),
             RolloutLine::SessionRollback(Box::new(SessionRollbackLine {
                 timestamp: Utc::now(),
@@ -1091,10 +1130,38 @@ mod tests {
             turn_id: TurnId::new(),
             summary_item_id: ItemId::new(),
             preserved_item_ids: vec![ItemId::new(), ItemId::new(), ItemId::new()],
+            context_occupancy: Some(
+                devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+                    /*context_window_tokens*/ 80_000, /*base*/ 8_000,
+                    /*skills*/ 2_000, /*tools_builtin*/ 10_000, /*tools_mcp*/ 0,
+                    /*conversation*/ 20_000,
+                ),
+            ),
         };
         let json = serde_json::to_string(&snapshot).expect("serialize");
         let restored: CompactionSnapshotLine = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored.preserved_item_ids.len(), 3);
+        assert_eq!(restored.context_occupancy, snapshot.context_occupancy);
+    }
+
+    #[test]
+    fn compaction_snapshot_reads_legacy_without_context_occupancy() {
+        let snapshot = CompactionSnapshotLine {
+            timestamp: Utc::now(),
+            session_id: SessionId::new(),
+            turn_id: TurnId::new(),
+            summary_item_id: ItemId::new(),
+            preserved_item_ids: vec![ItemId::new()],
+            context_occupancy: None,
+        };
+        let mut value = serde_json::to_value(&snapshot).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("snapshot object")
+            .remove("context_occupancy");
+        let restored: CompactionSnapshotLine =
+            serde_json::from_value(value).expect("deserialize legacy");
+        assert_eq!(restored.context_occupancy, None);
     }
 
     // ── Helpers ───────────────────────────────────────────────
@@ -1151,6 +1218,7 @@ mod tests {
             input_token_estimate: Some(100),
             usage: None,
             latest_query_usage: None,
+            context_occupancy: None,
             stop_reason: None,
             failure_reason: None,
             error: None,

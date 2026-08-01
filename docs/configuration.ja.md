@@ -219,7 +219,6 @@ stdio の例:
 ```toml
 [mcp]
 auto_start = true
-refresh_on_config_reload = true
 
 [[mcp.servers]]
 id = "filesystem"
@@ -264,7 +263,7 @@ url = "https://example.com/mcp/sse"
 
 フィールドの説明:
 
-- `auto_start` と `refresh_on_config_reload` は既定で `true` です。
+- `auto_start` は既定で `true` です。実行中セッションでの MCP 有効化/無効化は `mcp/set_enabled`（TUI `/mcps`）で即時反映されます。
 - `startup_policy` は有効なサーバーの起動タイミングを制御します: `eager` は
   ブートストラップ時、`lazy` は初回利用時、`manual` は明示的な要求のみです。
 - stdio では `env` がリテラル値を渡し、`env_vars` がローカル環境から継承する
@@ -286,6 +285,8 @@ url = "https://example.com/mcp/sse"
 `servers` は配列です。したがって、workspace の `[[mcp.servers]]` リストは
 ユーザーレベルのリストを `id` 単位でマージせず置き換えます。
 
-TUI の `/mcps` で対話的に確認できます（一覧 → 詳細 → ツール。Enable/Disable は設定のみ更新し、実行時反映にはセッション再起動が必要な場合があります）。クライアントは `mcp/list` / `mcp/tools` RPC も利用できます。ユーザー設定 (`~/.devo/config.toml`) は
-`devo mcp add|list|remove|enable|disable` でも管理できます（`--transport stdio|http|sse`）。
-クライアントは `mcp/list` RPC でランタイム状態を取得できます。
+TUI の `/mcps` で対話的に確認できます（一覧 → 詳細 → ツール。Enable/Disable は
+設定を保存し、`mcp/set_enabled` で次ターンからライブ適用します）。クライアントは
+`mcp/list` / `mcp/tools` / `mcp/set_enabled` RPC も利用できます。ユーザー設定
+(`~/.devo/config.toml`) は `devo mcp add|list|remove|enable|disable` でも管理できます
+（`--transport stdio|http|sse`）。

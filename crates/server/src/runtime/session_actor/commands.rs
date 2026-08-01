@@ -182,6 +182,9 @@ pub(crate) enum SessionCommand {
         tool_registry: Option<Arc<devo_core::tools::ToolRegistry>>,
         reply: oneshot::Sender<()>,
     },
+    GetRuntimeContext {
+        reply: oneshot::Sender<Arc<crate::session_context::SessionRuntimeContext>>,
+    },
     GetResumeSnapshot {
         reply: oneshot::Sender<super::snapshots::SessionResumeSnapshot>,
     },

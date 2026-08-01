@@ -246,7 +246,6 @@ Stdio example:
 ```toml
 [mcp]
 auto_start = true
-refresh_on_config_reload = true
 
 [[mcp.servers]]
 id = "filesystem"
@@ -291,7 +290,7 @@ url = "https://example.com/mcp/sse"
 
 Field notes:
 
-- `auto_start` and `refresh_on_config_reload` default to `true`.
+- `auto_start` defaults to `true`. Enable/disable of MCP servers in a running session is applied live via `mcp/set_enabled` (TUI `/mcps`).
 - `startup_policy` controls when an enabled server starts: `eager` during
   bootstrap, `lazy` on first use, or `manual` only by explicit request.
 - For stdio, `env` provides literal values and `env_vars` lists names inherited
@@ -336,11 +335,12 @@ devo mcp disable time
 devo mcp remove time
 ```
 
-CLI changes apply on the next Devo start (or config reload). They do not hot-reload
-an already-running interactive session.
+CLI `devo mcp enable|disable` writes user `config.toml` for offline use. An
+already-running interactive session applies enable/disable live through the TUI
+`/mcps` path (`mcp/set_enabled` RPC).
 
 Verify configuration in the TUI with `/mcps` (interactive server list → detail →
-tools; Enable/Disable writes config only and may need a session restart for live
-runtime). Clients can also call the `mcp/list` / `mcp/tools` RPCs for runtime
-status and tool catalogs from the shared MCP manager. Use `devo mcp add|list|remove|enable|disable`
-for CLI management.
+tools; Enable/Disable persists config and applies the manager + tool registry
+for the next turn). Clients can also call `mcp/list`, `mcp/tools`, and
+`mcp/set_enabled`. Use `devo mcp add|list|remove|enable|disable` for CLI
+management.

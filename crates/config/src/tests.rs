@@ -596,6 +596,45 @@ fn loader_ensures_bundled_code_search_mcp_when_servers_list_is_empty() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Trace: L2-DES-MCP-002
+/// Verifies: enabling bundled code_search materializes it into user config.toml.
+#[test]
+fn set_mcp_server_enabled_materializes_bundled_code_search() {
+    let root = unique_temp_dir("config-bundled-mcp-enable");
+    let home = root.join("home").join(".devo");
+    std::fs::create_dir_all(&home).expect("home config dir");
+    std::fs::write(home.join("config.toml"), "[mcp]\nservers = []\n").expect("write user config");
+
+    let config_file = home.join("config.toml");
+    let mut store = AppConfigStore::load(home, /*workspace_root*/ None).expect("load store");
+    assert!(
+        !std::fs::read_to_string(&config_file)
+            .expect("read user config")
+            .contains("code_search")
+    );
+
+    store
+        .set_mcp_server_enabled(
+            super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID,
+            /*enabled*/ true,
+        )
+        .expect("enable bundled code_search");
+
+    let server = store
+        .mcp_servers()
+        .iter()
+        .find(|record| record.id.0 == super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID)
+        .expect("bundled code_search server");
+    assert!(server.enabled);
+
+    let user_config = std::fs::read_to_string(&config_file).expect("read user config");
+    assert!(user_config.contains("code_search"));
+    assert!(user_config.contains("devo-code-search-mcp"));
+    assert!(user_config.contains("enabled = true") || user_config.contains("enabled=true"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn loader_reads_hook_command_config() {
     let root = unique_temp_dir("config-hooks");

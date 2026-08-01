@@ -60,9 +60,6 @@ pub struct McpConfig {
     /// Whether enabled servers should be auto-started during bootstrap.
     #[serde(default = "default_mcp_auto_start")]
     pub auto_start: bool,
-    /// Whether config reload should refresh running server catalogs.
-    #[serde(default = "default_mcp_refresh_on_config_reload")]
-    pub refresh_on_config_reload: bool,
 }
 
 impl Default for McpConfig {
@@ -70,7 +67,6 @@ impl Default for McpConfig {
         let mut config = Self {
             servers: Vec::new(),
             auto_start: true,
-            refresh_on_config_reload: true,
         };
         ensure_bundled_mcp_servers(&mut config);
         config
@@ -154,10 +150,6 @@ fn ensure_bundled_mcp_servers(config: &mut McpConfig) {
 }
 
 fn default_mcp_auto_start() -> bool {
-    true
-}
-
-fn default_mcp_refresh_on_config_reload() -> bool {
     true
 }
 
@@ -383,7 +375,6 @@ mod tests {
                 auth_ref: None,
             }],
             auto_start: true,
-            refresh_on_config_reload: true,
         };
         config.ensure_bundled_servers();
         assert_eq!(config.servers.len(), 1);
@@ -398,7 +389,6 @@ mod tests {
         let mut config = McpConfig {
             servers: Vec::new(),
             auto_start: true,
-            refresh_on_config_reload: true,
         };
         config.ensure_bundled_servers();
         assert_eq!(config.servers.len(), 1);
@@ -443,7 +433,6 @@ mod tests {
                 auth_ref: None,
             }],
             auto_start: true,
-            refresh_on_config_reload: true,
         };
         custom.apply_code_search_workspace_cwd(PathBuf::from("/workspace"));
         match &custom.servers[0].transport {

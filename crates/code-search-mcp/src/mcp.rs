@@ -403,4 +403,16 @@ mod tests {
         assert_eq!(output.operation, CodeSearchOperation::Search);
         assert_eq!(output.results.len(), 1);
     }
+
+    /// Trace: L2-DES-MCP-002
+    /// Verifies: the MCP server advertises tools capability and the code_search tool.
+    #[test]
+    fn server_advertises_code_search_tool() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let server = test_server(temp.path().to_path_buf(), temp.path().join("cache"));
+        let info = server.get_info();
+        assert!(info.capabilities.tools.is_some());
+        assert_eq!(server.tools.len(), 1);
+        assert_eq!(server.tools[0].name.as_ref(), TOOL_NAME);
+    }
 }

@@ -53,6 +53,11 @@ impl ToolRegistry {
         self.handlers.get(name)
     }
 
+    /// Returns the shared unified-exec process store when this registry owns one.
+    pub fn unified_exec_store(&self) -> Option<Arc<ProcessStore>> {
+        self.unified_exec_store.clone()
+    }
+
     pub fn spec(&self, name: &str) -> Option<&ToolSpec> {
         self.spec_index.get(name).map(|&idx| &self.specs[idx])
     }

@@ -144,7 +144,7 @@ impl SandboxLaunchPlan {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, any(target_os = "macos", windows)))]
     pub(crate) fn wrap(&self) -> &devo_sandbox::SandboxWrap {
         &self.wrap
     }

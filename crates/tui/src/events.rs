@@ -507,6 +507,14 @@ pub(crate) enum WorkerEvent {
         name: String,
         tools: Vec<devo_protocol::canonical::rpc_admin::McpToolEntry>,
     },
+    /// MCP enable/disable applied via `mcp/set_enabled`.
+    McpServerEnabled {
+        name: String,
+        enabled: bool,
+        servers: Vec<devo_protocol::canonical::rpc_admin::McpServerInfo>,
+    },
+    /// MCP enable/disable failed.
+    McpServerEnableFailed { name: String, message: String },
     /// ACP-native available commands changed for the active session.
     AcpAvailableCommandsUpdated {
         /// Commands advertised through `session/update`.

@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 use crate::events::ToolProgressSender;
 use crate::invocation::FunctionToolOutput;
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "macos", windows)))]
 pub(crate) use launch::SandboxLaunchPlan;
 #[cfg(test)]
 pub(crate) use resolve::platform_shell_program;

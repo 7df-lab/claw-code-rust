@@ -294,6 +294,11 @@ enum OperationCommand {
         path: PathBuf,
         enabled: bool,
     },
+    /// Persistently enable or disable one MCP server and apply it live.
+    SetMcpServerEnabled {
+        name: String,
+        enabled: bool,
+    },
     /// Request proactive compaction for the active session.
     CompactSession,
     /// Show the current goal for the active session.
@@ -606,6 +611,12 @@ impl QueryWorkerHandle {
     pub(crate) fn set_skill_enabled(&self, path: PathBuf, enabled: bool) -> Result<()> {
         self.command_tx
             .send(OperationCommand::SetSkillEnabled { path, enabled })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    pub(crate) fn set_mcp_server_enabled(&self, name: String, enabled: bool) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::SetMcpServerEnabled { name, enabled })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -1282,18 +1293,17 @@ async fn run_worker_inner(
                                 }
                             }
                             Some(OperationCommand::ListMcpServers) => {
-                                if let Err(error) = emit_mcp_servers_list(&mut client, event_tx).await
+                                if let Err(error) =
+                                    emit_mcp_servers_list(&mut client, event_tx).await
                                 {
-                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                        message: error.to_string(),
-                                        hint: None,
-                                        turn_count,
-                                        total_input_tokens,
-                                        total_output_tokens,
-                                        total_tokens,
-                                        total_cache_read_tokens,
-                                        prompt_token_estimate: total_input_tokens,
-                                        last_query_input_tokens,
+                                    // Still open the picker from config so a single
+                                    // broken/runtime-stuck MCP server cannot blank /mcps.
+                                    tracing::warn!(
+                                        error = %error,
+                                        "mcp/list failed; opening /mcps from config only"
+                                    );
+                                    let _ = event_tx.send(WorkerEvent::McpServersListed {
+                                        servers: Vec::new(),
                                     });
                                 }
                             }
@@ -1612,6 +1622,31 @@ async fn run_worker_inner(
                                             total_cache_read_tokens,
                                             prompt_token_estimate: total_input_tokens,
                                             last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::SetMcpServerEnabled { name, enabled }) => {
+                                match client
+                                    .mcp_set_enabled(
+                                        devo_protocol::canonical::rpc_admin::McpSetEnabledParams {
+                                            name: name.clone(),
+                                            enabled,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        let _ = event_tx.send(WorkerEvent::McpServerEnabled {
+                                            name,
+                                            enabled,
+                                            servers: result.servers,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::McpServerEnableFailed {
+                                            name,
+                                            message: error.to_string(),
                                         });
                                     }
                                 }

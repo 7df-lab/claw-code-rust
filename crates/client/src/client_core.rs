@@ -568,6 +568,13 @@ impl ServerClientCore {
         self.request_devo("mcp/tools", params).await
     }
 
+    pub(crate) async fn mcp_set_enabled(
+        &mut self,
+        params: devo_protocol::canonical::rpc_admin::McpSetEnabledParams,
+    ) -> Result<devo_protocol::canonical::rpc_admin::McpSetEnabledResult> {
+        self.request_devo("mcp/set_enabled", params).await
+    }
+
     pub(crate) async fn model_catalog(
         &mut self,
         params: ModelCatalogParams,

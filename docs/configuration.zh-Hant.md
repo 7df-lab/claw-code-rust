@@ -210,7 +210,6 @@ stdio 範例：
 ```toml
 [mcp]
 auto_start = true
-refresh_on_config_reload = true
 
 [[mcp.servers]]
 id = "filesystem"
@@ -255,7 +254,7 @@ url = "https://example.com/mcp/sse"
 
 欄位說明：
 
-- `auto_start` 與 `refresh_on_config_reload` 預設均為 `true`。
+- `auto_start` 預設為 `true`。執行中工作階段的 MCP 啟用/停用會透過 `mcp/set_enabled`（TUI `/mcps`）即時套用。
 - `startup_policy` 控制已啟用伺服器的啟動時機：`eager` 在啟動階段啟動，`lazy`
   首次使用時啟動，`manual` 僅依明確請求啟動。
 - stdio 下，`env` 提供字面值，`env_vars` 列出從本機環境繼承的變數名稱；
@@ -274,6 +273,8 @@ url = "https://example.com/mcp/sse"
 合併行為：`[mcp]` 與其他表一樣依欄位合併，但 `servers` 是陣列。專案級的
 `[[mcp.servers]]` 列表會整體取代使用者級列表，而不是依 `id` 合併。
 
-可在 TUI 中用 `/mcps`（互動式清單 → 詳情 → 工具；Enable/Disable 僅寫設定，執行階段可能需重啟工作階段）驗證配置。也可用 `devo mcp add|list|remove|enable|disable`
-管理使用者級 `~/.devo/config.toml`（支援 `--transport stdio|http|sse`）。客戶端可呼叫
-`mcp/list` RPC 取得執行時狀態。
+可在 TUI 中用 `/mcps`（互動式清單 → 詳情 → 工具；Enable/Disable 會寫入設定並透過
+`mcp/set_enabled` 即時套用到下一個回合）驗證配置。也可用
+`devo mcp add|list|remove|enable|disable` 管理使用者級 `~/.devo/config.toml`
+（支援 `--transport stdio|http|sse`）。客戶端可呼叫 `mcp/list`、`mcp/tools`、
+`mcp/set_enabled` RPC。

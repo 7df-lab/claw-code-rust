@@ -195,6 +195,19 @@ pub struct McpToolsResult {
     pub tools: Vec<McpToolEntry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSetEnabledParams {
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSetEnabledResult {
+    pub servers: Vec<McpServerInfo>,
+}
+
 // ── context/usage/read ──
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

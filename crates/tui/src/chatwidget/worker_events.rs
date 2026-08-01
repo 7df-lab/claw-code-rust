@@ -1195,6 +1195,35 @@ impl ChatWidget {
             WorkerEvent::McpToolsListed { name, tools } => {
                 self.on_mcp_tools_listed(name, tools);
             }
+            WorkerEvent::McpServerEnabled {
+                name,
+                enabled,
+                servers,
+            } => {
+                let action = if enabled { "enabled" } else { "disabled" };
+                let status = servers
+                    .iter()
+                    .find(|server| server.name == name)
+                    .map(|server| server.status.as_str())
+                    .unwrap_or("unknown");
+                self.set_mcp_reopen_detail(Some(name.clone()));
+                if status == "failed" {
+                    self.set_status_message(format!(
+                        "MCP `{name}` {action} in config but runtime startup failed"
+                    ));
+                } else {
+                    self.set_status_message(format!("MCP `{name}` {action}"));
+                }
+                self.on_mcp_servers_listed(servers);
+            }
+            WorkerEvent::McpServerEnableFailed { name, message } => {
+                self.set_mcp_reopen_detail(None);
+                self.add_to_history(crate::history_cell::new_error_event_with_hint(
+                    format!("Failed to update MCP server `{name}`: {message}"),
+                    Some("mcp enable/disable failed".to_string()),
+                ));
+                self.set_status_message(format!("Failed to update MCP `{name}`"));
+            }
             WorkerEvent::AcpAvailableCommandsUpdated { commands } => {
                 self.acp_available_commands = commands;
                 let count = self.acp_available_commands.len();

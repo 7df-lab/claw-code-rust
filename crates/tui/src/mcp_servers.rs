@@ -58,7 +58,10 @@ mod tests {
     #[test]
     fn render_mcp_servers_markdown_handles_empty_config() {
         assert_eq!(
-            render_mcp_servers_markdown(&McpConfig::default()),
+            render_mcp_servers_markdown(&McpConfig {
+                servers: Vec::new(),
+                auto_start: true,
+            }),
             "_No MCP servers configured._"
         );
     }
@@ -120,7 +123,6 @@ mod tests {
                 },
             ],
             auto_start: true,
-            refresh_on_config_reload: true,
         });
 
         assert!(body.contains("`docs` - Docs"));

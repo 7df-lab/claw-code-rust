@@ -148,6 +148,9 @@ fn list_status_label(server: &McpPickerServer) -> &str {
 /// Compact right-column meta for the server list (no command/URL).
 fn list_row_meta(server: &McpPickerServer) -> String {
     let status = list_status_label(server);
+    if !server.enabled {
+        return status.to_string();
+    }
     match server.tool_count {
         Some(count) => format!("{status} · {} · {count} tools", server.transport_kind),
         None => format!("{status} · {}", server.transport_kind),
@@ -215,9 +218,13 @@ fn detail_subtitle_lines(server: &McpPickerServer) -> Vec<ratatui::text::Line<'s
     use ratatui::text::Span;
 
     let status = detail_status_label(server);
-    let summary = match server.tool_count {
-        Some(count) => format!("{status} · {} · {count} tools", server.transport_kind),
-        None => format!("{status} · {}", server.transport_kind),
+    let summary = if !server.enabled {
+        status.to_string()
+    } else {
+        match server.tool_count {
+            Some(count) => format!("{status} · {} · {count} tools", server.transport_kind),
+            None => format!("{status} · {}", server.transport_kind),
+        }
     };
 
     let mut lines = vec![Line::from(summary.dim())];
@@ -464,6 +471,26 @@ mod tests {
                 name: "time".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn mcp_server_list_params_disabled_omits_transport_and_tool_count() {
+        let servers = vec![McpPickerServer {
+            id: "code_search".to_string(),
+            display_name: "Code Search".to_string(),
+            enabled: false,
+            transport_kind: "stdio".to_string(),
+            target: "devo-code-search-mcp".to_string(),
+            auth_summary: "none".to_string(),
+            capabilities: "tools".to_string(),
+            config_path: "/tmp/config.toml".to_string(),
+            status: Some("disabled".to_string()),
+            tool_count: Some(0),
+        }];
+        let params = mcp_server_list_params(&servers);
+        assert_eq!(params.items[0].description.as_deref(), Some("disabled"));
+        let detail = mcp_server_detail_params(&servers[0]);
+        assert_eq!(detail.subtitle_lines[0].to_string(), "disabled");
     }
 
     #[test]

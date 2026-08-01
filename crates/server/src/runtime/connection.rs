@@ -366,6 +366,9 @@ impl ServerRuntime {
             }
             Some(ClientMethod::McpList) => Some(self.handle_mcp_list(id?, params).await),
             Some(ClientMethod::McpTools) => Some(self.handle_mcp_tools(id?, params).await),
+            Some(ClientMethod::McpSetEnabled) => {
+                Some(self.handle_mcp_set_enabled(id?, params).await)
+            }
             // get the model catalog, aka the configured models list
             Some(ClientMethod::ModelCatalog) => Some(self.handle_model_catalog(id?, params).await),
             Some(ClientMethod::ModelConfig) => Some(self.handle_model_config(id?, params).await),
@@ -1514,7 +1517,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_list_returns_empty_servers_for_default_manager() {
+    async fn mcp_list_includes_bundled_disabled_code_search() {
         let temp = TempDir::new().expect("temp dir");
         let runtime = build_runtime(temp.path());
         let connection_id = initialized_connection(&runtime).await;
@@ -1531,10 +1534,142 @@ mod tests {
             .expect("mcp/list response");
         let result: SuccessResponse<devo_protocol::canonical::rpc_admin::McpListResult> =
             serde_json::from_value(response.clone()).expect("deserialize mcp/list");
-        assert_eq!(
-            result.result,
-            devo_protocol::canonical::rpc_admin::McpListResult { servers: vec![] }
+        let code_search = result
+            .result
+            .servers
+            .iter()
+            .find(|server| server.name == "code_search")
+            .expect("bundled code_search should be listed");
+        assert_eq!(code_search.status, "disabled");
+        assert_eq!(code_search.tool_count, 0);
+    }
+
+    #[tokio::test]
+    async fn mcp_set_enabled_applies_bad_binary_as_failed_status() {
+        let temp = TempDir::new().expect("temp dir");
+        {
+            let mut store = AppConfigStore::load(temp.path().to_path_buf(), None)
+                .expect("load app config store");
+            store
+                .upsert_mcp_server(devo_core::McpServerRecord {
+                    id: devo_core::McpServerId("bad_mcp".to_string()),
+                    display_name: "Bad MCP".to_string(),
+                    transport: devo_core::McpTransportConfig::Stdio {
+                        command: vec!["__devo_missing_mcp_binary__".to_string()],
+                        cwd: None,
+                        env: Default::default(),
+                        env_vars: Vec::new(),
+                    },
+                    startup_policy: devo_core::McpStartupPolicy::Lazy,
+                    enabled: false,
+                    trust_policy: Default::default(),
+                    allowed_capabilities: Vec::new(),
+                    roots_policy: Default::default(),
+                    output_limits: Default::default(),
+                    auth_ref: None,
+                })
+                .expect("upsert bad mcp server");
+        }
+
+        let mcp_manager = Arc::new(devo_mcp::manager::RmcpMcpManager::new(
+            {
+                let store = AppConfigStore::load(temp.path().to_path_buf(), None)
+                    .expect("reload app config store");
+                store.effective_config().mcp.clone()
+            },
+            Default::default(),
+        ));
+        let db = Arc::new(
+            crate::db::Database::open(temp.path().join("connection.db"))
+                .expect("open test database"),
         );
+        let provider: Arc<dyn ModelProviderSDK> = Arc::new(NoopProvider);
+        let runtime = ServerRuntime::new(
+            temp.path().to_path_buf(),
+            ServerRuntimeDependencies::new(
+                Arc::clone(&provider),
+                Arc::new(SingleProviderRouter::new(provider)),
+                Arc::new(ToolRegistry::new()),
+                mcp_manager,
+                "test-model".to_string(),
+                Arc::new(PresetModelCatalog::default()),
+                Arc::new(ProviderVendorCatalog::default()),
+                Box::new(FileSystemSkillCatalog::new(SkillsConfig {
+                    bundled: Some(BundledSkillsConfig { enabled: false }),
+                    ..SkillsConfig::default()
+                })),
+                devo_core::AgentsMdConfig::default(),
+                db,
+                Arc::new(std::sync::Mutex::new(
+                    AppConfigStore::load(temp.path().to_path_buf(), None)
+                        .expect("load app config store"),
+                )),
+            ),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 4,
+                    "method": "mcp/set_enabled",
+                    "params": { "name": "bad_mcp", "enabled": true }
+                }),
+            )
+            .await
+            .expect("mcp/set_enabled response");
+        let result: SuccessResponse<devo_protocol::canonical::rpc_admin::McpSetEnabledResult> =
+            serde_json::from_value(response).expect("deserialize mcp/set_enabled");
+        let bad = result
+            .result
+            .servers
+            .iter()
+            .find(|server| server.name == "bad_mcp")
+            .expect("bad_mcp should be listed");
+        assert_eq!(bad.status, "failed");
+        assert_eq!(bad.tool_count, 0);
+
+        let list_response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 5,
+                    "method": "mcp/list",
+                    "params": {}
+                }),
+            )
+            .await
+            .expect("mcp/list response");
+        let list: SuccessResponse<devo_protocol::canonical::rpc_admin::McpListResult> =
+            serde_json::from_value(list_response).expect("deserialize mcp/list");
+        let listed = list
+            .result
+            .servers
+            .iter()
+            .find(|server| server.name == "bad_mcp")
+            .expect("bad_mcp should remain listed");
+        assert_eq!(listed.status, "failed");
+    }
+
+    #[tokio::test]
+    async fn mcp_set_enabled_rejects_unknown_server() {
+        let temp = TempDir::new().expect("temp dir");
+        let runtime = build_runtime(temp.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 6,
+                    "method": "mcp/set_enabled",
+                    "params": { "name": "missing-server", "enabled": true }
+                }),
+            )
+            .await
+            .expect("mcp/set_enabled response");
+        let error: ErrorResponse = serde_json::from_value(response).expect("deserialize error");
+        assert_eq!(error.error.code, ProtocolErrorCode::InternalError);
     }
 
     fn assert_agent_message_chunk_update(

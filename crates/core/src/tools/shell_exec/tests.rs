@@ -2,7 +2,6 @@ use super::*;
 use crate::ToolContent;
 use pretty_assertions::assert_eq;
 use std::hint::black_box;
-use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -279,7 +278,7 @@ async fn execute_shell_command_error_output_is_text_only() {
     assert!(matches!(result.content, ToolContent::Text(text) if text.contains("exit code 7")));
 }
 
-use super::{SandboxLaunchPlan, platform_shell_program, preview, resolve_shell, truncate_output};
+use super::{platform_shell_program, preview, resolve_shell, truncate_output};
 
 #[cfg(unix)]
 #[tokio::test]
@@ -345,7 +344,7 @@ fn macos_pipe_and_pty_launch_plans_wrap_via_sandbox_exec() {
                 assert!(wrapped.helper_enforces, "{label}");
             }
             devo_sandbox::SandboxWrap::None => assert!(
-                !Path::new("/usr/bin/sandbox-exec").is_file(),
+                !std::path::Path::new("/usr/bin/sandbox-exec").is_file(),
                 "{label}: sandbox-exec exists but wrap was declined"
             ),
         }

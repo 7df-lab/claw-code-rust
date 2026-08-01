@@ -227,7 +227,6 @@ Devo подключается к серверам [Model Context Protocol](https
 ```toml
 [mcp]
 auto_start = true
-refresh_on_config_reload = true
 
 [[mcp.servers]]
 id = "filesystem"
@@ -272,7 +271,7 @@ url = "https://example.com/mcp/sse"
 
 Примечания к полям:
 
-- `auto_start` и `refresh_on_config_reload` по умолчанию равны `true`.
+- `auto_start` по умолчанию равен `true`. Включение/отключение MCP в активной сессии применяется через `mcp/set_enabled` (TUI `/mcps`).
 - `startup_policy` управляет запуском включенного сервера: `eager` - при
   bootstrap, `lazy` - при первом использовании, `manual` - только по явному
   запросу.
@@ -296,7 +295,9 @@ url = "https://example.com/mcp/sse"
 `servers` - это массив. Поэтому список `[[mcp.servers]]` уровня проекта заменяет
 пользовательский список целиком, а не сливает по `id`.
 
-Проверить конфигурацию можно в TUI командой `/mcps` (интерактивный список → детали → инструменты; Enable/Disable только пишет конфиг, для runtime может понадобиться перезапуск сессии). Пользовательский
-`~/.devo/config.toml` также можно менять через
-`devo mcp add|list|remove|enable|disable` (`--transport stdio|http|sse`). Клиенты
-могут вызывать RPC `mcp/list` для runtime-статуса.
+Проверить конфигурацию можно в TUI командой `/mcps` (интерактивный список →
+детали → инструменты; Enable/Disable сохраняет конфиг и применяет
+`mcp/set_enabled` для следующего хода). Пользовательский `~/.devo/config.toml`
+также можно менять через `devo mcp add|list|remove|enable|disable`
+(`--transport stdio|http|sse`). Клиенты могут вызывать RPC `mcp/list`,
+`mcp/tools` и `mcp/set_enabled`.

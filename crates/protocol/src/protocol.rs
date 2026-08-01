@@ -107,6 +107,7 @@ pub enum ClientMethod {
     ProviderVendorUpsert,
     McpList,
     McpTools,
+    McpSetEnabled,
     // New Native API methods (canonical types; not part of the legacy
     // `_devo/*` alias surface).
     SessionTurnsList,
@@ -178,6 +179,7 @@ impl ClientMethod {
             Self::ProviderVendorUpsert => "provider/upsert",
             Self::McpList => "mcp/list",
             Self::McpTools => "mcp/tools",
+            Self::McpSetEnabled => "mcp/set_enabled",
             Self::SessionTurnsList => "session/turns/list",
             Self::SessionItemsList => "session/items/list",
             Self::SessionRollbackPreview => "session/rollback/preview",
@@ -247,6 +249,7 @@ impl ClientMethod {
             "provider/upsert" => Self::ProviderVendorUpsert,
             "mcp/list" => Self::McpList,
             "mcp/tools" => Self::McpTools,
+            "mcp/set_enabled" => Self::McpSetEnabled,
             "session/turns/list" => Self::SessionTurnsList,
             "session/items/list" => Self::SessionItemsList,
             "session/rollback/preview" => Self::SessionRollbackPreview,
@@ -703,6 +706,15 @@ mod tests {
             Some(ClientMethod::McpTools)
         );
         assert_eq!(ClientMethod::McpTools.as_str(), "mcp/tools");
+    }
+
+    #[test]
+    fn client_method_recognizes_mcp_set_enabled() {
+        assert_eq!(
+            ClientMethod::parse("mcp/set_enabled"),
+            Some(ClientMethod::McpSetEnabled)
+        );
+        assert_eq!(ClientMethod::McpSetEnabled.as_str(), "mcp/set_enabled");
     }
 
     #[test]

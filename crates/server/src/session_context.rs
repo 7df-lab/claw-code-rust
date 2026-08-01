@@ -58,7 +58,9 @@ use crate::load_server_provider;
 pub(crate) struct SessionRuntimeContext {
     pub(crate) provider: Arc<dyn ModelProviderSDK>,
     pub(crate) provider_router: Arc<dyn ProviderRouter>,
-    pub(crate) registry: Arc<ToolRegistry>,
+    /// Live tool registry. Wrapped so MCP enable/disable can swap the Arc for
+    /// the next turn without rebuilding the whole process context graph.
+    pub(crate) registry: Arc<StdMutex<Arc<ToolRegistry>>>,
     pub(crate) mcp_manager: Arc<dyn McpManager>,
     pub(crate) default_model: String,
     pub(crate) model_catalog: Arc<dyn ModelCatalog>,
@@ -123,7 +125,7 @@ impl SessionRuntimeContext {
         Self {
             provider,
             provider_router,
-            registry,
+            registry: Arc::new(StdMutex::new(registry)),
             mcp_manager,
             default_model,
             model_catalog,
@@ -131,6 +133,22 @@ impl SessionRuntimeContext {
             agents_md,
             config_store,
         }
+    }
+
+    pub(crate) fn tool_registry(&self) -> Arc<ToolRegistry> {
+        Arc::clone(
+            &self
+                .registry
+                .lock()
+                .expect("tool registry mutex should not be poisoned"),
+        )
+    }
+
+    pub(crate) fn replace_tool_registry(&self, registry: Arc<ToolRegistry>) {
+        *self
+            .registry
+            .lock()
+            .expect("tool registry mutex should not be poisoned") = registry;
     }
 
     pub(crate) async fn load_for_workspace(
@@ -178,10 +196,10 @@ impl SessionRuntimeContext {
                 config.mcp_oauth_credentials_store.unwrap_or_default(),
             ));
             let tool_plan = ToolPlanConfig::from_app_config(&config);
-            let registry = Arc::new(
+            let registry = Arc::new(StdMutex::new(Arc::new(
                 handlers::build_registry_from_plan_with_mcp(&tool_plan, Arc::clone(&mcp_manager))
                     .await,
-            );
+            )));
             (registry, mcp_manager)
         };
         let model_catalog: Arc<dyn ModelCatalog> = Arc::new(PresetModelCatalog::load_from_config(
@@ -223,20 +241,20 @@ impl SessionRuntimeContext {
             )) as Box<dyn SkillCatalog + Send>,
         ));
 
-        Ok(Arc::new(Self::from_parts(
+        Ok(Arc::new(Self {
             provider,
             provider_router,
             registry,
             mcp_manager,
-            provider_default_model,
+            default_model: provider_default_model,
             model_catalog,
             skill_catalog,
-            AgentsMdConfig {
+            agents_md: AgentsMdConfig {
                 project_root_markers: config.project_root_markers.clone(),
                 ..AgentsMdConfig::default()
             },
             config_store,
-        )))
+        }))
     }
 
     pub(crate) fn provider_for_route(&self, route: ProviderRoute) -> Arc<dyn ModelProviderSDK> {

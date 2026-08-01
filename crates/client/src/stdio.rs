@@ -275,6 +275,13 @@ impl StdioServerClient {
         self.core.mcp_tools(params).await
     }
 
+    pub async fn mcp_set_enabled(
+        &mut self,
+        params: devo_protocol::canonical::rpc_admin::McpSetEnabledParams,
+    ) -> Result<devo_protocol::canonical::rpc_admin::McpSetEnabledResult> {
+        self.core.mcp_set_enabled(params).await
+    }
+
     pub async fn model_catalog(
         &mut self,
         params: ModelCatalogParams,

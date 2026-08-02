@@ -70,8 +70,7 @@ impl ChatWidget {
     }
 
     pub(super) fn set_default_placeholder(&mut self) {
-        self.bottom_pane
-            .set_placeholder_text("Ask Devo".to_string());
+        self.bottom_pane.set_default_placeholder();
     }
 
     pub(super) fn on_plan_updated(&mut self, explanation: Option<String>, steps: Vec<PlanStep>) {

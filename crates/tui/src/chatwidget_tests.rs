@@ -1199,6 +1199,11 @@ fn shift_tab_plan_submission_marks_user_turn_plan_mode() {
     let (mut widget, mut app_event_rx) = widget_with_model(model, cwd);
 
     widget.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    // Mode change persists collaboration mode before the user turn is submitted.
+    assert!(matches!(
+        app_event_rx.try_recv().expect("collaboration mode event"),
+        AppEvent::Command(AppCommand::SetCollaborationMode { .. })
+    ));
     paste_and_submit(&mut widget, "plan this");
 
     let AppEvent::Command(AppCommand::UserTurn {
@@ -1225,7 +1230,7 @@ fn composer_marker_color(widget: &ChatWidget) -> Color {
         let row_text = (0..area.width)
             .map(|col| buf[(col, row)].symbol())
             .collect::<String>();
-        if !row_text.contains("Ask Devo") {
+        if !row_text.contains("Tip:") {
             continue;
         }
 
@@ -1903,7 +1908,7 @@ fn permissions_command_opens_bottom_pane_picker_and_updates_default() {
 
     let rendered = rendered_rows(&widget, 100, 18).join("\n");
     assert!(rendered.contains("Update Permissions"));
-    assert!(rendered.contains("● 1. Default"));
+    assert!(rendered.contains("● 1. Ask for approval"));
     assert!(rendered.contains("Approve for me"));
     assert!(rendered.contains("Full-Access"));
 
@@ -2079,6 +2084,24 @@ fn trailing_space_exit_slash_command_exits() {
     let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
     widget.handle_paste("/exit ".to_string());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app_event_rx.try_recv().ok(),
+        Some(AppEvent::Exit(crate::app_event::ExitMode::ShutdownFirst))
+    );
+}
+
+#[test]
+fn trailing_space_quit_slash_command_exits() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_paste("/quit ".to_string());
     widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert_eq!(
@@ -3925,10 +3948,9 @@ fn onboarding_validation_succeeded_waits_for_provider_upsert() {
     );
     assert_eq!(app_event_rx.try_recv().is_err(), true);
     assert_eq!(widget.is_onboarding_active(), false);
-    assert_eq!(widget.placeholder_text(), "Ask Devo");
     assert_eq!(
-        widget.current_model().map(|model| model.slug.as_str()),
-        Some("deepseek-v4-flash")
+        widget.placeholder_text(),
+        format!("Tip: {}", crate::status_indicator_widget::WORKING_TIPS[0])
     );
     assert_eq!(
         widget.status_summary_text().contains("DeepSeek-V4-Flash"),
@@ -6534,7 +6556,10 @@ fn slash_model_opens_model_picker_instead_of_printing_current_model() {
         command: "model".to_string(),
     });
 
-    assert_eq!(widget.placeholder_text(), "Ask Devo");
+    assert_eq!(
+        widget.placeholder_text(),
+        format!("Tip: {}", crate::status_indicator_widget::WORKING_TIPS[0])
+    );
     assert_eq!(
         widget.current_model().map(|m| m.slug.as_str()),
         Some("test-model")

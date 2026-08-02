@@ -219,7 +219,10 @@ fn onboarding_completion_appends_header_after_success_record() {
     });
 
     assert_eq!(widget.is_onboarding_active(), false);
-    assert_eq!(widget.placeholder_text(), "Ask Devo");
+    assert_eq!(
+        widget.placeholder_text(),
+        format!("Tip: {}", crate::status_indicator_widget::WORKING_TIPS[0])
+    );
     assert_eq!(
         widget.current_model().map(|model| model.slug.as_str()),
         Some("deepseek-v4-flash")

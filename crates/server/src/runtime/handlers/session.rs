@@ -388,14 +388,14 @@ impl ServerRuntime {
                 "session does not exist",
             );
         }
-        if let Some(record) = session_handle.record().await.flatten() {
-            if let Err(error) = self.rollout_store.append_session_meta(&record) {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InternalError,
-                    format!("failed to persist session permissions update: {error}"),
-                );
-            }
+        if let Some(record) = session_handle.record().await.flatten()
+            && let Err(error) = self.rollout_store.append_session_meta(&record)
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                format!("failed to persist session permissions update: {error}"),
+            );
         }
 
         serde_json::to_value(SuccessResponse {

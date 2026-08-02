@@ -76,6 +76,32 @@ impl SlashCommand {
         }
     }
 
+    /// Soft alternate names accepted by parsing / popup filtering.
+    ///
+    /// These are not listed as separate built-in entries; the canonical
+    /// [`SlashCommand::command`] remains the display and insertion name.
+    pub fn aliases(self) -> &'static [&'static str] {
+        match self {
+            SlashCommand::Exit => &["quit"],
+            SlashCommand::Theme
+            | SlashCommand::Model
+            | SlashCommand::Skills
+            | SlashCommand::Mcp
+            | SlashCommand::Compact
+            | SlashCommand::Resume
+            | SlashCommand::New
+            | SlashCommand::Rename
+            | SlashCommand::Delete
+            | SlashCommand::Status
+            | SlashCommand::Settings
+            | SlashCommand::Permissions
+            | SlashCommand::ShowReasoning
+            | SlashCommand::Diff
+            | SlashCommand::Btw
+            | SlashCommand::Goal => &[],
+        }
+    }
+
     pub fn supports_inline_args(self) -> bool {
         matches!(
             self,
@@ -169,7 +195,8 @@ impl FromStr for SlashCommand {
             "diff" => Ok(Self::Diff),
             "btw" => Ok(Self::Btw),
             "goal" => Ok(Self::Goal),
-            "exit" => Ok(Self::Exit),
+            // `/quit` is a soft alias for exit.
+            "exit" | "quit" => Ok(Self::Exit),
             _ => Err(()),
         }
     }
@@ -333,6 +360,24 @@ mod tests {
         assert!(!SlashCommand::Delete.supports_inline_args());
         assert_eq!(SlashCommand::Rename.parameter_hint(), Some("<new title>"));
         assert_eq!(SlashCommand::Delete.parameter_hint(), None);
+    }
+
+    #[test]
+    fn exit_slash_command_parses_and_quit_is_alias() {
+        assert_eq!("exit".parse::<SlashCommand>(), Ok(SlashCommand::Exit));
+        assert_eq!("quit".parse::<SlashCommand>(), Ok(SlashCommand::Exit));
+        assert_eq!(SlashCommand::Exit.command(), "exit");
+        assert_eq!(SlashCommand::Exit.aliases(), &["quit"]);
+        assert!(
+            built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "exit" && *command == SlashCommand::Exit)
+        );
+        assert!(
+            !built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "quit")
+        );
     }
 
     #[test]

@@ -468,6 +468,11 @@ impl ChatWidget {
             return;
         }
 
+        // Remember the submitted mode for TurnStarted/TurnFinished even if the
+        // composer mode changes while the turn is still starting.
+        if !self.busy {
+            self.promoted_input_modes.push_back(input_mode);
+        }
         self.current_turn_mode = input_mode;
         let local_image_paths = user_message
             .local_images

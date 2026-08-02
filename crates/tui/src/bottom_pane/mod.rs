@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
+use std::time::Instant;
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -86,6 +87,8 @@ use crate::bottom_pane::unified_exec_footer::UnifiedExecFooter;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::status_indicator_widget::StatusIndicatorWidget;
+use crate::status_indicator_widget::TIP_ROTATION_INTERVAL;
+use crate::status_indicator_widget::composer_tip_placeholder;
 use crate::tui::frame_requester::FrameRequester;
 
 pub(crate) const QUIT_SHORTCUT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -253,6 +256,8 @@ pub(crate) struct BottomPane {
     /// User messages queued while a turn was active, shown below the composer.
     pending_queue: PendingQueueState,
     placeholder_text: String,
+    /// Wall-clock start for rotating composer placeholder tips (`Tip: …`).
+    placeholder_tips_started_at: Instant,
     /// Status indicator shown above the composer while a task is running.
     status: Option<StatusIndicatorWidget>,
     subagent_hint_visible: bool,
@@ -290,7 +295,10 @@ impl BottomPane {
         );
         composer.set_frame_requester(frame_requester.clone());
         composer.set_skill_mentions(skills);
-        Self {
+        let placeholder_tips_started_at = Instant::now();
+        let placeholder_text = composer_tip_placeholder(Duration::ZERO).unwrap_or(placeholder_text);
+        composer.set_placeholder_text(placeholder_text.clone());
+        let pane = Self {
             composer,
             view_stack: Vec::new(),
             app_event_tx,
@@ -299,6 +307,7 @@ impl BottomPane {
             pending_thread_approvals: PendingThreadApprovals::new(),
             pending_queue: PendingQueueState::default(),
             placeholder_text,
+            placeholder_tips_started_at,
             status: None,
             subagent_hint_visible: false,
             is_task_running: false,
@@ -311,7 +320,9 @@ impl BottomPane {
             external_history_draft: None,
             input_mode: InputMode::Build,
             accent_color: Color::Cyan,
-        }
+        };
+        pane.schedule_placeholder_tip_redraw();
+        pane
     }
 
     pub(crate) fn set_accent_color(&mut self, color: Color) {
@@ -532,6 +543,7 @@ impl BottomPane {
     }
 
     pub(crate) fn pre_draw_tick(&mut self) {
+        self.sync_placeholder_tip();
         self.composer.sync_popups();
         if self.composer.flush_paste_burst_if_due() {
             self.request_redraw();
@@ -545,6 +557,46 @@ impl BottomPane {
         self.placeholder_text = placeholder.clone();
         self.composer.set_placeholder_text(placeholder);
         self.request_redraw();
+    }
+
+    /// Restore the rotating `Tip: …` composer placeholder (replaces a fixed default).
+    pub(crate) fn set_default_placeholder(&mut self) {
+        self.sync_placeholder_tip();
+        self.schedule_placeholder_tip_redraw();
+    }
+
+    fn sync_placeholder_tip(&mut self) {
+        let Some(text) = composer_tip_placeholder(self.placeholder_tips_started_at.elapsed())
+        else {
+            return;
+        };
+        if self.placeholder_text == text {
+            self.schedule_placeholder_tip_redraw();
+            return;
+        }
+        self.placeholder_text = text.clone();
+        self.composer.set_placeholder_text(text);
+        self.request_redraw();
+        self.schedule_placeholder_tip_redraw();
+    }
+
+    fn schedule_placeholder_tip_redraw(&self) {
+        if !self.animations_enabled {
+            return;
+        }
+        let elapsed = self.placeholder_tips_started_at.elapsed();
+        let interval_secs = TIP_ROTATION_INTERVAL.as_secs().max(1);
+        let into = Duration::from_secs(elapsed.as_secs() % interval_secs);
+        let until_next = TIP_ROTATION_INTERVAL.saturating_sub(into);
+        self.request_redraw_in(until_next.max(Duration::from_millis(50)));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_placeholder_tips_elapsed_for_test(&mut self, elapsed: Duration) {
+        self.placeholder_tips_started_at = Instant::now()
+            .checked_sub(elapsed)
+            .unwrap_or_else(Instant::now);
+        self.sync_placeholder_tip();
     }
 
     pub(crate) fn clear_composer(&mut self) {
@@ -1537,6 +1589,24 @@ mod tests {
             InputResult::QueueRemove {
                 queue_item_id: "q1".into(),
             }
+        );
+    }
+
+    #[test]
+    fn composer_placeholder_rotates_working_tips() {
+        use crate::status_indicator_widget::WORKING_TIPS;
+
+        let mut pane = test_bottom_pane();
+        assert_eq!(pane.placeholder_text(), format!("Tip: {}", WORKING_TIPS[0]));
+
+        pane.set_placeholder_tips_elapsed_for_test(Duration::from_secs(6));
+        assert_eq!(pane.placeholder_text(), format!("Tip: {}", WORKING_TIPS[1]));
+
+        pane.set_default_placeholder();
+        assert_eq!(
+            pane.placeholder_text(),
+            format!("Tip: {}", WORKING_TIPS[1]),
+            "default placeholder should keep the current rotating tip"
         );
     }
 }

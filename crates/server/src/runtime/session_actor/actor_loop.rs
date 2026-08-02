@@ -143,21 +143,17 @@ pub(super) async fn run_session_actor(
                     .pending_turn_queue
                     .lock()
                     .expect("pending turn queue mutex should not be poisoned");
-                let pending_texts: Vec<String> = queue
+                let pending_count = queue
                     .iter()
-                    .filter_map(|item| match &item.kind {
-                        devo_core::PendingInputKind::UserText { text } => Some(text.clone()),
-                        devo_core::PendingInputKind::UserInput { display_text, .. } => {
-                            Some(display_text.clone())
-                        }
-                        _ => None,
+                    .filter(|item| {
+                        matches!(
+                            &item.kind,
+                            devo_core::PendingInputKind::UserText { .. }
+                                | devo_core::PendingInputKind::UserInput { .. }
+                        )
                     })
-                    .collect();
-                let pending_count = pending_texts.len();
-                let _ = reply.send(PendingQueueSnapshot {
-                    pending_count,
-                    pending_texts,
-                });
+                    .count();
+                let _ = reply.send(PendingQueueSnapshot { pending_count });
             }
             SessionCommand::PopQueuedTurnInput {
                 require_idle_session,
@@ -180,18 +176,6 @@ pub(super) async fn run_session_actor(
                     .lock()
                     .expect("pending turn queue mutex should not be poisoned")
                     .push_back(item);
-            }
-            SessionCommand::RemoveQueuedTurnInput {
-                queued_input_id,
-                reply,
-            } => {
-                let mut queue = state
-                    .pending_turn_queue
-                    .lock()
-                    .expect("pending turn queue mutex should not be poisoned");
-                let before = queue.len();
-                queue.retain(|item| item.id != queued_input_id);
-                let _ = reply.send(queue.len() != before);
             }
             SessionCommand::GetActiveTurnId { reply } => {
                 let _ = reply.send(state.active_turn.as_ref().map(|turn| turn.turn_id));

@@ -8,7 +8,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use devo_core::ItemId;
-use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::events::TextItemKind;
@@ -549,9 +548,7 @@ impl ChatWidget {
                 &self.session.cwd,
                 "Thinking: ",
                 Self::reasoning_heading_style(),
-                // Keep live reasoning undimmed so the in-flight cell stays
-                // colorful; completed Thought cells apply the muted style.
-                Style::default(),
+                Self::reasoning_text_style(),
                 Self::reasoning_dot_prefix(item.status),
             ));
         }
@@ -563,8 +560,7 @@ impl ChatWidget {
             Some(&self.session.cwd),
             &mut body_lines,
         );
-        // Keep live reasoning content undimmed so the in-flight cell stays
-        // colorful; completed Thought cells apply the muted style instead.
+        Self::patch_lines_style(&mut body_lines, Self::reasoning_text_style());
         if let Some(first_line) = body_lines.first_mut() {
             first_line.spans.insert(
                 0,

@@ -20,15 +20,16 @@ use crate::markdown::append_markdown;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
 
-/// Maximum *visual* terminal rows for collapsed reasoning body content.
+/// Maximum *visual* terminal rows for collapsed reasoning **body** content.
 ///
 /// Counted after wrap, not by markdown/logical newlines — a single long
 /// paragraph that wraps to many rows still counts toward this budget.
+/// Live streaming keeps a sticky `▌ Thinking:` heading above these body rows.
 pub(super) const COLLAPSED_REASONING_LIVE_LINES: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CollapsedReasoningMode {
-    /// Streaming: keep the latest wrapped rows in the live viewport.
+    /// Streaming: sticky Thinking heading + latest wrapped body rows.
     Live,
     /// Committed: short bodies stay full; longer bodies compact to Thought.
     Completed,
@@ -70,13 +71,34 @@ impl CollapsedReasoningCell {
         body_lines
     }
 
+    /// Sticky live header: `▌ Thinking:` — never scrolls away with the body tail.
+    fn sticky_heading_line(&self) -> Line<'static> {
+        let mut spans = self.initial_prefix.spans.clone();
+        spans.push(Span::styled(self.heading.clone(), self.heading_style));
+        Line {
+            style: self.initial_prefix.style,
+            alignment: self.initial_prefix.alignment,
+            spans,
+        }
+    }
+
+    /// Body-only wrap for live streaming (heading is rendered separately).
+    fn wrap_body_only(&self, width: u16) -> Vec<Line<'static>> {
+        let body_lines = self.body_lines();
+        collapse_consecutive_blank_lines(adaptive_wrap_lines(
+            &body_lines,
+            RtOptions::new(width as usize)
+                .initial_indent(self.subsequent_prefix.clone())
+                .subsequent_indent(self.subsequent_prefix.clone()),
+        ))
+    }
+
     fn wrap_body_with_heading(&self, width: u16) -> Vec<Line<'static>> {
         let mut body_lines = self.body_lines();
         if let Some(first_line) = body_lines.first_mut() {
-            first_line.spans.insert(
-                0,
-                Span::styled(self.heading.clone(), self.heading_style),
-            );
+            first_line
+                .spans
+                .insert(0, Span::styled(self.heading.clone(), self.heading_style));
         }
         collapse_consecutive_blank_lines(adaptive_wrap_lines(
             &body_lines,
@@ -102,19 +124,24 @@ impl CollapsedReasoningCell {
         )
         .display_lines(width)
     }
+
+    fn live_display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines = vec![self.sticky_heading_line()];
+        lines.extend(Self::take_last_visual_rows(
+            self.wrap_body_only(width),
+            COLLAPSED_REASONING_LIVE_LINES,
+        ));
+        lines.push(history_cell::reasoning_transcript_hint_line());
+        lines
+    }
 }
 
 impl HistoryCell for CollapsedReasoningCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let wrapped = self.wrap_body_with_heading(width);
         match self.mode {
-            CollapsedReasoningMode::Live => {
-                let mut lines =
-                    Self::take_last_visual_rows(wrapped, COLLAPSED_REASONING_LIVE_LINES);
-                lines.push(history_cell::reasoning_transcript_hint_line());
-                lines
-            }
+            CollapsedReasoningMode::Live => self.live_display_lines(width),
             CollapsedReasoningMode::Completed => {
+                let wrapped = self.wrap_body_with_heading(width);
                 if wrapped.len() <= COLLAPSED_REASONING_LIVE_LINES {
                     let mut lines = wrapped;
                     lines.push(history_cell::reasoning_transcript_hint_line());

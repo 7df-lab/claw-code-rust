@@ -666,8 +666,46 @@ impl ServerClientCore {
         self.request_devo("turn/interrupt", params).await
     }
 
-    pub(crate) async fn turn_steer(&mut self, params: TurnSteerParams) -> Result<TurnSteerResult> {
-        self.request_devo("turn/steer", params).await
+    pub(crate) async fn session_queue_push(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueuePushParams,
+    ) -> Result<canonical::rpc_turn::SessionQueuePushResult> {
+        self.request_devo("session/queue/push", params).await
+    }
+
+    pub(crate) async fn session_queue_list(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueListParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueListResult> {
+        self.request_devo("session/queue/list", params).await
+    }
+
+    pub(crate) async fn session_queue_update(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueUpdateParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueUpdateResult> {
+        self.request_devo("session/queue/update", params).await
+    }
+
+    pub(crate) async fn session_queue_remove(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueRemoveParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueRemoveResult> {
+        self.request_devo("session/queue/remove", params).await
+    }
+
+    pub(crate) async fn session_queue_steer(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueSteerParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueSteerResult> {
+        self.request_devo("session/queue/steer", params).await
+    }
+
+    pub(crate) async fn subscription_create(
+        &mut self,
+        params: canonical::event::SubscriptionCreateParams,
+    ) -> Result<canonical::event::SubscriptionCreateResult> {
+        self.request_devo("subscription/create", params).await
     }
 
     pub(crate) async fn reference_search_start(

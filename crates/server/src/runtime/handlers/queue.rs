@@ -407,15 +407,6 @@ impl ServerRuntime {
             None,
         )
         .await;
-        // The legacy queue broadcast goes through the session actor's
-        // mailbox, which a busy actor may not service until the turn ends —
-        // fire and forget, exactly like turn/start's queued path.
-        {
-            let runtime = Arc::clone(self);
-            tokio::spawn(async move {
-                runtime.broadcast_updated_queue(legacy_session_id).await;
-            });
-        }
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: SessionQueueUpdateResult { entry },
@@ -512,15 +503,6 @@ impl ServerRuntime {
             None,
         )
         .await;
-        // The legacy queue broadcast goes through the session actor's
-        // mailbox, which a busy actor may not service until the turn ends —
-        // fire and forget, exactly like turn/start's queued path.
-        {
-            let runtime = Arc::clone(self);
-            tokio::spawn(async move {
-                runtime.broadcast_updated_queue(legacy_session_id).await;
-            });
-        }
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: SessionQueueRemoveResult {},
@@ -684,15 +666,6 @@ impl ServerRuntime {
             None,
         )
         .await;
-        // The legacy queue broadcast goes through the session actor's
-        // mailbox, which a busy actor may not service until the turn ends —
-        // fire and forget, exactly like turn/start's queued path.
-        {
-            let runtime = Arc::clone(self);
-            tokio::spawn(async move {
-                runtime.broadcast_updated_queue(legacy_session_id).await;
-            });
-        }
         self.emit_to_connection(
             connection_id,
             "serverRequest/resolved",
@@ -713,9 +686,7 @@ impl ServerRuntime {
     }
 
     /// Broadcasts one canonical `queue/updated` notification to connections
-    /// subscribed to this session via the new subscription API. The legacy
-    /// `inputQueue/updated` broadcast stays on its own path
-    /// (`broadcast_updated_queue`) — TUI is unaffected.
+    /// subscribed to this session via the new subscription API.
     pub(crate) async fn broadcast_queue_updated(
         &self,
         session_id: SessionId,
@@ -825,7 +796,10 @@ pub(crate) fn legacy_input_items(input: &[UserInput]) -> Result<Vec<InputItem>, 
             UserInput::Text { text } => InputItem::Text { text: text.clone() },
             UserInput::Skill { name } => InputItem::Skill {
                 name: name.clone(),
-                path: std::path::PathBuf::from(name),
+                // Canonical skill input carries no path; an empty path keeps
+                // resolution name-based (a non-empty path would switch
+                // `find_skill` to exact path matching and never match).
+                path: std::path::PathBuf::new(),
             },
             UserInput::LocalImage { path, .. } => InputItem::LocalImage { path: path.clone() },
             UserInput::Mention { uri } => InputItem::Mention {

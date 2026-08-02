@@ -78,8 +78,8 @@ impl CommandPopup {
 
         if let Some(stripped) = first_line.strip_prefix('/') {
             // Extract the *first* token (sequence of non-whitespace
-            // characters) after the slash so that `/clear something` still
-            // shows the help for `/clear`.
+            // characters) after the slash so that `/status something` still
+            // shows the help for `/status`.
             let token = stripped.trim_start();
             let cmd_token = token.split_whitespace().next().unwrap_or("");
 
@@ -235,6 +235,11 @@ impl WidgetRef for CommandPopup {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::WidgetRef;
+
+    use super::super::popup_consts::MAX_POPUP_ROWS;
 
     #[test]
     fn filter_returns_empty_for_unknown_prefix() {
@@ -391,6 +396,60 @@ mod tests {
         assert!(
             !cmds.iter().any(|name| name.starts_with("debug")),
             "expected no /debug* command in popup menu, got {cmds:?}"
+        );
+    }
+
+    fn render_popup(popup: &CommandPopup, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        popup.render_ref(area, &mut buf);
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|col| buf[(col, row)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn full_command_list_shows_more_below_when_overflowing() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
+        popup.on_composer_text_change("/".to_string());
+        assert!(
+            popup.filtered_items().len() > MAX_POPUP_ROWS,
+            "expected more commands than visible popup rows"
+        );
+
+        let height = popup.calculate_required_height(80);
+        let rendered = render_popup(&popup, 80, height);
+        assert!(
+            rendered.contains("↓ more"),
+            "expected ↓ more when command list overflows:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("↑ more"),
+            "wrap-around slash lists should not show ↑ more:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn scrolled_command_list_does_not_show_more_above() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
+        popup.on_composer_text_change("/".to_string());
+        let len = popup.filtered_items().len();
+        assert!(len > MAX_POPUP_ROWS);
+
+        for _ in 0..MAX_POPUP_ROWS {
+            popup.move_down();
+        }
+
+        let height = popup.calculate_required_height(80);
+        let rendered = render_popup(&popup, 80, height);
+        assert!(
+            !rendered.contains("↑ more"),
+            "wrap-around slash lists should not show ↑ more after scrolling:\n{rendered}"
         );
     }
 }

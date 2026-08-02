@@ -359,9 +359,6 @@ impl ServerRuntime {
             )
             .await;
         }
-        if !leftover.is_empty() {
-            self.broadcast_updated_queue(session_id).await;
-        }
     }
 
     async fn append_terminal_turn_record(

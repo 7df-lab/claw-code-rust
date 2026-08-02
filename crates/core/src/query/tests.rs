@@ -1275,7 +1275,9 @@ fn recorded_compaction_events(events: &[QueryEvent]) -> Vec<RecordedCompactionEv
         .iter()
         .filter_map(|event| match event {
             QueryEvent::ContextCompactionStarted => Some(RecordedCompactionEvent::Started),
-            QueryEvent::ContextCompactionCompleted => Some(RecordedCompactionEvent::Completed),
+            QueryEvent::ContextCompactionCompleted { .. } => {
+                Some(RecordedCompactionEvent::Completed)
+            }
             QueryEvent::ContextCompactionFailed { message } => {
                 Some(RecordedCompactionEvent::Failed {
                     message: message.clone(),
@@ -1506,7 +1508,7 @@ async fn query_retries_transient_stream_event_errors_before_content() {
         .filter_map(|event| match event {
             QueryEvent::ProviderRetryStatus(status) => Some(status.clone()),
             QueryEvent::ContextCompactionStarted
-            | QueryEvent::ContextCompactionCompleted
+            | QueryEvent::ContextCompactionCompleted { .. }
             | QueryEvent::ContextCompactionFailed { .. }
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)
@@ -1596,7 +1598,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
         .filter_map(|event| match event {
             QueryEvent::ProviderRetryStatus(status) => Some(status.clone()),
             QueryEvent::ContextCompactionStarted
-            | QueryEvent::ContextCompactionCompleted
+            | QueryEvent::ContextCompactionCompleted { .. }
             | QueryEvent::ContextCompactionFailed { .. }
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)

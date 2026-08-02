@@ -499,7 +499,7 @@ fn write_query_event_jsonl(session_id: &str, event: &QueryEvent) -> Result<()> {
         QueryEvent::ContextCompactionStarted => {
             write_jsonl(&PromptJsonlEvent::ContextCompactionStarted { session_id })
         }
-        QueryEvent::ContextCompactionCompleted => {
+        QueryEvent::ContextCompactionCompleted { .. } => {
             write_jsonl(&PromptJsonlEvent::ContextCompactionCompleted { session_id })
         }
         QueryEvent::ContextCompactionFailed { message } => {

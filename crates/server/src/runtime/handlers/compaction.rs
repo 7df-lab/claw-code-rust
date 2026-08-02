@@ -440,7 +440,7 @@ impl ServerRuntime {
                     drop(state_change_guard);
                     return;
                 }
-                let preserved_item_ids = Self::preserved_item_ids_from_compacted(
+                let preserved_item_ids = preserved_item_ids_from_compacted(
                     &runtime_session.persisted_turn_items,
                     &compacted_items,
                 );
@@ -619,66 +619,45 @@ impl ServerRuntime {
                 }))
                 .await;
 
-                let summary_turn_item = Self::summary_turn_item_from_compacted(&compacted_items);
+                let summary_turn_item = summary_turn_item_from_compacted(&compacted_items);
                 let compact_summary = match &summary_turn_item {
                     TurnItem::ContextCompaction(TextItem { text }) => text.clone(),
                     _ => String::new(),
                 };
                 if let Some(record) = runtime_session.record.clone() {
-                    runtime_session.latest_compaction_snapshot =
-                        Some(devo_core::CompactionSnapshotLine {
-                            timestamp: Utc::now(),
-                            session_id,
-                            turn_id,
-                            summary_item_id: item_id,
-                            preserved_item_ids: preserved_item_ids.clone(),
-                            context_occupancy: runtime_session
-                                .summary
-                                .last_context_occupancy
-                                .clone(),
-                        });
-                    runtime_session.persisted_turn_items.push(
-                        crate::execution::PersistedTurnItem {
-                            turn_id,
-                            turn_kind: devo_core::TurnKind::ManualCompaction,
-                            item_id,
-                            turn_item: summary_turn_item.clone(),
-                        },
-                    );
-
-                    let item_record = crate::persistence::build_item_record(
+                    let snapshot = build_compaction_snapshot_line(
                         session_id,
                         turn_id,
                         item_id,
-                        item_seq,
-                        summary_turn_item,
-                        None,
-                        None,
+                        preserved_item_ids.clone(),
+                        runtime_session.summary.last_context_occupancy.clone(),
                     );
-                    if let Err(error) = self.rollout_store.append_item(&record, item_record) {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            error = %error,
-                            "failed to persist compaction summary item"
-                        );
+                    runtime_session.latest_compaction_snapshot = Some(snapshot.clone());
+                    runtime_session
+                        .persisted_turn_items
+                        .push(compaction_persisted_turn_item(
+                            turn_id,
+                            devo_core::TurnKind::ManualCompaction,
+                            item_id,
+                            summary_turn_item.clone(),
+                        ));
+                    if let Some(history_item) =
+                        crate::projection::history_item_from_turn_item(&summary_turn_item)
+                    {
+                        runtime_session.history_items.push(history_item);
                     }
-                    if let Some(snapshot) = runtime_session.latest_compaction_snapshot.clone() {
-                        if let Err(error) = self
-                            .rollout_store
-                            .append_compaction_snapshot(&record, snapshot)
-                        {
-                            tracing::warn!(
-                                session_id = %session_id,
-                                error = %error,
-                                "failed to persist compaction snapshot"
-                            );
-                        }
-                    } else {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            "compaction snapshot missing after summary item write"
-                        );
-                    }
+                    append_compaction_summary_and_snapshot(
+                        &self.rollout_store,
+                        &record,
+                        CompactionSummaryPersist {
+                            session_id,
+                            turn_id,
+                            summary_item_id: item_id,
+                            item_seq,
+                            summary_turn_item,
+                            snapshot,
+                        },
+                    );
                 }
 
                 let mut completed_turn = turn.clone();
@@ -936,143 +915,6 @@ impl ServerRuntime {
         self.record_terminal_turn_status(turn.turn_id, TerminalTurnSnapshot::from_turn(&turn))
             .await;
     }
-
-    fn preserved_item_ids_from_compacted(
-        persisted_turn_items: &[crate::execution::PersistedTurnItem],
-        compacted_items: &[ResponseItem],
-    ) -> Vec<ItemId> {
-        let mut normalized_persisted_items = Vec::new();
-        for item in persisted_turn_items {
-            if !crate::persistence::prompt_visible_persisted_turn_item(item) {
-                continue;
-            }
-
-            // The compactor returns a summary followed by the prompt-visible suffix it
-            // kept verbatim. Normalize persisted items into that same response shape
-            // without allocating a short intermediate Vec for every journal item.
-            match &item.turn_item {
-                TurnItem::UserMessage(TextItem { text })
-                | TurnItem::SteerInput(TextItem { text }) => {
-                    normalized_persisted_items.push((
-                        item.item_id,
-                        ResponseItem::Message(Message::user(text.clone())),
-                    ));
-                }
-                TurnItem::AgentMessage(TextItem { text })
-                | TurnItem::Plan(TextItem { text })
-                | TurnItem::WebSearch(TextItem { text })
-                | TurnItem::ImageGeneration(TextItem { text })
-                | TurnItem::ContextCompaction(TextItem { text })
-                | TurnItem::HookPrompt(TextItem { text }) => {
-                    normalized_persisted_items.push((
-                        item.item_id,
-                        ResponseItem::Message(Message::assistant_text(text.clone())),
-                    ));
-                }
-                TurnItem::Reasoning(_) => {}
-                TurnItem::ToolCall(ToolCallItem {
-                    tool_call_id,
-                    tool_name,
-                    input,
-                }) => {
-                    normalized_persisted_items.push((
-                        item.item_id,
-                        ResponseItem::ToolCall {
-                            id: tool_call_id.clone(),
-                            name: tool_name.clone(),
-                            input: input.clone(),
-                        },
-                    ));
-                }
-                TurnItem::ToolResult(ToolResultItem {
-                    tool_call_id,
-                    output,
-                    is_error,
-                    ..
-                }) => {
-                    normalized_persisted_items.push((
-                        item.item_id,
-                        ResponseItem::ToolCallOutput {
-                            tool_use_id: tool_call_id.clone(),
-                            content: match output {
-                                serde_json::Value::String(text) => text.clone(),
-                                other => other.to_string(),
-                            },
-                            is_error: *is_error,
-                        },
-                    ));
-                }
-                TurnItem::CommandExecution(CommandExecutionItem {
-                    tool_call_id,
-                    tool_name,
-                    input,
-                    output,
-                    is_error,
-                    ..
-                }) => {
-                    normalized_persisted_items.push((
-                        item.item_id,
-                        ResponseItem::ToolCall {
-                            id: tool_call_id.clone(),
-                            name: tool_name.clone(),
-                            input: input.clone(),
-                        },
-                    ));
-                    normalized_persisted_items.push((
-                        item.item_id,
-                        ResponseItem::ToolCallOutput {
-                            tool_use_id: tool_call_id.clone(),
-                            content: match output {
-                                serde_json::Value::String(text) => text.clone(),
-                                other => other.to_string(),
-                            },
-                            is_error: *is_error,
-                        },
-                    ));
-                }
-                TurnItem::ToolProgress(_)
-                | TurnItem::ApprovalRequest(_)
-                | TurnItem::ApprovalDecision(_)
-                | TurnItem::TurnSummary(_) => {}
-            }
-        }
-        let preserved = compacted_items.get(1..).unwrap_or(&[]);
-        if preserved.is_empty() {
-            return Vec::new();
-        }
-        let preserved_len = preserved.len();
-        if normalized_persisted_items.len() < preserved_len {
-            return Vec::new();
-        }
-        let suffix =
-            &normalized_persisted_items[normalized_persisted_items.len() - preserved_len..];
-        if suffix.iter().map(|(_, item)| item).eq(preserved.iter()) {
-            suffix.iter().map(|(item_id, _)| *item_id).collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn summary_turn_item_from_compacted(compacted_items: &[ResponseItem]) -> TurnItem {
-        let summary_text = compacted_items
-            .first()
-            .and_then(|item| match item {
-                ResponseItem::Message(message) => {
-                    message.content.iter().find_map(|block| match block {
-                        devo_core::ContentBlock::Text { text } => Some(text.clone()),
-                        devo_core::ContentBlock::Reasoning { .. }
-                        | devo_core::ContentBlock::ProviderReasoning { .. }
-                        | devo_core::ContentBlock::ToolUse { .. }
-                        | devo_core::ContentBlock::HostedToolUse { .. }
-                        | devo_core::ContentBlock::ToolResult { .. } => None,
-                    })
-                }
-                ResponseItem::Reason { text } => Some(text.clone()),
-                ResponseItem::ToolCall { .. } | ResponseItem::ToolCallOutput { .. } => None,
-            })
-            .unwrap_or_default();
-        TurnItem::ContextCompaction(TextItem { text: summary_text })
-    }
 }
 
 #[cfg(test)]
@@ -1080,6 +922,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+    use devo_core::CommandExecutionItem;
 
     #[test]
     fn preserved_item_ids_match_complete_command_execution_pair() {
@@ -1114,10 +957,7 @@ mod tests {
         ];
 
         assert_eq!(
-            ServerRuntime::preserved_item_ids_from_compacted(
-                &persisted_turn_items,
-                &compacted_items
-            ),
+            preserved_item_ids_from_compacted(&persisted_turn_items, &compacted_items),
             vec![command_item_id, command_item_id]
         );
     }

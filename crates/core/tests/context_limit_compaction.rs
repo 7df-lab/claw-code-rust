@@ -125,7 +125,7 @@ async fn context_limit_error_compacts_and_retries_query() {
         .iter()
         .filter_map(|event| match event {
             QueryEvent::ContextCompactionStarted => Some(CompactionEvent::Started),
-            QueryEvent::ContextCompactionCompleted => Some(CompactionEvent::Completed),
+            QueryEvent::ContextCompactionCompleted { .. } => Some(CompactionEvent::Completed),
             QueryEvent::ContextCompactionFailed { .. }
             | QueryEvent::ProviderRetryStatus(_)
             | QueryEvent::TextDelta(_)

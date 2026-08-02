@@ -114,10 +114,13 @@ impl ServerRuntime {
             }
         }
 
+        // Restore the turn queue non-destructively: SQLite stays the durable
+        // mirror until items are consumed or removed, so a restart before the
+        // queue drains does not lose pending input.
         match self
             .deps
             .db
-            .drain_pending(&session_id, crate::db::QueueType::Turn)
+            .list_pending(&session_id, crate::db::QueueType::Turn)
         {
             Ok(items) => {
                 if !items.is_empty() {

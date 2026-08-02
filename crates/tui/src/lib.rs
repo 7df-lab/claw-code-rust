@@ -49,6 +49,7 @@ mod onboarding_widget;
 #[cfg(test)]
 mod onboarding_widget_tests;
 mod pager_overlay;
+mod queue_ops;
 mod read_display;
 mod render;
 mod shell_output;

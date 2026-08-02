@@ -455,23 +455,6 @@ impl SessionHandle {
             .await;
     }
 
-    pub(crate) async fn remove_queued_turn_input(
-        &self,
-        queued_input_id: devo_core::PendingInputId,
-    ) -> Option<bool> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if !self
-            .send(SessionCommand::RemoveQueuedTurnInput {
-                queued_input_id,
-                reply: reply_tx,
-            })
-            .await
-        {
-            return None;
-        }
-        reply_rx.await.ok()
-    }
-
     pub(crate) async fn activate_queued_turn(&self, turn: TurnMetadata, turn_config: TurnConfig) {
         let _ = self
             .send(SessionCommand::ActivateQueuedTurn { turn, turn_config })

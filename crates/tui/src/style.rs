@@ -4,6 +4,8 @@ use crate::terminal_palette::best_color;
 use crate::terminal_palette::default_bg;
 use ratatui::style::Color;
 use ratatui::style::Style;
+use ratatui::style::Stylize;
+use ratatui::text::Line;
 
 pub fn user_message_style() -> Style {
     user_message_style_for(default_bg())
@@ -15,6 +17,11 @@ pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
         Some(bg) => Style::default().bg(user_message_bg(bg)),
         None => Style::default(),
     }
+}
+
+/// Full-width dim `─` rule used above/below user history cells and the chat composer.
+pub(crate) fn user_message_rule_line(width: u16) -> Line<'static> {
+    Line::from_iter(["─".repeat(width as usize).dim()])
 }
 
 #[allow(clippy::disallowed_methods)]

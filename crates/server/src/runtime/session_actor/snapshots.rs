@@ -68,7 +68,6 @@ pub(crate) struct TitleGenerationContext {
 #[derive(Clone, Default)]
 pub(crate) struct PendingQueueSnapshot {
     pub(crate) pending_count: usize,
-    pub(crate) pending_texts: Vec<String>,
 }
 
 /// Fields returned by session/resume without locking the actor mailbox.

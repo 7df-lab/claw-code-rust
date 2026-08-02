@@ -285,6 +285,16 @@ impl ChatWidget {
                     };
                     self.add_history_entry_without_redraw(Box::new(summary));
                 }
+                devo_protocol::SessionHistoryItemKind::ContextCompaction => {
+                    let title = if item.title.is_empty() {
+                        "Context compacted".to_string()
+                    } else {
+                        item.title.clone()
+                    };
+                    self.add_history_entry_without_redraw(Box::new(
+                        history_cell::new_live_aligned_info_event(title, None),
+                    ));
+                }
             }
         }
 
@@ -293,9 +303,6 @@ impl ChatWidget {
     }
 
     pub(super) fn add_restored_user_prompt(&mut self, body: String) {
-        self.add_history_entry_without_redraw(Box::new(history_cell::PlainHistoryCell::new(vec![
-            Line::from(""),
-        ])));
         self.add_history_entry_without_redraw(Box::new(history_cell::new_user_prompt(
             body,
             Vec::new(),
@@ -304,9 +311,6 @@ impl ChatWidget {
             self.active_accent_color(),
             InputMode::Build,
         )));
-        self.add_history_entry_without_redraw(Box::new(history_cell::PlainHistoryCell::new(vec![
-            Line::from(""),
-        ])));
     }
 
     fn add_restored_file_change_item(

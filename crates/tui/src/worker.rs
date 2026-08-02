@@ -79,7 +79,6 @@ use devo_server::TurnExecutionMode;
 use devo_server::TurnInterruptParams;
 use devo_server::TurnStartParams;
 use devo_server::TurnStartResult;
-use devo_server::TurnSteerParams;
 
 use crate::app_command::GoalObjectiveMode;
 use crate::app_command::InputHistoryDirection;
@@ -337,10 +336,23 @@ enum OperationCommand {
     ForkAtUserTurn(u32),
     /// Interrupt the active turn when one is running.
     InterruptTurn,
-    /// Steer text into the currently active turn.
-    SteerTurn {
+    /// Push input onto the canonical session queue (busy path).
+    QueuePush {
         input: Vec<InputItem>,
+    },
+    /// Promote a queued entry into the active turn as a steer.
+    QueueSteer {
+        queue_item_id: String,
         expected_turn_id: TurnId,
+    },
+    /// Remove a queued entry (edit-from-queue).
+    QueueRemove {
+        queue_item_id: String,
+    },
+    /// Replace a queued entry's content in place, preserving its position.
+    QueueUpdate {
+        queue_item_id: String,
+        input: Vec<InputItem>,
     },
     /// Ask a side question in a one-turn forked agent.
     RunBtwQuestion {
@@ -727,16 +739,40 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    /// Steer input into the currently active turn.
-    pub(crate) fn submit_steer(
+    /// Push input onto the session queue while a turn is active.
+    pub(crate) fn queue_push(&self, input: Vec<InputItem>) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::QueuePush { input })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Promote a queued item into the active turn as a steer.
+    pub(crate) fn queue_steer(
         &self,
-        input: Vec<InputItem>,
+        queue_item_id: String,
         expected_turn_id: TurnId,
     ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::SteerTurn {
-                input,
+            .send(OperationCommand::QueueSteer {
+                queue_item_id,
                 expected_turn_id,
+            })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Remove a queued item so it can be edited in the composer.
+    pub(crate) fn queue_remove(&self, queue_item_id: String) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::QueueRemove { queue_item_id })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Replace a queued item's content in place, preserving its position.
+    pub(crate) fn queue_update(&self, queue_item_id: String, input: Vec<InputItem>) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::QueueUpdate {
+                queue_item_id,
+                input,
             })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
@@ -908,6 +944,10 @@ async fn run_worker_inner(
     let mut active_reference_search_id: Option<ReferenceSearchId> = None;
     let mut active_shell_process_ids: HashSet<String> = HashSet::new();
     let mut next_shell_process_index = 1_u64;
+    // Session the worker currently holds a canonical event subscription for;
+    // `subscription/create` accumulates server-side, so subscribe at most once
+    // per activated session.
+    let mut subscribed_session_id: Option<SessionId> = None;
 
     if let Some(initial_session_id) = config.initial_session_id {
         match client
@@ -949,6 +989,13 @@ async fn run_worker_inner(
                 if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
                     let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
                 }
+                ensure_session_subscription(
+                    &mut client,
+                    initial_session_id,
+                    &mut subscribed_session_id,
+                    event_tx,
+                )
+                .await;
                 model = resumed.session.model.clone().unwrap_or(model);
                 model_binding_id = resumed.session.model_binding_id.clone();
                 reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
@@ -993,6 +1040,7 @@ async fn run_worker_inner(
                                     &mut model_binding_id,
                                     &mut reasoning_effort_selection,
                                     &mut session_id,
+                                    &mut subscribed_session_id,
                                     permission_preset,
                                     initial_sandbox_profile.as_deref(),
                                     event_tx,
@@ -1238,6 +1286,7 @@ async fn run_worker_inner(
                                 .await?;
                                 client.initialize(&config.client_capabilities).await?;
                                 session_id = None;
+                                subscribed_session_id = None;
                                 child_agent_sessions.clear();
                                 btw_agent_sessions.clear();
                                 active_turn_id = None;
@@ -1482,6 +1531,7 @@ async fn run_worker_inner(
                                     &mut model_binding_id,
                                     &mut reasoning_effort_selection,
                                     &mut session_id,
+                                    &mut subscribed_session_id,
                                     permission_preset,
                                     initial_sandbox_profile.as_deref(),
                                     event_tx,
@@ -1685,6 +1735,7 @@ async fn run_worker_inner(
                                 }
                                 active_turn_id = None;
                                 session_id = None;
+                                subscribed_session_id = None;
                                 active_reference_search_id = None;
                                 session_cwd = config.cwd.clone();
                                 input_history_cursor = None;
@@ -1737,6 +1788,7 @@ async fn run_worker_inner(
                                     Ok(result) => {
                                         active_turn_id = None;
                                         session_id = Some(next_session_id);
+                                        subscribed_session_id = None;
                                         child_agent_sessions.clear();
                                         btw_agent_sessions.clear();
                                         session_cwd = result.session.cwd.clone();
@@ -1772,6 +1824,13 @@ async fn run_worker_inner(
                                         if let Some(occupancy) = result.session.last_context_occupancy.clone() {
                                             let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
                                         }
+                                        ensure_session_subscription(
+                                            &mut client,
+                                            next_session_id,
+                                            &mut subscribed_session_id,
+                                            event_tx,
+                                        )
+                                        .await;
                                         model = result
                                             .session
                                             .model
@@ -1899,6 +1958,7 @@ async fn run_worker_inner(
                                         if deleting_active {
                                             active_turn_id = None;
                                             session_id = None;
+                                            subscribed_session_id = None;
                                             active_reference_search_id = None;
                                             session_cwd = config.cwd.clone();
                                             input_history_cursor = None;
@@ -2011,6 +2071,13 @@ async fn run_worker_inner(
                                         if let Some(occupancy) = result.session.last_context_occupancy.clone() {
                                             let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
                                         }
+                                        ensure_session_subscription(
+                                            &mut client,
+                                            active_session_id,
+                                            &mut subscribed_session_id,
+                                            event_tx,
+                                        )
+                                        .await;
                                         model = result.session.model.clone().unwrap_or(model);
                                         model_binding_id = result.session.model_binding_id.clone();
                                         reasoning_effort_selection = result.session.reasoning_effort_selection.clone();
@@ -2085,6 +2152,7 @@ async fn run_worker_inner(
                                             Ok(resumed) => {
                                                 active_turn_id = None;
                                                 session_id = Some(next_session_id);
+                                                subscribed_session_id = None;
                                                 child_agent_sessions.clear();
                                                 btw_agent_sessions.clear();
                                                 session_cwd = resumed.session.cwd.clone();
@@ -2119,6 +2187,13 @@ async fn run_worker_inner(
                                                 if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
                                                     let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
                                                 }
+                                                ensure_session_subscription(
+                                                    &mut client,
+                                                    next_session_id,
+                                                    &mut subscribed_session_id,
+                                                    event_tx,
+                                                )
+                                                .await;
                                                 model = resumed.session.model.clone().unwrap_or(model);
                                                 model_binding_id = resumed.session.model_binding_id.clone();
                                                 reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
@@ -2205,24 +2280,76 @@ async fn run_worker_inner(
                                     }
                                 }
                             }
-                            Some(OperationCommand::SteerTurn {
-                                input,
-                                expected_turn_id,
-                            }) => {
-                                if let Some(active_session_id) = session_id {
-                                    match client
-                                        .turn_steer(TurnSteerParams {
-                                            session_id: active_session_id,
-                                            expected_turn_id,
-                                            input,
-                                        })
-                                        .await
-                                    {
-                                        Ok(result) => {
-                                            let _ = event_tx.send(WorkerEvent::SteerAccepted {
-                                                turn_id: result.turn_id,
-                                            });
+                            Some(OperationCommand::QueuePush { input }) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: "no active session for queue push".to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                let push_result = client
+                                    .session_queue_push(
+                                        devo_protocol::canonical::rpc_turn::SessionQueuePushParams {
+                                            session_id: canonical_session.clone(),
+                                            input: crate::queue_ops::user_input_from_input_items(
+                                                &input,
+                                            ),
+                                            client_user_message_id: None,
+                                            idempotency_key: format!(
+                                                "tui-queue-{}",
+                                                SessionId::new()
+                                            ),
+                                        },
+                                    )
+                                    .await;
+                                match push_result {
+                                    Ok(
+                                        devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Queued {
+                                            entry,
+                                        },
+                                    ) => {
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Added,
+                                            entry.queue_item_id,
+                                            /*started_turn_id*/ None,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Ok(
+                                        devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Started {
+                                            turn,
+                                        },
+                                    ) => {
+                                        let started_turn_id =
+                                            TurnId::try_from(turn.id.as_str()).ok();
+                                        if let Some(turn_id) = started_turn_id {
+                                            active_turn_id = Some(turn_id);
                                         }
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Drained,
+                                            devo_protocol::canonical::ids::QueueItemId::from_string(
+                                                String::new(),
+                                            ),
+                                            started_turn_id,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
                                     Err(error) => {
                                         let _ = event_tx.send(WorkerEvent::TurnFailed {
                                             message: error.to_string(),
@@ -2237,6 +2364,160 @@ async fn run_worker_inner(
                                         });
                                     }
                                 }
+                            }
+                            Some(OperationCommand::QueueSteer {
+                                queue_item_id,
+                                expected_turn_id,
+                            }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                match client
+                                    .session_queue_steer(
+                                        devo_protocol::canonical::rpc_turn::SessionQueueSteerParams {
+                                            session_id: canonical_session.clone(),
+                                            queue_item_id:
+                                                devo_protocol::canonical::ids::QueueItemId::from_string(
+                                                    queue_item_id,
+                                                ),
+                                            expected_turn_id:
+                                                devo_protocol::canonical::ids::TurnId::from_string(
+                                                    expected_turn_id.to_string(),
+                                                ),
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let _ = event_tx.send(WorkerEvent::SteerAccepted {
+                                            turn_id: expected_turn_id,
+                                        });
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Promoted,
+                                            devo_protocol::canonical::ids::QueueItemId::from_string(
+                                                String::new(),
+                                            ),
+                                            Some(expected_turn_id),
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::QueueRemove { queue_item_id }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                let removed_id =
+                                    devo_protocol::canonical::ids::QueueItemId::from_string(
+                                        queue_item_id.clone(),
+                                    );
+                                match client
+                                    .session_queue_remove(
+                                        devo_protocol::canonical::rpc_turn::SessionQueueRemoveParams {
+                                            session_id: canonical_session.clone(),
+                                            queue_item_id: removed_id.clone(),
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Removed,
+                                            removed_id,
+                                            /*started_turn_id*/ None,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::QueueUpdate {
+                                queue_item_id,
+                                input,
+                            }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                let updated_id =
+                                    devo_protocol::canonical::ids::QueueItemId::from_string(
+                                        queue_item_id.clone(),
+                                    );
+                                match client
+                                    .session_queue_update(
+                                        devo_protocol::canonical::rpc_turn::SessionQueueUpdateParams {
+                                            session_id: canonical_session.clone(),
+                                            queue_item_id: updated_id.clone(),
+                                            input: Some(
+                                                crate::queue_ops::user_input_from_input_items(
+                                                    &input,
+                                                ),
+                                            ),
+                                            position: None,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Updated,
+                                            updated_id,
+                                            /*started_turn_id*/ None,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
                                 }
                             }
                             Some(OperationCommand::ApprovalRespond {
@@ -2504,6 +2785,13 @@ async fn run_worker_inner(
                                             let _ = event_tx.send(event);
                                         }
                                     }
+                                    continue;
+                                }
+                                if method == "queue/updated"
+                                    && let Ok(queue_event) =
+                                        parse_canonical_queue_updated(&params)
+                                {
+                                    let _ = event_tx.send(queue_event);
                                     continue;
                                 }
                                 let event: ServerEvent = serde_json::from_value(params)
@@ -2895,14 +3183,6 @@ async fn run_worker_inner(
                                             });
                                         }
                                     }
-                                    "inputQueue/updated" => {
-                                        if let ServerEvent::InputQueueUpdated(payload) = event {
-                                            let _ = event_tx.send(WorkerEvent::InputQueueUpdated {
-                                                pending_count: payload.pending_count,
-                                                pending_texts: payload.pending_texts,
-                                            });
-                                        }
-                                    }
                                     "search/updated" => {
                                         if let ServerEvent::ReferenceSearchUpdated(snapshot) = event {
                                             let _ =
@@ -3119,7 +3399,9 @@ async fn ensure_session_started(
 /// follow-up. When no session is active yet, [`ensure_session_started`] creates one on the
 /// server; the returned metadata is merged into the worker's current model, model binding, and
 /// reasoning-effort selection. For a newly created session, this also notifies the UI via
-/// [`WorkerEvent::SessionActivated`] and applies the configured permission preset.
+/// [`WorkerEvent::SessionActivated`] and applies the configured permission preset. The
+/// canonical session event subscription is ensured on every call; it is a no-op once the
+/// active session is already subscribed.
 #[allow(clippy::too_many_arguments)]
 async fn prepare_session_for_command(
     client: &mut StdioServerClient,
@@ -3128,6 +3410,7 @@ async fn prepare_session_for_command(
     model_binding_id: &mut Option<String>,
     reasoning_effort_selection: &mut Option<String>,
     session_id: &mut Option<SessionId>,
+    subscribed_session_id: &mut Option<SessionId>,
     permission_preset: PermissionPreset,
     initial_sandbox_profile: Option<&str>,
     event_tx: &mpsc::UnboundedSender<WorkerEvent>,
@@ -3160,15 +3443,127 @@ async fn prepare_session_for_command(
                 .await?;
         }
     }
+    ensure_session_subscription(client, active_session_id, subscribed_session_id, event_tx).await;
     Ok(active_session_id)
 }
 
 /// Records the active turn returned by `turn/start`.
 ///
 /// When the server queues input (`TurnStartResult::Queued`), queue state for the UI is
-/// delivered asynchronously via `inputQueue/updated` notifications.
+/// delivered asynchronously via canonical `queue/updated` notifications.
 fn handle_turn_start_result(result: TurnStartResult, active_turn_id: &mut Option<TurnId>) {
     *active_turn_id = Some(result.active_turn_id());
+}
+
+fn canonical_session_id(session_id: SessionId) -> devo_protocol::canonical::ids::SessionId {
+    devo_protocol::canonical::ids::SessionId::from_string(session_id.to_string())
+}
+
+fn parse_canonical_queue_updated(params: &serde_json::Value) -> Result<WorkerEvent> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct QueueUpdatedParams {
+        change: devo_protocol::canonical::queue::QueueChange,
+        queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+        #[serde(default)]
+        started_turn_id: Option<devo_protocol::canonical::ids::TurnId>,
+        queue: Vec<devo_protocol::canonical::queue::QueueEntry>,
+    }
+    let parsed: QueueUpdatedParams =
+        serde_json::from_value(params.clone()).context("decode queue/updated params")?;
+    Ok(WorkerEvent::QueueUpdated {
+        change: parsed.change,
+        queue_item_id: parsed.queue_item_id,
+        started_turn_id: parsed
+            .started_turn_id
+            .as_ref()
+            .and_then(|id| TurnId::try_from(id.as_str()).ok()),
+        entries: parsed.queue,
+    })
+}
+
+async fn emit_queue_snapshot(
+    client: &mut StdioServerClient,
+    session_id: &devo_protocol::canonical::ids::SessionId,
+    change: devo_protocol::canonical::queue::QueueChange,
+    queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+    started_turn_id: Option<TurnId>,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<()> {
+    let listed = client
+        .session_queue_list(devo_protocol::canonical::rpc_turn::SessionQueueListParams {
+            session_id: session_id.clone(),
+        })
+        .await
+        .context("session/queue/list after queue mutation")?;
+    let _ = event_tx.send(WorkerEvent::QueueUpdated {
+        change,
+        queue_item_id,
+        started_turn_id,
+        entries: listed.entries,
+    });
+    Ok(())
+}
+
+/// Subscribes to canonical session events at most once per activated session.
+///
+/// Server-side `subscription/create` accumulates entries, so repeat calls for
+/// the same session would leak subscriptions. Callers reset
+/// `subscribed_session_id` when the active session changes so the next call
+/// re-subscribes. Failures are logged and left non-fatal so prompt submission
+/// is never blocked; the tracked id is only recorded on success, so a later
+/// call retries.
+async fn ensure_session_subscription(
+    client: &mut StdioServerClient,
+    session_id: SessionId,
+    subscribed_session_id: &mut Option<SessionId>,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) {
+    if *subscribed_session_id == Some(session_id) {
+        return;
+    }
+    match subscribe_session_events(client, session_id, event_tx).await {
+        Ok(()) => *subscribed_session_id = Some(session_id),
+        Err(error) => {
+            tracing::warn!(?session_id, %error, "failed to subscribe to session events");
+        }
+    }
+}
+
+async fn subscribe_session_events(
+    client: &mut StdioServerClient,
+    session_id: SessionId,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<()> {
+    let canonical = canonical_session_id(session_id);
+    let created = client
+        .subscription_create(devo_protocol::canonical::event::SubscriptionCreateParams {
+            selectors: vec![devo_protocol::canonical::event::StreamSelector::Session {
+                session_id: canonical.clone(),
+            }],
+            include_snapshot: true,
+            after: Vec::new(),
+        })
+        .await
+        .context("subscription/create for session queue")?;
+    for snapshot in created.snapshots {
+        if let devo_protocol::canonical::event::SnapshotData::Session { queue, .. } = snapshot.data
+        {
+            let queue_item_id = queue
+                .first()
+                .map(|entry| entry.queue_item_id.clone())
+                .unwrap_or_else(|| {
+                    devo_protocol::canonical::ids::QueueItemId::from_string(String::new())
+                });
+            let _ = event_tx.send(WorkerEvent::QueueUpdated {
+                change: devo_protocol::canonical::queue::QueueChange::Added,
+                queue_item_id,
+                started_turn_id: None,
+                entries: queue,
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn pause_active_goal_before_session_leave(
@@ -4010,6 +4405,7 @@ fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
             SessionHistoryItemKind::CommandExecution => TranscriptItemKind::ToolResult,
             SessionHistoryItemKind::Error => TranscriptItemKind::Error,
             SessionHistoryItemKind::TurnSummary => TranscriptItemKind::TurnSummary,
+            SessionHistoryItemKind::ContextCompaction => TranscriptItemKind::System,
         };
         let mut transcript_item = match item.kind {
             SessionHistoryItemKind::ToolCall => TranscriptItem::tool_call(item.title.clone()),
@@ -4029,6 +4425,14 @@ fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
             SessionHistoryItemKind::TurnSummary => {
                 // TurnSummary uses title for model name, duration_ms for duration in seconds
                 TranscriptItem::new(kind, item.title.clone(), item.body.clone())
+            }
+            SessionHistoryItemKind::ContextCompaction => {
+                let title = if item.title.is_empty() {
+                    "Context compacted".to_string()
+                } else {
+                    item.title.clone()
+                };
+                TranscriptItem::new(kind, title, String::new())
             }
             SessionHistoryItemKind::User
             | SessionHistoryItemKind::Assistant

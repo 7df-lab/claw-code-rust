@@ -968,7 +968,7 @@ fn handle_worker_event(
         | WorkerEvent::SessionTitleUpdated { .. }
         | WorkerEvent::ContextCompactionCompleted { .. }
         | WorkerEvent::InputHistoryLoaded { .. }
-        | WorkerEvent::InputQueueUpdated { .. }
+        | WorkerEvent::QueueUpdated { .. }
         | WorkerEvent::ApprovalRequest { .. }
         | WorkerEvent::RequestUserInput { .. }
         | WorkerEvent::ApprovalDecision { .. }
@@ -1040,11 +1040,23 @@ fn handle_app_command(
         AppCommand::SubmitShellInput { command } => {
             worker.submit_shell_input(command.clone())?;
         }
-        AppCommand::SteerTurn {
-            input,
+        AppCommand::QueuePush { input } => {
+            worker.queue_push(input.clone())?;
+        }
+        AppCommand::QueueSteer {
+            queue_item_id,
             expected_turn_id,
         } => {
-            worker.submit_steer(input.clone(), *expected_turn_id)?;
+            worker.queue_steer(queue_item_id.clone(), *expected_turn_id)?;
+        }
+        AppCommand::QueueRemove { queue_item_id } => {
+            worker.queue_remove(queue_item_id.clone())?;
+        }
+        AppCommand::QueueUpdate {
+            queue_item_id,
+            input,
+        } => {
+            worker.queue_update(queue_item_id.clone(), input.clone())?;
         }
         AppCommand::RunBtwQuestion { question } => {
             worker.run_btw_question(question.clone())?;

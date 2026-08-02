@@ -27,7 +27,7 @@ use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::startup_header::StartupHeaderData;
 use crate::startup_header::build_startup_header;
-use crate::style::user_message_style;
+use crate::style::user_message_rule_line;
 use crate::text_formatting::truncate_text;
 use crate::theme::ThemeSet;
 use crate::ui_consts::ALERT_COLOR;
@@ -339,14 +339,13 @@ impl HistoryCell for UserHistoryCell {
         let accent = self.accent_color;
         let mode_color = self.input_mode.color();
         let style = if self.selected {
-            user_message_style().fg(mode_color)
+            Style::default().fg(mode_color)
         } else {
-            user_message_style()
+            Style::default()
         };
         let element_style = style.fg(accent);
         let slash_command_style = style.fg(accent);
         let prefix_style = Style::default().fg(mode_color);
-        let blank_prefixed_line = || Line::from(Span::styled("  ", style)).style(style);
 
         let wrapped_message = if self.message.is_empty() && self.text_elements.is_empty() {
             None
@@ -372,15 +371,15 @@ impl HistoryCell for UserHistoryCell {
             (!wrapped.is_empty()).then_some(wrapped)
         };
 
-        let mut lines = vec![blank_prefixed_line()];
+        let mut lines = vec![user_message_rule_line(width)];
         if let Some(wrapped_message) = wrapped_message {
             lines.extend(prefix_lines(
                 wrapped_message,
-                Span::styled("▌ ", prefix_style),
+                Span::styled("❯ ", prefix_style),
                 Span::styled("  ", style),
             ));
         }
-        lines.push(blank_prefixed_line());
+        lines.push(user_message_rule_line(width));
         lines
     }
 }
@@ -1434,11 +1433,7 @@ pub(crate) fn new_live_aligned_info_event(
     message: String,
     hint: Option<String>,
 ) -> PlainHistoryCell {
-    let mut line = vec![
-        " ".repeat(LIVE_PREFIX_COLS as usize).into(),
-        "▌ ".dim().into(),
-        message.into(),
-    ];
+    let mut line = vec!["▌ ".dim(), message.into()];
     if let Some(hint) = hint {
         line.push(" ".into());
         line.push(hint.dark_gray());
@@ -1856,11 +1851,58 @@ mod tests {
     }
 
     #[test]
+    fn user_prompt_uses_full_width_dim_rule_lines() {
+        use ratatui::style::Modifier;
+
+        let cell = new_user_prompt(
+            "hello".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Color::Yellow,
+            InputMode::Build,
+        );
+        let width = 12u16;
+        let lines = cell.display_lines(width);
+        assert_eq!(lines.len(), 3, "expected rule + body + rule: {lines:?}");
+
+        let expected_rule = "─".repeat(width as usize);
+        let first = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        let last = lines[lines.len() - 1]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(first, expected_rule);
+        assert_eq!(last, expected_rule);
+
+        for (index, line) in [0usize, lines.len() - 1]
+            .into_iter()
+            .map(|i| (i, &lines[i]))
+        {
+            assert_eq!(
+                line.style.bg, None,
+                "rule line {index} should have no background"
+            );
+            assert!(
+                line.spans
+                    .iter()
+                    .any(|span| span.style.add_modifier.contains(Modifier::DIM)),
+                "rule line {index} should be dim: {line:?}"
+            );
+        }
+    }
+
+    #[test]
     fn user_prompt_highlights_leading_slash_command_without_text_element() {
         assert_eq!(
             content_spans_for_message("/btw check this"),
             vec![
-                ("▌ ".to_string(), Some(Color::Cyan)),
+                ("❯ ".to_string(), Some(Color::Cyan)),
                 ("/btw".to_string(), Some(Color::Yellow)),
                 (" check this".to_string(), None),
             ]
@@ -1872,7 +1914,7 @@ mod tests {
         assert_eq!(
             content_spans_for_message("/unknown check this"),
             vec![
-                ("▌ ".to_string(), Some(Color::Cyan)),
+                ("❯ ".to_string(), Some(Color::Cyan)),
                 ("/unknown check this".to_string(), None),
             ]
         );

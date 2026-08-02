@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::time::Instant;
 
 use devo_core::ItemId;
@@ -289,6 +290,9 @@ pub(crate) struct ChatWidget {
     queued_count: usize,
     queued_input_modes: VecDeque<InputMode>,
     promoted_input_modes: VecDeque<InputMode>,
+    /// Queue item currently loaded into the composer for editing (ctrl+e);
+    /// resubmitting while busy updates it in place instead of pushing a new entry.
+    editing_queue_item_id: Option<String>,
     active_turn_id: Option<TurnId>,
     failed_turn_visually_finalized: bool,
     current_turn_mode: InputMode,
@@ -317,6 +321,14 @@ pub(crate) struct ChatWidget {
     skills_snapshot: Option<Vec<crate::skills_picker::SkillPickerEntry>>,
     /// After enable/disable, reopen this skill's detail once list refreshes.
     skills_reopen_detail: Option<String>,
+    /// Cached git branch for the footer status line (`None` when unavailable).
+    status_line_branch: Option<String>,
+    /// Cwd used for the last/pending git-branch lookup.
+    status_line_branch_cwd: Option<PathBuf>,
+    /// Whether an async git-branch lookup is currently in flight.
+    status_line_branch_pending: bool,
+    /// Earliest time the next light git-branch refresh may run.
+    status_line_branch_next_refresh_at: Instant,
 }
 
 impl ChatWidget {
@@ -360,6 +372,10 @@ impl ChatWidget {
         true
     }
 
+    pub(crate) fn is_task_running(&self) -> bool {
+        self.bottom_pane.is_task_running()
+    }
+
     #[cfg(test)]
     pub(crate) fn is_resuming_session_for_test(&self) -> bool {
         self.resuming_session
@@ -380,6 +396,16 @@ impl ChatWidget {
     #[cfg(test)]
     pub(crate) fn has_bottom_pane_view_for_test(&self) -> bool {
         self.bottom_pane.has_view_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bottom_pane_has_pending_for_test(&self) -> bool {
+        self.bottom_pane.has_pending_cells()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bottom_pane_mut_for_test(&mut self) -> &mut crate::bottom_pane::BottomPane {
+        &mut self.bottom_pane
     }
 }
 
@@ -530,6 +556,7 @@ impl ChatWidget {
             queued_count: 0,
             queued_input_modes: VecDeque::new(),
             promoted_input_modes: VecDeque::new(),
+            editing_queue_item_id: None,
             active_turn_id: None,
             failed_turn_visually_finalized: false,
             current_turn_mode: InputMode::Build,
@@ -553,6 +580,10 @@ impl ChatWidget {
             mcp_reopen_detail: None,
             skills_snapshot: None,
             skills_reopen_detail: None,
+            status_line_branch: None,
+            status_line_branch_cwd: None,
+            status_line_branch_pending: false,
+            status_line_branch_next_refresh_at: Instant::now(),
         };
 
         // Model onboarding can inject additional startup UI before the first frame is drawn.
@@ -571,8 +602,12 @@ impl ChatWidget {
         }
 
         // Keep the bottom pane summary in sync with the assembled widget state.
+        widget.request_status_line_branch_refresh();
         widget.sync_bottom_pane_summary();
         widget.maybe_start_subagent_debug_scenario();
         widget
     }
 }
+
+/// How often the footer re-checks the current git branch while the TUI is open.
+pub(super) const STATUS_LINE_BRANCH_REFRESH_INTERVAL: Duration = Duration::from_secs(3);

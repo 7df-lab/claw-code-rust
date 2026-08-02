@@ -9,6 +9,9 @@ use serde::Serialize;
 use ts_rs::Config;
 use ts_rs::TS;
 
+use crate::canonical::item::ContextCategoryId;
+use crate::canonical::item::ContextCategoryUsage;
+use crate::canonical::item::ContextOccupancy;
 use crate::canonical::rpc_admin::ContextUsageReadParams;
 use crate::canonical::rpc_admin::ContextUsageReadResult;
 use crate::canonical::rpc_admin::McpListParams;
@@ -224,12 +227,6 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<ShellCommandResult>(&cfg, &mut output);
     push_decl::<TurnInterruptParams>(&cfg, &mut output);
     push_decl::<TurnInterruptResult>(&cfg, &mut output);
-    push_decl::<TurnSteerParams>(&cfg, &mut output);
-    push_decl::<TurnSteerResult>(&cfg, &mut output);
-    push_decl::<TurnQueueRemoveParams>(&cfg, &mut output);
-    push_decl::<TurnQueueRemoveResult>(&cfg, &mut output);
-    push_decl::<TurnQueueSteerParams>(&cfg, &mut output);
-    push_decl::<TurnQueueSteerResult>(&cfg, &mut output);
     push_decl::<TurnKind>(&cfg, &mut output);
     push_decl::<WorkspaceChangeScope>(&cfg, &mut output);
     push_decl::<WorkspaceDiffDetail>(&cfg, &mut output);
@@ -299,6 +296,9 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<McpSetEnabledResult>(&cfg, &mut output);
     push_decl::<ContextUsageReadParams>(&cfg, &mut output);
     push_decl::<ContextUsageReadResult>(&cfg, &mut output);
+    push_decl::<ContextCategoryId>(&cfg, &mut output);
+    push_decl::<ContextCategoryUsage>(&cfg, &mut output);
+    push_decl::<ContextOccupancy>(&cfg, &mut output);
 
     push_decl::<ProviderWireApi>(&cfg, &mut output);
     push_decl::<InputModality>(&cfg, &mut output);
@@ -696,12 +696,6 @@ fn register_devo_protocol_schemas(
     schema::<ShellCommandResult>(schemas);
     schema::<TurnInterruptParams>(schemas);
     schema::<TurnInterruptResult>(schemas);
-    schema::<TurnSteerParams>(schemas);
-    schema::<TurnSteerResult>(schemas);
-    schema::<TurnQueueRemoveParams>(schemas);
-    schema::<TurnQueueRemoveResult>(schemas);
-    schema::<TurnQueueSteerParams>(schemas);
-    schema::<TurnQueueSteerResult>(schemas);
     schema::<WorkspaceChangesReadParams>(schemas);
     schema::<WorkspaceChangesReadResult>(schemas);
     schema::<WorkspaceChangesUpdatedPayload>(schemas);
@@ -833,15 +827,6 @@ fn register_devo_protocol_schemas(
     devo_method::<TurnStartParams, TurnStartResult>(methods, ClientMethod::TurnStart);
     devo_method::<ShellCommandParams, ShellCommandResult>(methods, ClientMethod::TurnShellCommand);
     devo_method::<TurnInterruptParams, TurnInterruptResult>(methods, ClientMethod::TurnInterrupt);
-    devo_method::<TurnSteerParams, TurnSteerResult>(methods, ClientMethod::TurnSteer);
-    devo_method::<TurnQueueRemoveParams, TurnQueueRemoveResult>(
-        methods,
-        ClientMethod::TurnQueueRemove,
-    );
-    devo_method::<TurnQueueSteerParams, TurnQueueSteerResult>(
-        methods,
-        ClientMethod::TurnQueueSteer,
-    );
     devo_method::<WorkspaceChangesReadParams, WorkspaceChangesReadResult>(
         methods,
         ClientMethod::WorkspaceChangesRead,

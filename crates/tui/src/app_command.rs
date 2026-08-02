@@ -71,9 +71,23 @@ pub(crate) enum AppCommand {
         sandbox: Option<Option<String>>,
         approval_policy: Option<Option<String>>,
     },
-    SteerTurn {
+    /// Enqueue input on the active session while a turn is busy.
+    QueuePush {
         input: Vec<InputItem>,
+    },
+    /// Promote a queued item into the active turn as a steer.
+    QueueSteer {
+        queue_item_id: String,
         expected_turn_id: TurnId,
+    },
+    /// Remove a queued item (e.g. before editing in the composer).
+    QueueRemove {
+        queue_item_id: String,
+    },
+    /// Replace a queued item's content in place, preserving its position.
+    QueueUpdate {
+        queue_item_id: String,
+        input: Vec<InputItem>,
     },
     RunBtwQuestion {
         question: String,
@@ -173,9 +187,6 @@ pub(crate) enum AppCommandView<'a> {
         sandbox: &'a Option<String>,
         approval_policy: &'a Option<String>,
         collaboration_mode: CollaborationMode,
-    },
-    SteerTurn {
-        input: &'a [InputItem],
     },
     RunBtwQuestion {
         question: &'a str,
@@ -391,7 +402,10 @@ impl AppCommand {
             Self::ClearGoal => "clear_goal",
             Self::UserTurn { .. } => "user_turn",
             Self::OverrideTurnContext { .. } => "override_turn_context",
-            Self::SteerTurn { .. } => "steer_turn",
+            Self::QueuePush { .. } => "queue_push",
+            Self::QueueSteer { .. } => "queue_steer",
+            Self::QueueRemove { .. } => "queue_remove",
+            Self::QueueUpdate { .. } => "queue_update",
             Self::RunBtwQuestion { .. } => "run_btw_question",
             Self::ApprovalRespond { .. } => "approval_respond",
             Self::RequestUserInputRespond { .. } => "request_user_input_respond",
@@ -462,7 +476,10 @@ impl AppCommand {
                 sandbox,
                 approval_policy,
             },
-            Self::SteerTurn { input, .. } => AppCommandView::SteerTurn { input },
+            Self::QueuePush { .. }
+            | Self::QueueSteer { .. }
+            | Self::QueueRemove { .. }
+            | Self::QueueUpdate { .. } => AppCommandView::ReloadUserConfig,
             Self::RunBtwQuestion { question } => AppCommandView::RunBtwQuestion { question },
             Self::ApprovalRespond {
                 approval_id,

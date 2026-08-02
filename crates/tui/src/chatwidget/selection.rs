@@ -81,9 +81,7 @@ impl ChatWidget {
         self.selection_mode = false;
         self.selected_user_cell_index = None;
         self.sync_selected_user_cell_highlight();
-        self.bottom_pane
-            .set_status_line(Some(Line::from(self.session_summary_text()).dim()));
-        self.bottom_pane.set_status_line_enabled(true);
+        self.sync_bottom_pane_summary();
         self.frame_requester.schedule_frame();
     }
 

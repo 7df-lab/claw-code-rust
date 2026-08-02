@@ -43,7 +43,6 @@ impl ChatWidget {
             | SlashCommand::Goal
             | SlashCommand::Exit
             | SlashCommand::Status
-            | SlashCommand::Clear
             | SlashCommand::ShowReasoning
             | SlashCommand::Rename
             | SlashCommand::Btw => {
@@ -67,10 +66,6 @@ impl ChatWidget {
                 tracing::info!("slash /exit dispatched from chat widget");
                 self.app_event_tx
                     .send(AppEvent::Exit(crate::app_event::ExitMode::ShutdownFirst));
-            }
-            SlashCommand::Clear => {
-                self.clear_transcript_view();
-                self.set_status_message("Transcript cleared");
             }
             SlashCommand::Status => {
                 self.bottom_pane.open_status_panel(

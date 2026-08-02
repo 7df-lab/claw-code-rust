@@ -368,8 +368,46 @@ impl StdioServerClient {
         self.core.turn_interrupt(params).await
     }
 
-    pub async fn turn_steer(&mut self, params: TurnSteerParams) -> Result<TurnSteerResult> {
-        self.core.turn_steer(params).await
+    pub async fn session_queue_push(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueuePushParams,
+    ) -> Result<canonical::rpc_turn::SessionQueuePushResult> {
+        self.core.session_queue_push(params).await
+    }
+
+    pub async fn session_queue_list(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueListParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueListResult> {
+        self.core.session_queue_list(params).await
+    }
+
+    pub async fn session_queue_update(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueUpdateParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueUpdateResult> {
+        self.core.session_queue_update(params).await
+    }
+
+    pub async fn session_queue_remove(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueRemoveParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueRemoveResult> {
+        self.core.session_queue_remove(params).await
+    }
+
+    pub async fn session_queue_steer(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueSteerParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueSteerResult> {
+        self.core.session_queue_steer(params).await
+    }
+
+    pub async fn subscription_create(
+        &mut self,
+        params: canonical::event::SubscriptionCreateParams,
+    ) -> Result<canonical::event::SubscriptionCreateResult> {
+        self.core.subscription_create(params).await
     }
 
     pub async fn approval_respond(&mut self, params: ApprovalResponseParams) -> Result<()> {

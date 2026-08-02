@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use devo_core::ResponseItem;
 use devo_core::{ItemId, SessionId, TurnId};
 
 use super::super::ServerRuntime;
@@ -41,12 +42,16 @@ impl ContextCompactionLifecycle {
         runtime: &Arc<ServerRuntime>,
         session_id: SessionId,
         turn_id: TurnId,
+        compacted_items: Vec<ResponseItem>,
     ) {
         let Some(item_id) = self.item_id.take() else {
             return;
         };
+        let item_seq = runtime
+            .persist_in_turn_compaction(session_id, turn_id, item_id, &compacted_items)
+            .await;
         runtime
-            .broadcast_event(completed_event(session_id, turn_id, item_id))
+            .broadcast_event(completed_event(session_id, turn_id, item_id, item_seq))
             .await;
     }
 
@@ -100,6 +105,7 @@ pub(super) fn started_event(
         session_id,
         turn_id,
         item_id,
+        None,
         ServerEvent::ItemStarted,
         serde_json::json!({ "title": "Compaction started" }),
     )
@@ -109,11 +115,13 @@ pub(super) fn completed_event(
     session_id: SessionId,
     turn_id: TurnId,
     item_id: ItemId,
+    item_seq: Option<u64>,
 ) -> ServerEvent {
     item_event(
         session_id,
         turn_id,
         item_id,
+        item_seq,
         ServerEvent::ItemCompleted,
         serde_json::json!({ "title": "Context compacted" }),
     )
@@ -130,6 +138,7 @@ pub(super) fn failed_events(
             session_id,
             turn_id,
             item_id,
+            None,
             ServerEvent::ItemCompleted,
             serde_json::json!({
                 "title": "Compaction failed",
@@ -148,6 +157,7 @@ fn item_event(
     session_id: SessionId,
     turn_id: TurnId,
     item_id: ItemId,
+    item_seq: Option<u64>,
     wrap: impl FnOnce(ItemEventPayload) -> ServerEvent,
     payload: serde_json::Value,
 ) -> ServerEvent {
@@ -156,8 +166,8 @@ fn item_event(
             session_id,
             turn_id: Some(turn_id),
             item_id: Some(item_id),
-            seq: 0,
-            item_seq: None,
+            seq: item_seq.unwrap_or(0),
+            item_seq,
         },
         item: ItemEnvelope {
             item_id,

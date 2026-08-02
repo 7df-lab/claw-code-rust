@@ -177,10 +177,12 @@ pub(crate) enum WorkerEvent {
     },
     /// The active session identifier is now known.
     SessionActivated { session_id: SessionId },
-    /// Input queue state updated by the server.
-    InputQueueUpdated {
-        pending_count: usize,
-        pending_texts: Vec<String>,
+    /// Canonical session queue snapshot (`queue/updated` / list / push).
+    QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange,
+        queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+        started_turn_id: Option<TurnId>,
+        entries: Vec<devo_protocol::canonical::queue::QueueEntry>,
     },
     /// A steer (/btw) was accepted by the server.
     SteerAccepted { turn_id: TurnId },

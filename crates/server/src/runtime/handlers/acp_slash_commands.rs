@@ -110,7 +110,6 @@ impl ServerRuntime {
             | SlashCommand::Settings
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning
-            | SlashCommand::Clear
             | SlashCommand::Diff
             | SlashCommand::Exit
             | SlashCommand::Btw => {

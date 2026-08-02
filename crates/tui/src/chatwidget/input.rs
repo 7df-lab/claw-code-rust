@@ -110,24 +110,25 @@ impl ChatWidget {
                     mention_bindings,
                 };
                 if self.busy && !user_message.text.trim().is_empty() {
-                    // Turn is active — show in bottom pane as pending cell.
-                    self.bottom_pane
-                        .push_pending_cell(user_message.text.clone());
-                    self.queued_input_modes.push_back(input_mode);
-                    self.queued_count += 1;
-                    self.app_event_tx.send(AppEvent::Command(
-                        AppCommand::user_turn_with_collaboration_mode(
-                            input_items_for_user_message(&user_message),
-                            Some(self.session.cwd.clone()),
-                            self.user_turn_model(),
-                            self.user_turn_model_binding_id(),
-                            self.reasoning_effort_selection.clone(),
-                            /*sandbox*/ None,
-                            Some("on-request".to_string()),
-                            collaboration_mode,
-                        ),
-                    ));
-                    self.set_status_message("Message queued");
+                    if let Some(queue_item_id) = self.editing_queue_item_id.take() {
+                        // Resubmit of a queue edit — replace the entry in place
+                        // so it keeps its position and existing mode slot.
+                        self.app_event_tx
+                            .send(AppEvent::Command(AppCommand::QueueUpdate {
+                                queue_item_id,
+                                input: input_items_for_user_message(&user_message),
+                            }));
+                        self.set_status_message("Queued message updated");
+                    } else {
+                        // Turn is active — enqueue via canonical session/queue/push.
+                        // Mode is applied when QueueUpdated assigns a queue_item_id.
+                        self.queued_input_modes.push_back(input_mode);
+                        self.app_event_tx
+                            .send(AppEvent::Command(AppCommand::QueuePush {
+                                input: input_items_for_user_message(&user_message),
+                            }));
+                        self.set_status_message("Message queued");
+                    }
                 } else {
                     self.submit_user_message_with_modes(
                         user_message,
@@ -179,6 +180,37 @@ impl ChatWidget {
             InputResult::ThemeSelected { name } => {
                 self.apply_theme_selection(name);
             }
+            InputResult::QueueSteer { queue_item_id } => {
+                let Some(turn_id) = self.active_turn_id else {
+                    self.set_status_message("No active turn to steer");
+                    return;
+                };
+                self.app_event_tx
+                    .send(AppEvent::Command(AppCommand::QueueSteer {
+                        queue_item_id,
+                        expected_turn_id: turn_id,
+                    }));
+                self.bottom_pane.clear_pending_queue_focus();
+                self.set_status_message("Steering queued message…");
+            }
+            InputResult::QueueEdit {
+                queue_item_id,
+                text,
+            } => {
+                // Load the queued text into the composer and remember the item;
+                // resubmitting while busy updates it in place (position kept).
+                self.editing_queue_item_id = Some(queue_item_id);
+                self.bottom_pane.clear_pending_queue_focus();
+                self.bottom_pane
+                    .set_text_content(text, Vec::new(), Vec::new());
+                self.bottom_pane.move_composer_cursor_to_end();
+                self.set_status_message("Editing queued message");
+            }
+            InputResult::QueueRemove { queue_item_id } => {
+                self.app_event_tx
+                    .send(AppEvent::Command(AppCommand::QueueRemove { queue_item_id }));
+                self.set_status_message("Removing queued message");
+            }
             InputResult::None => {}
         }
     }
@@ -229,6 +261,7 @@ impl ChatWidget {
         self.advance_startup_header_animation();
         self.run_stream_commit_tick();
         self.tick_subagent_monitor(Instant::now());
+        self.maybe_refresh_status_line_branch();
         self.bottom_pane.pre_draw_tick();
     }
 
@@ -338,6 +371,10 @@ impl ChatWidget {
                 }
                 self.frame_requester.schedule_frame();
             }
+            AppEvent::StatusLineBranchUpdated { cwd, branch } => {
+                self.apply_status_line_branch_update(cwd, branch);
+                self.frame_requester.schedule_frame();
+            }
             AppEvent::Exit(_)
             | AppEvent::OnboardingCompleted
             | AppEvent::OpenSlashCommandPopup
@@ -346,7 +383,6 @@ impl ChatWidget {
             | AppEvent::OpenReasoningEffortPicker
             | AppEvent::OpenThemePicker
             | AppEvent::OpenSubagentOverlay { .. }
-            | AppEvent::StatusLineBranchUpdated { .. }
             | AppEvent::ReferenceSearchRequested { .. }
             | AppEvent::ReferenceSearchCancelled
             | AppEvent::StatusLineSetup { .. }

@@ -144,7 +144,6 @@ pub(crate) enum AppEvent {
         value: Option<String>,
     },
 
-    #[allow(dead_code)]
     /// Async update of the current git branch for status-line rendering.
     StatusLineBranchUpdated {
         cwd: PathBuf,

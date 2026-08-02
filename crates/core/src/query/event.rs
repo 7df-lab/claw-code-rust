@@ -8,6 +8,7 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
+use crate::response_item::ResponseItem;
 use crate::tools::ToolContent;
 use devo_protocol::StopReason;
 use devo_provider::ModelProviderSDK;
@@ -20,7 +21,12 @@ pub enum QueryEvent {
     /// Context compaction is about to begin.
     ContextCompactionStarted,
     /// Context compaction replaced the current prompt history.
-    ContextCompactionCompleted,
+    ContextCompactionCompleted {
+        /// Full compacted history (summary + preserved suffix), including tool
+        /// pairs. Callers persist snapshots from this before Message-only
+        /// prompt conversion drops non-message items.
+        compacted_items: Vec<ResponseItem>,
+    },
     /// Context compaction did not replace the current prompt history.
     ContextCompactionFailed {
         /// Human-readable reason the compaction did not complete.

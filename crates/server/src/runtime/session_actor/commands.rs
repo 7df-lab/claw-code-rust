@@ -70,10 +70,6 @@ pub(crate) enum SessionCommand {
     EnqueuePendingTurnInput {
         item: PendingInputItem,
     },
-    RemoveQueuedTurnInput {
-        queued_input_id: devo_core::PendingInputId,
-        reply: oneshot::Sender<bool>,
-    },
     GetActiveTurnId {
         reply: oneshot::Sender<Option<TurnId>>,
     },

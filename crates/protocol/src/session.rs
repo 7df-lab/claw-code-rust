@@ -167,6 +167,7 @@ pub enum SessionHistoryItemKind {
     CommandExecution,
     Error,
     TurnSummary,
+    ContextCompaction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

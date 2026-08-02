@@ -14,10 +14,7 @@ use devo_protocol::user_input::TextElement;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
-use ratatui::style::Stylize;
 use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
-use ratatui::widgets::Widget;
 
 mod approval_overlay;
 pub(crate) mod bottom_pane_view;
@@ -34,6 +31,7 @@ mod input_mode;
 pub(crate) mod list_selection_view;
 mod model_picker;
 mod paste_burst;
+mod pending_queue;
 mod pending_thread_approvals;
 pub(crate) mod popup_consts;
 mod prompt_args;
@@ -78,10 +76,13 @@ use crate::app_command::InputHistoryDirection;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::bottom_pane_view::BottomPaneView;
+pub(crate) use crate::bottom_pane::pending_queue::PendingQueueItem;
+use crate::bottom_pane::pending_queue::PendingQueueList;
+use crate::bottom_pane::pending_queue::PendingQueueState;
+pub(crate) use crate::bottom_pane::pending_queue::QueueNavResult;
 use crate::bottom_pane::pending_thread_approvals::PendingThreadApprovals;
 use crate::bottom_pane::request_user_input_overlay::RequestUserInputOverlay;
 use crate::bottom_pane::unified_exec_footer::UnifiedExecFooter;
-use crate::render::line_utils::prefix_lines;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::status_indicator_widget::StatusIndicatorWidget;
@@ -212,6 +213,19 @@ pub(crate) enum InputResult {
     ThemeSelected {
         name: String,
     },
+    /// Steer the selected queued item into the active turn.
+    QueueSteer {
+        queue_item_id: String,
+    },
+    /// Remove the selected queued item and load its text into the composer.
+    QueueEdit {
+        queue_item_id: String,
+        text: String,
+    },
+    /// Remove the selected queued item without loading it into the composer.
+    QueueRemove {
+        queue_item_id: String,
+    },
     None,
 }
 
@@ -233,9 +247,8 @@ pub(crate) struct BottomPane {
     frame_requester: FrameRequester,
     unified_exec_footer: UnifiedExecFooter,
     pending_thread_approvals: PendingThreadApprovals,
-    /// User messages queued while a turn was active, shown above the composer
-    /// as pending cells. Each entry is the raw text of one queued prompt.
-    pending_cell_texts: Vec<String>,
+    /// User messages queued while a turn was active, shown below the composer.
+    pending_queue: PendingQueueState,
     placeholder_text: String,
     /// Status indicator shown above the composer while a task is running.
     status: Option<StatusIndicatorWidget>,
@@ -281,7 +294,7 @@ impl BottomPane {
             frame_requester,
             unified_exec_footer: UnifiedExecFooter::new(),
             pending_thread_approvals: PendingThreadApprovals::new(),
-            pending_cell_texts: Vec::new(),
+            pending_queue: PendingQueueState::default(),
             placeholder_text,
             status: None,
             subagent_hint_visible: false,
@@ -356,6 +369,23 @@ impl BottomPane {
             return InputResult::None;
         }
 
+        if self.pending_queue.focused()
+            && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+        {
+            return self.handle_pending_queue_key(key);
+        }
+
+        if key.code == KeyCode::Down
+            && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            && key.modifiers == KeyModifiers::NONE
+            && self.composer.is_empty()
+            && self.has_pending_cells()
+            && !self.composer.popup_active()
+        {
+            self.focus_pending_queue();
+            return InputResult::None;
+        }
+
         if key.code == KeyCode::Esc
             && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
             && self.is_task_running
@@ -405,6 +435,49 @@ impl BottomPane {
             self.request_redraw_in(ChatComposer::recommended_paste_flush_delay());
         }
         self.map_composer_input_result(input_result)
+    }
+
+    fn handle_pending_queue_key(&mut self, key: KeyEvent) -> InputResult {
+        match key.code {
+            KeyCode::Down => {
+                self.pending_queue_select_next();
+                InputResult::None
+            }
+            KeyCode::Up => {
+                let _ = self.pending_queue_select_prev();
+                InputResult::None
+            }
+            KeyCode::Esc => {
+                self.clear_pending_queue_focus();
+                InputResult::None
+            }
+            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let Some(item) = self.selected_pending_queue_item() else {
+                    return InputResult::None;
+                };
+                InputResult::QueueSteer {
+                    queue_item_id: item.queue_item_id.clone(),
+                }
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let Some(item) = self.selected_pending_queue_item() else {
+                    return InputResult::None;
+                };
+                InputResult::QueueEdit {
+                    queue_item_id: item.queue_item_id.clone(),
+                    text: item.text.clone(),
+                }
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let Some(item) = self.selected_pending_queue_item() else {
+                    return InputResult::None;
+                };
+                InputResult::QueueRemove {
+                    queue_item_id: item.queue_item_id.clone(),
+                }
+            }
+            _ => InputResult::None,
+        }
     }
 
     pub fn handle_paste(&mut self, pasted: String) {
@@ -651,6 +724,14 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Move the composer cursor to the end of its text (e.g. after loading a
+    /// queued message for editing, so new input appends instead of
+    /// prepending).
+    pub(crate) fn move_composer_cursor_to_end(&mut self) {
+        self.composer.move_cursor_to_end();
+        self.request_redraw();
+    }
+
     pub(crate) fn is_normal_backtrack_mode(&self) -> bool {
         self.active_view().is_none()
             && !self.is_task_running
@@ -682,6 +763,12 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn set_context_window_label(&mut self, label: Option<String>) {
+        if self.composer.set_context_window_label(label) {
+            self.request_redraw();
+        }
+    }
+
     pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) {
         if self.composer.set_active_agent_label(active_agent_label) {
             self.request_redraw();
@@ -706,9 +793,14 @@ impl BottomPane {
             .set_subagent_hint_visible(self.subagent_hint_visible && !status_visible);
     }
 
+    pub(crate) fn is_task_running(&self) -> bool {
+        self.is_task_running
+    }
+
     pub(crate) fn set_task_running(&mut self, running: bool) {
         let was_running = self.is_task_running;
         self.is_task_running = running;
+        self.composer.set_task_running(running);
         if running {
             self.pending_interrupt_esc = false;
             self.interrupt_requested = false;
@@ -764,28 +856,73 @@ impl BottomPane {
         }
     }
 
-    pub(crate) fn push_pending_cell(&mut self, text: String) {
-        self.pending_cell_texts.push(text);
+    pub(crate) fn replace_pending_queue(&mut self, items: Vec<PendingQueueItem>) {
+        self.pending_queue.replace_items(items);
         self.request_redraw();
+    }
+
+    pub(crate) fn pending_queue_items(&self) -> &[PendingQueueItem] {
+        self.pending_queue.items()
+    }
+
+    pub(crate) fn pending_queue_focused(&self) -> bool {
+        self.pending_queue.focused()
+    }
+
+    pub(crate) fn focus_pending_queue(&mut self) -> bool {
+        let focused = self.pending_queue.focus_first();
+        if focused {
+            self.request_redraw();
+        }
+        focused
+    }
+
+    pub(crate) fn clear_pending_queue_focus(&mut self) {
+        if self.pending_queue.focused() {
+            self.pending_queue.clear_focus();
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn pending_queue_select_next(&mut self) -> bool {
+        let handled = self.pending_queue.select_next();
+        if handled {
+            self.request_redraw();
+        }
+        handled
+    }
+
+    pub(crate) fn pending_queue_select_prev(&mut self) -> QueueNavResult {
+        let result = self.pending_queue.select_prev();
+        if result != QueueNavResult::Ignored {
+            self.request_redraw();
+        }
+        result
+    }
+
+    pub(crate) fn selected_pending_queue_item(&self) -> Option<&PendingQueueItem> {
+        self.pending_queue.selected_item()
     }
 
     /// Pop the oldest pending cell (FIFO). Returns its text, or None if empty.
     pub(crate) fn pop_oldest_pending_cell(&mut self) -> Option<String> {
-        if self.pending_cell_texts.is_empty() {
+        if self.pending_queue.is_empty() {
             return None;
         }
-        let result = Some(self.pending_cell_texts.remove(0));
+        let mut items = self.pending_queue.items().to_vec();
+        let removed = items.remove(0);
+        self.pending_queue.replace_items(items);
         self.request_redraw();
-        result
+        Some(removed.text)
     }
 
     pub(crate) fn has_pending_cells(&self) -> bool {
-        !self.pending_cell_texts.is_empty()
+        !self.pending_queue.is_empty()
     }
 
     pub(crate) fn clear_pending_cells(&mut self) {
-        if !self.pending_cell_texts.is_empty() {
-            self.pending_cell_texts.clear();
+        if !self.pending_queue.is_empty() {
+            self.pending_queue.clear();
             self.request_redraw();
         }
     }
@@ -1048,58 +1185,6 @@ impl BottomPane {
     }
 }
 
-/// Thin renderable wrapper around a slice of pending cell texts.
-/// Each cell is rendered with a `┃` prefix and a `QUEUED` badge, matching the
-/// style of a normal user input cell in the history transcript.
-struct PendingCellList<'a> {
-    texts: &'a [String],
-}
-
-impl Renderable for PendingCellList<'_> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        if area.is_empty() || self.texts.is_empty() {
-            return;
-        }
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for text in self.texts {
-            lines.push(Line::from(""));
-            lines.push(Line::from("  QUEUED".cyan().bold()));
-            let wrapped = crate::wrapping::adaptive_wrap_lines(
-                text.lines().map(|line| Line::from(line.to_string())),
-                crate::wrapping::RtOptions::new(area.width as usize),
-            );
-            if !wrapped.is_empty() {
-                let has_more = wrapped.len() > 3;
-                let truncated: Vec<_> = wrapped.into_iter().take(3).collect();
-                lines.extend(prefix_lines(truncated, "┃ ".cyan(), "┃ ".cyan()));
-                if has_more {
-                    lines.push(Line::from("┃ …".cyan())); // truncated_extra
-                }
-            }
-        }
-        Paragraph::new(lines).render(area, buf);
-    }
-
-    fn desired_height(&self, _width: u16) -> u16 {
-        if self.texts.is_empty() {
-            return 0;
-        }
-        // Each cell: blank line + wrapped content + QUEUED badge
-        let content_lines: usize = self
-            .texts
-            .iter()
-            .map(|t| {
-                // blank + QUEUED badge + min(content_lines, 3) + "..."
-                let line_count = t.lines().count().min(3);
-                let truncated_extra = if t.lines().count() > 3 { 1 } else { 0 };
-                // blank line + QUEUED + content +
-                2 + line_count + truncated_extra
-            })
-            .sum();
-        content_lines as u16
-    }
-}
-
 impl Renderable for BottomPane {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.is_empty() {
@@ -1120,14 +1205,12 @@ impl Renderable for BottomPane {
         if self.status.is_none() && !self.unified_exec_footer.is_empty() {
             children.push(&self.unified_exec_footer);
         }
-        let pending_cells = PendingCellList {
-            texts: &self.pending_cell_texts,
-        };
-        if pending_cells.desired_height(area.width) > 0 {
-            children.push(&pending_cells);
-        }
         children.push(&self.pending_thread_approvals);
         children.push(&self.composer);
+        let pending_queue = PendingQueueList::new(&self.pending_queue);
+        if pending_queue.desired_height(area.width) > 0 {
+            children.push(&pending_queue);
+        }
         self.render_children(area, buf, &children);
     }
 
@@ -1144,14 +1227,12 @@ impl Renderable for BottomPane {
         if self.status.is_none() && !self.unified_exec_footer.is_empty() {
             children.push(&self.unified_exec_footer);
         }
-        let pending_cells = PendingCellList {
-            texts: &self.pending_cell_texts,
-        };
-        if pending_cells.desired_height(width) > 0 {
-            children.push(&pending_cells);
-        }
         children.push(&self.pending_thread_approvals);
         children.push(&self.composer);
+        let pending_queue = PendingQueueList::new(&self.pending_queue);
+        if pending_queue.desired_height(width) > 0 {
+            children.push(&pending_queue);
+        }
         self.desired_children_height(width, &children)
     }
 
@@ -1182,14 +1263,9 @@ impl Renderable for BottomPane {
         if self.status.is_none() && !self.unified_exec_footer.is_empty() {
             children.push(&self.unified_exec_footer);
         }
-        let pending_cells = PendingCellList {
-            texts: &self.pending_cell_texts,
-        };
-        if pending_cells.desired_height(area.width) > 0 {
-            children.push(&pending_cells);
-        }
         children.push(&self.pending_thread_approvals);
         children.push(&self.composer);
+        // Queue renders below the composer and does not own the caret.
         self.child_cursor_pos(area, &children)
     }
 }
@@ -1396,6 +1472,56 @@ mod tests {
         assert!(
             panel_row > draft_row,
             "status panel should render below composer; draft_row={draft_row} panel_row={panel_row}\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn pending_queue_stacks_below_composer_and_supports_edit_key() {
+        let mut pane = test_bottom_pane();
+        let draft = "composer draft";
+        pane.set_text_content(draft.to_string(), Vec::new(), Vec::new());
+        pane.replace_pending_queue(vec![PendingQueueItem {
+            queue_item_id: "q1".into(),
+            text: "queued\nmulti".into(),
+        }]);
+        let rendered = render_bottom_pane(&pane, /*width*/ 80);
+        let draft_row = rendered
+            .lines()
+            .position(|line| line.contains(draft))
+            .expect("missing composer draft");
+        let queue_row = rendered
+            .lines()
+            .position(|line| line.contains("1 ›") && line.contains("queued multi"))
+            .expect("missing queue row");
+        assert!(
+            queue_row > draft_row,
+            "queue should render below composer; draft_row={draft_row} queue_row={queue_row}\n{rendered}"
+        );
+
+        pane.set_text_content(String::new(), Vec::new(), Vec::new());
+        assert_eq!(
+            pane.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            InputResult::None
+        );
+        assert!(pane.pending_queue_focused());
+        assert_eq!(
+            pane.handle_key_event(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            InputResult::QueueSteer {
+                queue_item_id: "q1".into(),
+            }
+        );
+        assert_eq!(
+            pane.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL)),
+            InputResult::QueueEdit {
+                queue_item_id: "q1".into(),
+                text: "queued\nmulti".into(),
+            }
+        );
+        assert_eq!(
+            pane.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            InputResult::QueueRemove {
+                queue_item_id: "q1".into(),
+            }
         );
     }
 }

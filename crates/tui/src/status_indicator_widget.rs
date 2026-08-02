@@ -47,6 +47,10 @@ const WORKING_TIPS: &[&str] = &[
     "Keep prompts narrow when you want a small, low-risk code change.",
     "Press SHIFT+TAB to switch modes.",
     "Enter '!' to enter SHELL mode; press SHIFT+TAB to switch modes.",
+    "Press Ctrl+S to add guidance without waiting for the turn to finish.",
+    "You can also send messages while Devo is working; they enter the wait queue.",
+    "Use /status to check current token and context usage.",
+    "Use /settings to change the compact limit, theme, and more.",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

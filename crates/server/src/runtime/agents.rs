@@ -455,7 +455,6 @@ impl ServerRuntime {
                     "failed to persist agent follow-up pending message"
                 );
             }
-            self.broadcast_updated_queue(session_id).await;
             return Ok(active_turn);
         }
 

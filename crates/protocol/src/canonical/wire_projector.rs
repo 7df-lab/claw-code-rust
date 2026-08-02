@@ -838,10 +838,13 @@ mod tests {
 
     #[test]
     fn typed_notification_skips_non_item_events() {
-        let event = ServerEvent::InputQueueUpdated(crate::InputQueueUpdatedPayload {
-            session_id: crate::SessionId::new(),
-            pending_count: 0,
-            pending_texts: Vec::new(),
+        let event = ServerEvent::ReferenceSearchUpdated(crate::ReferenceSearchSnapshot {
+            search_id: crate::ReferenceSearchId::new(),
+            query: "q".to_string(),
+            results: Vec::new(),
+            total_file_match_count: 0,
+            scanned_file_count: 0,
+            file_search_complete: false,
         });
         assert_eq!(typed_item_notification_from_server_event(&event), None);
     }

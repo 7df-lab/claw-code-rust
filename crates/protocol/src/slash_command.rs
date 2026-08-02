@@ -19,7 +19,6 @@ pub enum SlashCommand {
     Settings,
     Permissions,
     ShowReasoning,
-    Clear,
     Diff,
     Exit,
     Btw,
@@ -46,7 +45,6 @@ impl SlashCommand {
             SlashCommand::ShowReasoning => {
                 "choose how reasoning content is shown in the transcript"
             }
-            SlashCommand::Clear => "clear the current transcript",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Btw => {
                 "Ask a quick side question without interrupting the main conversation"
@@ -71,7 +69,6 @@ impl SlashCommand {
             SlashCommand::Settings => "settings",
             SlashCommand::Permissions => "permissions",
             SlashCommand::ShowReasoning => "show-reasoning",
-            SlashCommand::Clear => "clear",
             SlashCommand::Diff => "diff",
             SlashCommand::Btw => "btw",
             SlashCommand::Goal => "goal",
@@ -103,7 +100,6 @@ impl SlashCommand {
             | SlashCommand::Settings
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning
-            | SlashCommand::Clear
             | SlashCommand::Diff
             | SlashCommand::Exit => None,
         }
@@ -144,7 +140,6 @@ impl SlashCommand {
             | SlashCommand::Settings
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning
-            | SlashCommand::Clear
             | SlashCommand::Diff
             | SlashCommand::Exit
             | SlashCommand::Btw => None,
@@ -171,7 +166,6 @@ impl FromStr for SlashCommand {
             "settings" => Ok(Self::Settings),
             "permissions" | "approvals" => Ok(Self::Permissions),
             "show-reasoning" | "reasoning-view" => Ok(Self::ShowReasoning),
-            "clear" => Ok(Self::Clear),
             "diff" => Ok(Self::Diff),
             "btw" => Ok(Self::Btw),
             "goal" => Ok(Self::Goal),
@@ -195,7 +189,6 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         ("settings", SlashCommand::Settings),
         ("permissions", SlashCommand::Permissions),
         ("show-reasoning", SlashCommand::ShowReasoning),
-        ("clear", SlashCommand::Clear),
         ("diff", SlashCommand::Diff),
         ("goal", SlashCommand::Goal),
         ("btw", SlashCommand::Btw),
@@ -340,5 +333,15 @@ mod tests {
         assert!(!SlashCommand::Delete.supports_inline_args());
         assert_eq!(SlashCommand::Rename.parameter_hint(), Some("<new title>"));
         assert_eq!(SlashCommand::Delete.parameter_hint(), None);
+    }
+
+    #[test]
+    fn clear_slash_command_is_removed() {
+        assert_eq!("clear".parse::<SlashCommand>(), Err(()));
+        assert!(
+            !built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "clear")
+        );
     }
 }

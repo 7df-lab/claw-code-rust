@@ -5,16 +5,19 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use devo_protocol::Model;
 use devo_protocol::ProviderWireApi;
+use devo_util_git::current_branch_name;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 
+use crate::app_event::AppEvent;
 use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::startup_header::STARTUP_HEADER_ANIMATION_INTERVAL;
@@ -23,6 +26,7 @@ use crate::ui_consts::REASONING_ACCENT_COLOR;
 
 use super::ChatWidget;
 use super::DotStatus;
+use super::STATUS_LINE_BRANCH_REFRESH_INTERVAL;
 
 /// Blue used for the pending-state dot prefix.
 pub(super) const PENDING_DOT_COLOR: Color = Color::Rgb(110, 200, 255);
@@ -322,18 +326,29 @@ impl ChatWidget {
 
     fn session_summary_text_with_context(&self, include_context: bool) -> String {
         let model = self.model_display_name();
-        let mut summary = String::with_capacity(model.len().saturating_add(48));
+        let mut summary = String::with_capacity(model.len().saturating_add(64));
         summary.push_str(model);
+        if let Some(branch) = self.status_line_branch.as_deref() {
+            summary.push_str(" · ");
+            summary.push_str(branch);
+        }
 
-        if include_context && let Some((used, total, _percent)) = self.context_usage() {
+        if include_context && let Some(context) = self.session_context_summary_text() {
             summary.push_str("  ");
-            Self::push_progress_bar(&mut summary, used, total, 10);
-            summary.push(' ');
-            Self::push_compact_token_count(&mut summary, used);
-            summary.push('/');
-            Self::push_compact_token_count(&mut summary, total);
+            summary.push_str(&context);
         }
         summary
+    }
+
+    fn session_context_summary_text(&self) -> Option<String> {
+        let (used, total, _percent) = self.context_usage()?;
+        let mut context = String::with_capacity(48);
+        Self::push_progress_bar(&mut context, used, total, 10);
+        context.push(' ');
+        Self::push_compact_token_count(&mut context, used);
+        context.push('/');
+        Self::push_compact_token_count(&mut context, total);
+        Some(context)
     }
 
     pub(super) fn model_display_name(&self) -> &str {
@@ -350,11 +365,80 @@ impl ChatWidget {
     }
 
     pub(super) fn sync_bottom_pane_summary(&mut self) {
-        let summary =
-            self.session_summary_text_with_context(self.session.active_agent_label.is_none());
+        // Left: mode · model · branch. Right: context meter (right-aligned).
+        let summary = self.session_summary_text_with_context(/*include_context*/ false);
         self.bottom_pane
             .set_status_line(Some(Line::from(summary).dim()));
         self.bottom_pane.set_status_line_enabled(true);
+        let context_label = if self.session.active_agent_label.is_none() {
+            self.session_context_summary_text()
+        } else {
+            None
+        };
+        self.bottom_pane.set_context_window_label(context_label);
+    }
+
+    fn status_line_cwd(&self) -> &Path {
+        self.session.cwd.as_path()
+    }
+
+    /// Forces a git-branch refresh for the footer status line.
+    pub(super) fn request_status_line_branch_refresh(&mut self) {
+        let cwd = self.status_line_cwd().to_path_buf();
+        if self
+            .status_line_branch_cwd
+            .as_ref()
+            .is_none_or(|path| path != &cwd)
+        {
+            self.status_line_branch_cwd = Some(cwd.clone());
+            self.status_line_branch = None;
+            self.status_line_branch_pending = false;
+        }
+        self.request_status_line_branch(cwd);
+    }
+
+    /// Light periodic refresh so external `git checkout` stays visible.
+    pub(super) fn maybe_refresh_status_line_branch(&mut self) {
+        let now = Instant::now();
+        if now < self.status_line_branch_next_refresh_at {
+            return;
+        }
+        self.status_line_branch_next_refresh_at = now + STATUS_LINE_BRANCH_REFRESH_INTERVAL;
+        self.request_status_line_branch_refresh();
+    }
+
+    fn request_status_line_branch(&mut self, cwd: PathBuf) {
+        if self.status_line_branch_pending {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            // Unit tests construct widgets without a Tokio runtime.
+            return;
+        };
+        self.status_line_branch_pending = true;
+        let tx = self.app_event_tx.clone();
+        handle.spawn(async move {
+            let branch = current_branch_name(&cwd).await;
+            tx.send(AppEvent::StatusLineBranchUpdated { cwd, branch });
+        });
+    }
+
+    pub(super) fn apply_status_line_branch_update(&mut self, cwd: PathBuf, branch: Option<String>) {
+        if self
+            .status_line_branch_cwd
+            .as_ref()
+            .is_some_and(|path| path != &cwd)
+        {
+            // Stale completion after a cwd change.
+            return;
+        }
+        self.status_line_branch_pending = false;
+        self.status_line_branch_cwd = Some(cwd);
+        if self.status_line_branch == branch {
+            return;
+        }
+        self.status_line_branch = branch;
+        self.sync_bottom_pane_summary();
     }
 
     pub(super) fn push_session_header(
@@ -513,7 +597,8 @@ impl ChatWidget {
     }
 
     /// Completed reasoning uses a muted style so finished Thought cells read as
-    /// settled history, while the live "Thinking" cell keeps the accent color.
+    /// settled history, while the live "Thinking" heading keeps the accent color
+    /// and the live body stays dim.
     pub(super) fn reasoning_completed_heading_style() -> Style {
         Style::default().dim().italic()
     }
@@ -638,6 +723,21 @@ mod tests {
         assert_eq!(
             widget.status_summary_text(),
             "Test Model  ▰▰▰▰▰▰▰▰▱▱ 83% 157.0k/190.0k"
+        );
+    }
+
+    #[test]
+    fn session_summary_text_includes_git_branch_before_context() {
+        let mut widget = widget_for_summary_bench();
+        widget.status_line_branch = Some("feat/status-bar".to_string());
+
+        assert_eq!(
+            widget.status_summary_text(),
+            "Test Model · feat/status-bar  ▰▰▰▰▰▰▰▰▱▱ 83% 157.0k/190.0k"
+        );
+        assert_eq!(
+            widget.session_summary_text_with_context(/*include_context*/ false),
+            "Test Model · feat/status-bar"
         );
     }
 

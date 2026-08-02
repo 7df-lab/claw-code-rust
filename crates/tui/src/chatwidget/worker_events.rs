@@ -1288,6 +1288,7 @@ impl ChatWidget {
                 self.current_turn_mode = InputMode::Build;
                 self.queued_input_modes.clear();
                 self.promoted_input_modes.clear();
+                self.editing_queue_item_id = None;
                 self.stream_chunking_policy.reset();
                 self.busy = false;
                 self.turn_count = 0;
@@ -1325,7 +1326,7 @@ impl ChatWidget {
                 history_items,
                 rich_history_items,
                 loaded_item_count,
-                pending_texts,
+                pending_texts: _,
                 collaboration_mode,
                 effective_context_window,
             } => {
@@ -1351,6 +1352,7 @@ impl ChatWidget {
                 self.bottom_pane.set_input_mode(restored_mode);
                 self.queued_input_modes.clear();
                 self.promoted_input_modes.clear();
+                self.editing_queue_item_id = None;
                 self.stream_chunking_policy.reset();
                 self.total_input_tokens = total_input_tokens;
                 self.total_output_tokens = total_output_tokens;
@@ -1373,14 +1375,10 @@ impl ChatWidget {
                         title.as_deref(),
                     );
                 }
-                // Restore pending queue state from the resumed session
-                self.queued_count = pending_texts.len();
+                // Queue entries arrive via QueueUpdated after subscription/create.
+                self.queued_count = 0;
                 self.queued_input_modes.clear();
                 self.bottom_pane.clear_pending_cells();
-                for text in &pending_texts {
-                    self.bottom_pane.push_pending_cell(text.clone());
-                    self.queued_input_modes.push_back(InputMode::Build);
-                }
                 self.busy = false;
                 if collaboration_mode == CollaborationMode::Plan
                     && history_awaits_proposed_plan_decision(&rich_history_items)
@@ -1529,33 +1527,101 @@ impl ChatWidget {
             WorkerEvent::InputHistoryLoaded { direction: _, text } => {
                 self.bottom_pane.restore_input_from_history(text);
             }
-            WorkerEvent::InputQueueUpdated {
-                pending_count,
-                pending_texts,
+            WorkerEvent::QueueUpdated {
+                change, entries, ..
             } => {
-                if self.queued_count > pending_count {
-                    self.commit_active_streams(DotStatus::Completed);
-                }
-                // If the queue shrunk, unqueue the oldest queued cells.
-                while self.queued_count > pending_count {
-                    self.unqueue_oldest_pending();
-                }
-                // If the queue grew outside the local submit path, add the new
-                // pending cells from the server snapshot using Build mode as the
-                // only safe fallback because queue updates do not carry mode.
-                if self.queued_count < pending_count {
-                    for text in pending_texts.iter().skip(self.queued_count) {
-                        self.bottom_pane.push_pending_cell(text.clone());
-                        self.queued_input_modes.push_back(InputMode::Build);
-                    }
-                    self.queued_count = pending_count;
-                }
+                self.apply_canonical_queue_snapshot(change, entries);
                 self.frame_requester.schedule_frame();
             }
             WorkerEvent::SteerAccepted { .. } => {
                 self.set_status_message("Steer accepted");
             }
         }
+    }
+
+    fn apply_canonical_queue_snapshot(
+        &mut self,
+        change: devo_protocol::canonical::queue::QueueChange,
+        entries: Vec<devo_protocol::canonical::queue::QueueEntry>,
+    ) {
+        use crate::bottom_pane::PendingQueueItem;
+        use crate::queue_ops::queue_entry_text;
+        use std::collections::HashMap;
+
+        let old_items = self.bottom_pane.pending_queue_items().to_vec();
+        let new_items: Vec<PendingQueueItem> = entries
+            .iter()
+            .map(|entry| PendingQueueItem {
+                queue_item_id: entry.queue_item_id.to_string(),
+                text: queue_entry_text(entry),
+            })
+            .collect();
+        let new_ids: std::collections::HashSet<&str> = new_items
+            .iter()
+            .map(|item| item.queue_item_id.as_str())
+            .collect();
+
+        // The item being edited was deleted or drained meanwhile; fall back to
+        // pushing a fresh entry on the next busy submit.
+        if self
+            .editing_queue_item_id
+            .as_deref()
+            .is_some_and(|id| !new_ids.contains(id))
+        {
+            self.editing_queue_item_id = None;
+        }
+
+        let mut mode_by_id: HashMap<String, InputMode> = HashMap::new();
+        for (item, mode) in old_items.iter().zip(self.queued_input_modes.iter()) {
+            mode_by_id.insert(item.queue_item_id.clone(), *mode);
+        }
+        // Modes queued ahead of known ids (busy push before snapshot returned).
+        let mut pending_new_modes: std::collections::VecDeque<InputMode> = self
+            .queued_input_modes
+            .iter()
+            .skip(old_items.len())
+            .copied()
+            .collect();
+
+        for old in &old_items {
+            if new_ids.contains(old.queue_item_id.as_str()) {
+                continue;
+            }
+            let mode = mode_by_id
+                .remove(&old.queue_item_id)
+                .unwrap_or(InputMode::Build);
+            match change {
+                devo_protocol::canonical::queue::QueueChange::Drained => {
+                    if self.queued_count > new_items.len() {
+                        self.commit_active_streams(DotStatus::Completed);
+                    }
+                    self.promoted_input_modes.push_back(mode);
+                    self.add_to_history(history_cell::new_user_prompt(
+                        old.text.clone(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        self.active_accent_color(),
+                        mode,
+                    ));
+                }
+                devo_protocol::canonical::queue::QueueChange::Removed
+                | devo_protocol::canonical::queue::QueueChange::Promoted => {}
+                _ => {}
+            }
+        }
+
+        let mut next_modes = std::collections::VecDeque::new();
+        for item in &new_items {
+            let mode = mode_by_id
+                .remove(&item.queue_item_id)
+                .or_else(|| pending_new_modes.pop_front())
+                .unwrap_or(InputMode::Build);
+            next_modes.push_back(mode);
+        }
+        self.queued_input_modes = next_modes;
+        self.bottom_pane.replace_pending_queue(new_items);
+        self.queued_count = self.bottom_pane.pending_queue_items().len();
     }
 }
 

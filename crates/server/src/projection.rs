@@ -176,7 +176,12 @@ pub(crate) fn history_item_from_turn_item(item: &TurnItem) -> Option<SessionHist
                 .with_metadata(metadata),
             )
         }
-        TurnItem::ContextCompaction(TextItem { .. }) => None,
+        TurnItem::ContextCompaction(TextItem { .. }) => Some(SessionHistoryItem::new(
+            None,
+            SessionHistoryItemKind::ContextCompaction,
+            "Context compacted".to_string(),
+            String::new(),
+        )),
         TurnItem::Reasoning(TextItem { text }) => Some(SessionHistoryItem::new(
             None,
             SessionHistoryItemKind::Reasoning,

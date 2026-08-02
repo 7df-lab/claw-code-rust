@@ -163,9 +163,9 @@ async fn summarize_and_compact(
     match compact_history(&items, &token_info, &summarizer, &config, cancel_token).await {
         Ok(CompactAction::Replaced(compacted_items)) => {
             let new_messages: Vec<Message> = compacted_items
-                .into_iter()
+                .iter()
                 .filter_map(|item| match item {
-                    ResponseItem::Message(msg) => Some(msg),
+                    ResponseItem::Message(msg) => Some(msg.clone()),
                     _ => None,
                 })
                 .collect();
@@ -175,7 +175,11 @@ async fn summarize_and_compact(
                 .saturating_sub(new_messages.len());
             info!("LLM compaction removed {removed} messages");
             session.set_prompt_messages(new_messages);
-            emit_query_event(on_event, QueryEvent::ContextCompactionCompleted).await;
+            emit_query_event(
+                on_event,
+                QueryEvent::ContextCompactionCompleted { compacted_items },
+            )
+            .await;
         }
         Ok(CompactAction::Skipped) => {
             debug!("LLM compaction skipped, nothing to compact");

@@ -1488,6 +1488,14 @@ async fn compacted_session_resume_keeps_full_transcript_after_restart() -> Resul
         resume_result.history_items
     );
     assert!(
+        resume_result.history_items.iter().any(|item| {
+            item.kind == SessionHistoryItemKind::ContextCompaction
+                && item.title == "Context compacted"
+        }),
+        "expected ContextCompaction history row after compact resume, got {:?}",
+        resume_result.history_items
+    );
+    assert!(
         resume_result
             .history_items
             .iter()
@@ -1632,6 +1640,228 @@ async fn compacted_session_next_query_uses_compaction_summary_after_restart() ->
             })
         }),
         "expected prompt request to include compaction summary after restart"
+    );
+    Ok(())
+}
+
+/// High-usage streaming provider that also captures requests and returns a
+/// compaction summary from the non-streaming completion path.
+struct AutoCompactTestProvider {
+    requests: Mutex<Vec<ModelRequest>>,
+    input_tokens: usize,
+    output_tokens: usize,
+}
+
+impl AutoCompactTestProvider {
+    fn new(input_tokens: usize, output_tokens: usize) -> Self {
+        Self {
+            requests: Mutex::new(Vec::new()),
+            input_tokens,
+            output_tokens,
+        }
+    }
+
+    fn usage(&self) -> Usage {
+        Usage {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: Some(self.input_tokens / 2),
+            reasoning_output_tokens: None,
+            total_tokens: Some(self.input_tokens + self.output_tokens),
+        }
+    }
+}
+
+#[async_trait]
+impl ModelProviderSDK for AutoCompactTestProvider {
+    async fn completion(&self, request: ModelRequest) -> Result<ModelResponse> {
+        self.requests.lock().expect("lock requests").push(request);
+        Ok(ModelResponse {
+            id: "compact-summary".into(),
+            content: vec![ResponseContent::Text(
+                "auto compact summary for resume".to_string(),
+            )],
+            stop_reason: Some(StopReason::EndTurn),
+            usage: Usage::default(),
+            metadata: ResponseMetadata::default(),
+        })
+    }
+
+    async fn completion_stream(
+        &self,
+        request: ModelRequest,
+    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent>> + Send>>> {
+        self.requests.lock().expect("lock requests").push(request);
+        let usage = self.usage();
+        Ok(Box::pin(stream::iter(vec![
+            Ok(StreamEvent::UsageDelta(usage.clone())),
+            Ok(StreamEvent::TextDelta {
+                index: 0,
+                text: "Hello from auto compact test.".into(),
+            }),
+            Ok(StreamEvent::MessageDone {
+                response: ModelResponse {
+                    id: "resp-auto-compact".into(),
+                    content: vec![ResponseContent::Text(
+                        "Hello from auto compact test.".into(),
+                    )],
+                    stop_reason: Some(StopReason::EndTurn),
+                    usage,
+                    metadata: ResponseMetadata::default(),
+                },
+            }),
+        ])))
+    }
+
+    fn name(&self) -> &str {
+        "auto-compact-test-provider"
+    }
+}
+
+#[tokio::test]
+async fn auto_compaction_persists_snapshot_and_survives_resume() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let provider = Arc::new(AutoCompactTestProvider::new(
+        /*input_tokens*/ 80_000, /*output_tokens*/ 1_000,
+    ));
+    let runtime = build_runtime_with_provider(data_root.path(), provider.clone())?;
+    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
+
+    let start_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 201,
+                "method": "session/start",
+                "params": {
+                    "cwd": data_root.path(),
+                    "ephemeral": false,
+                    "title": "Auto compact persist session",
+                    "model": "test-model"
+                }
+            }),
+        )
+        .await
+        .context("session/start response")?;
+    let session_id = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionStartResult>,
+    >(start_response)?
+    .result
+    .session
+    .session_id;
+
+    let _ = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 202,
+                "method": "session/compaction/update",
+                "params": {
+                    "sessionId": session_id,
+                    "effectiveContextWindow": 5_000
+                }
+            }),
+        )
+        .await
+        .context("session/compaction/update response")?;
+
+    // Build enough oversized history that Auto preserve budget cannot keep it all.
+    for request_id in 0..3 {
+        let large_prompt = "x".repeat(100_000);
+        let _ = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 210 + request_id,
+                    "method": "_devo/turn/start",
+                    "params": {
+                        "session_id": session_id,
+                        "input": [{ "type": "text", "text": large_prompt }],
+                        "model": null,
+                        "sandbox": null,
+                        "approval_policy": null,
+                        "cwd": null
+                    }
+                }),
+            )
+            .await
+            .context("turn/start response")?;
+        wait_for_turn_completed(&mut notifications_rx).await?;
+    }
+
+    let capturing_provider = Arc::new(CapturingProvider::default());
+    let rebuilt_runtime =
+        build_runtime_with_provider(data_root.path(), capturing_provider.clone())?;
+    rebuilt_runtime.load_persisted_sessions().await?;
+    let (rebuilt_connection_id, mut rebuilt_notifications_rx) =
+        initialize_connection(&rebuilt_runtime).await?;
+    let resume_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 220,
+                "method": "_devo/session/resume",
+                "params": {
+                    "session_id": session_id
+                }
+            }),
+        )
+        .await
+        .context("session/resume after auto compact")?;
+    let resume_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    >(resume_response)?
+    .result;
+
+    assert!(
+        resume_result.history_items.iter().any(|item| {
+            item.kind == SessionHistoryItemKind::ContextCompaction
+                && item.title == "Context compacted"
+        }),
+        "expected ContextCompaction history after auto-compact resume, got {:?}",
+        resume_result.history_items
+    );
+
+    let _ = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 221,
+                "method": "_devo/turn/start",
+                "params": {
+                    "session_id": session_id,
+                    "input": [{ "type": "text", "text": "continue" }],
+                    "model": null,
+                    "sandbox": null,
+                    "approval_policy": null,
+                    "cwd": null
+                }
+            }),
+        )
+        .await
+        .context("post-resume turn")?;
+    wait_for_turn_completed(&mut rebuilt_notifications_rx).await?;
+
+    let requests = capturing_provider.requests.lock().expect("lock requests");
+    let request = requests
+        .last()
+        .context("expected captured model request after auto-compact resume")?;
+    assert!(
+        request.messages.iter().any(|message| {
+            message.content.iter().any(|content| match content {
+                devo_protocol::RequestContent::Text { text }
+                | devo_protocol::RequestContent::Reasoning { text } => {
+                    text.contains("<compaction_summary>") || text.contains("auto compact summary")
+                }
+                devo_protocol::RequestContent::ProviderReasoning { .. }
+                | devo_protocol::RequestContent::ToolUse { .. }
+                | devo_protocol::RequestContent::HostedToolUse { .. }
+                | devo_protocol::RequestContent::ToolResult { .. } => false,
+            })
+        }),
+        "expected post-resume prompt to use compacted history, got {:?}",
+        request.messages
     );
     Ok(())
 }

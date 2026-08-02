@@ -181,8 +181,6 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
                 | ServerEvent::WorkspaceChangesUpdated(_)
                 | ServerEvent::ToolCallStatusUpdated(_)
                 | ServerEvent::RequestUserInput(_)
-                | ServerEvent::InputQueueUpdated(_)
-                | ServerEvent::SteerAccepted(_)
                 | ServerEvent::MessageEditRecorded(_)
                 | ServerEvent::TurnSuperseded(_)
                 | ServerEvent::WorkspaceRestoreStarted(_)

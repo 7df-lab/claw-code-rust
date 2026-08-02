@@ -118,9 +118,14 @@ pub(crate) fn spawn_turn_event_stream(
                         .start(&runtime, session_id, turn_for_events.turn_id)
                         .await;
                 }
-                devo_core::QueryEvent::ContextCompactionCompleted => {
+                devo_core::QueryEvent::ContextCompactionCompleted { compacted_items } => {
                     context_compaction
-                        .complete(&runtime, session_id, turn_for_events.turn_id)
+                        .complete(
+                            &runtime,
+                            session_id,
+                            turn_for_events.turn_id,
+                            compacted_items,
+                        )
                         .await;
                 }
                 devo_core::QueryEvent::ContextCompactionFailed { message } => {

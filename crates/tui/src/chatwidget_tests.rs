@@ -275,7 +275,7 @@ fn user_prompt_multiline_has_single_marker_and_aligned_continuation_rows() {
 
     assert_eq!(
         user_lines,
-        ["  ", "▌ line one", "  line two", "  line three"]
+        [&"─".repeat(80), "❯ line one", "  line two", "  line three"]
     );
 }
 
@@ -1222,7 +1222,7 @@ fn composer_marker_color(widget: &ChatWidget) -> Color {
 
         for col in 0..area.width {
             let cell = &buf[(col, row)];
-            if cell.symbol() == "┃" {
+            if cell.symbol() == "❯" {
                 return cell.fg;
             }
         }
@@ -1245,7 +1245,7 @@ fn scrollback_marker_color_for_text(widget: &mut ChatWidget, needle: &str) -> Co
         }
 
         for span in &line.line.spans {
-            if span.content.contains('▌')
+            if span.content.contains('❯')
                 && let Some(color) = span.style.fg
             {
                 return color;
@@ -1265,9 +1265,9 @@ fn paste_and_submit(widget: &mut ChatWidget, text: &str) {
 }
 
 /// Trace: L2-DES-TUI-003
-/// Verifies: Mode labels and switch hints render as the first bottom status-line field.
+/// Verifies: Mode labels render as the first bottom status-line field.
 #[test]
-fn mode_label_and_switch_hint_render_at_left_of_status_line() {
+fn mode_label_renders_at_left_of_status_line() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
@@ -1277,25 +1277,21 @@ fn mode_label_and_switch_hint_render_at_left_of_status_line() {
 
     let rows = rendered_rows(&widget, 100, 12);
     let build_row = status_row_starting_with(&rows, "BUILD");
+    assert!(build_row.trim_start().starts_with("BUILD ·"));
     assert!(
-        build_row
-            .trim_start()
-            .starts_with("BUILD SHIFT+TAB switch ·")
+        !build_row.contains("SHIFT+TAB switch"),
+        "mode switch hint should not appear in the status line:\n{build_row}"
     );
 
     widget.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     let rows = rendered_rows(&widget, 100, 12);
     let plan_row = status_row_starting_with(&rows, "PLAN");
-    assert!(plan_row.trim_start().starts_with("PLAN SHIFT+TAB switch ·"));
+    assert!(plan_row.trim_start().starts_with("PLAN ·"));
 
     widget.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     let rows = rendered_rows(&widget, 100, 12);
     let build_row = status_row_starting_with(&rows, "BUILD");
-    assert!(
-        build_row
-            .trim_start()
-            .starts_with("BUILD SHIFT+TAB switch ·")
-    );
+    assert!(build_row.trim_start().starts_with("BUILD ·"));
     assert!(
         rows.iter()
             .all(|row| !row.trim_start().starts_with("SHELL")),
@@ -1307,6 +1303,46 @@ fn mode_label_and_switch_hint_render_at_left_of_status_line() {
     let rows = rendered_rows(&widget, 100, 12);
     let shell_row = status_row_starting_with(&rows, "SHELL");
     assert!(shell_row.trim_start().starts_with("SHELL ·"));
+}
+
+#[test]
+fn status_line_shows_branch_left_and_context_right() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    widget.handle_app_event(AppEvent::StatusLineBranchUpdated {
+        cwd: PathBuf::from("."),
+        branch: Some("feat/status-bar".to_string()),
+    });
+
+    let rows = rendered_rows(&widget, 100, 12);
+    let status_row = status_row_starting_with(&rows, "BUILD");
+    let trimmed = status_row.trim_end();
+    assert!(
+        trimmed.contains("BUILD · Test Model · feat/status-bar"),
+        "expected mode/model/branch on the left:\n{trimmed}"
+    );
+    assert!(
+        !trimmed.contains("SHIFT+TAB switch"),
+        "mode switch hint should be absent:\n{trimmed}"
+    );
+    // Context meter is right-aligned; look for the token fraction suffix.
+    assert!(
+        trimmed.contains('/') && (trimmed.contains('▰') || trimmed.contains('▱')),
+        "expected right-aligned context meter on the status row:\n{trimmed}"
+    );
+    let branch_idx = trimmed
+        .find("feat/status-bar")
+        .expect("branch should be present");
+    let context_idx = trimmed.find('▰').or_else(|| trimmed.find('▱'));
+    let context_idx = context_idx.expect("context meter should be present");
+    assert!(
+        branch_idx < context_idx,
+        "context should render to the right of the branch:\n{trimmed}"
+    );
 }
 
 /// Trace: L2-DES-TUI-003
@@ -1423,9 +1459,26 @@ fn queued_prompt_keeps_submitted_mode_when_promoted_to_history() {
 
     widget.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     paste_and_submit(&mut widget, "queued plan");
-    widget.handle_worker_event(crate::events::WorkerEvent::InputQueueUpdated {
-        pending_count: 0,
-        pending_texts: Vec::new(),
+    let queue_item_id = devo_protocol::canonical::ids::QueueItemId::from_string("qit_plan".into());
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Added,
+        queue_item_id: queue_item_id.clone(),
+        started_turn_id: None,
+        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+            queue_item_id: queue_item_id.clone(),
+            position: 1,
+            input: vec![devo_protocol::canonical::item::UserInput::Text {
+                text: "queued plan".to_string(),
+            }],
+            preview: "queued plan".to_string(),
+            enqueued_at: chrono::Utc::now(),
+        }],
+    });
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Drained,
+        queue_item_id,
+        started_turn_id: Some(TurnId::new()),
+        entries: Vec::new(),
     });
 
     assert_eq!(
@@ -1491,10 +1544,36 @@ fn queued_prompt_promotes_after_active_assistant_stream() {
     });
 
     paste_and_submit(&mut widget, "queued prompt");
-    widget.handle_worker_event(crate::events::WorkerEvent::InputQueueUpdated {
-        pending_count: 0,
-        pending_texts: Vec::new(),
+    let queue_item_id =
+        devo_protocol::canonical::ids::QueueItemId::from_string("qit_prompt".into());
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Added,
+        queue_item_id: queue_item_id.clone(),
+        started_turn_id: None,
+        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+            queue_item_id: queue_item_id.clone(),
+            position: 1,
+            input: vec![devo_protocol::canonical::item::UserInput::Text {
+                text: "queued prompt".to_string(),
+            }],
+            preview: "queued prompt".to_string(),
+            enqueued_at: chrono::Utc::now(),
+        }],
     });
+    assert!(
+        widget.bottom_pane_has_pending_for_test(),
+        "queued entry should appear in the pending queue UI"
+    );
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Drained,
+        queue_item_id,
+        started_turn_id: Some(TurnId::new()),
+        entries: Vec::new(),
+    });
+    assert!(
+        !widget.bottom_pane_has_pending_for_test(),
+        "drained entry should leave the pending queue UI"
+    );
     widget.handle_worker_event(crate::events::WorkerEvent::TextItemCompleted {
         item_id,
         kind: TextItemKind::Assistant,
@@ -1502,6 +1581,11 @@ fn queued_prompt_promotes_after_active_assistant_stream() {
     });
 
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100));
+    assert!(
+        history.iter().any(|line| line.contains("queued prompt")),
+        "queued prompt should be promoted:\n{}",
+        history.join("\n")
+    );
     let assistant_indexes = history
         .iter()
         .enumerate()
@@ -1521,6 +1605,151 @@ fn queued_prompt_promotes_after_active_assistant_stream() {
         assistant_indexes[0] < queued_index,
         "assistant stream should stay before queued prompt:\n{}",
         history.join("\n")
+    );
+}
+
+fn drain_commands(rx: &mut mpsc::UnboundedReceiver<AppEvent>) -> Vec<AppCommand> {
+    let mut commands = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::Command(command) = event {
+            commands.push(command);
+        }
+    }
+    commands
+}
+
+fn test_queue_entry(id: &str, text: &str) -> devo_protocol::canonical::queue::QueueEntry {
+    devo_protocol::canonical::queue::QueueEntry {
+        queue_item_id: devo_protocol::canonical::ids::QueueItemId::from_string(id.to_string()),
+        position: 1,
+        input: vec![devo_protocol::canonical::item::UserInput::Text {
+            text: text.to_string(),
+        }],
+        preview: text.to_string(),
+        enqueued_at: chrono::Utc::now(),
+    }
+}
+
+fn start_busy_turn(widget: &mut ChatWidget) {
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: TurnId::new(),
+    });
+}
+
+fn push_queue_snapshot(
+    widget: &mut ChatWidget,
+    change: devo_protocol::canonical::queue::QueueChange,
+    queue_item_id: &str,
+    entries: Vec<devo_protocol::canonical::queue::QueueEntry>,
+) {
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change,
+        queue_item_id: devo_protocol::canonical::ids::QueueItemId::from_string(
+            queue_item_id.to_string(),
+        ),
+        started_turn_id: None,
+        entries,
+    });
+}
+
+#[test]
+fn queue_edit_resubmit_updates_item_in_place() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    start_busy_turn(&mut widget);
+    push_queue_snapshot(
+        &mut widget,
+        devo_protocol::canonical::queue::QueueChange::Added,
+        "qit_edit",
+        vec![test_queue_entry("qit_edit", "original text")],
+    );
+    drain_commands(&mut app_event_rx);
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+    assert_eq!(
+        drain_commands(&mut app_event_rx),
+        Vec::new(),
+        "queue edit must not remove the item"
+    );
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    // Flush the composer's held first char (paste-burst flicker suppression)
+    // before submitting, same idiom as paste_and_submit.
+    std::thread::sleep(crate::bottom_pane::ChatComposer::recommended_paste_flush_delay());
+    widget.pre_draw_tick();
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        drain_commands(&mut app_event_rx),
+        vec![AppCommand::QueueUpdate {
+            queue_item_id: "qit_edit".to_string(),
+            input: vec![devo_protocol::InputItem::Text {
+                text: "original textx".to_string(),
+            }],
+        }],
+        "busy resubmit after edit should update the queued item in place"
+    );
+
+    // The edit flag is consumed: a subsequent busy submit pushes a new entry.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    std::thread::sleep(crate::bottom_pane::ChatComposer::recommended_paste_flush_delay());
+    widget.pre_draw_tick();
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        drain_commands(&mut app_event_rx),
+        vec![AppCommand::QueuePush {
+            input: vec![devo_protocol::InputItem::Text {
+                text: "y".to_string(),
+            }],
+        }],
+        "submit after the edit was applied should push a fresh queue entry"
+    );
+}
+
+#[test]
+fn queue_edit_falls_back_to_push_when_item_vanishes() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    start_busy_turn(&mut widget);
+    push_queue_snapshot(
+        &mut widget,
+        devo_protocol::canonical::queue::QueueChange::Added,
+        "qit_edit",
+        vec![test_queue_entry("qit_edit", "original text")],
+    );
+    widget.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+    drain_commands(&mut app_event_rx);
+
+    // The item is removed (or drained) while its text sits in the composer.
+    push_queue_snapshot(
+        &mut widget,
+        devo_protocol::canonical::queue::QueueChange::Removed,
+        "qit_edit",
+        Vec::new(),
+    );
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        drain_commands(&mut app_event_rx),
+        vec![AppCommand::QueuePush {
+            input: vec![devo_protocol::InputItem::Text {
+                text: "original text".to_string(),
+            }],
+        }],
+        "submit should fall back to a queue push once the edited item is gone"
     );
 }
 
@@ -1843,59 +2072,6 @@ fn trailing_space_exit_slash_command_exits() {
     assert_eq!(
         app_event_rx.try_recv().ok(),
         Some(AppEvent::Exit(crate::app_event::ExitMode::ShutdownFirst))
-    );
-}
-
-#[test]
-fn typed_clear_slash_command_clears_history_and_active_streams() {
-    let model = Model {
-        slug: "test-model".to_string(),
-        display_name: "Test Model".to_string(),
-        ..Model::default()
-    };
-    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
-    widget.handle_app_event(AppEvent::ClearTranscript);
-
-    paste_and_submit(&mut widget, "old prompt");
-    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
-        model: "test-model".to_string(),
-
-        model_binding_id: None,
-        reasoning_effort_selection: None,
-        reasoning_effort: None,
-        turn_id: TurnId::new(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextDelta(
-        "active stream body".to_string(),
-    ));
-    let before_scrollback = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join(
-        "
-",
-    );
-    assert!(before_scrollback.contains("old prompt"));
-    let before = rendered_rows(&widget, 100, 16).join(
-        "
-",
-    );
-    assert!(before.contains("active stream body"));
-
-    paste_and_submit(&mut widget, "/clear");
-
-    let after_scrollback = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join(
-        "
-",
-    );
-    let after = rendered_rows(&widget, 100, 16).join(
-        "
-",
-    );
-    assert!(
-        !after_scrollback.contains("old prompt") && !after.contains("active stream body"),
-        "typed /clear should remove visible history and active streams:
-scrollback:
-{after_scrollback}
-rendered:
-{after}"
     );
 }
 
@@ -2932,6 +3108,75 @@ fn session_switch_restores_plan_turn_summary_label() {
     assert!(
         !rendered.contains("▣ BUILD · Test Model"),
         "did not expect Build mode in restored plan turn summary:\n{rendered}"
+    );
+}
+
+#[test]
+fn session_switch_restores_context_compaction_info_row() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-compaction-row".to_string(),
+        cwd,
+        title: Some("Compacted session".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 50_000,
+        last_query_input_tokens: 45_000,
+        prompt_token_estimate: 50_000,
+        history_items: Vec::new(),
+        rich_history_items: vec![
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::User,
+                title: String::new(),
+                body: "before compact".to_string(),
+                tool_io: None,
+                metadata: None,
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::ContextCompaction,
+                title: "Context compacted".to_string(),
+                body: String::new(),
+                tool_io: None,
+                metadata: None,
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::Assistant,
+                title: String::new(),
+                body: "after compact".to_string(),
+                tool_io: None,
+                metadata: None,
+                duration_ms: None,
+            },
+        ],
+        loaded_item_count: 3,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
+        effective_context_window: None,
+    });
+
+    let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        rendered.contains("Context compacted"),
+        "expected restored Context compacted row:\n{rendered}"
     );
 }
 
@@ -4252,12 +4497,11 @@ fn session_switch_restores_header_and_spacing_before_user_input() {
     assert!(committed_text.contains("world"));
     assert!(!committed_text.contains("session 1 lingering line"));
     assert!(
-        committed_rows
-            .windows(5)
-            .any(|window| window[0].contains("▌ hello")
-                && window[1].trim().is_empty()
-                && window[2].trim().is_empty()
-                && window[3].contains("world")),
+        committed_rows.windows(3).any(|window| {
+            window[0].contains("❯ hello")
+                && window[1].chars().all(|ch| ch == '─')
+                && window[2].contains("world")
+        }),
         "expected restored spaced user prompt before assistant response: {committed_lines:?}"
     );
 }
@@ -4323,7 +4567,7 @@ fn restored_user_spacing_matches_live_turn_batch_spacing() {
 
     let live_user = live_rows
         .iter()
-        .position(|row| row.contains("▌ hello"))
+        .position(|row| row.contains("❯ hello"))
         .expect("live user row");
     let live_assistant = live_rows
         .iter()
@@ -4331,7 +4575,7 @@ fn restored_user_spacing_matches_live_turn_batch_spacing() {
         .expect("live assistant row");
     let restored_user = restored_rows
         .iter()
-        .position(|row| row.contains("▌ hello"))
+        .position(|row| row.contains("❯ hello"))
         .expect("restored user row");
     let restored_assistant = restored_rows
         .iter()
@@ -4397,12 +4641,11 @@ fn rich_session_switch_restores_user_spacing_before_assistant_response() {
 
     let committed_rows = scrollback_plain_lines(&widget.drain_scrollback_lines(80));
     assert!(
-        committed_rows
-            .windows(5)
-            .any(|window| window[0].contains("▌ hello")
-                && window[1].trim().is_empty()
-                && window[2].trim().is_empty()
-                && window[3].contains("world")),
+        committed_rows.windows(3).any(|window| {
+            window[0].contains("❯ hello")
+                && window[1].chars().all(|ch| ch == '─')
+                && window[2].contains("world")
+        }),
         "expected restored rich user prompt to keep live spacing before assistant response: {committed_rows:?}"
     );
 }
@@ -6875,7 +7118,7 @@ fn session_compaction_live_rows_use_live_prefix_cols() {
     assert!(
         started_history
             .iter()
-            .any(|line| line.starts_with(&format!("{live_prefix}▌ Compaction started"))),
+            .any(|line| line.starts_with("▌ Compaction started")),
         "context compaction start should be visible in history:\n{}",
         started_history.join("\n")
     );
@@ -6901,7 +7144,7 @@ fn session_compaction_live_rows_use_live_prefix_cols() {
     assert!(
         history
             .iter()
-            .any(|line| { line.starts_with(&format!("{live_prefix}▌ Context compacted")) }),
+            .any(|line| line.starts_with("▌ Context compacted")),
         "compaction completion history should align with live prefix:\n{}",
         history.join("\n")
     );
@@ -8254,6 +8497,10 @@ fn collapsed_reasoning_live_view_keeps_only_latest_lines() {
         "collapsed live view should drop older reasoning lines:\n{live}"
     );
     assert!(
+        live.contains("Thinking:"),
+        "collapsed live view should keep sticky Thinking heading while body tails:\n{live}"
+    );
+    assert!(
         live.contains("ctrl + t to view transcript"),
         "collapsed live reasoning should hint Ctrl+T:\n{live}"
     );
@@ -8299,30 +8546,29 @@ fn collapsed_reasoning_live_view_caps_wrapped_visual_rows() {
 
     let width = 40u16;
     let live_lines = widget.active_viewport_lines_for_test(width);
-    let body_rows = live_lines
+    let content_rows: Vec<String> = live_lines
         .iter()
-        .filter(|line| {
-            let text: String = line
-                .spans
+        .map(|line| {
+            line.spans
                 .iter()
                 .map(|span| span.content.as_ref())
-                .collect();
-            !text.contains("ctrl + t to view transcript")
+                .collect::<String>()
         })
+        .filter(|text| !text.contains("ctrl + t to view transcript"))
+        .collect();
+    let body_rows = content_rows
+        .iter()
+        .filter(|text| !text.contains("Thinking:"))
         .count();
     assert!(
+        content_rows.iter().any(|text| text.contains("Thinking:")),
+        "collapsed live view should keep sticky Thinking heading:\n{}",
+        content_rows.join("\n")
+    );
+    assert!(
         body_rows <= 3,
-        "collapsed live view should cap wrapped visual rows to 3, got {body_rows}:\n{}",
-        live_lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        "collapsed live view should cap wrapped body rows to 3, got {body_rows}:\n{}",
+        content_rows.join("\n")
     );
     let live = live_lines
         .iter()
@@ -8334,6 +8580,10 @@ fn collapsed_reasoning_live_view_caps_wrapped_visual_rows() {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    assert!(
+        live.contains("Thinking:"),
+        "sticky Thinking heading must remain while body wraps:\n{live}"
+    );
     assert!(
         live.contains("ctrl + t to view transcript"),
         "collapsed live reasoning should still hint Ctrl+T:\n{live}"

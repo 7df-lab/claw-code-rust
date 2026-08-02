@@ -421,23 +421,6 @@ impl SessionState {
         }
     }
 
-    /// Pushes a pending input to the turn queue (for execution in a future turn).
-    pub fn enqueue_pending_input(&self, item: PendingInputItem) {
-        self.pending_turn_queue
-            .lock()
-            .expect("pending turn queue mutex should not be poisoned")
-            .push_back(item);
-    }
-
-    /// Drains all pending inputs from the turn queue.
-    pub fn drain_pending_turn_queue(&self) -> Vec<PendingInputItem> {
-        let mut pending = self
-            .pending_turn_queue
-            .lock()
-            .expect("pending turn queue mutex should not be poisoned");
-        pending.drain(..).collect()
-    }
-
     /// Drains all pending inputs from the active-turn steer queue.
     pub fn drain_steer_input_queue(&self) -> Vec<PendingInputItem> {
         let mut guard = self
@@ -448,24 +431,22 @@ impl SessionState {
     }
 
     pub fn start_turn(&mut self, kind: TurnKind) {
-        let mut turn = TurnState::new(kind);
-        // Drain pending turn queue into the new turn's pending input.
-        let pending = self.drain_pending_turn_queue();
-        turn.pending_input = pending;
-        self.turn_state = Some(turn);
+        // The session turn queue is owned by the server-side drain (canonical
+        // `session/queue/*` semantics): queued entries become follow-up turns
+        // with their own drain notification and persistence bookkeeping, so
+        // they must never be absorbed into a running or starting turn here.
+        // Turn-scoped pending input starts empty and only collects transient
+        // steering fragments produced during this turn (e.g. budget notices).
+        self.turn_state = Some(TurnState::new(kind));
     }
 
     pub fn end_turn(&mut self) {
-        if let Some(turn) = self.turn_state.take() {
-            // Unconsumed pending input goes back to the turn queue (prepend to preserve order).
-            let mut queue = self
-                .pending_turn_queue
-                .lock()
-                .expect("pending turn queue mutex should not be poisoned");
-            for item in turn.pending_input.into_iter().rev() {
-                queue.push_front(item);
-            }
-        }
+        // Unconsumed turn-scoped pending input expires with the turn: it is
+        // transient steering produced for this turn only. It must not be
+        // re-queued into the canonical turn queue, whose entries are owned by
+        // the server-side drain (a transient item would surface as a blank
+        // queue row and bypass the drain's persistence bookkeeping).
+        self.turn_state = None;
         // Steer inputs that arrived before the injection boundary but
         // were not consumed before turn end degrade back into the session turn
         // queue. This preserves the message; a later follow-up drain may start
@@ -489,14 +470,15 @@ impl SessionState {
         }
     }
 
-    /// Merge turn-scoped pending input with both cross-thread inboxes.
-    /// Order: steer inbox → turn-state pending → turn queue
+    /// Merge turn-scoped pending input with the steer inbox.
+    /// Order: steer inbox → turn-state pending. The session turn queue is
+    /// deliberately NOT drained here: its entries become follow-up turns via
+    /// the server-side drain, never silent mid-turn injections.
     pub fn take_turn_pending_input(&mut self) -> Vec<PendingInputItem> {
         let mut result = self.drain_steer_input_queue();
         if let Some(turn) = self.turn_state.as_mut() {
             result.extend(turn.take_pending_input());
         }
-        result.extend(self.drain_pending_turn_queue());
         result
     }
 }
@@ -701,30 +683,6 @@ mod tests {
     }
 
     #[test]
-    fn session_state_drains_pending_turn_queue() {
-        use chrono::Utc;
-        let state = SessionState::new(SessionConfig::default(), PathBuf::from("/tmp"));
-        state.enqueue_pending_input(PendingInputItem::new(
-            devo_protocol::PendingInputKind::UserText {
-                text: "first".to_string(),
-            },
-            None,
-            Utc::now(),
-        ));
-        state.enqueue_pending_input(PendingInputItem::new(
-            devo_protocol::PendingInputKind::UserText {
-                text: "second".to_string(),
-            },
-            None,
-            Utc::now(),
-        ));
-
-        let drained = state.drain_pending_turn_queue();
-        assert_eq!(drained.len(), 2);
-        assert!(state.drain_pending_turn_queue().is_empty());
-    }
-
-    #[test]
     fn session_state_start_turn_creates_turn_state() {
         let mut state = SessionState::new(SessionConfig::default(), PathBuf::from("/tmp"));
         assert!(state.turn_state.is_none());
@@ -734,44 +692,50 @@ mod tests {
     }
 
     #[test]
-    fn session_state_start_turn_drains_pending_queue() {
+    fn session_state_start_turn_leaves_pending_queue_untouched() {
         use chrono::Utc;
         let mut state = SessionState::new(SessionConfig::default(), PathBuf::from("/tmp"));
-        state.enqueue_pending_input(PendingInputItem::new(
-            devo_protocol::PendingInputKind::UserText {
-                text: "queued".to_string(),
-            },
-            None,
-            Utc::now(),
-        ));
+        state
+            .pending_turn_queue
+            .lock()
+            .expect("queue lock")
+            .push_back(PendingInputItem::new(
+                devo_protocol::PendingInputKind::UserText {
+                    text: "queued".to_string(),
+                },
+                None,
+                Utc::now(),
+            ));
         state.start_turn(TurnKind::Regular);
+        // Queued entries become follow-up turns via the server-side drain;
+        // they are never absorbed into the starting turn.
         let pending = state.take_turn_pending_input();
-        assert_eq!(pending.len(), 1);
-        assert!(state.pending_turn_queue.lock().unwrap().is_empty());
+        assert!(pending.is_empty());
+        assert_eq!(state.pending_turn_queue.lock().unwrap().len(), 1);
     }
 
     #[test]
-    fn session_state_end_turn_moves_unconsumed_back_to_queue() {
+    fn session_state_end_turn_expires_unconsumed_turn_pending() {
         use chrono::Utc;
         let mut state = SessionState::new(SessionConfig::default(), PathBuf::from("/tmp"));
         state.start_turn(TurnKind::Regular);
-        // Push an item into the turn's pending input directly.
+        // Push a transient turn-scoped fragment (e.g. a budget notice).
         if let Some(turn) = state.turn_state.as_mut() {
             turn.push_pending_input(PendingInputItem::new(
-                devo_protocol::PendingInputKind::UserText {
-                    text: "unconsumed".to_string(),
-                },
+                devo_protocol::PendingInputKind::BudgetLimitSteering,
                 None,
                 Utc::now(),
             ));
         }
         state.end_turn();
         assert!(state.turn_state.is_none());
-        assert_eq!(state.pending_turn_queue.lock().unwrap().len(), 1);
+        // Transient fragments expire with the turn instead of leaking into
+        // the canonical turn queue owned by the server-side drain.
+        assert!(state.pending_turn_queue.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn session_state_take_turn_pending_merges_turn_and_inbox() {
+    fn session_state_take_turn_pending_merges_steer_and_turn_pending() {
         use chrono::Utc;
         let mut state = SessionState::new(SessionConfig::default(), PathBuf::from("/tmp"));
         state.start_turn(TurnKind::Regular);
@@ -785,32 +749,47 @@ mod tests {
                 Utc::now(),
             ));
         }
-        // Push to cross-thread inbox.
-        state.enqueue_pending_input(PendingInputItem::new(
-            devo_protocol::PendingInputKind::UserText {
-                text: "inbox-item".to_string(),
-            },
-            None,
-            Utc::now(),
-        ));
+        // Push to the steer inbox.
+        state
+            .steer_input_queue
+            .lock()
+            .expect("steer lock")
+            .push_back(PendingInputItem::new(
+                devo_protocol::PendingInputKind::UserText {
+                    text: "steer-item".to_string(),
+                },
+                None,
+                Utc::now(),
+            ));
         let merged = state.take_turn_pending_input();
         assert_eq!(merged.len(), 2);
+        assert!(
+            matches!(&merged[0].kind, devo_protocol::PendingInputKind::UserText { text } if text == "steer-item")
+        );
+        assert!(
+            matches!(&merged[1].kind, devo_protocol::PendingInputKind::UserText { text } if text == "turn-item")
+        );
     }
 
     #[test]
-    fn session_state_take_turn_pending_without_turn_drains_inbox_only() {
+    fn session_state_take_turn_pending_leaves_turn_queue_untouched() {
         use chrono::Utc;
-        let state = SessionState::new(SessionConfig::default(), PathBuf::from("/tmp"));
-        state.enqueue_pending_input(PendingInputItem::new(
-            devo_protocol::PendingInputKind::UserText {
-                text: "direct".to_string(),
-            },
-            None,
-            Utc::now(),
-        ));
-        // No turn started — take_turn_pending_input should still drain the inbox.
-        let mut state_mut = state;
-        let items = state_mut.take_turn_pending_input();
-        assert_eq!(items.len(), 1);
+        let mut state = SessionState::new(SessionConfig::default(), PathBuf::from("/tmp"));
+        state
+            .pending_turn_queue
+            .lock()
+            .expect("queue lock")
+            .push_back(PendingInputItem::new(
+                devo_protocol::PendingInputKind::UserText {
+                    text: "queued".to_string(),
+                },
+                None,
+                Utc::now(),
+            ));
+        // The session turn queue is drained only by the server-side follow-up
+        // scheduling, never by the running turn.
+        let items = state.take_turn_pending_input();
+        assert!(items.is_empty());
+        assert_eq!(state.pending_turn_queue.lock().unwrap().len(), 1);
     }
 }

@@ -178,21 +178,21 @@ impl SettingsHubView {
             SettingsHubTab::Session => {
                 lines.push(self.setting_row(
                     &pad,
-                    "Model",
+                    "Default Model",
                     &self.snapshot.model_label,
                     self.selected_row == 0,
                     /*cycleable*/ false,
                 ));
                 lines.push(self.setting_row(
                     &pad,
-                    "Permissions",
+                    "Default Permissions",
                     &self.snapshot.permissions_label,
                     self.selected_row == 1,
                     /*cycleable*/ false,
                 ));
                 lines.push(self.setting_row(
                     &pad,
-                    "Mode",
+                    "Default Mode",
                     self.snapshot.mode.label(),
                     self.selected_row == 2,
                     /*cycleable*/ false,
@@ -200,7 +200,7 @@ impl SettingsHubView {
                 lines.push(Line::from(""));
                 lines.push(self.setting_row(
                     &pad,
-                    "Compaction threshold",
+                    "Default Compaction Limit",
                     &self.snapshot.compaction_threshold_label,
                     self.selected_row == 3,
                     /*cycleable*/ false,
@@ -273,7 +273,7 @@ impl SettingsHubView {
         focused: bool,
         cycleable: bool,
     ) -> Line<'static> {
-        let label_width = 24usize;
+        let label_width = 26usize;
         let label_text = format!("{label:<label_width$}");
         let style = if focused {
             Style::default().bold()
@@ -432,7 +432,7 @@ mod tests {
                 model_label: "deepseek-v4-flash".into(),
                 permissions_label: "default".into(),
                 mode: InputMode::Build,
-                compaction_threshold_label: "190K".into(),
+                compaction_threshold_label: "250K".into(),
                 theme_label: "devo (default)".into(),
                 reasoning_view_label: "Collapsed".into(),
             },
@@ -440,6 +440,26 @@ mod tests {
             Color::Cyan,
         );
         (view, rx)
+    }
+
+    #[test]
+    fn session_rows_keep_space_between_label_and_value() {
+        let (view, _rx) = view();
+        let text = view
+            .render_lines()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("Default Compaction Limit  250K")
+                || text.contains("Default Compaction Limit 250K"),
+            "label must not run into value: {text}"
+        );
+        assert!(
+            !text.contains("Default Compaction Limit250K"),
+            "missing gap between compaction label and value: {text}"
+        );
     }
 
     #[test]

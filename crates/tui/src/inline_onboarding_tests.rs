@@ -43,6 +43,8 @@ fn onboarding_widget_with_models(
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,

@@ -287,6 +287,8 @@ fn normalize_session(session: &SessionRecord) -> SessionRecord {
         },
         archived_at: session.archived_at.map(|_| session.created_at),
         latest_turn_context: None,
+        collaboration_mode: None,
+        permission_preset: None,
         schema_version: 2,
         ..session.clone()
     }
@@ -437,6 +439,8 @@ fn live_write_lines() -> Vec<RolloutLine> {
                 parent_session_id: None,
                 session_context: None,
                 latest_turn_context: None,
+                collaboration_mode: None,
+                permission_preset: None,
                 schema_version: 2,
             },
         })),

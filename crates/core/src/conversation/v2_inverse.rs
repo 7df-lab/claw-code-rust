@@ -289,6 +289,8 @@ impl V2InverseProjector {
             session_context: extras.and_then(|extras| extras.session_context.clone()),
             // Internal prefix-cache cache, not carried even in the extras.
             latest_turn_context: None,
+            collaboration_mode: extras.and_then(|extras| extras.collaboration_mode),
+            permission_preset: extras.and_then(|extras| extras.permission_preset),
             schema_version: CURRENT_SESSION_SCHEMA_VERSION,
         };
         Ok(vec![RolloutLine::SessionMeta(Box::new(SessionMetaLine {

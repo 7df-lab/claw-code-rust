@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+use devo_protocol::CollaborationMode;
 use devo_protocol::PermissionPreset;
 use devo_protocol::ProviderModelBinding;
 use devo_protocol::ProviderVendor;
@@ -98,6 +99,9 @@ pub struct AppConfig {
     /// When unset, sessions use the model effective context window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_token_limit: Option<u64>,
+    /// Default collaboration/input mode (Build or Plan) for new sessions.
+    #[serde(default)]
+    pub default_collaboration_mode: CollaborationMode,
 }
 
 /// Settings remembered for one project.
@@ -191,6 +195,7 @@ impl Default for AppConfig {
             project_root_markers: vec![".git".into()],
             projects: BTreeMap::new(),
             compaction_token_limit: None,
+            default_collaboration_mode: CollaborationMode::Build,
         }
     }
 }
@@ -402,6 +407,35 @@ impl AppConfigStore {
         document.insert(
             "compaction_token_limit".to_string(),
             toml::Value::Integer(limit_i64),
+        );
+
+        let data = toml::to_string_pretty(&document)?;
+        write_atomic(target_config_file, data.as_bytes())?;
+
+        self.config = self
+            .loader
+            .load(self.workspace_root.as_deref())
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(())
+    }
+
+    /// Persists the default collaboration mode and refreshes effective config.
+    pub fn set_default_collaboration_mode(
+        &mut self,
+        mode: CollaborationMode,
+    ) -> anyhow::Result<()> {
+        let target_config_file = self.user_config_file.as_path();
+        if let Some(parent) = target_config_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut document = read_provider_config_document(target_config_file)?;
+        let document = ensure_toml_table(&mut document);
+        document.insert(
+            "default_collaboration_mode".to_string(),
+            toml::Value::String(match mode {
+                CollaborationMode::Build => "build".to_string(),
+                CollaborationMode::Plan => "plan".to_string(),
+            }),
         );
 
         let data = toml::to_string_pretty(&document)?;

@@ -40,6 +40,12 @@ pub struct SessionPersistenceExtras {
     pub cli_version: String,
     /// The session source kind, such as `cli` or `api` (audit field).
     pub source: String,
+    /// Session-level collaboration mode override (Build/Plan), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_mode: Option<crate::CollaborationMode>,
+    /// Session-level permission preset override, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_preset: Option<crate::PermissionPreset>,
 }
 
 /// Persistence-only extras on the v2 Turn line, same rationale as

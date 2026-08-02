@@ -20,6 +20,7 @@ use super::state::SessionActorState;
 use super::turn::execute_turn_in_actor;
 use crate::SessionRuntimeStatus;
 use crate::persistence::build_turn_record;
+use crate::runtime::protocol_preset_from_safety;
 use crate::runtime::session_model_selection;
 
 pub(super) async fn run_session_actor(
@@ -345,6 +346,7 @@ pub(super) async fn run_session_actor(
             }
             SessionCommand::UpdateCorePermissionMode { permission_mode } => {
                 state.core.config.permission_mode = permission_mode;
+                state.config.permission_mode = permission_mode;
             }
             SessionCommand::UpdateRecordRolloutPath { rollout_path } => {
                 if let Some(record) = state.record.as_mut() {
@@ -392,17 +394,34 @@ pub(super) async fn run_session_actor(
                 model,
                 model_binding_id,
                 reasoning_effort_selection,
+                collaboration_mode,
                 reply,
             } => {
                 let updated_at = Utc::now();
-                state.summary.model = model.clone();
-                state.summary.model_binding_id = model_binding_id.clone();
-                state.summary.reasoning_effort_selection = reasoning_effort_selection.clone();
+                // Mode-only updates omit model fields as null; do not wipe them.
+                let mode_only_update = model.is_none()
+                    && model_binding_id.is_none()
+                    && reasoning_effort_selection.is_none()
+                    && collaboration_mode.is_some();
+                if !mode_only_update {
+                    state.summary.model = model.clone();
+                    state.summary.model_binding_id = model_binding_id.clone();
+                    state.summary.reasoning_effort_selection = reasoning_effort_selection.clone();
+                }
                 state.summary.updated_at = updated_at;
+                if let Some(mode) = collaboration_mode {
+                    state.core.collaboration_mode = mode;
+                    state.summary.collaboration_mode = mode;
+                }
                 if let Some(record) = state.record.as_mut() {
-                    record.model = model;
-                    record.model_binding_id = model_binding_id;
-                    record.reasoning_effort_selection = reasoning_effort_selection;
+                    if !mode_only_update {
+                        record.model = model;
+                        record.model_binding_id = model_binding_id;
+                        record.reasoning_effort_selection = reasoning_effort_selection;
+                    }
+                    if let Some(mode) = collaboration_mode {
+                        record.collaboration_mode = Some(mode);
+                    }
                     record.updated_at = updated_at;
                 }
                 let _ = reply.send(state.summary.clone());
@@ -413,10 +432,18 @@ pub(super) async fn run_session_actor(
                 state.core.config.permission_profile = profile.clone();
                 state.core.config.sandbox_profile = sandbox.clone();
                 state.config.permission_mode = profile.permission_mode();
-                state.config.permission_profile = profile;
+                state.config.permission_profile = profile.clone();
                 state.config.sandbox_profile = sandbox;
                 state.session_approval_cache = crate::execution::ApprovalGrantCache::default();
                 state.turn_approval_cache = crate::execution::ApprovalGrantCache::default();
+                let preset = protocol_preset_from_safety(profile.preset);
+                state.summary.permission_preset = Some(preset);
+                let updated_at = Utc::now();
+                state.summary.updated_at = updated_at;
+                if let Some(record) = state.record.as_mut() {
+                    record.permission_preset = Some(preset);
+                    record.updated_at = updated_at;
+                }
                 let _ = reply.send(());
             }
             SessionCommand::ApplyEffectiveContextWindow { limit, reply } => {

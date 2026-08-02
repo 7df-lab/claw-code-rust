@@ -11,6 +11,15 @@ use devo_protocol::TurnId;
 use devo_protocol::TurnStartParams;
 use serde::Serialize;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+pub(crate) enum PersistScope {
+    /// Apply to the active session only; do not write user/project defaults.
+    #[default]
+    Session,
+    /// Write user/project defaults and hot-apply to the active session when one exists.
+    Default,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum InputHistoryDirection {
     Previous,
@@ -70,6 +79,11 @@ pub(crate) enum AppCommand {
         reasoning_effort_selection: Option<Option<String>>,
         sandbox: Option<Option<String>>,
         approval_policy: Option<Option<String>>,
+        persist_scope: PersistScope,
+    },
+    SetCollaborationMode {
+        collaboration_mode: CollaborationMode,
+        persist_scope: PersistScope,
     },
     /// Enqueue input on the active session while a turn is busy.
     QueuePush {
@@ -107,6 +121,7 @@ pub(crate) enum AppCommand {
     },
     UpdatePermissions {
         preset: devo_protocol::PermissionPreset,
+        persist_scope: PersistScope,
     },
     UpdateEffectiveContextWindow {
         effective_context_window: u64,
@@ -202,6 +217,7 @@ pub(crate) enum AppCommandView<'a> {
     },
     UpdatePermissions {
         preset: devo_protocol::PermissionPreset,
+        persist_scope: PersistScope,
     },
     UpdateEffectiveContextWindow {
         effective_context_window: u64,
@@ -325,12 +341,51 @@ impl AppCommand {
         sandbox: Option<Option<String>>,
         approval_policy: Option<Option<String>>,
     ) -> Self {
+        Self::override_turn_context_with_scope(
+            cwd,
+            model,
+            reasoning_effort_selection,
+            sandbox,
+            approval_policy,
+            PersistScope::Session,
+        )
+    }
+
+    pub(crate) fn override_turn_context_with_scope(
+        cwd: Option<PathBuf>,
+        model: Option<String>,
+        reasoning_effort_selection: Option<Option<String>>,
+        sandbox: Option<Option<String>>,
+        approval_policy: Option<Option<String>>,
+        persist_scope: PersistScope,
+    ) -> Self {
         Self::OverrideTurnContext {
             cwd,
             model,
             reasoning_effort_selection,
             sandbox,
             approval_policy,
+            persist_scope,
+        }
+    }
+
+    pub(crate) fn set_collaboration_mode(
+        collaboration_mode: CollaborationMode,
+        persist_scope: PersistScope,
+    ) -> Self {
+        Self::SetCollaborationMode {
+            collaboration_mode,
+            persist_scope,
+        }
+    }
+
+    pub(crate) fn update_permissions(
+        preset: devo_protocol::PermissionPreset,
+        persist_scope: PersistScope,
+    ) -> Self {
+        Self::UpdatePermissions {
+            preset,
+            persist_scope,
         }
     }
 
@@ -402,6 +457,7 @@ impl AppCommand {
             Self::ClearGoal => "clear_goal",
             Self::UserTurn { .. } => "user_turn",
             Self::OverrideTurnContext { .. } => "override_turn_context",
+            Self::SetCollaborationMode { .. } => "set_collaboration_mode",
             Self::QueuePush { .. } => "queue_push",
             Self::QueueSteer { .. } => "queue_steer",
             Self::QueueRemove { .. } => "queue_remove",
@@ -469,6 +525,7 @@ impl AppCommand {
                 reasoning_effort_selection,
                 sandbox,
                 approval_policy,
+                ..
             } => AppCommandView::OverrideTurnContext {
                 cwd,
                 model,
@@ -476,6 +533,7 @@ impl AppCommand {
                 sandbox,
                 approval_policy,
             },
+            Self::SetCollaborationMode { .. } => AppCommandView::ReloadUserConfig,
             Self::QueuePush { .. }
             | Self::QueueSteer { .. }
             | Self::QueueRemove { .. }
@@ -499,9 +557,13 @@ impl AppCommand {
                 request_id,
                 response,
             },
-            Self::UpdatePermissions { preset, .. } => {
-                AppCommandView::UpdatePermissions { preset: *preset }
-            }
+            Self::UpdatePermissions {
+                preset,
+                persist_scope,
+            } => AppCommandView::UpdatePermissions {
+                preset: *preset,
+                persist_scope: *persist_scope,
+            },
             Self::UpdateEffectiveContextWindow {
                 effective_context_window,
             } => AppCommandView::UpdateEffectiveContextWindow {

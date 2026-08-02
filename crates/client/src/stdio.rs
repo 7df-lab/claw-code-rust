@@ -744,6 +744,7 @@ mod tests {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
             effective_context_window: None,
+            permission_preset: None,
         };
         assert_eq!(session, expected);
 
@@ -838,6 +839,7 @@ mod tests {
                 status: SessionRuntimeStatus::Idle,
                 collaboration_mode: Default::default(),
                 effective_context_window: None,
+                permission_preset: None,
             }]
         );
 
@@ -890,6 +892,7 @@ mod tests {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
             effective_context_window: None,
+            permission_preset: None,
         };
         let mut stdout_lines = BufReader::new(stdout).lines();
 

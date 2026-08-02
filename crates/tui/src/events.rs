@@ -564,6 +564,8 @@ pub(crate) enum WorkerEvent {
         reasoning_effort_selection: Option<String>,
         /// Effective reasoning effort currently configured for the next session.
         reasoning_effort: Option<ReasoningEffort>,
+        permission_preset: devo_protocol::PermissionPreset,
+        collaboration_mode: CollaborationMode,
         /// Contextual footer label for the active child agent, when viewing one.
         active_agent_label: Option<String>,
         /// Latest completed query display total for the fresh session.
@@ -615,6 +617,8 @@ pub(crate) enum WorkerEvent {
         pending_texts: Vec<String>,
         /// Collaboration mode restored from the resumed session metadata.
         collaboration_mode: CollaborationMode,
+        /// Permission preset restored from the resumed session metadata.
+        permission_preset: Option<devo_protocol::PermissionPreset>,
         /// Session auto-compaction token limit override, when one is set.
         effective_context_window: Option<u64>,
     },

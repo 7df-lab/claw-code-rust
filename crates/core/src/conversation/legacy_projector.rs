@@ -410,6 +410,8 @@ impl LegacyProjector {
                 session_context: record.session_context.clone(),
                 cli_version: record.cli_version.clone(),
                 source: record.source.clone(),
+                collaboration_mode: record.collaboration_mode,
+                permission_preset: record.permission_preset,
             })),
         }])
     }

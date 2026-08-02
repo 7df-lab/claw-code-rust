@@ -550,6 +550,7 @@ impl SessionHandle {
         model: Option<String>,
         model_binding_id: Option<String>,
         reasoning_effort_selection: Option<String>,
+        collaboration_mode: Option<devo_protocol::CollaborationMode>,
     ) -> Option<SessionMetadata> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if !self
@@ -557,6 +558,7 @@ impl SessionHandle {
                 model,
                 model_binding_id,
                 reasoning_effort_selection,
+                collaboration_mode,
                 reply: reply_tx,
             })
             .await

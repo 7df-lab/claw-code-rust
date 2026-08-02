@@ -212,6 +212,19 @@ impl ChatWidget {
                 self.set_status_message("Removing queued message");
             }
             InputResult::None => {}
+            InputResult::InputModeChanged { input_mode } => {
+                self.current_turn_mode = input_mode;
+                if matches!(
+                    input_mode,
+                    crate::bottom_pane::InputMode::Build | crate::bottom_pane::InputMode::Plan
+                ) {
+                    self.app_event_tx
+                        .send(AppEvent::Command(AppCommand::set_collaboration_mode(
+                            input_mode.collaboration_mode(),
+                            crate::app_command::PersistScope::Session,
+                        )));
+                }
+            }
         }
     }
 
@@ -280,10 +293,10 @@ impl ChatWidget {
                 self.refresh_settings_hub_if_open();
             }
             AppEvent::SettingsOpenModel => {
-                self.open_model_picker();
+                self.open_model_picker_for_defaults();
             }
             AppEvent::SettingsOpenPermissions => {
-                self.open_permissions_picker();
+                self.open_permissions_picker_for_defaults();
             }
             AppEvent::SettingsOpenReasoning => {
                 self.open_reasoning_view_picker();
@@ -294,6 +307,11 @@ impl ChatWidget {
             AppEvent::SettingsCycleMode => {
                 self.bottom_pane.cycle_build_plan_mode();
                 self.current_turn_mode = self.bottom_pane.input_mode();
+                self.app_event_tx
+                    .send(AppEvent::Command(AppCommand::set_collaboration_mode(
+                        self.current_turn_mode.collaboration_mode(),
+                        crate::app_command::PersistScope::Default,
+                    )));
                 self.refresh_settings_hub_if_open();
             }
             AppEvent::SettingsCycleTheme { direction } => {
@@ -474,7 +492,7 @@ impl ChatWidget {
                 self.user_turn_model_binding_id(),
                 self.reasoning_effort_selection.clone(),
                 /*sandbox*/ None,
-                Some("on-request".to_string()),
+                /*approval_policy*/ None,
                 collaboration_mode,
             ),
         ));
@@ -666,6 +684,11 @@ impl ChatWidget {
     #[cfg(test)]
     pub(crate) fn input_mode_for_test(&self) -> InputMode {
         self.bottom_pane.input_mode()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn permission_preset_for_test(&self) -> devo_protocol::PermissionPreset {
+        self.permission_preset
     }
 
     pub(crate) fn composer_is_empty(&self) -> bool {

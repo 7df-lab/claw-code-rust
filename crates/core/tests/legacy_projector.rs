@@ -91,6 +91,8 @@ fn session_record(n: u128) -> SessionRecord {
         parent_session_id: None,
         session_context: None,
         latest_turn_context: None,
+        collaboration_mode: None,
+        permission_preset: None,
         schema_version: 2,
     }
 }

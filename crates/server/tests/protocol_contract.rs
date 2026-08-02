@@ -241,6 +241,7 @@ fn session_projection_maps_core_record() {
         sandbox_policy: "workspace-write".into(),
         approval_mode: "never".into(),
         effective_context_window: None,
+        permission_preset: None,
         tokens_used: 0,
         first_user_message: None,
         archived_at: None,
@@ -250,6 +251,7 @@ fn session_projection_maps_core_record() {
         parent_session_id: None,
         session_context: None,
         latest_turn_context: None,
+        collaboration_mode: None,
         schema_version: 2,
     };
 
@@ -370,6 +372,7 @@ fn session_title_updated_event_serializes_expected_kind() {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
             effective_context_window: None,
+            permission_preset: None,
         },
     });
 
@@ -409,6 +412,7 @@ fn session_compaction_events_serialize_expected_kinds() {
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
         effective_context_window: None,
+        permission_preset: None,
     };
 
     let started = ServerEvent::SessionCompactionStarted(devo_server::SessionEventPayload {

@@ -175,6 +175,7 @@ impl ServerRuntime {
                     .effective_context_window_override
                     .map(|limit| limit as u64)
             }),
+            permission_preset: parent_summary.permission_preset,
         };
         let child_session = RuntimeSession {
             runtime_context,

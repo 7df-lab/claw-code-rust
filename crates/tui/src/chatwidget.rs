@@ -89,7 +89,6 @@ mod worker_events;
 use self::permission_presets::permission_preset_items;
 use self::permission_presets::permission_preset_label;
 use self::resume_browser::ResumeBrowserState;
-use self::sandbox_profiles::sandbox_profile_label;
 use self::session_header::SessionHeaderParams;
 use self::subagent_monitor::SubagentMonitorState;
 
@@ -110,6 +109,8 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) initial_reasoning_effort_selection: Option<String>,
     pub(crate) initial_permission_preset: devo_protocol::PermissionPreset,
     pub(crate) initial_sandbox_profile: Option<String>,
+    pub(crate) initial_compaction_token_limit: Option<u64>,
+    pub(crate) initial_default_collaboration_mode: devo_protocol::CollaborationMode,
     pub(crate) initial_user_message: Option<UserMessage>,
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) is_first_run: bool,
@@ -306,6 +307,12 @@ pub(crate) struct ChatWidget {
     sandbox_profile: Option<String>,
     /// Applied auto-compaction threshold for the active session (clamped to model).
     effective_context_window: Option<u64>,
+    /// Global default compaction limit from settings/`config.toml` (survives `/new`).
+    default_compaction_token_limit: Option<u64>,
+    /// Global default collaboration mode from settings/`config.toml`.
+    default_collaboration_mode: devo_protocol::CollaborationMode,
+    /// Persist scope for the next model/permissions picker selection.
+    settings_picker_persist_scope: crate::app_command::PersistScope,
     busy: bool,
     selection_mode: bool,
     selected_user_cell_index: Option<usize>,
@@ -434,6 +441,8 @@ impl ChatWidget {
             initial_reasoning_effort_selection,
             initial_permission_preset,
             initial_sandbox_profile,
+            initial_compaction_token_limit,
+            initial_default_collaboration_mode,
             initial_user_message,
             enhanced_keys_supported,
             is_first_run,
@@ -559,7 +568,9 @@ impl ChatWidget {
             editing_queue_item_id: None,
             active_turn_id: None,
             failed_turn_visually_finalized: false,
-            current_turn_mode: InputMode::Build,
+            current_turn_mode: InputMode::from_collaboration_mode(
+                initial_default_collaboration_mode,
+            ),
             committed_server_assistant_in_turn: false,
             boundary_committed_assistant_items: HashSet::new(),
             current_turn_has_user_shell_command: false,
@@ -568,7 +579,10 @@ impl ChatWidget {
             pending_proposed_plan_actions: false,
             permission_preset: initial_permission_preset,
             sandbox_profile: initial_sandbox_profile,
-            effective_context_window: None,
+            effective_context_window: initial_compaction_token_limit,
+            default_compaction_token_limit: initial_compaction_token_limit,
+            default_collaboration_mode: initial_default_collaboration_mode,
+            settings_picker_persist_scope: crate::app_command::PersistScope::Session,
             busy: false,
             selection_mode: false,
             selected_user_cell_index: None,
@@ -602,6 +616,11 @@ impl ChatWidget {
         }
 
         // Keep the bottom pane summary in sync with the assembled widget state.
+        widget
+            .bottom_pane
+            .set_input_mode(InputMode::from_collaboration_mode(
+                initial_default_collaboration_mode,
+            ));
         widget.request_status_line_branch_refresh();
         widget.sync_bottom_pane_summary();
         widget.maybe_start_subagent_debug_scenario();

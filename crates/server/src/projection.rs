@@ -469,11 +469,16 @@ impl SessionProjector for DefaultProjection {
             last_context_occupancy: None,
             status,
             collaboration_mode: session
-                .latest_turn_context
-                .as_ref()
-                .map(|context| context.collaboration_mode)
+                .collaboration_mode
+                .or_else(|| {
+                    session
+                        .latest_turn_context
+                        .as_ref()
+                        .map(|context| context.collaboration_mode)
+                })
                 .unwrap_or_default(),
             effective_context_window: session.effective_context_window,
+            permission_preset: session.permission_preset,
         }
     }
 }

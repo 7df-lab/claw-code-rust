@@ -226,6 +226,9 @@ pub(crate) enum InputResult {
     QueueRemove {
         queue_item_id: String,
     },
+    InputModeChanged {
+        input_mode: InputMode,
+    },
     None,
 }
 
@@ -360,12 +363,24 @@ impl BottomPane {
         }
 
         if is_input_mode_cycle_key(key) && !self.composer.popup_active() {
+            let previous = self.input_mode;
             self.cycle_input_mode();
+            if self.input_mode != previous {
+                return InputResult::InputModeChanged {
+                    input_mode: self.input_mode,
+                };
+            }
             return InputResult::None;
         }
 
         if is_bare_shell_mode_trigger(key) && self.composer.is_empty() {
+            let previous = self.input_mode;
             self.set_input_mode(InputMode::Shell);
+            if self.input_mode != previous {
+                return InputResult::InputModeChanged {
+                    input_mode: self.input_mode,
+                };
+            }
             return InputResult::None;
         }
 
@@ -1430,7 +1445,7 @@ mod tests {
             },
             StatusPanelSnapshot {
                 cwd: "/tmp/project".to_string(),
-                permissions_label: "Default".to_string(),
+                permissions_label: "Ask for approval".to_string(),
             },
         );
 

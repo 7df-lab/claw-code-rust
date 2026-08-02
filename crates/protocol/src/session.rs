@@ -15,6 +15,7 @@ use crate::SessionTitleState;
 use crate::TurnId;
 use crate::TurnUsage;
 use crate::parse_command::ParsedCommand;
+use crate::permissions::PermissionPreset;
 use crate::protocol::FileChange;
 use crate::turn::CollaborationMode;
 use crate::turn::TurnMetadata;
@@ -122,6 +123,9 @@ pub struct SessionMetadata {
     /// `effective_context_window()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_context_window: Option<u64>,
+    /// Permission preset restored from session durable metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_preset: Option<PermissionPreset>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -289,6 +293,8 @@ pub struct SessionMetadataUpdateParams {
     pub model_binding_id: Option<String>,
     #[serde(default, alias = "thinking", skip_serializing_if = "Option::is_none")]
     pub reasoning_effort_selection: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_mode: Option<CollaborationMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -477,6 +483,7 @@ mod tests {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: CollaborationMode::Plan,
             effective_context_window: None,
+            permission_preset: None,
         };
 
         let json = serde_json::to_string(&metadata).expect("serialize");

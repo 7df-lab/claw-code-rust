@@ -24,7 +24,6 @@ use super::permission_preset_items;
 use super::permission_preset_label;
 use super::reasoning_effort;
 use super::reasoning_effort::ReasoningEffortListEntry;
-use super::sandbox_profile_label;
 
 impl ChatWidget {
     pub(crate) fn set_model(&mut self, model: Model) {
@@ -322,6 +321,15 @@ impl ChatWidget {
     }
 
     pub(super) fn open_model_picker(&mut self) {
+        self.open_model_picker_with_scope(crate::app_command::PersistScope::Session);
+    }
+
+    pub(super) fn open_model_picker_for_defaults(&mut self) {
+        self.open_model_picker_with_scope(crate::app_command::PersistScope::Default);
+    }
+
+    fn open_model_picker_with_scope(&mut self, persist_scope: crate::app_command::PersistScope) {
+        self.settings_picker_persist_scope = persist_scope;
         let session_effort = self.reasoning_effort_selection.clone();
         let entries = self
             .saved_models
@@ -411,14 +419,17 @@ impl ChatWidget {
             .resolve_reasoning_effort_selection(self.reasoning_effort_selection.as_deref())
             .effective_reasoning_effort;
         self.refresh_header_box();
-        self.app_event_tx
-            .send(AppEvent::Command(AppCommand::override_turn_context(
+        self.app_event_tx.send(AppEvent::Command(
+            AppCommand::override_turn_context_with_scope(
                 /*cwd*/ None,
                 Some(selection),
                 Some(self.reasoning_effort_selection.clone()),
                 /*sandbox*/ None,
                 /*approval_policy*/ None,
-            )));
+                self.settings_picker_persist_scope,
+            ),
+        ));
+        self.settings_picker_persist_scope = crate::app_command::PersistScope::Session;
         self.set_status_message(format!("Model set to {display_name}"));
     }
 
@@ -429,13 +440,25 @@ impl ChatWidget {
     }
 
     pub(super) fn open_permissions_picker(&mut self) {
+        self.open_permissions_picker_with_scope(crate::app_command::PersistScope::Session);
+    }
+
+    pub(super) fn open_permissions_picker_for_defaults(&mut self) {
+        self.open_permissions_picker_with_scope(crate::app_command::PersistScope::Default);
+    }
+
+    fn open_permissions_picker_with_scope(
+        &mut self,
+        persist_scope: crate::app_command::PersistScope,
+    ) {
+        self.settings_picker_persist_scope = persist_scope;
         let current = self.permission_preset;
         self.bottom_pane
             .open_popup_view(Box::new(ListSelectionView::new(
                 SelectionViewParams {
                     title: Some("Update Permissions".to_string()),
                     footer_hint: Some(Line::from("Press enter to confirm or esc to go back")),
-                    items: permission_preset_items(current),
+                    items: permission_preset_items(current, persist_scope),
                     ..SelectionViewParams::default()
                 },
                 self.app_event_tx.clone(),
@@ -480,6 +503,20 @@ impl ChatWidget {
         self.frame_requester.schedule_frame();
     }
 
+    pub(crate) fn apply_collaboration_mode(
+        &mut self,
+        collaboration_mode: devo_protocol::CollaborationMode,
+        persist_scope: crate::app_command::PersistScope,
+    ) {
+        let input_mode = crate::bottom_pane::InputMode::from_collaboration_mode(collaboration_mode);
+        if persist_scope == crate::app_command::PersistScope::Default {
+            self.default_collaboration_mode = collaboration_mode;
+        }
+        self.current_turn_mode = input_mode;
+        self.bottom_pane.set_input_mode(input_mode);
+        self.refresh_settings_hub_if_open();
+    }
+
     pub(crate) fn note_permissions_updated(&mut self, preset: devo_protocol::PermissionPreset) {
         self.permission_preset = preset;
         self.sandbox_profile = Some(
@@ -501,6 +538,7 @@ impl ChatWidget {
 
     pub(crate) fn note_effective_context_window_updated(&mut self, effective_context_window: u64) {
         self.effective_context_window = Some(effective_context_window);
+        self.default_compaction_token_limit = Some(effective_context_window);
         if let Some(occupancy) = self.last_context_occupancy.as_mut() {
             occupancy.context_window_tokens = effective_context_window;
         }
@@ -527,13 +565,11 @@ impl ChatWidget {
     }
 
     pub(crate) fn note_sandbox_profile_updated(&mut self, profile: String) {
-        let label = sandbox_profile_label(&profile).to_string();
+        // Sandbox follows the permission preset (or an explicit /sandbox pick). Keep local
+        // state in sync for settings/status, but do not emit a transcript or status line —
+        // "Sandbox profile updated to …" is noise next to "Permissions updated to …".
         self.sandbox_profile = Some(profile);
-        self.add_to_history(history_cell::new_info_event(
-            format!("Sandbox profile updated to {label}"),
-            None,
-        ));
-        self.set_status_message(format!("Sandbox profile updated to {label}"));
+        self.refresh_settings_hub_if_open();
     }
 
     pub(super) fn apply_theme_selection(&mut self, name: String) {
@@ -650,9 +686,21 @@ impl ChatWidget {
                 .map(|model| model.slug.clone())
                 .unwrap_or_else(|| "unknown".to_string()),
             permissions_label: permission_preset_label(self.permission_preset).to_string(),
-            mode: self.current_turn_mode,
+            mode: crate::bottom_pane::InputMode::from_collaboration_mode(
+                self.default_collaboration_mode,
+            ),
             compaction_threshold_label: crate::bottom_pane::format_token_limit(
-                self.effective_compaction_threshold_tokens(),
+                self.default_compaction_token_limit
+                    .map(|limit| {
+                        let model_window = self
+                            .session
+                            .model
+                            .as_ref()
+                            .map(|model| u64::from(model.context_window.max(1)))
+                            .unwrap_or(u64::MAX);
+                        limit.min(model_window).max(1)
+                    })
+                    .unwrap_or_else(|| self.effective_compaction_threshold_tokens()),
             ),
             theme_label: self.active_theme_name.clone(),
             reasoning_view_label: super::reasoning_view::reasoning_view_label(

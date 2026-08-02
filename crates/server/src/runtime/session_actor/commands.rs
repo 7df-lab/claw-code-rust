@@ -160,6 +160,7 @@ pub(crate) enum SessionCommand {
         model: Option<String>,
         model_binding_id: Option<String>,
         reasoning_effort_selection: Option<String>,
+        collaboration_mode: Option<CollaborationMode>,
         reply: oneshot::Sender<SessionMetadata>,
     },
     ApplyPermissionProfile {

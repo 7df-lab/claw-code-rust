@@ -9,7 +9,7 @@ use crate::{
     TurnWorkspaceChangeRecordedRecord, TurnWorkspaceCheckpointRecordedRecord,
     TurnWorkspaceRestoreCompletedRecord, TurnWorkspaceRestoreStartedRecord,
 };
-use devo_protocol::{StopReason, TurnFailureReason};
+use devo_protocol::{CollaborationMode, PermissionPreset, StopReason, TurnFailureReason};
 
 /// Stores persistent metadata for one session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,6 +81,12 @@ pub struct SessionRecord {
     /// The latest turn context snapshot known for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_turn_context: Option<TurnContext>,
+    /// Session-level collaboration mode override, persisted without requiring a turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_mode: Option<CollaborationMode>,
+    /// Session-level permission preset override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_preset: Option<PermissionPreset>,
     /// The schema version for persisted session metadata.
     pub schema_version: u32,
 }
@@ -586,6 +592,8 @@ mod tests {
             parent_session_id: None,
             session_context: None,
             latest_turn_context: None,
+            collaboration_mode: None,
+            permission_preset: None,
             schema_version: 2,
         };
 
@@ -1202,6 +1210,8 @@ mod tests {
             parent_session_id: None,
             session_context: None,
             latest_turn_context: None,
+            collaboration_mode: None,
+            permission_preset: None,
             schema_version: 2,
         }
     }

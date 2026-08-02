@@ -509,6 +509,121 @@ async fn resume_restores_plan_collaboration_mode_from_latest_turn() -> Result<()
 }
 
 #[tokio::test]
+async fn resume_restores_session_permission_preset_and_plan_mode_without_turn() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let runtime = build_runtime(data_root.path())?;
+    let (connection_id, _notifications_rx) = initialize_connection(&runtime).await?;
+
+    let start_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 1,
+                "method": "session/start",
+                "params": {
+                    "cwd": data_root.path(),
+                    "ephemeral": false,
+                    "title": "Session overrides",
+                    "model": "test-model"
+                }
+            }),
+        )
+        .await
+        .context("session/start response")?;
+    let start_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionStartResult>,
+    >(start_response)?
+    .result;
+    let session_id = start_result.session.session_id;
+    let started_model = start_result.session.model.clone();
+
+    let permissions_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 2,
+                "method": "_devo/session/permissions/update",
+                "params": {
+                    "session_id": session_id,
+                    "preset": "full-access"
+                }
+            }),
+        )
+        .await
+        .context("session/permissions/update response")?;
+    let permissions_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionPermissionsUpdateResult>,
+    >(permissions_response)?
+    .result;
+    assert_eq!(
+        permissions_result.preset,
+        devo_protocol::PermissionPreset::FullAccess
+    );
+
+    let metadata_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 3,
+                "method": "_devo/session/metadata/update",
+                "params": {
+                    "session_id": session_id,
+                    "collaboration_mode": "plan"
+                }
+            }),
+        )
+        .await
+        .context("session/metadata/update response")?;
+    let metadata_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionMetadataUpdateResult>,
+    >(metadata_response)?
+    .result;
+    assert_eq!(
+        metadata_result.session.collaboration_mode,
+        devo_protocol::CollaborationMode::Plan
+    );
+    assert_eq!(
+        metadata_result.session.permission_preset,
+        Some(devo_protocol::PermissionPreset::FullAccess)
+    );
+    assert_eq!(metadata_result.session.model, started_model);
+
+    drop(runtime);
+    let rebuilt_runtime = build_runtime(data_root.path())?;
+    rebuilt_runtime.load_persisted_sessions().await?;
+    let (connection_id, _notifications_rx) = initialize_connection(&rebuilt_runtime).await?;
+
+    let resume_response = rebuilt_runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 4,
+                "method": "_devo/session/resume",
+                "params": {
+                    "session_id": session_id
+                }
+            }),
+        )
+        .await
+        .context("session/resume response")?;
+    let resume_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    >(resume_response.clone())
+    .with_context(|| format!("decode session/resume response: {resume_response}"))?
+    .result;
+
+    assert_eq!(
+        resume_result.session.collaboration_mode,
+        devo_protocol::CollaborationMode::Plan
+    );
+    assert_eq!(
+        resume_result.session.permission_preset,
+        Some(devo_protocol::PermissionPreset::FullAccess)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
@@ -858,6 +973,8 @@ async fn resume_normalizes_historical_default_reasoning_effort() -> Result<()> {
             parent_session_id: None,
             session_context: None,
             latest_turn_context: None,
+            collaboration_mode: None,
+            permission_preset: None,
             schema_version: 2,
         };
         let turn = TurnRecord {
@@ -1004,6 +1121,8 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         parent_session_id: None,
         session_context: None,
         latest_turn_context: None,
+        collaboration_mode: None,
+        permission_preset: None,
         schema_version: 2,
     };
     let failed_running = TurnRecord {
@@ -3073,5 +3192,6 @@ fn sample_indexed_session(
         status: devo_protocol::SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
         effective_context_window: None,
+        permission_preset: None,
     }
 }

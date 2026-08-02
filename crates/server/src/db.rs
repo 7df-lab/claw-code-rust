@@ -1165,6 +1165,7 @@ fn parse_session_metadata_row(
         // Applied compaction window is resolved from AppConfig at session
         // hydrate / create time; DB list rows do not persist it.
         effective_context_window: None,
+        permission_preset: None,
     })
 }
 
@@ -1452,6 +1453,7 @@ mod tests {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
             effective_context_window: None,
+            permission_preset: None,
         }
     }
 

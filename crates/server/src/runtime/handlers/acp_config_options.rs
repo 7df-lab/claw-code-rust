@@ -105,6 +105,7 @@ impl ServerRuntime {
                         Some(turn_config.model.slug.clone()),
                         turn_config.model_binding_id.clone(),
                         turn_config.reasoning_effort_selection.clone(),
+                        None,
                     )
                     .await
                     .ok_or_else(|| {
@@ -172,6 +173,7 @@ impl ServerRuntime {
                         Some(turn_config.model.slug.clone()),
                         turn_config.model_binding_id.clone(),
                         turn_config.reasoning_effort_selection.clone(),
+                        None,
                     )
                     .await
                     .ok_or_else(|| {
@@ -358,17 +360,17 @@ fn acp_mode_config_option_for_session(config: &SessionConfig) -> AcpSessionConfi
             [
                 (
                     PermissionPreset::Default,
-                    "Default",
-                    "Workspace sandbox; read/edit/run in workspace. Ask before network or outside-workspace edits.",
+                    "Ask for approval",
+                    "Workspace sandbox; read/edit/run in workspace. You approve sensitive tools.",
                 ),
                 (
                     PermissionPreset::AutoReview,
-                    "Auto-review",
-                    "Workspace sandbox with default permissions; eligible approvals go through auto-review first.",
+                    "Approve for me",
+                    "Same sandbox as Ask for approval. An AI reviewer may approve low-risk tools; uncertain ones still ask you.",
                 ),
                 (
                     PermissionPreset::FullAccess,
-                    "Full Access",
+                    "Full-Access",
                     "No OS sandbox and no approval prompts; use with caution.",
                 ),
             ]

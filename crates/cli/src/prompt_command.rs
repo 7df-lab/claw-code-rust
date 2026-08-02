@@ -117,7 +117,7 @@ pub(crate) async fn run_prompt(
                     session_id: session_state.id.clone(),
                     transcript_path: String::new(),
                     cwd: cwd.clone(),
-                    permission_mode: Some("auto-approve".to_string()),
+                    permission_mode: Some("yolo".to_string()),
                     agent_id: None,
                     agent_type: None,
                 },

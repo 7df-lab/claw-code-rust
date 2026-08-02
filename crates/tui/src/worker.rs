@@ -214,6 +214,8 @@ pub(crate) struct QueryWorkerConfig {
     pub(crate) reasoning_effort_selection: Option<String>,
     /// Permission preset to apply to the server session when it exists.
     pub(crate) permission_preset: PermissionPreset,
+    /// Default collaboration mode for newly prepared sessions.
+    pub(crate) default_collaboration_mode: CollaborationMode,
     /// Initial OS sandbox profile from project config (or permission-implied).
     pub(crate) initial_sandbox_profile: Option<String>,
     /// Agent client capabilities to advertise to the server session.
@@ -242,6 +244,11 @@ enum OperationCommand {
     SetModel {
         model: String,
         model_binding_id: Option<String>,
+        persist_scope: crate::app_command::PersistScope,
+    },
+    SetCollaborationMode {
+        collaboration_mode: CollaborationMode,
+        persist_scope: crate::app_command::PersistScope,
     },
     /// TODO: Same with model, should bind at session metadata.
     /// Update the reasoning effort selection used for future turns.
@@ -373,6 +380,7 @@ enum OperationCommand {
     },
     UpdatePermissions {
         preset: devo_protocol::PermissionPreset,
+        persist_scope: crate::app_command::PersistScope,
     },
     UpdateEffectiveContextWindow {
         effective_context_window: u64,
@@ -508,10 +516,24 @@ impl QueryWorkerHandle {
         model: String,
         model_binding_id: Option<String>,
     ) -> Result<()> {
+        self.set_model_selection_with_scope(
+            model,
+            model_binding_id,
+            crate::app_command::PersistScope::Session,
+        )
+    }
+
+    pub(crate) fn set_model_selection_with_scope(
+        &self,
+        model: String,
+        model_binding_id: Option<String>,
+        persist_scope: crate::app_command::PersistScope,
+    ) -> Result<()> {
         self.command_tx
             .send(OperationCommand::SetModel {
                 model,
                 model_binding_id,
+                persist_scope,
             })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
@@ -820,9 +842,29 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    pub(crate) fn update_permissions(&self, preset: devo_protocol::PermissionPreset) -> Result<()> {
+    pub(crate) fn update_permissions(
+        &self,
+        preset: devo_protocol::PermissionPreset,
+        persist_scope: crate::app_command::PersistScope,
+    ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::UpdatePermissions { preset })
+            .send(OperationCommand::UpdatePermissions {
+                preset,
+                persist_scope,
+            })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    pub(crate) fn set_collaboration_mode(
+        &self,
+        collaboration_mode: CollaborationMode,
+        persist_scope: crate::app_command::PersistScope,
+    ) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::SetCollaborationMode {
+                collaboration_mode,
+                persist_scope,
+            })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -920,12 +962,17 @@ async fn run_worker_inner(
     // calls, then turns server notifications back into lightweight UI events.
     let mut client = spawn_client(&config.cwd, config.server_log_level.clone()).await?;
     let _ = client.initialize(&config.client_capabilities).await?;
+    let mut default_model = config.model.clone();
+    let mut default_model_binding_id = config.model_binding_id.clone();
+    let default_reasoning_effort_selection = config.reasoning_effort_selection.clone();
+    let mut default_permission_preset = config.permission_preset;
+    let mut default_collaboration_mode = config.default_collaboration_mode;
     let mut session_id: Option<SessionId> = None;
     let mut session_cwd = config.cwd.clone();
-    let mut model = config.model;
-    let mut model_binding_id = config.model_binding_id;
-    let mut reasoning_effort_selection = config.reasoning_effort_selection;
-    let mut permission_preset = config.permission_preset;
+    let mut model = default_model.clone();
+    let mut model_binding_id = default_model_binding_id.clone();
+    let mut reasoning_effort_selection = default_reasoning_effort_selection.clone();
+    let mut session_permission_preset: Option<PermissionPreset> = None;
     let initial_sandbox_profile = config.initial_sandbox_profile.clone();
     let mut active_turn_id: Option<TurnId> = None;
     let mut turn_count = 0usize;
@@ -963,13 +1010,21 @@ async fn run_worker_inner(
                 let active_agent_label = active_agent_label_from_session(&resumed.session);
                 let (last_query_total, last_query_input) =
                     last_query_tokens_from_resume(&resumed.session);
+                model = resumed
+                    .session
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| default_model.clone());
+                model_binding_id = resumed.session.model_binding_id.clone();
+                reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
+                session_permission_preset = resumed.session.permission_preset;
                 let _ = event_tx.send(WorkerEvent::SessionSwitched {
                     session_id: initial_session_id.to_string(),
-                    cwd: resumed.session.cwd,
-                    title: resumed.session.title,
+                    cwd: resumed.session.cwd.clone(),
+                    title: resumed.session.title.clone(),
                     model: resumed.session.model.clone(),
-                    model_binding_id: resumed.session.model_binding_id.clone(),
-                    reasoning_effort_selection: resumed.session.reasoning_effort_selection.clone(),
+                    model_binding_id: model_binding_id.clone(),
+                    reasoning_effort_selection: reasoning_effort_selection.clone(),
                     reasoning_effort: resumed.session.reasoning_effort,
                     active_agent_label,
                     total_input_tokens: resumed.session.total_input_tokens,
@@ -984,6 +1039,7 @@ async fn run_worker_inner(
                     loaded_item_count: resumed.loaded_item_count,
                     pending_texts: resumed.pending_texts,
                     collaboration_mode: resumed.session.collaboration_mode,
+                    permission_preset: resumed.session.permission_preset,
                     effective_context_window: resumed.session.effective_context_window,
                 });
                 if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
@@ -996,9 +1052,6 @@ async fn run_worker_inner(
                     event_tx,
                 )
                 .await;
-                model = resumed.session.model.clone().unwrap_or(model);
-                model_binding_id = resumed.session.model_binding_id.clone();
-                reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
                 total_input_tokens = resumed.session.total_input_tokens;
                 total_output_tokens = resumed.session.total_output_tokens;
                 total_tokens = resumed.session.total_tokens;
@@ -1041,7 +1094,8 @@ async fn run_worker_inner(
                                     &mut reasoning_effort_selection,
                                     &mut session_id,
                                     &mut subscribed_session_id,
-                                    permission_preset,
+                                    session_permission_preset
+                                        .unwrap_or(default_permission_preset),
                                     initial_sandbox_profile.as_deref(),
                                     event_tx,
                                 )
@@ -1124,9 +1178,14 @@ async fn run_worker_inner(
                             Some(OperationCommand::SetModel {
                                 model: next_model,
                                 model_binding_id: next_model_binding_id,
+                                persist_scope,
                             }) => {
                                 model = next_model;
                                 model_binding_id = next_model_binding_id;
+                                if persist_scope == crate::app_command::PersistScope::Default {
+                                    default_model = model.clone();
+                                    default_model_binding_id = model_binding_id.clone();
+                                }
                                 input_history_cursor = None;
                                 if let Some(active_session_id) = session_id {
                                     let _ = client
@@ -1135,6 +1194,26 @@ async fn run_worker_inner(
                                             model: Some(model.clone()),
                                             model_binding_id: model_binding_id.clone(),
                                             reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                            collaboration_mode: None,
+                                        })
+                                        .await;
+                                }
+                            }
+                            Some(OperationCommand::SetCollaborationMode {
+                                collaboration_mode,
+                                persist_scope,
+                            }) => {
+                                if persist_scope == crate::app_command::PersistScope::Default {
+                                    default_collaboration_mode = collaboration_mode;
+                                }
+                                if let Some(active_session_id) = session_id {
+                                    let _ = client
+                                        .session_metadata_update(devo_server::SessionMetadataUpdateParams {
+                                            session_id: active_session_id,
+                                            model: Some(model.clone()),
+                                            model_binding_id: model_binding_id.clone(),
+                                            reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                            collaboration_mode: Some(collaboration_mode),
                                         })
                                         .await;
                                 }
@@ -1148,6 +1227,7 @@ async fn run_worker_inner(
                                             model: Some(model.clone()),
                                             model_binding_id: model_binding_id.clone(),
                                             reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                            collaboration_mode: None,
                                         })
                                         .await;
                                 }
@@ -1532,7 +1612,8 @@ async fn run_worker_inner(
                                     &mut reasoning_effort_selection,
                                     &mut session_id,
                                     &mut subscribed_session_id,
-                                    permission_preset,
+                                    session_permission_preset
+                                        .unwrap_or(default_permission_preset),
                                     initial_sandbox_profile.as_deref(),
                                     event_tx,
                                 )
@@ -1747,12 +1828,19 @@ async fn run_worker_inner(
                                 last_query_total_tokens = 0;
                                 last_query_input_tokens = 0;
                                 has_authoritative_usage_totals = true;
+                                model = default_model.clone();
+                                model_binding_id = default_model_binding_id.clone();
+                                reasoning_effort_selection =
+                                    default_reasoning_effort_selection.clone();
+                                session_permission_preset = None;
                                 let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
                                     cwd: session_cwd.clone(),
                                     model: model.clone(),
                                     model_binding_id: model_binding_id.clone(),
                                     reasoning_effort_selection: reasoning_effort_selection.clone(),
                                     reasoning_effort: None,
+                                    permission_preset: default_permission_preset,
+                                    collaboration_mode: default_collaboration_mode,
                                     active_agent_label: None,
                                     last_query_total_tokens,
                                     last_query_input_tokens,
@@ -1792,6 +1880,7 @@ async fn run_worker_inner(
                                         child_agent_sessions.clear();
                                         btw_agent_sessions.clear();
                                         session_cwd = result.session.cwd.clone();
+                                        session_permission_preset = result.session.permission_preset;
                                         input_history_cursor = None;
                                         let active_agent_label =
                                             active_agent_label_from_session(&result.session);
@@ -1818,8 +1907,9 @@ async fn run_worker_inner(
                                             rich_history_items: result.history_items.clone(),
                                             loaded_item_count: result.loaded_item_count,
                                             pending_texts: result.pending_texts,
-                                            collaboration_mode: result.session.collaboration_mode,
-                                            effective_context_window: result.session.effective_context_window,
+                    collaboration_mode: result.session.collaboration_mode,
+                    permission_preset: result.session.permission_preset,
+                    effective_context_window: result.session.effective_context_window,
         });
                                         if let Some(occupancy) = result.session.last_context_occupancy.clone() {
                                             let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
@@ -1970,12 +2060,19 @@ async fn run_worker_inner(
                                             last_query_total_tokens = 0;
                                             last_query_input_tokens = 0;
                                             has_authoritative_usage_totals = true;
+                                            model = default_model.clone();
+                                            model_binding_id = default_model_binding_id.clone();
+                                            reasoning_effort_selection =
+                                                default_reasoning_effort_selection.clone();
+                                            session_permission_preset = None;
                                             let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
                                                 cwd: session_cwd.clone(),
                                                 model: model.clone(),
                                                 model_binding_id: model_binding_id.clone(),
                                                 reasoning_effort_selection: reasoning_effort_selection.clone(),
                                                 reasoning_effort: None,
+                                                permission_preset: default_permission_preset,
+                                                collaboration_mode: default_collaboration_mode,
                                                 active_agent_label: None,
                                                 last_query_total_tokens,
                                                 last_query_input_tokens,
@@ -2065,8 +2162,9 @@ async fn run_worker_inner(
                                             rich_history_items: result.history_items.clone(),
                                             loaded_item_count: result.loaded_item_count,
                                             pending_texts: result.pending_texts,
-                                            collaboration_mode: result.session.collaboration_mode,
-                                            effective_context_window: result.session.effective_context_window,
+                    collaboration_mode: result.session.collaboration_mode,
+                    permission_preset: result.session.permission_preset,
+                    effective_context_window: result.session.effective_context_window,
         });
                                         if let Some(occupancy) = result.session.last_context_occupancy.clone() {
                                             let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
@@ -2182,6 +2280,7 @@ async fn run_worker_inner(
                                                     loaded_item_count: resumed.loaded_item_count,
                                                     pending_texts: resumed.pending_texts,
                                                     collaboration_mode: resumed.session.collaboration_mode,
+                                                    permission_preset: resumed.session.permission_preset,
                                                     effective_context_window: resumed.session.effective_context_window,
         });
                                                 if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
@@ -2578,8 +2677,15 @@ async fn run_worker_inner(
                                     });
                                 }
                             }
-                            Some(OperationCommand::UpdatePermissions { preset }) => {
-                                permission_preset = preset;
+                            Some(OperationCommand::UpdatePermissions { preset, persist_scope }) => {
+                                match persist_scope {
+                                    crate::app_command::PersistScope::Default => {
+                                        default_permission_preset = preset;
+                                    }
+                                    crate::app_command::PersistScope::Session => {
+                                        session_permission_preset = Some(preset);
+                                    }
+                                }
                                 let Some(active_session_id) = session_id else {
                                     continue;
                                 };
@@ -2603,6 +2709,11 @@ async fn run_worker_inner(
                                 effective_context_window,
                             }) => {
                                 let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(
+                                        WorkerEvent::EffectiveContextWindowUpdated {
+                                            effective_context_window,
+                                        },
+                                    );
                                     continue;
                                 };
                                 match client
@@ -6669,6 +6780,7 @@ mod tests {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
             effective_context_window: None,
+            permission_preset: None,
         }
     }
 
@@ -7127,6 +7239,7 @@ mod tests {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
             effective_context_window: None,
+            permission_preset: None,
         };
         let entry = SessionListEntry {
             session_id: summary.session_id,
@@ -7174,6 +7287,7 @@ mod tests {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
             effective_context_window: None,
+            permission_preset: None,
         };
         let entry = SessionListEntry {
             session_id: summary.session_id,

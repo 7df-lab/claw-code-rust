@@ -317,7 +317,7 @@ impl ServerRuntime {
             Some(ClientMethod::SessionMetadataUpdate) => {
                 Some(self.handle_session_metadata_update(id?, params).await)
             }
-            // update session's permission mode, including auto-approve, default, full-access, readonly
+            // update session's permission mode, including yolo, default, full-access, readonly
             Some(ClientMethod::SessionPermissionsUpdate) => {
                 Some(self.handle_session_permissions_update(id?, params).await)
             }
@@ -3013,6 +3013,7 @@ mod tests {
                 status: devo_protocol::SessionRuntimeStatus::Unloaded,
                 collaboration_mode: Default::default(),
                 effective_context_window: None,
+                permission_preset: None,
             },
             None,
         )?;

@@ -127,6 +127,7 @@ impl ServerRuntime {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
             effective_context_window: None,
+            permission_preset: None,
         };
         let global_compaction_limit = runtime_context
             .config_store
@@ -301,6 +302,7 @@ impl ServerRuntime {
                 params.model.clone(),
                 params.model_binding_id.clone(),
                 params.reasoning_effort_selection.clone(),
+                params.collaboration_mode,
             )
             .await
         else {
@@ -385,6 +387,15 @@ impl ServerRuntime {
                 ProtocolErrorCode::SessionNotFound,
                 "session does not exist",
             );
+        }
+        if let Some(record) = session_handle.record().await.flatten() {
+            if let Err(error) = self.rollout_store.append_session_meta(&record) {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InternalError,
+                    format!("failed to persist session permissions update: {error}"),
+                );
+            }
         }
 
         serde_json::to_value(SuccessResponse {
@@ -1279,6 +1290,7 @@ impl ServerRuntime {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: core_session.collaboration_mode,
             effective_context_window: None,
+            permission_preset: None,
         };
         drop(source_core_session);
 

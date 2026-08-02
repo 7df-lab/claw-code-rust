@@ -420,7 +420,7 @@ impl ServerRuntime {
 fn permission_mode_from_approval_policy(policy: &str) -> Option<PermissionMode> {
     match policy {
         "on-request" | "interactive" | "ask" => Some(PermissionMode::Interactive),
-        "never" | "auto" | "auto-approve" => Some(PermissionMode::AutoApprove),
+        "never" | "auto" | "auto-approve" | "yolo" => Some(PermissionMode::Yolo),
         "deny" => Some(PermissionMode::Deny),
         _ => None,
     }
@@ -446,5 +446,15 @@ fn protocol_reviewer_from_safety(
     match reviewer {
         devo_safety::ApprovalsReviewer::User => devo_protocol::ApprovalsReviewer::User,
         devo_safety::ApprovalsReviewer::AutoReview => devo_protocol::ApprovalsReviewer::AutoReview,
+    }
+}
+
+pub(crate) fn protocol_preset_from_safety(
+    preset: devo_safety::PermissionPreset,
+) -> devo_protocol::PermissionPreset {
+    match preset {
+        devo_safety::PermissionPreset::Default => devo_protocol::PermissionPreset::Default,
+        devo_safety::PermissionPreset::AutoReview => devo_protocol::PermissionPreset::AutoReview,
+        devo_safety::PermissionPreset::FullAccess => devo_protocol::PermissionPreset::FullAccess,
     }
 }

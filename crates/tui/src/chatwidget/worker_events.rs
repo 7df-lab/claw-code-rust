@@ -1264,6 +1264,8 @@ impl ChatWidget {
                 model_binding_id,
                 reasoning_effort_selection,
                 reasoning_effort,
+                permission_preset,
+                collaboration_mode,
                 active_agent_label,
                 last_query_total_tokens: _,
                 last_query_input_tokens: _,
@@ -1285,7 +1287,10 @@ impl ChatWidget {
                 self.pending_tool_calls.clear();
                 self.active_text_items.clear();
                 self.committed_server_assistant_in_turn = false;
-                self.current_turn_mode = InputMode::Build;
+                let restored_mode = InputMode::from_collaboration_mode(collaboration_mode);
+                self.current_turn_mode = restored_mode;
+                self.bottom_pane.set_input_mode(restored_mode);
+                self.permission_preset = permission_preset;
                 self.queued_count = 0;
                 self.queued_input_modes.clear();
                 self.promoted_input_modes.clear();
@@ -1301,7 +1306,7 @@ impl ChatWidget {
                 self.last_query_input_tokens = 0;
                 self.prompt_token_estimate = 0;
                 self.last_context_occupancy = None;
-                self.effective_context_window = None;
+                self.effective_context_window = self.default_compaction_token_limit;
                 if should_append_header {
                     self.push_session_header(/*is_first_run*/ false, None);
                 } else {
@@ -1330,6 +1335,7 @@ impl ChatWidget {
                 loaded_item_count,
                 pending_texts: _,
                 collaboration_mode,
+                permission_preset,
                 effective_context_window,
             } => {
                 self.resume_browser_loading = false;
@@ -1352,6 +1358,9 @@ impl ChatWidget {
                 let restored_mode = InputMode::from_collaboration_mode(collaboration_mode);
                 self.current_turn_mode = restored_mode;
                 self.bottom_pane.set_input_mode(restored_mode);
+                if let Some(preset) = permission_preset {
+                    self.permission_preset = preset;
+                }
                 self.queued_input_modes.clear();
                 self.promoted_input_modes.clear();
                 self.editing_queue_item_id = None;

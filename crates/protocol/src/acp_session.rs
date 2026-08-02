@@ -201,6 +201,7 @@ mod tests {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
             effective_context_window: None,
+            permission_preset: None,
         };
 
         let info = acp_session_info_from_metadata(&session);

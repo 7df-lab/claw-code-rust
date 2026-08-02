@@ -1084,6 +1084,7 @@ fn acp_session_metadata_from_start_params(
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
         effective_context_window: None,
+        permission_preset: None,
     }
 }
 
@@ -1124,6 +1125,7 @@ fn acp_session_metadata_from_session_info(session_info: &AcpSessionInfo) -> Sess
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
         effective_context_window: None,
+        permission_preset: None,
     }
 }
 

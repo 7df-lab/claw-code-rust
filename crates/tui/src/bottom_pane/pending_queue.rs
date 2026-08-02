@@ -322,10 +322,6 @@ mod tests {
             "focused skips select hint: {}",
             focused[1]
         );
-        assert!(
-            focused[3].contains("ctrl+d delete"),
-            "hint={}",
-            focused[3]
-        );
+        assert!(focused[3].contains("ctrl+d delete"), "hint={}", focused[3]);
     }
 }

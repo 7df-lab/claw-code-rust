@@ -31,6 +31,7 @@ use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event_sender::AppEventSender;
+use crate::bottom_pane::InputMode;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ChatWidgetInit;
 use crate::chatwidget::ReasoningEffortListEntry;
@@ -65,6 +66,8 @@ fn widget_with_model_and_reasoning_effort(
         initial_reasoning_effort_selection,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -105,6 +108,8 @@ fn onboarding_widget_with_model(
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -141,6 +146,8 @@ fn onboarding_widget_with_available_model_and_exit_after_onboarding(
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -716,6 +723,7 @@ fn session_switched_clears_resume_blocking_state() {
         loaded_item_count: 0,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -1157,7 +1165,7 @@ fn approval_request_bottom_pane_menu_denies_with_n_shortcut() {
 }
 
 #[test]
-fn submitted_prompt_requests_on_request_approval_policy() {
+fn submitted_prompt_omits_approval_policy() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
@@ -1174,7 +1182,8 @@ fn submitted_prompt_requests_on_request_approval_policy() {
     else {
         panic!("expected user turn command");
     };
-    assert_eq!(approval_policy, Some("on-request".to_string()));
+    // None keeps the server's session permission mode (do not force Interactive).
+    assert_eq!(approval_policy, None);
 }
 
 /// Trace: L2-DES-TUI-003
@@ -1895,8 +1904,8 @@ fn permissions_command_opens_bottom_pane_picker_and_updates_default() {
     let rendered = rendered_rows(&widget, 100, 18).join("\n");
     assert!(rendered.contains("Update Permissions"));
     assert!(rendered.contains("● 1. Default"));
-    assert!(rendered.contains("Auto-review"));
-    assert!(rendered.contains("Full Access"));
+    assert!(rendered.contains("Approve for me"));
+    assert!(rendered.contains("Full-Access"));
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
 
@@ -1905,6 +1914,7 @@ fn permissions_command_opens_bottom_pane_picker_and_updates_default() {
         event,
         AppEvent::Command(AppCommand::UpdatePermissions {
             preset: devo_protocol::PermissionPreset::Default,
+            persist_scope: crate::app_command::PersistScope::Session,
         })
     );
 }
@@ -1961,6 +1971,8 @@ fn permissions_command_marks_initial_project_preset_current() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::FullAccess,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -1978,7 +1990,7 @@ fn permissions_command_marks_initial_project_preset_current() {
     });
 
     let rendered = rendered_rows(&widget, 100, 18).join("\n");
-    assert!(rendered.contains("● 3. Full Access"));
+    assert!(rendered.contains("● 3. Full-Access"));
 }
 
 #[test]
@@ -2686,7 +2698,7 @@ fn submit_text_emits_user_turn_with_model_and_reasoning_effort() {
             model_binding_id: None,
             reasoning_effort_selection: Some("disabled".to_string()),
             sandbox: None,
-            approval_policy: Some("on-request".to_string()),
+            approval_policy: None,
             collaboration_mode: devo_protocol::CollaborationMode::Build,
         })
     );
@@ -2722,7 +2734,7 @@ fn typed_character_submits_after_paste_burst_flush() {
             model_binding_id: None,
             reasoning_effort_selection: None,
             sandbox: None,
-            approval_policy: Some("on-request".to_string()),
+            approval_policy: None,
             collaboration_mode: devo_protocol::CollaborationMode::Build,
         })
     );
@@ -2833,7 +2845,7 @@ fn key_release_does_not_duplicate_text_input() {
             model_binding_id: None,
             reasoning_effort_selection: None,
             sandbox: None,
-            approval_policy: Some("on-request".to_string()),
+            approval_policy: None,
             collaboration_mode: devo_protocol::CollaborationMode::Build,
         })
     );
@@ -3024,6 +3036,7 @@ fn session_switch_restores_plan_mode_and_proposed_plan_actions() {
         loaded_item_count: 1,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Plan,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -3093,6 +3106,7 @@ fn session_switch_restores_plan_turn_summary_label() {
         loaded_item_count: 2,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Plan,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -3170,6 +3184,7 @@ fn session_switch_restores_context_compaction_info_row() {
         loaded_item_count: 3,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -3230,6 +3245,7 @@ fn session_switch_after_implement_stays_in_build_without_plan_actions() {
         loaded_item_count: 2,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -3386,6 +3402,7 @@ fn session_switch_restores_plan_metadata_into_progress() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -3438,6 +3455,7 @@ fn session_switch_restores_explored_metadata_into_history() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -3503,6 +3521,7 @@ fn session_switch_restores_edited_metadata_into_history() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -3576,6 +3595,7 @@ fn session_switch_merges_consecutive_explored_items() {
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -3635,6 +3655,7 @@ fn session_switch_restores_error_via_tool_result_cell_style() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -3718,6 +3739,7 @@ fn rich_session_restore_orders_terminal_error_before_single_failed_footer() {
         loaded_item_count: 4,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -3797,6 +3819,7 @@ fn live_and_resume_error_share_same_rendering_chain() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
     let resume_blob = scrollback_plain_lines(&resume_widget.drain_scrollback_lines(80))
@@ -4471,6 +4494,7 @@ fn session_switch_restores_header_and_spacing_before_user_input() {
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -4561,6 +4585,7 @@ fn restored_user_spacing_matches_live_turn_batch_spacing() {
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
     let restored_rows = scrollback_plain_lines(&restored_widget.drain_scrollback_lines(80));
@@ -4636,6 +4661,7 @@ fn rich_session_switch_restores_user_spacing_before_assistant_response() {
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -6057,6 +6083,7 @@ fn restored_reasoning_text_is_visible_in_transcript() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -6486,6 +6513,8 @@ fn slash_model_opens_model_picker_instead_of_printing_current_model() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -6550,6 +6579,7 @@ fn session_switch_updates_session_identity_projection() {
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -6595,6 +6625,7 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -6675,6 +6706,7 @@ fn session_compacted_updates_context_bar_to_compacted_prompt_estimate() {
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -6725,6 +6757,7 @@ fn usage_updated_keeps_context_bar_on_last_query_not_cumulative_totals() {
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -7916,6 +7949,7 @@ fn session_switch_sets_active_agent_footer_label() {
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -7960,6 +7994,7 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
         loaded_item_count: 0,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
     widget.add_to_history(crate::history_cell::new_info_event(
@@ -7978,6 +8013,8 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
         last_query_total_tokens: 25,
         last_query_input_tokens: 20,
         total_cache_read_tokens: 12,
+        permission_preset: devo_protocol::PermissionPreset::Default,
+        collaboration_mode: devo_protocol::CollaborationMode::Build,
     });
 
     assert_eq!(widget.current_cwd(), initial_cwd.as_path());
@@ -8018,8 +8055,7 @@ fn new_session_prepared_clears_pending_queue() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
 
-    let queue_item_id =
-        devo_protocol::canonical::ids::QueueItemId::from_string("qit_stale".into());
+    let queue_item_id = devo_protocol::canonical::ids::QueueItemId::from_string("qit_stale".into());
     widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
         change: devo_protocol::canonical::queue::QueueChange::Added,
         queue_item_id: queue_item_id.clone(),
@@ -8046,11 +8082,175 @@ fn new_session_prepared_clears_pending_queue() {
         last_query_total_tokens: 0,
         last_query_input_tokens: 0,
         total_cache_read_tokens: 0,
+        permission_preset: devo_protocol::PermissionPreset::Default,
+        collaboration_mode: devo_protocol::CollaborationMode::Build,
     });
 
     assert!(
         !widget.bottom_pane_has_pending_for_test(),
         "new session should clear the previous session queue UI"
+    );
+}
+
+#[test]
+fn new_session_prepared_restores_default_compaction_limit() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        context_window: 200_000,
+        effective_context_window_percent: Some(95),
+        ..Model::default()
+    };
+    let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = ChatWidget::new_with_app_event(ChatWidgetInit {
+        frame_requester: FrameRequester::test_dummy(),
+        app_event_tx: AppEventSender::new(app_event_tx),
+        initial_session: TuiSessionState::new(cwd.clone(), Some(model)),
+        initial_reasoning_effort_selection: None,
+        initial_permission_preset: devo_protocol::PermissionPreset::Default,
+        initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: Some(100_000),
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
+        initial_user_message: None,
+        enhanced_keys_supported: true,
+        is_first_run: false,
+        available_models: Vec::new(),
+        saved_models: Vec::new(),
+        show_model_onboarding: false,
+        exit_after_onboarding: false,
+        startup_tooltip_override: None,
+        initial_theme_name: None,
+        initial_collapse_reasoning: false,
+    });
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-1".to_string(),
+        cwd: cwd.clone(),
+        title: Some("Resumed".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: Vec::new(),
+        rich_history_items: Vec::new(),
+        loaded_item_count: 0,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: Some(50_000),
+    });
+    assert!(
+        widget.status_summary_text().contains("50.0k"),
+        "session override should use 50K compaction threshold: {}",
+        widget.status_summary_text()
+    );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::NewSessionPrepared {
+        cwd,
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        permission_preset: devo_protocol::PermissionPreset::Default,
+        collaboration_mode: devo_protocol::CollaborationMode::Build,
+        active_agent_label: None,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        total_cache_read_tokens: 0,
+    });
+    assert!(
+        widget.status_summary_text().contains("100.0k"),
+        "new session should restore the default 100K compaction threshold: {}",
+        widget.status_summary_text()
+    );
+}
+
+#[test]
+fn new_session_prepared_restores_default_permissions_and_mode() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = ChatWidget::new_with_app_event(ChatWidgetInit {
+        frame_requester: FrameRequester::test_dummy(),
+        app_event_tx: AppEventSender::new(app_event_tx),
+        initial_session: TuiSessionState::new(cwd.clone(), Some(model)),
+        initial_reasoning_effort_selection: None,
+        initial_permission_preset: PermissionPreset::Default,
+        initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: CollaborationMode::Plan,
+        initial_user_message: None,
+        enhanced_keys_supported: true,
+        is_first_run: false,
+        available_models: Vec::new(),
+        saved_models: Vec::new(),
+        show_model_onboarding: false,
+        exit_after_onboarding: false,
+        startup_tooltip_override: None,
+        initial_theme_name: None,
+        initial_collapse_reasoning: false,
+    });
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-1".to_string(),
+        cwd: cwd.clone(),
+        title: Some("Resumed".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: Vec::new(),
+        rich_history_items: Vec::new(),
+        loaded_item_count: 0,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: Some(PermissionPreset::FullAccess),
+        effective_context_window: None,
+    });
+    assert_eq!(widget.input_mode_for_test(), InputMode::Build);
+    assert_eq!(
+        widget.permission_preset_for_test(),
+        PermissionPreset::FullAccess
+    );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::NewSessionPrepared {
+        cwd,
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        permission_preset: PermissionPreset::Default,
+        collaboration_mode: CollaborationMode::Plan,
+        active_agent_label: None,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        total_cache_read_tokens: 0,
+    });
+    assert_eq!(widget.input_mode_for_test(), InputMode::Plan);
+    assert_eq!(
+        widget.permission_preset_for_test(),
+        PermissionPreset::Default
     );
 }
 
@@ -8075,6 +8275,8 @@ fn new_session_prepared_does_not_duplicate_startup_header_without_history() {
         last_query_total_tokens: 10,
         last_query_input_tokens: 10,
         total_cache_read_tokens: 4,
+        permission_preset: devo_protocol::PermissionPreset::Default,
+        collaboration_mode: devo_protocol::CollaborationMode::Build,
     });
 
     let rows = rendered_rows(&widget, 80, 16);
@@ -8108,6 +8310,8 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -8139,6 +8343,7 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
             reasoning_effort_selection: Some(Some("high".to_string())),
             sandbox: None,
             approval_policy: None,
+            persist_scope: crate::app_command::PersistScope::Session,
         })
     );
     assert_eq!(
@@ -8153,7 +8358,7 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
             model_binding_id: None,
             reasoning_effort_selection: Some("high".to_string()),
             sandbox: None,
-            approval_policy: Some("on-request".to_string()),
+            approval_policy: None,
             collaboration_mode: devo_protocol::CollaborationMode::Build,
         })
     );
@@ -8188,6 +8393,8 @@ fn model_selection_with_reasoning_effort_support_applies_default_immediately() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -8215,6 +8422,7 @@ fn model_selection_with_reasoning_effort_support_applies_default_immediately() {
             reasoning_effort_selection: Some(Some("high".to_string())),
             sandbox: None,
             approval_policy: None,
+            persist_scope: crate::app_command::PersistScope::Session,
         })
     );
 }
@@ -8241,6 +8449,8 @@ fn model_selection_without_reasoning_effort_support_finishes_immediately() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -8268,6 +8478,7 @@ fn model_selection_without_reasoning_effort_support_finishes_immediately() {
             reasoning_effort_selection: Some(None),
             sandbox: None,
             approval_policy: None,
+            persist_scope: crate::app_command::PersistScope::Session,
         })
     );
 }
@@ -8500,6 +8711,8 @@ fn collapsed_reasoning_live_view_keeps_only_latest_lines() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -8567,6 +8780,8 @@ fn collapsed_reasoning_live_view_caps_wrapped_visual_rows() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -8651,6 +8866,8 @@ fn collapsed_short_reasoning_stays_full_after_completion() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -8703,6 +8920,8 @@ fn collapsed_wrapping_reasoning_compacts_after_completion() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -8763,6 +8982,8 @@ fn collapsed_long_reasoning_compacts_to_one_line_after_completion() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -9235,6 +9456,7 @@ fn restored_session_transcript_overlay_preserves_paired_tool_io() {
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -9303,6 +9525,7 @@ fn legacy_restored_session_without_tool_io_keeps_existing_tool_result_rendering(
         loaded_item_count: 2,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -10571,6 +10794,7 @@ fn session_switch_without_rich_edited_metadata_degrades_to_tool_result_path() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -10628,6 +10852,7 @@ fn session_switch_restores_added_file_content_in_edited_block() {
         loaded_item_count: 1,
         pending_texts: Vec::new(),
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 
@@ -10685,6 +10910,7 @@ fn session_switch_without_rich_edited_metadata_still_restores_edited_block() {
         loaded_item_count: 1,
         pending_texts: vec![],
         collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
         effective_context_window: None,
     });
 

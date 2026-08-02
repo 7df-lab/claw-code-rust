@@ -181,6 +181,8 @@ impl RolloutStore {
             parent_session_id,
             session_context: None,
             latest_turn_context: None,
+            collaboration_mode: None,
+            permission_preset: None,
             schema_version: 2,
         }
     }
@@ -1339,6 +1341,29 @@ impl ReplayState {
         if let Some(latest_turn_context) = core_session.latest_turn_context.as_ref() {
             core_session.collaboration_mode = latest_turn_context.collaboration_mode;
         }
+        if let Some(mode) = record.collaboration_mode {
+            core_session.collaboration_mode = mode;
+        }
+        if let Some(preset) = record.permission_preset {
+            let safety_preset = match preset {
+                devo_protocol::PermissionPreset::Default => devo_safety::PermissionPreset::Default,
+                devo_protocol::PermissionPreset::AutoReview => {
+                    devo_safety::PermissionPreset::AutoReview
+                }
+                devo_protocol::PermissionPreset::FullAccess => {
+                    devo_safety::PermissionPreset::FullAccess
+                }
+            };
+            let profile = devo_safety::RuntimePermissionProfile::from_preset(
+                safety_preset,
+                record.cwd.clone(),
+            )
+            .with_additional_roots(record.additional_directories.clone());
+            let sandbox = Some(profile.implied_sandbox_profile().to_string());
+            core_session.config.permission_mode = profile.permission_mode();
+            core_session.config.permission_profile = profile;
+            core_session.config.sandbox_profile = sandbox;
+        }
         core_session.turn_count = self.turns_seen as usize;
         core_session.total_input_tokens = self.total_input_tokens;
         core_session.total_output_tokens = self.total_output_tokens;
@@ -1470,6 +1495,7 @@ impl ReplayState {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: core_session.collaboration_mode,
             effective_context_window: Some(applied_compaction_limit),
+            permission_preset: record.permission_preset,
         };
 
         let config = core_session.config.clone();
@@ -2263,13 +2289,18 @@ pub(crate) fn session_metadata_from_record(
         last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: record
-            .latest_turn_context
-            .as_ref()
-            .map(|context| context.collaboration_mode)
+            .collaboration_mode
+            .or_else(|| {
+                record
+                    .latest_turn_context
+                    .as_ref()
+                    .map(|context| context.collaboration_mode)
+            })
             .unwrap_or_default(),
         // Do not revive legacy session-record overrides. Applied window comes
         // from AppConfig when the session is hydrated into a RuntimeSession.
         effective_context_window: None,
+        permission_preset: record.permission_preset,
     }
 }
 
@@ -3061,6 +3092,7 @@ mod tests {
                 status: SessionRuntimeStatus::Idle,
                 collaboration_mode: Default::default(),
                 effective_context_window: None,
+                permission_preset: None,
             },
             None,
         )
@@ -3455,6 +3487,8 @@ mod tests {
                     parent_session_id: None,
                     session_context: None,
                     latest_turn_context: None,
+                    collaboration_mode: None,
+                    permission_preset: None,
                     schema_version: 2,
                 },
             })))
@@ -3577,6 +3611,8 @@ mod tests {
                     parent_session_id: None,
                     session_context: None,
                     latest_turn_context: None,
+                    collaboration_mode: None,
+                    permission_preset: None,
                     schema_version: 2,
                 },
             })))
@@ -3685,6 +3721,8 @@ mod tests {
                     parent_session_id: None,
                     session_context: None,
                     latest_turn_context: None,
+                    collaboration_mode: None,
+                    permission_preset: None,
                     schema_version: 2,
                 },
             })))

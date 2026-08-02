@@ -190,7 +190,7 @@ impl ChatWidget {
                             implement_model_binding_id.clone(),
                             implement_reasoning.clone(),
                             /*sandbox*/ None,
-                            Some("on-request".to_string()),
+                            /*approval_policy*/ None,
                             CollaborationMode::Build,
                         ),
                     ));
@@ -204,7 +204,7 @@ impl ChatWidget {
                             revise_model_binding_id.clone(),
                             revise_reasoning.clone(),
                             /*sandbox*/ None,
-                            Some("on-request".to_string()),
+                            /*approval_policy*/ None,
                             CollaborationMode::Plan,
                         ),
                     ));

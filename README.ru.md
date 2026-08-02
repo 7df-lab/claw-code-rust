@@ -26,11 +26,11 @@
 ## Скриншоты
 
 <p align="center">
-  <img width="100%" alt="Devo desktop coding agent app показывает беседу по репозиторию, боковую панель проекта и управление моделью" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo terminal TUI coding agent работает в локальном репозитории и показывает модель, контекст и token status" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
 </p>
 
 <p align="center">
-  <img width="100%" alt="Devo terminal TUI coding agent работает в локальном репозитории и показывает модель, контекст и token status" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo desktop coding agent app показывает беседу по репозиторию, боковую панель проекта и управление моделью" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
 </p>
 
 ## Почему Devo

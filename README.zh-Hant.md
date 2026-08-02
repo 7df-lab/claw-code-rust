@@ -26,11 +26,11 @@
 ## 截圖
 
 <p align="center">
-  <img width="100%" alt="Devo desktop coding agent app 展示儲存庫對話、專案側邊欄和模型控制" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo 終端機 TUI coding agent 在本地儲存庫中顯示模型、上下文和 token 狀態" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
 </p>
 
 <p align="center">
-  <img width="100%" alt="Devo 終端機 TUI coding agent 在本地儲存庫中顯示模型、上下文和 token 狀態" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo desktop coding agent app 展示儲存庫對話、專案側邊欄和模型控制" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
 </p>
 
 ## 為什麼選擇 Devo

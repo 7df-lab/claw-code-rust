@@ -1,5 +1,6 @@
 //! Composer-adjacent pending input queue (canonical `session/queue/*`).
 
+use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -10,6 +11,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
+use crate::key_hint;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::queue_ops::queue_render_preview;
 use crate::render::renderable::Renderable;
@@ -150,9 +152,13 @@ impl Renderable for PendingQueueList<'_> {
         }
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(""));
-        lines.push(Line::from(
-            format!("  queued ({})", self.state.items.len()).dim(),
-        ));
+        if !self.state.focused {
+            lines.push(Line::from(vec![
+                "  ".into(),
+                key_hint::plain(KeyCode::Down).into(),
+                " to select".dim(),
+            ]));
+        }
         for (idx, item) in self.state.items.iter().enumerate() {
             let selected = self.state.focused && self.state.selected == Some(idx);
             let preview = queue_render_preview(&item.text);
@@ -191,9 +197,10 @@ impl Renderable for PendingQueueList<'_> {
             return 0;
         }
         let _ = width;
-        // blank + header + one row per item + optional focus hint
-        let hint = if self.state.focused { 1 } else { 0 };
-        (2 + self.state.items.len() + hint) as u16
+        // blank + optional select hint + one row per item + optional focus hint
+        let select_hint = if self.state.focused { 0 } else { 1 };
+        let focus_hint = if self.state.focused { 1 } else { 0 };
+        (1 + select_hint + self.state.items.len() + focus_hint) as u16
     }
 }
 
@@ -246,7 +253,10 @@ mod tests {
         let header: String = (0..40)
             .map(|x| buf[(x, 1)].symbol().to_string())
             .collect::<String>();
-        assert!(header.contains("queued (1)"), "header={header}");
+        assert!(
+            header.contains("↓") && header.contains("to select"),
+            "header={header}"
+        );
         let row: String = (0..40)
             .map(|x| buf[(x, 2)].symbol().to_string())
             .collect::<String>();
@@ -255,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_queue_header_counts_items_and_shows_focus_hint() {
+    fn pending_queue_header_shows_down_select_hint_until_focused() {
         let mut state = PendingQueueState::default();
         state.replace_items(vec![
             PendingQueueItem {
@@ -267,27 +277,55 @@ mod tests {
                 text: "second".into(),
             },
         ]);
-        assert!(state.focus_first());
         let list = PendingQueueList::new(&state);
-        assert_eq!(list.desired_height(/*width*/ 60), 5);
+        assert_eq!(list.desired_height(/*width*/ 60), 4);
 
-        let area = Rect::new(0, 0, 60, 5);
+        let area = Rect::new(0, 0, 60, 4);
         let mut buf = Buffer::empty(area);
         list.render(area, &mut buf);
-        let rendered: Vec<String> = (0..5)
+        let rendered: Vec<String> = (0..4)
             .map(|y| {
                 (0..60)
                     .map(|x| buf[(x, y)].symbol().to_string())
                     .collect::<String>()
             })
             .collect();
-        assert!(rendered[1].contains("queued (2)"), "header={}", rendered[1]);
+        assert!(
+            rendered[1].contains("↓") && rendered[1].contains("to select"),
+            "header={}",
+            rendered[1]
+        );
+        assert!(
+            !rendered[1].contains("queued"),
+            "header should not show count: {}",
+            rendered[1]
+        );
         assert!(rendered[2].contains("1 › first"), "row={}", rendered[2]);
         assert!(rendered[3].contains("2 › second"), "row={}", rendered[3]);
+
+        assert!(state.focus_first());
+        let list = PendingQueueList::new(&state);
+        assert_eq!(list.desired_height(/*width*/ 60), 4);
+
+        let area = Rect::new(0, 0, 60, 4);
+        let mut buf = Buffer::empty(area);
+        list.render(area, &mut buf);
+        let focused: Vec<String> = (0..4)
+            .map(|y| {
+                (0..60)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect();
         assert!(
-            rendered[4].contains("ctrl+d delete"),
+            focused[1].contains("1 › first"),
+            "focused skips select hint: {}",
+            focused[1]
+        );
+        assert!(
+            focused[3].contains("ctrl+d delete"),
             "hint={}",
-            rendered[4]
+            focused[3]
         );
     }
 }

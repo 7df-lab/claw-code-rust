@@ -1286,9 +1286,11 @@ impl ChatWidget {
                 self.active_text_items.clear();
                 self.committed_server_assistant_in_turn = false;
                 self.current_turn_mode = InputMode::Build;
+                self.queued_count = 0;
                 self.queued_input_modes.clear();
                 self.promoted_input_modes.clear();
                 self.editing_queue_item_id = None;
+                self.bottom_pane.clear_pending_cells();
                 self.stream_chunking_policy.reset();
                 self.busy = false;
                 self.turn_count = 0;

@@ -8009,6 +8009,52 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
 }
 
 #[test]
+fn new_session_prepared_clears_pending_queue() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
+
+    let queue_item_id =
+        devo_protocol::canonical::ids::QueueItemId::from_string("qit_stale".into());
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Added,
+        queue_item_id: queue_item_id.clone(),
+        started_turn_id: None,
+        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+            queue_item_id,
+            position: 1,
+            input: vec![devo_protocol::canonical::item::UserInput::Text {
+                text: "stale queued".to_string(),
+            }],
+            preview: "stale queued".to_string(),
+            enqueued_at: chrono::Utc::now(),
+        }],
+    });
+    assert!(widget.bottom_pane_has_pending_for_test());
+
+    widget.handle_worker_event(crate::events::WorkerEvent::NewSessionPrepared {
+        cwd,
+        model: "new-session-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        total_cache_read_tokens: 0,
+    });
+
+    assert!(
+        !widget.bottom_pane_has_pending_for_test(),
+        "new session should clear the previous session queue UI"
+    );
+}
+
+#[test]
 fn new_session_prepared_does_not_duplicate_startup_header_without_history() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {

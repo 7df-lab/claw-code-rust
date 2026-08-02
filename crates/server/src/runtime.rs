@@ -1,20 +1,17 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use chrono::Utc;
-use futures::FutureExt;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use devo_core::CommandExecutionItem;
 use devo_core::ItemId;
 use devo_core::Message;
 use devo_core::ResponseItem;
@@ -23,8 +20,6 @@ use devo_core::SessionTitleFinalSource;
 use devo_core::SessionTitleState;
 use devo_core::TextItem;
 use devo_core::TokenInfo;
-use devo_core::ToolCallItem;
-use devo_core::ToolResultItem;
 use devo_core::TurnId;
 use devo_core::TurnItem;
 use devo_core::TurnStatus;
@@ -71,8 +66,10 @@ use crate::RequestUserInputResponse;
 use crate::ServerEvent;
 use crate::ServerRequestResolvedPayload;
 use crate::SessionCompactParams;
-use crate::SessionCompactResult;
 use crate::SessionCompactionFailedPayload;
+use crate::SessionCompactionUpdateParams;
+use crate::SessionCompactionUpdateResult;
+use crate::SessionEffectiveContextWindowUpdatedPayload;
 use crate::SessionEventPayload;
 use crate::SessionForkParams;
 use crate::SessionForkResult;
@@ -103,8 +100,6 @@ use crate::TurnInterruptResult;
 use crate::TurnMetadata;
 use crate::TurnStartParams;
 use crate::TurnStartResult;
-use crate::TurnSteerParams;
-use crate::TurnSteerResult;
 use crate::TurnUsageUpdatedPayload;
 use crate::approval_reviewer::ReviewerDecision;
 use crate::approval_reviewer::build_approval_review_request;
@@ -136,7 +131,16 @@ mod active_turn;
 mod agents;
 mod approval;
 mod command_exec;
+mod compaction_persist;
+pub(crate) use compaction_persist::CompactionSummaryPersist;
+pub(crate) use compaction_persist::append_compaction_summary_and_snapshot;
+pub(crate) use compaction_persist::build_compaction_snapshot_line;
+pub(crate) use compaction_persist::compaction_persisted_turn_item;
+pub(crate) use compaction_persist::preserved_item_ids_from_compacted;
+pub(crate) use compaction_persist::summary_turn_item_from_compacted;
 mod connection;
+pub(crate) mod context_occupancy;
+mod context_usage;
 mod control_requests;
 mod goal_accounting;
 mod goal_continuation;
@@ -252,14 +256,14 @@ pub(crate) enum TurnInputMode {
 const TERMINAL_TURN_STATUS_LIMIT: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TerminalTurnSnapshot {
-    status: TurnStatus,
-    stop_reason: Option<devo_core::StopReason>,
-    failure_reason: Option<devo_protocol::TurnFailureReason>,
+pub(crate) struct TerminalTurnSnapshot {
+    pub(crate) status: TurnStatus,
+    pub(crate) stop_reason: Option<devo_core::StopReason>,
+    pub(crate) failure_reason: Option<devo_protocol::TurnFailureReason>,
 }
 
 impl TerminalTurnSnapshot {
-    fn from_turn(turn: &TurnMetadata) -> Self {
+    pub(crate) fn from_turn(turn: &TurnMetadata) -> Self {
         Self {
             status: turn.status.clone(),
             stop_reason: turn.stop_reason.clone(),
@@ -416,7 +420,7 @@ impl ServerRuntime {
 fn permission_mode_from_approval_policy(policy: &str) -> Option<PermissionMode> {
     match policy {
         "on-request" | "interactive" | "ask" => Some(PermissionMode::Interactive),
-        "never" | "auto" | "auto-approve" => Some(PermissionMode::AutoApprove),
+        "never" | "auto" | "auto-approve" | "yolo" => Some(PermissionMode::Yolo),
         "deny" => Some(PermissionMode::Deny),
         _ => None,
     }
@@ -442,5 +446,15 @@ fn protocol_reviewer_from_safety(
     match reviewer {
         devo_safety::ApprovalsReviewer::User => devo_protocol::ApprovalsReviewer::User,
         devo_safety::ApprovalsReviewer::AutoReview => devo_protocol::ApprovalsReviewer::AutoReview,
+    }
+}
+
+pub(crate) fn protocol_preset_from_safety(
+    preset: devo_safety::PermissionPreset,
+) -> devo_protocol::PermissionPreset {
+    match preset {
+        devo_safety::PermissionPreset::Default => devo_protocol::PermissionPreset::Default,
+        devo_safety::PermissionPreset::AutoReview => devo_protocol::PermissionPreset::AutoReview,
+        devo_safety::PermissionPreset::FullAccess => devo_protocol::PermissionPreset::FullAccess,
     }
 }

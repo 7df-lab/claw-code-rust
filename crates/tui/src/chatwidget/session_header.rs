@@ -5,16 +5,19 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use devo_protocol::Model;
 use devo_protocol::ProviderWireApi;
+use devo_util_git::current_branch_name;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 
+use crate::app_event::AppEvent;
 use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::startup_header::STARTUP_HEADER_ANIMATION_INTERVAL;
@@ -23,6 +26,7 @@ use crate::ui_consts::REASONING_ACCENT_COLOR;
 
 use super::ChatWidget;
 use super::DotStatus;
+use super::STATUS_LINE_BRANCH_REFRESH_INTERVAL;
 
 /// Blue used for the pending-state dot prefix.
 pub(super) const PENDING_DOT_COLOR: Color = Color::Rgb(110, 200, 255);
@@ -240,20 +244,39 @@ impl ChatWidget {
 
     /// Context length for the status bar.
     ///
-    /// Uses the latest completed query's display total (`input_tokens +
-    /// output_tokens`, or provider `total_tokens` when available). This is
-    /// **not** the session cumulative `total_input_tokens`.
+    /// `used` follows the latest query display total from `TurnUsageUpdated` so
+    /// the bar moves mid-turn. The denominator prefers the live session
+    /// effective-context override (Settings › Compaction threshold), then the
+    /// occupancy snapshot window, then the model effective window. Occupancy
+    /// `total_tokens` is only a fallback when no last-query usage has arrived
+    /// yet (for example a hydrate that set occupancy alone).
     pub(super) fn context_usage(&self) -> Option<(usize, usize, usize)> {
-        let model = self.session.model.as_ref()?;
-        let total = model.context_window as usize;
-        let used = self.last_query_total_tokens;
-        let capped_used = used.min(total);
-        let percent = if total == 0 {
+        let total = if let Some(limit) = self.effective_context_window {
+            limit as usize
+        } else if let Some(occupancy) = self.last_context_occupancy.as_ref() {
+            occupancy.context_window_tokens as usize
+        } else {
+            self.session.model.as_ref()?.effective_context_window() as usize
+        };
+        let used = if self.last_query_total_tokens > 0 {
+            self.last_query_total_tokens
+        } else if let Some(occupancy) = self.last_context_occupancy.as_ref() {
+            occupancy.total_tokens as usize
+        } else {
+            0
+        };
+        let percent = Self::usage_percent(used, total);
+        Some((used, total, percent))
+    }
+
+    fn usage_percent(used: usize, total: usize) -> usize {
+        if total == 0 {
             0
         } else {
-            capped_used.saturating_mul(100) / total
-        };
-        Some((used, total, percent))
+            ((used as f64 / total as f64) * 100.0)
+                .clamp(0.0, 100.0)
+                .round() as usize
+        }
     }
 
     pub(super) fn format_compact_token_count(value: usize) -> String {
@@ -267,7 +290,7 @@ impl ChatWidget {
             write!(rendered, "{:.1}M", value as f64 / 1_000_000.0)
                 .expect("writing to String should not fail");
         } else if value >= 1_000 {
-            write!(rendered, "{:.0}k", value as f64 / 1_000.0)
+            write!(rendered, "{:.1}k", value as f64 / 1_000.0)
                 .expect("writing to String should not fail");
         } else {
             write!(rendered, "{value}").expect("writing to String should not fail");
@@ -297,47 +320,35 @@ impl ChatWidget {
         write!(rendered, " {pct}%").expect("writing to String should not fail");
     }
 
-    pub(super) fn percent_of(numerator: usize, denominator: usize) -> usize {
-        if denominator == 0 {
-            0
-        } else {
-            (numerator.saturating_mul(100) + denominator / 2) / denominator
-        }
-    }
-
     pub(super) fn session_summary_text(&self) -> String {
         self.session_summary_text_with_context(/*include_context*/ true)
     }
 
     fn session_summary_text_with_context(&self, include_context: bool) -> String {
         let model = self.model_display_name();
-        let reasoning_effort_selection = self
-            .display_reasoning_effort_selection()
-            .unwrap_or_else(|| "default".to_string());
-        let cached_input_percent =
-            Self::percent_of(self.total_cache_read_tokens, self.total_input_tokens);
-
-        let mut summary =
-            String::with_capacity(model.len() + reasoning_effort_selection.len() + 96);
+        let mut summary = String::with_capacity(model.len().saturating_add(64));
         summary.push_str(model);
-        summary.push(' ');
-        summary.push_str(&reasoning_effort_selection);
-        summary.push_str("  ↑");
-        Self::push_compact_token_count(&mut summary, self.total_input_tokens);
-        summary.push_str("  (cached ");
-        Self::push_compact_token_count(&mut summary, self.total_cache_read_tokens);
-        write!(summary, " {cached_input_percent}%)  ↓").expect("writing to String should not fail");
-        Self::push_compact_token_count(&mut summary, self.total_output_tokens);
+        if let Some(branch) = self.status_line_branch.as_deref() {
+            summary.push_str(" · ");
+            summary.push_str(branch);
+        }
 
-        if include_context && let Some((used, total, _percent)) = self.context_usage() {
+        if include_context && let Some(context) = self.session_context_summary_text() {
             summary.push_str("  ");
-            Self::push_progress_bar(&mut summary, used, total, 10);
-            summary.push(' ');
-            Self::push_compact_token_count(&mut summary, used);
-            summary.push('/');
-            Self::push_compact_token_count(&mut summary, total);
+            summary.push_str(&context);
         }
         summary
+    }
+
+    fn session_context_summary_text(&self) -> Option<String> {
+        let (used, total, _percent) = self.context_usage()?;
+        let mut context = String::with_capacity(48);
+        Self::push_progress_bar(&mut context, used, total, 10);
+        context.push(' ');
+        Self::push_compact_token_count(&mut context, used);
+        context.push('/');
+        Self::push_compact_token_count(&mut context, total);
+        Some(context)
     }
 
     pub(super) fn model_display_name(&self) -> &str {
@@ -354,11 +365,80 @@ impl ChatWidget {
     }
 
     pub(super) fn sync_bottom_pane_summary(&mut self) {
-        let summary =
-            self.session_summary_text_with_context(self.session.active_agent_label.is_none());
+        // Left: mode · model · branch. Right: context meter (right-aligned).
+        let summary = self.session_summary_text_with_context(/*include_context*/ false);
         self.bottom_pane
             .set_status_line(Some(Line::from(summary).dim()));
         self.bottom_pane.set_status_line_enabled(true);
+        let context_label = if self.session.active_agent_label.is_none() {
+            self.session_context_summary_text()
+        } else {
+            None
+        };
+        self.bottom_pane.set_context_window_label(context_label);
+    }
+
+    fn status_line_cwd(&self) -> &Path {
+        self.session.cwd.as_path()
+    }
+
+    /// Forces a git-branch refresh for the footer status line.
+    pub(super) fn request_status_line_branch_refresh(&mut self) {
+        let cwd = self.status_line_cwd().to_path_buf();
+        if self
+            .status_line_branch_cwd
+            .as_ref()
+            .is_none_or(|path| path != &cwd)
+        {
+            self.status_line_branch_cwd = Some(cwd.clone());
+            self.status_line_branch = None;
+            self.status_line_branch_pending = false;
+        }
+        self.request_status_line_branch(cwd);
+    }
+
+    /// Light periodic refresh so external `git checkout` stays visible.
+    pub(super) fn maybe_refresh_status_line_branch(&mut self) {
+        let now = Instant::now();
+        if now < self.status_line_branch_next_refresh_at {
+            return;
+        }
+        self.status_line_branch_next_refresh_at = now + STATUS_LINE_BRANCH_REFRESH_INTERVAL;
+        self.request_status_line_branch_refresh();
+    }
+
+    fn request_status_line_branch(&mut self, cwd: PathBuf) {
+        if self.status_line_branch_pending {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            // Unit tests construct widgets without a Tokio runtime.
+            return;
+        };
+        self.status_line_branch_pending = true;
+        let tx = self.app_event_tx.clone();
+        handle.spawn(async move {
+            let branch = current_branch_name(&cwd).await;
+            tx.send(AppEvent::StatusLineBranchUpdated { cwd, branch });
+        });
+    }
+
+    pub(super) fn apply_status_line_branch_update(&mut self, cwd: PathBuf, branch: Option<String>) {
+        if self
+            .status_line_branch_cwd
+            .as_ref()
+            .is_some_and(|path| path != &cwd)
+        {
+            // Stale completion after a cwd change.
+            return;
+        }
+        self.status_line_branch_pending = false;
+        self.status_line_branch_cwd = Some(cwd);
+        if self.status_line_branch == branch {
+            return;
+        }
+        self.status_line_branch = branch;
+        self.sync_bottom_pane_summary();
     }
 
     pub(super) fn push_session_header(
@@ -517,7 +597,8 @@ impl ChatWidget {
     }
 
     /// Completed reasoning uses a muted style so finished Thought cells read as
-    /// settled history, while the live "Thinking" cell keeps the accent color.
+    /// settled history, while the live "Thinking" heading keeps the accent color
+    /// and the live body stays dim.
     pub(super) fn reasoning_completed_heading_style() -> Style {
         Style::default().dim().italic()
     }
@@ -543,14 +624,15 @@ impl ChatWidget {
 
 #[cfg(test)]
 mod tests {
+    use std::hint::black_box;
     use std::path::PathBuf;
     use std::time::Instant;
 
     use devo_protocol::PermissionPreset;
     use devo_protocol::ReasoningCapability;
     use devo_protocol::ReasoningEffort;
+    use devo_protocol::canonical::item::ContextOccupancy;
     use pretty_assertions::assert_eq;
-    use std::hint::black_box;
     use tokio::sync::mpsc;
 
     use crate::app_event_sender::AppEventSender;
@@ -576,6 +658,8 @@ mod tests {
             initial_reasoning_effort_selection: None,
             initial_permission_preset: PermissionPreset::Default,
             initial_sandbox_profile: Some("workspace".to_string()),
+            initial_compaction_token_limit: None,
+            initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
             initial_user_message: None,
             enhanced_keys_supported: true,
             is_first_run: false,
@@ -615,6 +699,8 @@ mod tests {
             initial_reasoning_effort_selection: None,
             initial_permission_preset: PermissionPreset::Default,
             initial_sandbox_profile: Some("workspace".to_string()),
+            initial_compaction_token_limit: None,
+            initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
             initial_user_message: None,
             enhanced_keys_supported: true,
             is_first_run: false,
@@ -629,8 +715,9 @@ mod tests {
 
         let summary = widget.status_summary_text();
 
+        assert_eq!(summary.contains("high"), false);
         assert_eq!(summary.contains("default"), false);
-        assert_eq!(summary.starts_with("deepseek-v4-flash high"), true);
+        assert_eq!(summary.starts_with("deepseek-v4-flash"), true);
     }
 
     #[test]
@@ -639,7 +726,22 @@ mod tests {
 
         assert_eq!(
             widget.status_summary_text(),
-            "Test Model default  ↑124k  (cached 82k 66%)  ↓10k  ▰▰▰▰▰▰▰▰▱▱ 79% 157k/200k"
+            "Test Model  ▰▰▰▰▰▰▰▰▱▱ 83% 157.0k/190.0k"
+        );
+    }
+
+    #[test]
+    fn session_summary_text_includes_git_branch_before_context() {
+        let mut widget = widget_for_summary_bench();
+        widget.status_line_branch = Some("feat/status-bar".to_string());
+
+        assert_eq!(
+            widget.status_summary_text(),
+            "Test Model · feat/status-bar  ▰▰▰▰▰▰▰▰▱▱ 83% 157.0k/190.0k"
+        );
+        assert_eq!(
+            widget.session_summary_text_with_context(/*include_context*/ false),
+            "Test Model · feat/status-bar"
         );
     }
 
@@ -649,7 +751,88 @@ mod tests {
         widget.last_query_input_tokens = 7;
         widget.last_query_total_tokens = 9;
 
-        assert_eq!(widget.context_usage(), Some((9, 200_000, 0)));
+        assert_eq!(widget.context_usage(), Some((9, 190_000, 0)));
+    }
+
+    #[test]
+    fn context_usage_uses_last_query_with_occupancy_window() {
+        let mut widget = widget_for_summary_bench();
+        widget.last_query_total_tokens = 99_000;
+        widget.last_context_occupancy = Some(ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 996_147, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 6_700,
+        ));
+
+        // Mid-turn TurnUsageUpdated advances last_query while occupancy lags
+        // until turn finalize; the status bar must follow last_query.
+        assert_eq!(widget.context_usage(), Some((99_000, 996_147, 10)));
+        assert_eq!(
+            widget.status_summary_text(),
+            "Test Model  ▰▱▱▱▱▱▱▱▱▱ 10% 99.0k/996.1k"
+        );
+    }
+
+    #[test]
+    fn context_usage_prefers_session_effective_window_over_occupancy() {
+        let mut widget = widget_for_summary_bench();
+        widget.last_query_total_tokens = 50_000;
+        widget.last_context_occupancy = Some(ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 996_147, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
+        ));
+        widget.effective_context_window = Some(250_000);
+
+        assert_eq!(widget.context_usage(), Some((50_000, 250_000, 20)));
+        assert!(widget.status_summary_text().contains("50.0k/250.0k"));
+    }
+
+    #[test]
+    fn effective_context_window_update_rewrites_occupancy_and_status_bar() {
+        let mut widget = widget_for_summary_bench();
+        widget.last_query_total_tokens = 50_000;
+        widget.last_context_occupancy = Some(ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 996_147, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
+        ));
+
+        assert_eq!(widget.context_usage(), Some((50_000, 996_147, 5)));
+
+        widget.note_effective_context_window_updated(250_000);
+
+        assert_eq!(widget.effective_context_window, Some(250_000));
+        assert_eq!(
+            widget
+                .last_context_occupancy
+                .as_ref()
+                .map(|o| o.context_window_tokens),
+            Some(250_000)
+        );
+        assert_eq!(widget.context_usage(), Some((50_000, 250_000, 20)));
+        assert!(widget.status_summary_text().contains("50.0k/250.0k"));
+    }
+
+    #[test]
+    fn usage_updated_moves_context_bar_even_when_occupancy_is_stale() {
+        let mut widget = widget_for_summary_bench();
+        widget.last_query_total_tokens = 16_700;
+        widget.last_context_occupancy = Some(ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 190_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 6_700,
+        ));
+        assert_eq!(widget.context_usage(), Some((16_700, 190_000, 9)));
+
+        widget.handle_worker_event(crate::events::WorkerEvent::UsageUpdated {
+            total_input_tokens: 550,
+            total_output_tokens: 110,
+            total_tokens: 660,
+            total_cache_read_tokens: 60,
+            last_query_total_tokens: 48_000,
+            last_query_input_tokens: 40_000,
+        });
+
+        assert_eq!(widget.last_query_total_tokens, 48_000);
+        assert_eq!(widget.context_usage(), Some((48_000, 190_000, 25)));
+        assert!(widget.status_summary_text().contains("48.0k/190.0k"));
     }
 
     #[test]
@@ -673,7 +856,7 @@ mod tests {
         assert_eq!(widget.last_query_total_tokens, 48);
         assert_eq!(widget.last_query_input_tokens, 35);
         assert_eq!(widget.prompt_token_estimate, 35);
-        assert_eq!(widget.context_usage(), Some((48, 200_000, 0)));
+        assert_eq!(widget.context_usage(), Some((48, 190_000, 0)));
     }
 
     #[test]

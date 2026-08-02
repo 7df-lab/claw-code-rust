@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::time::Instant;
 
 use devo_core::ItemId;
@@ -88,7 +89,6 @@ mod worker_events;
 use self::permission_presets::permission_preset_items;
 use self::permission_presets::permission_preset_label;
 use self::resume_browser::ResumeBrowserState;
-use self::sandbox_profiles::sandbox_profile_label;
 use self::session_header::SessionHeaderParams;
 use self::subagent_monitor::SubagentMonitorState;
 
@@ -109,6 +109,8 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) initial_reasoning_effort_selection: Option<String>,
     pub(crate) initial_permission_preset: devo_protocol::PermissionPreset,
     pub(crate) initial_sandbox_profile: Option<String>,
+    pub(crate) initial_compaction_token_limit: Option<u64>,
+    pub(crate) initial_default_collaboration_mode: devo_protocol::CollaborationMode,
     pub(crate) initial_user_message: Option<UserMessage>,
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) is_first_run: bool,
@@ -221,19 +223,6 @@ enum DotStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PickerMode {
-    Model,
-    ReasoningEffort,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PendingModelSelection {
-    selection: String,
-    display_name: String,
-    reasoning_effort_selection: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingApprovalRequest {
     session_id: devo_protocol::SessionId,
@@ -284,10 +273,10 @@ pub(crate) struct ChatWidget {
     resume_browser_loading: bool,
     resuming_session: bool,
     subagent_monitor: SubagentMonitorState,
-    picker_mode: Option<PickerMode>,
-    pending_model_selection: Option<PendingModelSelection>,
     theme_set: ThemeSet,
     active_theme_name: String,
+    /// Monotonic epoch used to coalesce rapid theme-driven transcript reloads.
+    theme_reload_epoch: u64,
     collapse_reasoning: bool,
     resume_browser_last_height: Cell<u16>,
     turn_count: usize,
@@ -297,10 +286,14 @@ pub(crate) struct ChatWidget {
     prompt_token_estimate: usize,
     last_query_input_tokens: usize,
     last_query_total_tokens: usize,
+    last_context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
     last_plan_progress: Option<(usize, usize)>,
     queued_count: usize,
     queued_input_modes: VecDeque<InputMode>,
     promoted_input_modes: VecDeque<InputMode>,
+    /// Queue item currently loaded into the composer for editing (ctrl+e);
+    /// resubmitting while busy updates it in place instead of pushing a new entry.
+    editing_queue_item_id: Option<String>,
     active_turn_id: Option<TurnId>,
     failed_turn_visually_finalized: bool,
     current_turn_mode: InputMode,
@@ -312,6 +305,14 @@ pub(crate) struct ChatWidget {
     pending_proposed_plan_actions: bool,
     permission_preset: devo_protocol::PermissionPreset,
     sandbox_profile: Option<String>,
+    /// Applied auto-compaction threshold for the active session (clamped to model).
+    effective_context_window: Option<u64>,
+    /// Global default compaction limit from settings/`config.toml` (survives `/new`).
+    default_compaction_token_limit: Option<u64>,
+    /// Global default collaboration mode from settings/`config.toml`.
+    default_collaboration_mode: devo_protocol::CollaborationMode,
+    /// Persist scope for the next model/permissions picker selection.
+    settings_picker_persist_scope: crate::app_command::PersistScope,
     busy: bool,
     selection_mode: bool,
     selected_user_cell_index: Option<usize>,
@@ -327,6 +328,14 @@ pub(crate) struct ChatWidget {
     skills_snapshot: Option<Vec<crate::skills_picker::SkillPickerEntry>>,
     /// After enable/disable, reopen this skill's detail once list refreshes.
     skills_reopen_detail: Option<String>,
+    /// Cached git branch for the footer status line (`None` when unavailable).
+    status_line_branch: Option<String>,
+    /// Cwd used for the last/pending git-branch lookup.
+    status_line_branch_cwd: Option<PathBuf>,
+    /// Whether an async git-branch lookup is currently in flight.
+    status_line_branch_pending: bool,
+    /// Earliest time the next light git-branch refresh may run.
+    status_line_branch_next_refresh_at: Instant,
 }
 
 impl ChatWidget {
@@ -370,6 +379,10 @@ impl ChatWidget {
         true
     }
 
+    pub(crate) fn is_task_running(&self) -> bool {
+        self.bottom_pane.is_task_running()
+    }
+
     #[cfg(test)]
     pub(crate) fn is_resuming_session_for_test(&self) -> bool {
         self.resuming_session
@@ -390,6 +403,16 @@ impl ChatWidget {
     #[cfg(test)]
     pub(crate) fn has_bottom_pane_view_for_test(&self) -> bool {
         self.bottom_pane.has_view_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bottom_pane_has_pending_for_test(&self) -> bool {
+        self.bottom_pane.has_pending_cells()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bottom_pane_mut_for_test(&mut self) -> &mut crate::bottom_pane::BottomPane {
+        &mut self.bottom_pane
     }
 }
 
@@ -418,6 +441,8 @@ impl ChatWidget {
             initial_reasoning_effort_selection,
             initial_permission_preset,
             initial_sandbox_profile,
+            initial_compaction_token_limit,
+            initial_default_collaboration_mode,
             initial_user_message,
             enhanced_keys_supported,
             is_first_run,
@@ -523,10 +548,9 @@ impl ChatWidget {
             resume_browser_loading: false,
             resuming_session: false,
             subagent_monitor: SubagentMonitorState::default(),
-            picker_mode: None,
-            pending_model_selection: None,
             theme_set,
             active_theme_name,
+            theme_reload_epoch: 0,
             collapse_reasoning: initial_collapse_reasoning,
             resume_browser_last_height: Cell::new(0),
             turn_count: 0,
@@ -536,13 +560,17 @@ impl ChatWidget {
             prompt_token_estimate: 0,
             last_query_input_tokens: 0,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             last_plan_progress: None,
             queued_count: 0,
             queued_input_modes: VecDeque::new(),
             promoted_input_modes: VecDeque::new(),
+            editing_queue_item_id: None,
             active_turn_id: None,
             failed_turn_visually_finalized: false,
-            current_turn_mode: InputMode::Build,
+            current_turn_mode: InputMode::from_collaboration_mode(
+                initial_default_collaboration_mode,
+            ),
             committed_server_assistant_in_turn: false,
             boundary_committed_assistant_items: HashSet::new(),
             current_turn_has_user_shell_command: false,
@@ -551,6 +579,10 @@ impl ChatWidget {
             pending_proposed_plan_actions: false,
             permission_preset: initial_permission_preset,
             sandbox_profile: initial_sandbox_profile,
+            effective_context_window: initial_compaction_token_limit,
+            default_compaction_token_limit: initial_compaction_token_limit,
+            default_collaboration_mode: initial_default_collaboration_mode,
+            settings_picker_persist_scope: crate::app_command::PersistScope::Session,
             busy: false,
             selection_mode: false,
             selected_user_cell_index: None,
@@ -562,6 +594,10 @@ impl ChatWidget {
             mcp_reopen_detail: None,
             skills_snapshot: None,
             skills_reopen_detail: None,
+            status_line_branch: None,
+            status_line_branch_cwd: None,
+            status_line_branch_pending: false,
+            status_line_branch_next_refresh_at: Instant::now(),
         };
 
         // Model onboarding can inject additional startup UI before the first frame is drawn.
@@ -580,8 +616,17 @@ impl ChatWidget {
         }
 
         // Keep the bottom pane summary in sync with the assembled widget state.
+        widget
+            .bottom_pane
+            .set_input_mode(InputMode::from_collaboration_mode(
+                initial_default_collaboration_mode,
+            ));
+        widget.request_status_line_branch_refresh();
         widget.sync_bottom_pane_summary();
         widget.maybe_start_subagent_debug_scenario();
         widget
     }
 }
+
+/// How often the footer re-checks the current git branch while the TUI is open.
+pub(super) const STATUS_LINE_BRANCH_REFRESH_INTERVAL: Duration = Duration::from_secs(3);

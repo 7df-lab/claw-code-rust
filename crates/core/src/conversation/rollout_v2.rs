@@ -40,6 +40,12 @@ pub struct SessionPersistenceExtras {
     pub cli_version: String,
     /// The session source kind, such as `cli` or `api` (audit field).
     pub source: String,
+    /// Session-level collaboration mode override (Build/Plan), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_mode: Option<crate::CollaborationMode>,
+    /// Session-level permission preset override, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_preset: Option<crate::PermissionPreset>,
 }
 
 /// Persistence-only extras on the v2 Turn line, same rationale as
@@ -61,6 +67,9 @@ pub struct TurnPersistenceExtras {
     /// Provider usage of the latest model query (excludes tool/retry calls).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_query_usage: Option<crate::TurnUsage>,
+    /// Context-window occupancy after the latest model query in this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
     /// The terminal provider/model stop reason, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<crate::StopReason>,
@@ -137,6 +146,8 @@ pub enum RolloutLineV2 {
         turn_id: TurnId,
         summary_item_id: ItemId,
         preserved_item_ids: Vec<ItemId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
     },
     /// An append-only rollback marker: the retained turns/items after the
     /// in-memory history was rebuilt.

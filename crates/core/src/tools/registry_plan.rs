@@ -44,7 +44,7 @@ impl Default for ToolRegistryPlan {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolPlanConfig {
     pub use_shell_command: bool,
     pub use_unified_exec: bool,

@@ -201,6 +201,7 @@ impl ServerRuntime {
                 );
             }
         }
+        self.deps.invalidate_workspace_contexts();
 
         let server_id = McpServerId(name.to_string());
         let process_context = &self.deps.process_context;

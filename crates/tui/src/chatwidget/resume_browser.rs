@@ -8,6 +8,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -20,15 +21,26 @@ use ratatui::widgets::Wrap;
 
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
+use crate::bottom_pane::HorizontalChipStrip;
 use crate::events::SessionListEntry;
+use crate::key_hint;
+use crate::ui_consts::FOOTER_INDENT_COLS;
+use devo_core::SessionId;
 
 use super::ChatWidget;
+
+const DELETE_CONFIRM_CANCEL: usize = 0;
+const DELETE_CONFIRM_DELETE: usize = 1;
 
 #[derive(Debug, Clone)]
 pub(super) struct ResumeBrowserState {
     pub(super) sessions: Vec<SessionListEntry>,
     pub(super) selection: usize,
     pub(super) scroll_offset: usize,
+    /// When set, the footer shows Cancel/Delete chips for this session.
+    pub(super) pending_delete_session_id: Option<SessionId>,
+    /// Chip selection for the pending delete confirm (default Cancel).
+    pub(super) pending_delete_chips: HorizontalChipStrip,
 }
 
 impl ChatWidget {
@@ -42,8 +54,17 @@ impl ChatWidget {
             sessions,
             selection,
             scroll_offset: 0,
+            pending_delete_session_id: None,
+            pending_delete_chips: Self::new_delete_confirm_chips(),
         });
         self.set_status_message("Resume session");
+    }
+
+    fn new_delete_confirm_chips() -> HorizontalChipStrip {
+        HorizontalChipStrip::new(
+            vec!["Cancel".to_string(), "Delete".to_string()],
+            /*selected*/ DELETE_CONFIRM_CANCEL,
+        )
     }
 
     pub(super) fn handle_resume_browser_key_event(&mut self, key: KeyEvent) {
@@ -53,11 +74,70 @@ impl ChatWidget {
         let Some(browser) = self.resume_browser.as_mut() else {
             return;
         };
+        let confirming_delete = browser.pending_delete_session_id.is_some();
         let page_step = Self::resume_browser_visible_capacity(
             self.resume_browser_last_height.get(),
             !browser.sessions.is_empty(),
+            confirming_delete,
         )
         .max(1);
+
+        if confirming_delete {
+            match key.code {
+                KeyCode::Esc => {
+                    browser.pending_delete_session_id = None;
+                    browser.pending_delete_chips = Self::new_delete_confirm_chips();
+                    self.set_status_message("Resume session");
+                    self.frame_requester.schedule_frame();
+                }
+                KeyCode::Char('q') => {
+                    self.resume_browser = None;
+                    self.resume_browser_loading = false;
+                    self.set_status_message("Ready");
+                    self.frame_requester.schedule_frame();
+                }
+                KeyCode::Left => {
+                    browser.pending_delete_chips.move_left();
+                    self.frame_requester.schedule_frame();
+                }
+                KeyCode::Right => {
+                    browser.pending_delete_chips.move_right();
+                    self.frame_requester.schedule_frame();
+                }
+                KeyCode::Enter => {
+                    let selected = browser.pending_delete_chips.selected_index();
+                    if selected != DELETE_CONFIRM_DELETE {
+                        browser.pending_delete_session_id = None;
+                        browser.pending_delete_chips = Self::new_delete_confirm_chips();
+                        self.set_status_message("Resume session");
+                        self.frame_requester.schedule_frame();
+                        return;
+                    }
+                    let Some(session_id) = browser.pending_delete_session_id.take() else {
+                        return;
+                    };
+                    browser.pending_delete_chips = Self::new_delete_confirm_chips();
+                    let deleting_active = browser
+                        .sessions
+                        .iter()
+                        .find(|session| session.session_id == session_id)
+                        .is_some_and(|session| session.is_active);
+                    if deleting_active {
+                        self.resume_browser = None;
+                        self.clear_for_session_switch();
+                    }
+                    self.app_event_tx
+                        .send(AppEvent::Command(AppCommand::delete_session_by_id(
+                            session_id,
+                        )));
+                    self.set_status_message("Deleting session");
+                    self.frame_requester.schedule_frame();
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.resume_browser = None;
@@ -118,6 +198,14 @@ impl ChatWidget {
                 self.ensure_resume_selection_visible(u16::MAX);
                 self.frame_requester.schedule_frame();
             }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                if let Some(selected) = browser.sessions.get(browser.selection) {
+                    browser.pending_delete_session_id = Some(selected.session_id);
+                    browser.pending_delete_chips = Self::new_delete_confirm_chips();
+                    self.set_status_message("Confirm session delete");
+                    self.frame_requester.schedule_frame();
+                }
+            }
             KeyCode::Enter => {
                 if let Some(selected) = browser.sessions.get(browser.selection) {
                     let session_id = selected.session_id;
@@ -135,7 +223,6 @@ impl ChatWidget {
             | KeyCode::F(_)
             | KeyCode::Tab
             | KeyCode::BackTab
-            | KeyCode::Delete
             | KeyCode::Insert
             | KeyCode::Null
             | KeyCode::CapsLock
@@ -154,16 +241,55 @@ impl ChatWidget {
         self.resume_browser_loading || self.resume_browser.is_some()
     }
 
+    /// Drop a deleted session from an open resume browser, if present.
+    pub(super) fn remove_session_from_resume_browser(&mut self, session_id: &str) {
+        let Some(browser) = self.resume_browser.as_mut() else {
+            return;
+        };
+        let before = browser.sessions.len();
+        browser
+            .sessions
+            .retain(|session| session.session_id.to_string() != session_id);
+        if browser.sessions.len() == before {
+            return;
+        }
+        browser.pending_delete_session_id = None;
+        browser.pending_delete_chips = Self::new_delete_confirm_chips();
+        if browser.sessions.is_empty() {
+            browser.selection = 0;
+            browser.scroll_offset = 0;
+        } else {
+            browser.selection = browser
+                .selection
+                .min(browser.sessions.len().saturating_sub(1));
+            self.ensure_resume_selection_visible(u16::MAX);
+        }
+        self.frame_requester.schedule_frame();
+    }
+
     fn resume_browser_entry_height() -> usize {
         1
     }
 
-    fn resume_browser_chrome_height(has_sessions: bool) -> usize {
-        if has_sessions { 7 } else { 6 }
+    fn resume_browser_chrome_height(has_sessions: bool, confirming_delete: bool) -> usize {
+        let base: usize = if has_sessions { 7 } else { 6 };
+        // Pending delete adds a chip row between the prompt and the hint.
+        if confirming_delete {
+            base.saturating_add(1)
+        } else {
+            base
+        }
     }
 
-    fn resume_browser_visible_capacity(area_height: u16, has_sessions: bool) -> usize {
-        area_height.saturating_sub(Self::resume_browser_chrome_height(has_sessions) as u16) as usize
+    fn resume_browser_visible_capacity(
+        area_height: u16,
+        has_sessions: bool,
+        confirming_delete: bool,
+    ) -> usize {
+        area_height
+            .saturating_sub(
+                Self::resume_browser_chrome_height(has_sessions, confirming_delete) as u16,
+            ) as usize
     }
 
     fn resume_browser_window(
@@ -171,11 +297,13 @@ impl ChatWidget {
         selection: usize,
         requested_offset: usize,
         area_height: u16,
+        confirming_delete: bool,
     ) -> (usize, usize, bool, bool) {
         if sessions_len == 0 {
             return (0, 0, false, false);
         }
-        let list_window = Self::resume_browser_visible_capacity(area_height, true);
+        let list_window =
+            Self::resume_browser_visible_capacity(area_height, true, confirming_delete);
         if list_window == 0 {
             return (selection.min(sessions_len.saturating_sub(1)), 0, true, true);
         }
@@ -209,14 +337,49 @@ impl ChatWidget {
         }
     }
 
-    fn resume_browser_footer_lines(has_sessions: bool) -> Vec<Line<'static>> {
+    fn resume_browser_delete_footer_hint() -> Line<'static> {
+        Line::from(vec![
+            key_hint::plain(KeyCode::Left).into(),
+            Span::raw("/"),
+            key_hint::plain(KeyCode::Right).into(),
+            Span::raw(" choose  "),
+            key_hint::plain(KeyCode::Enter).into(),
+            Span::raw(" confirm  "),
+            key_hint::plain(KeyCode::Esc).into(),
+            Span::raw(" cancel"),
+        ])
+        .dim()
+    }
+
+    fn pad_resume_line(line: Line<'static>) -> Line<'static> {
+        let mut spans = vec![Span::raw(" ".repeat(FOOTER_INDENT_COLS))];
+        spans.extend(line.spans);
+        Line::from(spans)
+    }
+
+    fn resume_browser_footer_lines(
+        has_sessions: bool,
+        pending_delete: Option<(&str, &HorizontalChipStrip)>,
+        accent: Color,
+        chip_width: usize,
+    ) -> Vec<Line<'static>> {
+        if let Some((title, chips)) = pending_delete {
+            let available = chip_width.saturating_sub(FOOTER_INDENT_COLS);
+            return vec![
+                Self::pad_resume_line(Line::from(format!("Delete \"{title}\"?").bold())),
+                Self::pad_resume_line(chips.render_line(available, accent)),
+                Self::pad_resume_line(Self::resume_browser_delete_footer_hint()),
+            ];
+        }
         if has_sessions {
             vec![
-                Line::from("↑/↓ select  pgup/pgdn page  home/end jump".dim()),
-                Line::from("enter resume  q back".dim()),
+                Self::pad_resume_line(Line::from(
+                    "↑/↓ select  pgup/pgdn page  home/end jump".dim(),
+                )),
+                Self::pad_resume_line(Line::from("enter resume  d delete  q back".dim())),
             ]
         } else {
-            vec![Line::from("q back".dim())]
+            vec![Self::pad_resume_line(Line::from("q back".dim()))]
         }
     }
 
@@ -225,13 +388,14 @@ impl ChatWidget {
         sessions_len: usize,
         rendered_start: usize,
         area_height: u16,
+        confirming_delete: bool,
     ) -> String {
         if sessions_len == 0 {
             return " 0 / 0 · 100% ".to_string();
         }
         let position = selection.saturating_add(1);
         let total = sessions_len;
-        let capacity = Self::resume_browser_visible_capacity(area_height, true);
+        let capacity = Self::resume_browser_visible_capacity(area_height, true, confirming_delete);
         let max_scroll = sessions_len.saturating_sub(capacity.max(1));
         let percent = if max_scroll == 0 {
             100
@@ -250,41 +414,39 @@ impl ChatWidget {
             browser.scroll_offset = 0;
             return;
         }
-
-        let selection = browser
+        browser.selection = browser
             .selection
             .min(browser.sessions.len().saturating_sub(1));
-        browser.selection = selection;
-        let capacity = Self::resume_browser_visible_capacity(area_height, true);
+        let confirming_delete = browser.pending_delete_session_id.is_some();
+        let capacity = Self::resume_browser_visible_capacity(area_height, true, confirming_delete);
         if capacity == 0 {
-            browser.scroll_offset = selection;
+            browser.scroll_offset = browser.selection;
             return;
         }
-
-        if selection < browser.scroll_offset {
-            browser.scroll_offset = selection;
+        let selection = browser.selection;
+        let mut offset = browser.scroll_offset;
+        if selection < offset {
+            offset = selection;
         } else {
             let selection_bottom = selection + Self::resume_browser_entry_height();
-            let viewport_bottom = browser.scroll_offset + capacity;
-            if selection_bottom > viewport_bottom {
-                browser.scroll_offset = selection_bottom.saturating_sub(capacity);
+            let visible_end = offset + capacity;
+            if selection_bottom > visible_end {
+                offset = selection_bottom.saturating_sub(capacity);
             }
         }
-
-        let max_offset = browser.sessions.len().saturating_sub(capacity);
-        browser.scroll_offset = browser.scroll_offset.min(max_offset);
+        let max_offset = browser.sessions.len().saturating_sub(capacity.max(1));
+        browser.scroll_offset = offset.min(max_offset);
     }
 
     pub(super) fn render_resume_browser_if_open(&self, area: Rect, buf: &mut Buffer) -> bool {
         if self.resume_browser_loading {
             let lines = vec![
-                Line::from("Resume Session".bold()),
-                Line::from("Loading saved sessions...".dim()),
+                Self::pad_resume_line(Line::from("Resume Session".bold())),
+                Self::pad_resume_line(Line::from("Loading saved sessions...".dim())),
                 Line::from(""),
-                Line::from("Please wait.".dim()),
+                Self::pad_resume_line(Line::from("Please wait.".dim())),
             ];
             Paragraph::new(Text::from(lines))
-                .block(Block::default().title("Devo Sessions"))
                 .wrap(Wrap { trim: false })
                 .render(area, buf);
             return true;
@@ -296,11 +458,13 @@ impl ChatWidget {
 
         self.resume_browser_last_height.set(area.height);
         Block::default().style(Style::default()).render(area, buf);
+        let confirming_delete = browser.pending_delete_session_id.is_some();
         let (scroll_offset, end, has_above, has_below) = Self::resume_browser_window(
             browser.sessions.len(),
             browser.selection,
             browser.scroll_offset,
             area.height,
+            confirming_delete,
         );
         let title_width = browser
             .sessions
@@ -314,36 +478,50 @@ impl ChatWidget {
             browser.sessions.len(),
             scroll_offset,
             area.height,
+            confirming_delete,
         );
-        let mut lines = vec![Line::from(vec![
+        let pending_delete = browser.pending_delete_session_id.and_then(|session_id| {
+            browser
+                .sessions
+                .iter()
+                .find(|session| session.session_id == session_id)
+                .map(|session| (session.title.as_str(), &browser.pending_delete_chips))
+        });
+        let mut lines = vec![Self::pad_resume_line(Line::from(vec![
             Span::styled("Resume Session", Style::default().bold()),
             Span::raw(" "),
             Span::styled(progress, Style::default().dim()),
-        ])];
+        ]))];
         if browser.sessions.is_empty() {
-            lines.push(Line::from("No saved sessions found.".dim()));
+            lines.push(Self::pad_resume_line(Line::from(
+                "No saved sessions found.".dim(),
+            )));
         } else {
-            lines.push(
+            // Indent column headers under the title text (after marker + space).
+            let col_pad = " ".repeat(2);
+            lines.push(Self::pad_resume_line(
                 Line::from(format!(
-                    "  {:title_width$}  {:<36}  {}",
+                    "{col_pad}{:title_width$}  {:<36}  {}",
                     "Title",
                     "Session ID",
                     "Updated",
                     title_width = title_width
                 ))
                 .dim(),
-            );
-            lines.push(
+            ));
+            lines.push(Self::pad_resume_line(
                 Line::from(format!(
-                    "  {}  {}  {}",
+                    "{col_pad}{}  {}  {}",
                     "-".repeat(title_width),
                     "-".repeat(36),
                     "-".repeat(23)
                 ))
                 .dim(),
-            );
+            ));
             if has_above {
-                lines.push(Line::from("  ↑ more").dim());
+                lines.push(Self::pad_resume_line(Line::from(
+                    format!("{col_pad}↑ more").dim(),
+                )));
             }
             for (index, session) in browser
                 .sessions
@@ -368,23 +546,27 @@ impl ChatWidget {
                     "{marker} {}  {:<16}  {}",
                     display_title, session.session_id, session.updated_at
                 );
-                lines.push(if is_selected {
+                lines.push(Self::pad_resume_line(if is_selected {
                     Line::from(line).bold()
                 } else if session.is_active {
                     Line::from(line).style(Style::default().fg(self.active_accent_color()))
                 } else {
                     Line::from(line)
-                });
+                }));
             }
             if has_below {
-                lines.push(Line::from("  ↓ more").dim());
+                lines.push(Self::pad_resume_line(Line::from(
+                    format!("{col_pad}↓ more").dim(),
+                )));
             }
         }
         lines.extend(Self::resume_browser_footer_lines(
             !browser.sessions.is_empty(),
+            pending_delete,
+            self.active_accent_color(),
+            usize::from(area.width.saturating_sub(2)),
         ));
         Paragraph::new(Text::from(lines))
-            .block(Block::default().title("Devo Sessions"))
             .wrap(Wrap { trim: false })
             .render(area, buf);
         true
@@ -407,5 +589,12 @@ impl ChatWidget {
     #[cfg(test)]
     pub(crate) fn open_resume_browser_for_test(&mut self, sessions: Vec<SessionListEntry>) {
         self.open_resume_browser(sessions);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resume_browser_pending_delete_for_test(&self) -> Option<SessionId> {
+        self.resume_browser
+            .as_ref()
+            .and_then(|browser| browser.pending_delete_session_id)
     }
 }

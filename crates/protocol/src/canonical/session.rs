@@ -136,6 +136,12 @@ pub struct SessionSettings {
     /// resuming the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_profile: Option<String>,
+    /// Session override for the absolute effective context window (tokens).
+    /// When set, takes precedence over the model-derived effective window and
+    /// is clamped to `model.context_window` at resolve time. Also drives the
+    /// automatic-compaction boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_context_window: Option<u64>,
 }
 
 /// Snapshot semantics: the current value is *copied* into the record at

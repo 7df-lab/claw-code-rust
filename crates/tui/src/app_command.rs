@@ -11,6 +11,15 @@ use devo_protocol::TurnId;
 use devo_protocol::TurnStartParams;
 use serde::Serialize;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+pub(crate) enum PersistScope {
+    /// Apply to the active session only; do not write user/project defaults.
+    #[default]
+    Session,
+    /// Write user/project defaults and hot-apply to the active session when one exists.
+    Default,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum InputHistoryDirection {
     Previous,
@@ -70,10 +79,29 @@ pub(crate) enum AppCommand {
         reasoning_effort_selection: Option<Option<String>>,
         sandbox: Option<Option<String>>,
         approval_policy: Option<Option<String>>,
+        persist_scope: PersistScope,
     },
-    SteerTurn {
+    SetCollaborationMode {
+        collaboration_mode: CollaborationMode,
+        persist_scope: PersistScope,
+    },
+    /// Enqueue input on the active session while a turn is busy.
+    QueuePush {
         input: Vec<InputItem>,
+    },
+    /// Promote a queued item into the active turn as a steer.
+    QueueSteer {
+        queue_item_id: String,
         expected_turn_id: TurnId,
+    },
+    /// Remove a queued item (e.g. before editing in the composer).
+    QueueRemove {
+        queue_item_id: String,
+    },
+    /// Replace a queued item's content in place, preserving its position.
+    QueueUpdate {
+        queue_item_id: String,
+        input: Vec<InputItem>,
     },
     RunBtwQuestion {
         question: String,
@@ -93,6 +121,10 @@ pub(crate) enum AppCommand {
     },
     UpdatePermissions {
         preset: devo_protocol::PermissionPreset,
+        persist_scope: PersistScope,
+    },
+    UpdateEffectiveContextWindow {
+        effective_context_window: u64,
     },
     UpdateSandboxProfile {
         profile: String,
@@ -106,7 +138,10 @@ pub(crate) enum AppCommand {
     RenameSession {
         title: String,
     },
-    DeleteSession,
+    /// Delete a session. `None` deletes the current active session.
+    DeleteSession {
+        session_id: Option<SessionId>,
+    },
     RollbackToUserTurn {
         user_turn_index: u32,
     },
@@ -168,9 +203,6 @@ pub(crate) enum AppCommandView<'a> {
         approval_policy: &'a Option<String>,
         collaboration_mode: CollaborationMode,
     },
-    SteerTurn {
-        input: &'a [InputItem],
-    },
     RunBtwQuestion {
         question: &'a str,
     },
@@ -185,6 +217,10 @@ pub(crate) enum AppCommandView<'a> {
     },
     UpdatePermissions {
         preset: devo_protocol::PermissionPreset,
+        persist_scope: PersistScope,
+    },
+    UpdateEffectiveContextWindow {
+        effective_context_window: u64,
     },
     UpdateSandboxProfile {
         profile: &'a str,
@@ -305,12 +341,51 @@ impl AppCommand {
         sandbox: Option<Option<String>>,
         approval_policy: Option<Option<String>>,
     ) -> Self {
+        Self::override_turn_context_with_scope(
+            cwd,
+            model,
+            reasoning_effort_selection,
+            sandbox,
+            approval_policy,
+            PersistScope::Session,
+        )
+    }
+
+    pub(crate) fn override_turn_context_with_scope(
+        cwd: Option<PathBuf>,
+        model: Option<String>,
+        reasoning_effort_selection: Option<Option<String>>,
+        sandbox: Option<Option<String>>,
+        approval_policy: Option<Option<String>>,
+        persist_scope: PersistScope,
+    ) -> Self {
         Self::OverrideTurnContext {
             cwd,
             model,
             reasoning_effort_selection,
             sandbox,
             approval_policy,
+            persist_scope,
+        }
+    }
+
+    pub(crate) fn set_collaboration_mode(
+        collaboration_mode: CollaborationMode,
+        persist_scope: PersistScope,
+    ) -> Self {
+        Self::SetCollaborationMode {
+            collaboration_mode,
+            persist_scope,
+        }
+    }
+
+    pub(crate) fn update_permissions(
+        preset: devo_protocol::PermissionPreset,
+        persist_scope: PersistScope,
+    ) -> Self {
+        Self::UpdatePermissions {
+            preset,
+            persist_scope,
         }
     }
 
@@ -351,7 +426,13 @@ impl AppCommand {
     }
 
     pub(crate) fn delete_session() -> Self {
-        Self::DeleteSession
+        Self::DeleteSession { session_id: None }
+    }
+
+    pub(crate) fn delete_session_by_id(session_id: SessionId) -> Self {
+        Self::DeleteSession {
+            session_id: Some(session_id),
+        }
     }
 
     pub(crate) fn rollback_to_user_turn(user_turn_index: u32) -> Self {
@@ -376,16 +457,21 @@ impl AppCommand {
             Self::ClearGoal => "clear_goal",
             Self::UserTurn { .. } => "user_turn",
             Self::OverrideTurnContext { .. } => "override_turn_context",
-            Self::SteerTurn { .. } => "steer_turn",
+            Self::SetCollaborationMode { .. } => "set_collaboration_mode",
+            Self::QueuePush { .. } => "queue_push",
+            Self::QueueSteer { .. } => "queue_steer",
+            Self::QueueRemove { .. } => "queue_remove",
+            Self::QueueUpdate { .. } => "queue_update",
             Self::RunBtwQuestion { .. } => "run_btw_question",
             Self::ApprovalRespond { .. } => "approval_respond",
             Self::RequestUserInputRespond { .. } => "request_user_input_respond",
             Self::UpdatePermissions { .. } => "update_permissions",
+            Self::UpdateEffectiveContextWindow { .. } => "update_effective_context_window",
             Self::UpdateSandboxProfile { .. } => "update_sandbox_profile",
             Self::BrowseInputHistory { .. } => "browse_input_history",
             Self::SwitchSession { .. } => "switch_session",
             Self::RenameSession { .. } => "rename_session",
-            Self::DeleteSession => "delete_session",
+            Self::DeleteSession { .. } => "delete_session",
             Self::RollbackToUserTurn { .. } => "rollback_to_user_turn",
             Self::ForkAtUserTurn { .. } => "fork_at_user_turn",
             Self::ListMcpServers => "list_mcp_servers",
@@ -439,6 +525,7 @@ impl AppCommand {
                 reasoning_effort_selection,
                 sandbox,
                 approval_policy,
+                ..
             } => AppCommandView::OverrideTurnContext {
                 cwd,
                 model,
@@ -446,7 +533,11 @@ impl AppCommand {
                 sandbox,
                 approval_policy,
             },
-            Self::SteerTurn { input, .. } => AppCommandView::SteerTurn { input },
+            Self::SetCollaborationMode { .. } => AppCommandView::ReloadUserConfig,
+            Self::QueuePush { .. }
+            | Self::QueueSteer { .. }
+            | Self::QueueRemove { .. }
+            | Self::QueueUpdate { .. } => AppCommandView::ReloadUserConfig,
             Self::RunBtwQuestion { question } => AppCommandView::RunBtwQuestion { question },
             Self::ApprovalRespond {
                 approval_id,
@@ -466,9 +557,18 @@ impl AppCommand {
                 request_id,
                 response,
             },
-            Self::UpdatePermissions { preset, .. } => {
-                AppCommandView::UpdatePermissions { preset: *preset }
-            }
+            Self::UpdatePermissions {
+                preset,
+                persist_scope,
+            } => AppCommandView::UpdatePermissions {
+                preset: *preset,
+                persist_scope: *persist_scope,
+            },
+            Self::UpdateEffectiveContextWindow {
+                effective_context_window,
+            } => AppCommandView::UpdateEffectiveContextWindow {
+                effective_context_window: *effective_context_window,
+            },
             Self::UpdateSandboxProfile { profile } => {
                 AppCommandView::UpdateSandboxProfile { profile }
             }
@@ -479,7 +579,7 @@ impl AppCommand {
                 session_id: *session_id,
             },
             Self::RenameSession { title } => AppCommandView::RenameSession { title },
-            Self::DeleteSession => AppCommandView::DeleteSession,
+            Self::DeleteSession { .. } => AppCommandView::DeleteSession,
             Self::RollbackToUserTurn { user_turn_index } => AppCommandView::ThreadRollback {
                 num_turns: *user_turn_index,
             },

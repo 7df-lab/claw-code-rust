@@ -280,7 +280,7 @@ fn onboarding_validation_failure_defaults_to_add_model_anyway() {
     let (widget, _app_event_rx) = failed_validation_widget();
 
     let view = rendered_rows(&widget, 160, 40).join("\n");
-    assert_eq!(view.contains("> Add model anyway"), true);
+    assert_eq!(view.contains("› Add model anyway"), true);
     assert_eq!(view.contains("  Retry with current settings"), true);
 }
 
@@ -538,14 +538,14 @@ fn onboarding_invocation_and_reasoning_popups_render_inline_and_use_model_preset
         invocation_view.contains("Invocation Method: OpenAI Chat Completions"),
         true
     );
-    assert_eq!(invocation_view.contains("> OpenAI Chat Completions"), true);
+    assert_eq!(invocation_view.contains("› OpenAI Chat Completions"), true);
 
     widget.handle_key_event(press(KeyCode::Enter));
 
     let reasoning_view = rendered_rows(&widget, 160, 60).join("\n");
     assert_eq!(reasoning_view.contains("Reason Effort: High"), true);
     assert_eq!(reasoning_view.contains(" Off"), true);
-    assert_eq!(reasoning_view.contains("> High"), true);
+    assert_eq!(reasoning_view.contains("› High"), true);
     assert_eq!(reasoning_view.contains(" Max"), true);
     assert_eq!(reasoning_view.contains("Medium"), false);
     assert_eq!(reasoning_view.contains("XHigh"), false);
@@ -594,7 +594,7 @@ fn onboarding_toggle_model_reasoning_popup_shows_off_and_on() {
     let reasoning_view = rendered_rows(&widget, 160, 60).join("\n");
     assert_eq!(reasoning_view.contains("Reason Effort: On"), true);
     assert_eq!(reasoning_view.contains(" Off"), true);
-    assert_eq!(reasoning_view.contains("> On"), true);
+    assert_eq!(reasoning_view.contains("› On"), true);
     assert_eq!(reasoning_view.contains("Medium"), false);
 
     widget.handle_key_event(press(KeyCode::Enter));
@@ -626,7 +626,7 @@ fn onboarding_invocation_popup_keeps_active_section_visible_when_short() {
         "expected invocation hint in short viewport:\n{invocation_view}"
     );
     assert!(
-        invocation_view.contains("> OpenAI Chat Completions"),
+        invocation_view.contains("› OpenAI Chat Completions"),
         "expected selected invocation option in short viewport:\n{invocation_view}"
     );
 }
@@ -646,7 +646,7 @@ fn onboarding_reasoning_popup_keeps_active_section_visible_when_short_and_narrow
         "expected wrapped reasoning hint in short viewport:\n{reasoning_view}"
     );
     assert!(
-        reasoning_view.contains("> High"),
+        reasoning_view.contains("› High"),
         "expected selected reasoning effort in short viewport:\n{reasoning_view}"
     );
 }

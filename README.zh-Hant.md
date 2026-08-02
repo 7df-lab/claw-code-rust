@@ -256,16 +256,6 @@ provider 與 binding，把 key 存入使用者級 `auth.json`，並將 `invocati
 
 請開啟 issue 或 pull request 討論變更。
 
-## Star 歷史
-
-<a href="https://www.star-history.com/?repos=7df-lab%2Fdevo&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left" />
- </picture>
-</a>
-
 ## 授權
 
 本專案採用 [MIT License](./LICENSE) 授權。

@@ -8,7 +8,7 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use super::ids::SessionId;
-use super::item::ContextUsage;
+use super::item::ContextOccupancy;
 use super::item::ToolSource;
 use super::model::PermissionProfile;
 
@@ -216,11 +216,11 @@ pub struct ContextUsageReadParams {
     pub session_id: SessionId,
 }
 
-/// Parts that were not precisely metered are marked `measured = false`.
+/// Current context-window occupancy with category breakdown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextUsageReadResult {
-    pub usage: ContextUsage,
+    pub occupancy: ContextOccupancy,
 }
 
 // ── permission/profile/* ──

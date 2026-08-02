@@ -908,7 +908,7 @@ fn policy_decision(
 ) -> AuthorizationDecision {
     use devo_protocol::canonical::item::ApprovalDecisionSource;
 
-    if profile.auto_approve {
+    if profile.yolo {
         return AuthorizationDecision::Allow {
             source: ApprovalDecisionSource::StaticPolicy,
         };
@@ -1526,7 +1526,7 @@ fn permission_mode_authorization(mode: PermissionMode) -> Option<AuthorizationDe
     use devo_protocol::canonical::item::ApprovalDecisionSource;
 
     match mode {
-        PermissionMode::AutoApprove => Some(AuthorizationDecision::Allow {
+        PermissionMode::Yolo => Some(AuthorizationDecision::Allow {
             source: ApprovalDecisionSource::StaticPolicy,
         }),
         PermissionMode::Deny => Some(AuthorizationDecision::Deny {
@@ -1622,7 +1622,7 @@ mod tests {
         );
         assert_eq!(
             permission_mode_from_approval_policy("never"),
-            Some(PermissionMode::AutoApprove)
+            Some(PermissionMode::Yolo)
         );
         assert_eq!(
             permission_mode_from_approval_policy("deny"),
@@ -1787,7 +1787,7 @@ mod tests {
     #[test]
     fn permission_mode_overrides_authorization_policy() {
         assert_eq!(
-            permission_mode_authorization(PermissionMode::AutoApprove),
+            permission_mode_authorization(PermissionMode::Yolo),
             Some(AuthorizationDecision::Allow {
                 source: devo_protocol::canonical::item::ApprovalDecisionSource::StaticPolicy,
             })
@@ -1806,7 +1806,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_approve_grants_sandbox_bypass_for_escalation() {
+    fn yolo_grants_sandbox_bypass_for_escalation() {
         let mut request = test_permission_request("shell_command");
         request.requests_escalation = true;
         request.input = serde_json::json!({
@@ -1815,7 +1815,7 @@ mod tests {
         });
 
         assert_eq!(
-            permission_mode_authorization(PermissionMode::AutoApprove),
+            permission_mode_authorization(PermissionMode::Yolo),
             Some(AuthorizationDecision::Allow {
                 source: devo_protocol::canonical::item::ApprovalDecisionSource::StaticPolicy,
             })
@@ -1830,13 +1830,13 @@ mod tests {
     }
 
     #[test]
-    fn auto_approve_profile_grants_sandbox_bypass_for_escalation() {
+    fn yolo_profile_grants_sandbox_bypass_for_escalation() {
         let root = abs_path(&["workspace"]);
         let mut profile = devo_safety::RuntimePermissionProfile::from_preset(
             devo_safety::PermissionPreset::Default,
             root.clone(),
         );
-        profile.auto_approve = true;
+        profile.yolo = true;
         let mut request = test_permission_request("shell_command");
         request.requests_escalation = true;
         request.input = serde_json::json!({

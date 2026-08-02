@@ -127,6 +127,7 @@ impl V2InverseProjector {
                 turn_id,
                 summary_item_id,
                 preserved_item_ids,
+                context_occupancy,
                 ..
             } => Ok(vec![RolloutLine::CompactionSnapshot(Box::new(
                 CompactionSnapshotLine {
@@ -138,6 +139,7 @@ impl V2InverseProjector {
                         .iter()
                         .map(legacy_item_id)
                         .collect::<Result<_, _>>()?,
+                    context_occupancy: context_occupancy.clone(),
                 },
             ))]),
             RolloutLineV2::SessionRollback {
@@ -268,6 +270,7 @@ impl V2InverseProjector {
             },
             sandbox_policy: session.settings.sandbox_profile.clone().unwrap_or_default(),
             approval_mode: approval_mode.into(),
+            effective_context_window: session.settings.effective_context_window,
             tokens_used: session
                 .usage
                 .legacy
@@ -286,6 +289,8 @@ impl V2InverseProjector {
             session_context: extras.and_then(|extras| extras.session_context.clone()),
             // Internal prefix-cache cache, not carried even in the extras.
             latest_turn_context: None,
+            collaboration_mode: extras.and_then(|extras| extras.collaboration_mode),
+            permission_preset: extras.and_then(|extras| extras.permission_preset),
             schema_version: CURRENT_SESSION_SCHEMA_VERSION,
         };
         Ok(vec![RolloutLine::SessionMeta(Box::new(SessionMetaLine {
@@ -361,6 +366,7 @@ impl V2InverseProjector {
             input_token_estimate: extras.and_then(|extras| extras.input_token_estimate),
             usage,
             latest_query_usage: extras.and_then(|extras| extras.latest_query_usage.clone()),
+            context_occupancy: extras.and_then(|extras| extras.context_occupancy.clone()),
             stop_reason: extras.and_then(|extras| extras.stop_reason.clone()),
             failure_reason: extras.and_then(|extras| extras.failure_reason),
             error,

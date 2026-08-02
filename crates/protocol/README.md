@@ -16,7 +16,8 @@ client-to-server ACP methods are:
 - `session/prompt`: submit a prompt to an active session. The JSON-RPC response
   returns when the turn completes (`AcpPromptResult.stopReason`). Streaming
   progress is delivered through `session/update` notifications during the turn.
-- `session/cancel`: cancel the active session turn.
+- `session/cancel`: cancel the active session turn (including manual
+  `/compact`, which is admitted as a `ManualCompaction` turn).
 
 Event-driven clients that need an immediate turn acknowledgement should use the
 Devo extension `_devo/turn/start`, which returns `TurnStartResult::Started`
@@ -63,7 +64,8 @@ behavior that is not represented by the portable ACP method set.
 - `_devo/session/metadata/update`: update session metadata such as the active
   model or reasoning-effort selection.
 - `_devo/session/permissions/update`: update the current permission preset.
-- `_devo/session/compact`: proactively compact a session context.
+- `_devo/session/compact`: start a manual compaction turn (`TurnStartResult`);
+  keep emitting `session/compaction/*` for UI.
 - `_devo/session/fork`: fork a new session from an existing turn.
 - `_devo/session/rollback`: roll back a session to a selected user turn.
 

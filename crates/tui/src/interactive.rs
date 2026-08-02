@@ -22,6 +22,7 @@ use crate::app::AppExit;
 use crate::app::InitialTuiSession;
 use crate::app::InteractiveTuiConfig;
 use crate::app_command::AppCommand;
+use crate::app_command::PersistScope;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::chatwidget::ChatWidget;
@@ -34,6 +35,7 @@ use crate::host_overlay::OverlayState;
 use crate::onboarding::OnboardingModelBinding;
 use crate::onboarding::onboarding_provider_model_binding;
 use crate::onboarding::onboarding_provider_vendor;
+use crate::onboarding::save_default_collaboration_mode;
 use crate::onboarding::save_last_used_model;
 use crate::onboarding::save_project_permission_preset;
 use crate::onboarding::save_project_sandbox_profile;
@@ -244,6 +246,7 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
         server_log_level: config.server_log_level.clone(),
         reasoning_effort_selection: initial_session.reasoning_effort_selection.clone(),
         permission_preset: initial_session.permission_preset,
+        default_collaboration_mode: initial_session.default_collaboration_mode,
         initial_sandbox_profile: initial_session.sandbox_profile.clone(),
         client_capabilities: devo_protocol::AcpClientCapabilities {
             fs: devo_protocol::AcpFileSystemCapabilities {
@@ -303,6 +306,8 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
         initial_reasoning_effort_selection: initial_session.reasoning_effort_selection.clone(),
         initial_permission_preset: initial_session.permission_preset,
         initial_sandbox_profile: initial_session.sandbox_profile.clone(),
+        initial_compaction_token_limit: initial_session.compaction_token_limit,
+        initial_default_collaboration_mode: initial_session.default_collaboration_mode,
         initial_user_message: None,
         enhanced_keys_supported: tui.enhanced_keys_supported(),
         is_first_run: config.saved_models.is_empty(),
@@ -960,6 +965,7 @@ fn handle_worker_event(
         | WorkerEvent::AcpCurrentModeUpdated { .. }
         | WorkerEvent::AcpConfigOptionsUpdated { .. }
         | WorkerEvent::AcpUsageUpdated { .. }
+        | WorkerEvent::ContextUsageUpdated { .. }
         | WorkerEvent::ReferenceSearchUpdated { .. }
         | WorkerEvent::NewSessionPrepared { .. }
         | WorkerEvent::SessionRenamed { .. }
@@ -967,7 +973,7 @@ fn handle_worker_event(
         | WorkerEvent::SessionTitleUpdated { .. }
         | WorkerEvent::ContextCompactionCompleted { .. }
         | WorkerEvent::InputHistoryLoaded { .. }
-        | WorkerEvent::InputQueueUpdated { .. }
+        | WorkerEvent::QueueUpdated { .. }
         | WorkerEvent::ApprovalRequest { .. }
         | WorkerEvent::RequestUserInput { .. }
         | WorkerEvent::ApprovalDecision { .. }
@@ -981,7 +987,8 @@ fn handle_worker_event(
         | WorkerEvent::GoalOperationFailed { .. }
         | WorkerEvent::BtwStarted { .. }
         | WorkerEvent::BtwCompleted { .. }
-        | WorkerEvent::BtwFailed { .. } => {}
+        | WorkerEvent::BtwFailed { .. }
+        | WorkerEvent::EffectiveContextWindowUpdated { .. } => {}
     }
     if matches!(&worker_event, WorkerEvent::SessionsListed { .. }) {
         loop_state.resume_browser_pending = false;
@@ -1038,11 +1045,23 @@ fn handle_app_command(
         AppCommand::SubmitShellInput { command } => {
             worker.submit_shell_input(command.clone())?;
         }
-        AppCommand::SteerTurn {
-            input,
+        AppCommand::QueuePush { input } => {
+            worker.queue_push(input.clone())?;
+        }
+        AppCommand::QueueSteer {
+            queue_item_id,
             expected_turn_id,
         } => {
-            worker.submit_steer(input.clone(), *expected_turn_id)?;
+            worker.queue_steer(queue_item_id.clone(), *expected_turn_id)?;
+        }
+        AppCommand::QueueRemove { queue_item_id } => {
+            worker.queue_remove(queue_item_id.clone())?;
+        }
+        AppCommand::QueueUpdate {
+            queue_item_id,
+            input,
+        } => {
+            worker.queue_update(queue_item_id.clone(), input.clone())?;
         }
         AppCommand::RunBtwQuestion { question } => {
             worker.run_btw_question(question.clone())?;
@@ -1075,41 +1094,72 @@ fn handle_app_command(
                 response.clone(),
             )?;
         }
-        AppCommand::UpdatePermissions { preset } => {
-            worker.update_permissions(*preset)?;
-            save_project_permission_preset(context.project_config_key, *preset)?;
+        AppCommand::UpdatePermissions {
+            preset,
+            persist_scope,
+        } => {
+            worker.update_permissions(*preset, *persist_scope)?;
             let implied_sandbox = match preset {
                 PermissionPreset::FullAccess => "off",
                 PermissionPreset::Default | PermissionPreset::AutoReview => "workspace",
             };
-            save_project_sandbox_profile(context.project_config_key, implied_sandbox)?;
             worker.update_sandbox_profile(implied_sandbox.to_string())?;
-            chat_widget.note_permissions_updated(*preset);
+            // Sync implied sandbox locally without a user-visible notice (permissions
+            // message below is enough).
             chat_widget.note_sandbox_profile_updated(implied_sandbox.to_string());
+            if *persist_scope == PersistScope::Default {
+                save_project_permission_preset(context.project_config_key, *preset)?;
+                save_project_sandbox_profile(context.project_config_key, implied_sandbox)?;
+            }
+            chat_widget.note_permissions_updated(*preset);
+        }
+        AppCommand::UpdateEffectiveContextWindow {
+            effective_context_window,
+        } => {
+            crate::onboarding::save_compaction_token_limit(*effective_context_window)?;
+            chat_widget.note_effective_context_window_updated(*effective_context_window);
+            worker.update_effective_context_window(*effective_context_window)?;
         }
         AppCommand::UpdateSandboxProfile { profile } => {
             worker.update_sandbox_profile(profile.clone())?;
             save_project_sandbox_profile(context.project_config_key, profile)?;
+            // No transcript notice: sandbox is an implementation detail of permissions /
+            // explicit picks; settings hub reflects the change silently.
             chat_widget.note_sandbox_profile_updated(profile.clone());
         }
         AppCommand::OverrideTurnContext {
             model,
             reasoning_effort_selection,
+            persist_scope,
             ..
         } => {
             if let Some(model) = model {
-                worker.set_model(model.clone())?;
-                let provider = context
-                    .model_catalog
-                    .get(model)
-                    .map(Model::provider_wire_api)
-                    .unwrap_or(context.default_provider);
-                save_last_used_model(/*wire_api*/ None, provider, model)?;
+                worker.set_model_selection_with_scope(model.clone(), None, *persist_scope)?;
+                if *persist_scope == PersistScope::Default {
+                    let provider = context
+                        .model_catalog
+                        .get(model)
+                        .map(Model::provider_wire_api)
+                        .unwrap_or(context.default_provider);
+                    save_last_used_model(/*wire_api*/ None, provider, model)?;
+                }
             }
             if let Some(reasoning_effort_selection) = reasoning_effort_selection {
                 worker.set_reasoning_effort(reasoning_effort_selection.clone())?;
-                save_reasoning_effort_selection(reasoning_effort_selection.as_deref())?;
+                if *persist_scope == PersistScope::Default {
+                    save_reasoning_effort_selection(reasoning_effort_selection.as_deref())?;
+                }
             }
+        }
+        AppCommand::SetCollaborationMode {
+            collaboration_mode,
+            persist_scope,
+        } => {
+            if *persist_scope == PersistScope::Default {
+                save_default_collaboration_mode(*collaboration_mode)?;
+            }
+            worker.set_collaboration_mode(*collaboration_mode, *persist_scope)?;
+            chat_widget.apply_collaboration_mode(*collaboration_mode, *persist_scope);
         }
         AppCommand::RunUserShellCommand { command } => {
             if command == "session list" {
@@ -1220,8 +1270,8 @@ fn handle_app_command(
         AppCommand::RenameSession { title } => {
             worker.rename_session(title.clone())?;
         }
-        AppCommand::DeleteSession => {
-            worker.delete_session()?;
+        AppCommand::DeleteSession { session_id } => {
+            worker.delete_session(*session_id)?;
         }
         AppCommand::ShowGoal => {
             worker.show_goal()?;

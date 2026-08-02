@@ -70,8 +70,7 @@ impl ChatWidget {
     }
 
     pub(super) fn set_default_placeholder(&mut self) {
-        self.bottom_pane
-            .set_placeholder_text("Ask Devo".to_string());
+        self.bottom_pane.set_default_placeholder();
     }
 
     pub(super) fn on_plan_updated(&mut self, explanation: Option<String>, steps: Vec<PlanStep>) {
@@ -190,7 +189,7 @@ impl ChatWidget {
                             implement_model_binding_id.clone(),
                             implement_reasoning.clone(),
                             /*sandbox*/ None,
-                            Some("on-request".to_string()),
+                            /*approval_policy*/ None,
                             CollaborationMode::Build,
                         ),
                     ));
@@ -204,7 +203,7 @@ impl ChatWidget {
                             revise_model_binding_id.clone(),
                             revise_reasoning.clone(),
                             /*sandbox*/ None,
-                            Some("on-request".to_string()),
+                            /*approval_policy*/ None,
                             CollaborationMode::Plan,
                         ),
                     ));

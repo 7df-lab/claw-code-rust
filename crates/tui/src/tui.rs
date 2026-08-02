@@ -71,6 +71,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::disable_raw_mode;
 use ratatui::crossterm::terminal::enable_raw_mode;
+use ratatui::layout::Rect;
 use ratatui::layout::Size;
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
@@ -595,16 +596,12 @@ impl Tui {
         is_zellij: bool,
     ) -> Result<bool> {
         let size = terminal.size()?;
+        let (area, scroll_by) = next_inline_viewport_area(terminal.viewport_area, size, height);
         let mut needs_full_repaint = false;
 
-        let mut area = terminal.viewport_area;
-        area.height = height.min(size.height);
-        area.width = size.width;
-        if area.bottom() > size.height {
-            let scroll_by = area.bottom() - size.height;
+        if scroll_by > 0 {
             Self::append_expanded_viewport(terminal, size, scroll_by, is_zellij)?;
             needs_full_repaint = true;
-            area.y = size.height - area.height;
         }
         if area != terminal.viewport_area {
             apply_inline_viewport_area_change(terminal, area)?;
@@ -741,6 +738,27 @@ impl Tui {
     }
 }
 
+/// Compute the next inline viewport rect for a target `height`.
+///
+/// Returns `(area, scroll_by)`. When `scroll_by > 0`, the caller must append that
+/// many rows before applying `area` so growth remains append-only.
+///
+/// Shrinks keep `area.y` unchanged. Pinning the bottom on shrink would move `y`
+/// downward and clear the vacated rows (see `apply_inline_viewport_area_change`),
+/// which accumulates blank gaps after tall bottom-pane views such as `/model`.
+fn next_inline_viewport_area(previous: Rect, size: Size, height: u16) -> (Rect, u16) {
+    let mut area = previous;
+    area.height = height.min(size.height);
+    area.width = size.width;
+    if area.bottom() > size.height {
+        let scroll_by = area.bottom() - size.height;
+        area.y = size.height - area.height;
+        (area, scroll_by)
+    } else {
+        (area, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
@@ -748,11 +766,13 @@ mod tests {
     use crossterm::event::KeyboardEnhancementFlags;
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
+    use ratatui::layout::Size;
     use ratatui::text::Line;
 
     use super::Tui;
     use super::apply_inline_viewport_area_change;
     use super::keyboard_enhancement_flags;
+    use super::next_inline_viewport_area;
     use crate::custom_terminal::Terminal as CustomTerminal;
     use crate::history_cell::ScrollbackLine;
     use crate::insert_history::insert_history_lines;
@@ -765,6 +785,35 @@ mod tests {
         assert!(flags.contains(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
         assert!(flags.contains(KeyboardEnhancementFlags::REPORT_EVENT_TYPES));
         assert!(flags.contains(KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS));
+    }
+
+    #[test]
+    fn next_inline_viewport_area_expands_with_scroll_when_overflowing() {
+        let previous = Rect::new(0, 20, 80, 10);
+        let size = Size::new(80, 40);
+        let (area, scroll_by) = next_inline_viewport_area(previous, size, 39);
+        assert_eq!(scroll_by, 19);
+        assert_eq!(area, Rect::new(0, 1, 80, 39));
+    }
+
+    #[test]
+    fn next_inline_viewport_area_shrink_keeps_top_to_avoid_blank_gaps() {
+        // Bottom-aligned full-height viewport shrinking (e.g. closing /model) must
+        // keep y stable. Moving y down would clear the vacated rows into blank gaps.
+        let previous = Rect::new(0, 1, 80, 39);
+        let size = Size::new(80, 40);
+        let (area, scroll_by) = next_inline_viewport_area(previous, size, 5);
+        assert_eq!(scroll_by, 0);
+        assert_eq!(area, Rect::new(0, 1, 80, 5));
+    }
+
+    #[test]
+    fn next_inline_viewport_area_preserves_mid_screen_growth_without_overflow() {
+        let previous = Rect::new(0, 10, 80, 5);
+        let size = Size::new(80, 40);
+        let (area, scroll_by) = next_inline_viewport_area(previous, size, 8);
+        assert_eq!(scroll_by, 0);
+        assert_eq!(area, Rect::new(0, 10, 80, 8));
     }
 
     #[test]

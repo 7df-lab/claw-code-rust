@@ -13,7 +13,6 @@ use crate::events::ToolProgressSender;
 use crate::invocation::FunctionToolOutput;
 
 use super::launch::SandboxLaunchPlan;
-use super::preview;
 use super::resolve::ResolvedShellRun;
 use super::truncate_output;
 
@@ -41,7 +40,6 @@ pub(crate) async fn run_with_pipes(
     } = run;
 
     info!(command = %command_to_run, shell = shell.program, "executing shell command");
-    let command_preview = preview(&command_to_run);
 
     let plan = match SandboxLaunchPlan::prepare_pipe(
         sandbox_profile.as_deref(),
@@ -125,7 +123,7 @@ pub(crate) async fn run_with_pipes(
                 Ok(FunctionToolOutput::success_with_metadata(
                     result_text.clone(),
                     json!({
-                        "command": command_preview,
+                        "command": command_to_run,
                         "exit": status.code(),
                         "description": description,
                         "cwd": workdir,

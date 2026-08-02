@@ -10,6 +10,7 @@ use crate::events::TextItemKind;
 use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::ScrollbackLine;
+use crate::render::line_utils::is_horizontal_rule_line;
 use crate::tool_io_cell::ToolIoCell;
 use crate::tool_io_cell::ToolIoCellOptions;
 
@@ -385,8 +386,12 @@ impl ChatWidget {
         }
 
         let should_insert_separator = !target.is_empty()
-            && target.last().is_some_and(|line| !Self::is_blank_line(line))
-            && next.first().is_some_and(|line| !Self::is_blank_line(line));
+            && target
+                .last()
+                .is_some_and(|line| !Self::is_blank_line(line) && !is_horizontal_rule_line(line))
+            && next
+                .first()
+                .is_some_and(|line| !Self::is_blank_line(line) && !is_horizontal_rule_line(line));
         if should_insert_separator {
             target.push(Line::from(""));
         }
@@ -410,19 +415,25 @@ impl ChatWidget {
             let should_insert_separator = index > 0
                 && !cell_lines.is_empty()
                 && !lines.is_empty()
-                && lines
-                    .last()
-                    .is_some_and(|line: &ScrollbackLine| !Self::is_blank_line(&line.line))
-                && cell_lines
-                    .first()
-                    .is_some_and(|line| !Self::is_blank_line(line));
+                && lines.last().is_some_and(|line: &ScrollbackLine| {
+                    !Self::is_blank_line(&line.line) && !is_horizontal_rule_line(&line.line)
+                })
+                && cell_lines.first().is_some_and(|line| {
+                    !Self::is_blank_line(line) && !is_horizontal_rule_line(line)
+                });
             if should_insert_separator {
                 lines.push(ScrollbackLine::new(Line::from("")));
             }
             lines.extend(cell_lines.into_iter().map(ScrollbackLine::new));
         }
         self.next_history_flush_index = self.history.len();
-        if !lines.is_empty() {
+        // Rule-lined cells (e.g. user prompts) already provide visual separation; avoid an
+        // extra blank row after them so adjacent content sits flush against the rule.
+        if !lines.is_empty()
+            && lines
+                .last()
+                .is_some_and(|line| !is_horizontal_rule_line(&line.line))
+        {
             lines.push(ScrollbackLine::new(Line::from("")));
         }
         lines

@@ -36,6 +36,20 @@ pub fn is_blank_line_spaces_only(line: &Line<'_>) -> bool {
         .all(|s| s.content.is_empty() || s.content.bytes().all(|byte| byte == b' '))
 }
 
+/// True when the line is a non-empty horizontal rule made only of `─` characters.
+pub fn is_horizontal_rule_line(line: &Line<'_>) -> bool {
+    let mut saw_rule = false;
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            if ch != '─' {
+                return false;
+            }
+            saw_rule = true;
+        }
+    }
+    saw_rule
+}
+
 /// Prefix each line with `initial_prefix` for the first line and
 /// `subsequent_prefix` for following lines. Returns a new Vec of owned lines.
 pub fn prefix_lines(
@@ -98,6 +112,15 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(detected, vec![true, true, true]);
+    }
+
+    #[test]
+    fn horizontal_rule_line_detection() {
+        assert!(is_horizontal_rule_line(&Line::from("─".repeat(8).dim())));
+        assert!(is_horizontal_rule_line(&Line::from("────")));
+        assert!(!is_horizontal_rule_line(&Line::from("")));
+        assert!(!is_horizontal_rule_line(&Line::from("── x ──")));
+        assert!(!is_horizontal_rule_line(&Line::from("  ")));
     }
 
     #[test]

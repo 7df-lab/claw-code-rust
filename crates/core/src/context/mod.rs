@@ -478,6 +478,26 @@ mod tests {
     }
 
     #[test]
+    fn session_override_sets_effective_context_window_and_auto_compact() {
+        let model = Model {
+            context_window: 200_000,
+            effective_context_window_percent: Some(95),
+            max_tokens: Some(8_192),
+            ..Model::default()
+        };
+        let turn = crate::TurnConfig::new(model, None);
+        let budget = turn.token_budget_for_session(Some(100_000));
+        assert_eq!(budget.context_window, 100_000);
+        assert_eq!(budget.auto_compact_token_limit, Some(100_000));
+        assert!(!budget.should_compact(100_000));
+        assert!(budget.should_compact(100_001));
+
+        let clamped = turn.token_budget_for_session(Some(500_000));
+        assert_eq!(clamped.context_window, 200_000);
+        assert_eq!(clamped.auto_compact_token_limit, Some(200_000));
+    }
+
+    #[test]
     fn token_budget_input_budget_saturates() {
         let budget = TokenBudget::new(100, 200);
         assert_eq!(budget.input_budget(), 0);

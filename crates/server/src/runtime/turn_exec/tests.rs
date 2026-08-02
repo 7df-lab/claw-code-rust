@@ -60,7 +60,7 @@ fn context_compaction_events_share_stable_item_lifecycle() {
     assert_eq!(
         vec![
             started_event(session_id, turn_id, item_id),
-            completed_event(session_id, turn_id, item_id),
+            completed_event(session_id, turn_id, item_id, None),
         ],
         vec![
             ServerEvent::ItemStarted(ItemEventPayload {
@@ -496,7 +496,9 @@ async fn provider_retry_status_waits_for_channel_capacity() {
 fn lifecycle_and_control_query_events_are_must_deliver() {
     let events = [
         devo_core::QueryEvent::ContextCompactionStarted,
-        devo_core::QueryEvent::ContextCompactionCompleted,
+        devo_core::QueryEvent::ContextCompactionCompleted {
+            compacted_items: Vec::new(),
+        },
         devo_core::QueryEvent::ContextCompactionFailed {
             message: "context limit".to_string(),
         },

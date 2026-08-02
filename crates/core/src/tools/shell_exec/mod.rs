@@ -32,7 +32,6 @@ use pipe::run_with_pipes;
 use pty::run_with_pty;
 use resolve::ResolvedShellRun;
 
-const MAX_METADATA_LENGTH: usize = 30_000;
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const DEFAULT_YIELD_TIME_MS: u64 = 1_000;
 pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: usize = 16_000;
@@ -108,17 +107,6 @@ pub(crate) async fn execute_shell_command(
     } else {
         run_with_pipes(run, progress, cancel_token).await
     }
-}
-
-// TODO: Preview truncation belongs on the client, not the server. Move
-// `preview` (used today for short command metadata) and any remaining
-// display-oriented shortening to the client so the server returns full
-// stream text plus structured metadata without duplicating output.
-pub(crate) fn preview(text: &str) -> String {
-    if text.len() <= MAX_METADATA_LENGTH {
-        return text.to_string();
-    }
-    format!("{}\n\n...", &text[..MAX_METADATA_LENGTH])
 }
 
 pub(crate) fn truncate_output(text: &str, max_output_tokens: usize) -> String {

@@ -104,6 +104,31 @@ impl McpConfig {
             break;
         }
     }
+
+    /// Returns whether two MCP configs can share a live manager/registry.
+    ///
+    /// Used by `SessionRuntimeContext::load_for_workspace` to avoid rebuilding
+    /// MCP state (and re-spawning lazy servers) for every workspace lookup.
+    ///
+    /// Workspace injection of `code_search` cwd is ignored while that server is
+    /// disabled, so process-level and workspace-level managers stay reusable.
+    /// When `code_search` is enabled, cwd must match or managers are not shared.
+    pub fn is_operationally_equivalent_to(&self, other: &Self) -> bool {
+        self.normalized_for_runtime_equivalence() == other.normalized_for_runtime_equivalence()
+    }
+
+    fn normalized_for_runtime_equivalence(&self) -> Self {
+        let mut normalized = self.clone();
+        for record in &mut normalized.servers {
+            if record.id.0 != BUNDLED_CODE_SEARCH_MCP_SERVER_ID || record.enabled {
+                continue;
+            }
+            if let McpTransportConfig::Stdio { cwd, .. } = &mut record.transport {
+                *cwd = None;
+            }
+        }
+        normalized
+    }
 }
 
 /// Returns the bundled, disabled-by-default code_search MCP server record.
@@ -441,5 +466,27 @@ mod tests {
             }
             _ => panic!("expected stdio transport"),
         }
+    }
+
+    #[test]
+    fn operational_equivalence_ignores_disabled_code_search_cwd() {
+        let mut left = McpConfig::default();
+        let mut right = McpConfig::default();
+        left.apply_code_search_workspace_cwd(PathBuf::from("/process-cwd"));
+        right.apply_code_search_workspace_cwd(PathBuf::from("/workspace-cwd"));
+
+        assert!(left.is_operationally_equivalent_to(&right));
+    }
+
+    #[test]
+    fn operational_equivalence_requires_enabled_code_search_cwd_match() {
+        let mut left = McpConfig::default();
+        let mut right = McpConfig::default();
+        left.servers[0].enabled = true;
+        right.servers[0].enabled = true;
+        left.apply_code_search_workspace_cwd(PathBuf::from("/process-cwd"));
+        right.apply_code_search_workspace_cwd(PathBuf::from("/workspace-cwd"));
+
+        assert!(!left.is_operationally_equivalent_to(&right));
     }
 }

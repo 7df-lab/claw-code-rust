@@ -166,6 +166,15 @@ impl WebSocketServerClient {
             .await
     }
 
+    pub async fn session_compaction_update(
+        &mut self,
+        params: SessionCompactionUpdateParams,
+    ) -> Result<SessionCompactionUpdateResult> {
+        self.core
+            .request_devo("session/compaction/update", params)
+            .await
+    }
+
     pub async fn session_sandbox_profile_update(
         &mut self,
         params: SessionSandboxProfileUpdateParams,
@@ -178,8 +187,14 @@ impl WebSocketServerClient {
     pub async fn session_compact(
         &mut self,
         params: SessionCompactParams,
-    ) -> Result<SessionCompactResult> {
+    ) -> Result<TurnStartResult> {
         self.core.request_devo("session/compact", params).await
+    }
+
+    pub async fn session_cancel(&mut self, params: AcpCancelParams) -> Result<AcpEmptyResult> {
+        self.core
+            .request(devo_protocol::ACP_SESSION_CANCEL_METHOD, params)
+            .await
     }
 
     pub async fn goal_create(&mut self, params: GoalCreateParams) -> Result<GoalCreateResult> {
@@ -343,8 +358,46 @@ impl WebSocketServerClient {
         self.core.request_devo("turn/interrupt", params).await
     }
 
-    pub async fn turn_steer(&mut self, params: TurnSteerParams) -> Result<TurnSteerResult> {
-        self.core.request_devo("turn/steer", params).await
+    pub async fn session_queue_push(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueuePushParams,
+    ) -> Result<canonical::rpc_turn::SessionQueuePushResult> {
+        self.core.session_queue_push(params).await
+    }
+
+    pub async fn session_queue_list(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueListParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueListResult> {
+        self.core.session_queue_list(params).await
+    }
+
+    pub async fn session_queue_update(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueUpdateParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueUpdateResult> {
+        self.core.session_queue_update(params).await
+    }
+
+    pub async fn session_queue_remove(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueRemoveParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueRemoveResult> {
+        self.core.session_queue_remove(params).await
+    }
+
+    pub async fn session_queue_steer(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueSteerParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueSteerResult> {
+        self.core.session_queue_steer(params).await
+    }
+
+    pub async fn subscription_create(
+        &mut self,
+        params: canonical::event::SubscriptionCreateParams,
+    ) -> Result<canonical::event::SubscriptionCreateResult> {
+        self.core.subscription_create(params).await
     }
 
     pub async fn approval_respond(&mut self, params: ApprovalResponseParams) -> Result<()> {

@@ -20,6 +20,7 @@ use devo_protocol::RequestUserInputQuestion;
 use devo_protocol::SessionHistoryItem;
 use devo_protocol::SessionRuntimeStatus;
 use devo_protocol::ThreadGoal;
+use devo_protocol::canonical::item::ContextOccupancy;
 use devo_protocol::parse_command::ParsedCommand;
 use devo_protocol::protocol::ExecCommandSource;
 use devo_protocol::protocol::FileChange;
@@ -176,10 +177,12 @@ pub(crate) enum WorkerEvent {
     },
     /// The active session identifier is now known.
     SessionActivated { session_id: SessionId },
-    /// Input queue state updated by the server.
-    InputQueueUpdated {
-        pending_count: usize,
-        pending_texts: Vec<String>,
+    /// Canonical session queue snapshot (`queue/updated` / list / push).
+    QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange,
+        queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+        started_turn_id: Option<TurnId>,
+        entries: Vec<devo_protocol::canonical::queue::QueueEntry>,
     },
     /// A steer (/btw) was accepted by the server.
     SteerAccepted { turn_id: TurnId },
@@ -376,6 +379,11 @@ pub(crate) enum WorkerEvent {
         /// Estimated prompt tokens for the just-completed request.
         prompt_token_estimate: usize,
     },
+    /// Live context-window occupancy breakdown for the active session.
+    ContextUsageUpdated {
+        /// Category occupancy anchored to the latest query display total.
+        occupancy: ContextOccupancy,
+    },
     /// The interrupt request could not be delivered or accepted.
     InterruptFailed {
         /// Human-readable failure reason to restore into the working status.
@@ -556,6 +564,8 @@ pub(crate) enum WorkerEvent {
         reasoning_effort_selection: Option<String>,
         /// Effective reasoning effort currently configured for the next session.
         reasoning_effort: Option<ReasoningEffort>,
+        permission_preset: devo_protocol::PermissionPreset,
+        collaboration_mode: CollaborationMode,
         /// Contextual footer label for the active child agent, when viewing one.
         active_agent_label: Option<String>,
         /// Latest completed query display total for the fresh session.
@@ -607,6 +617,10 @@ pub(crate) enum WorkerEvent {
         pending_texts: Vec<String>,
         /// Collaboration mode restored from the resumed session metadata.
         collaboration_mode: CollaborationMode,
+        /// Permission preset restored from the resumed session metadata.
+        permission_preset: Option<devo_protocol::PermissionPreset>,
+        /// Session auto-compaction token limit override, when one is set.
+        effective_context_window: Option<u64>,
     },
     /// The current session title changed.
     SessionRenamed {
@@ -619,6 +633,11 @@ pub(crate) enum WorkerEvent {
     SessionDeleted {
         /// The deleted session identifier.
         session_id: String,
+    },
+    /// Server confirmed a compaction-threshold hot update.
+    EffectiveContextWindowUpdated {
+        /// Absolute token threshold applied for the active session (model-clamped).
+        effective_context_window: u64,
     },
     /// The active session or its context-compaction transcript item started compaction.
     SessionCompactionStarted,

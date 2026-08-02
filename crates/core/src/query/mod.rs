@@ -17,7 +17,8 @@ pub use event::QueryOptions;
 pub use event::QueryProviderRetryPhase;
 
 pub(crate) use event::emit_query_event;
-pub(crate) use prompt_estimate::estimate_request_prompt_tokens;
+pub use prompt_estimate::RawContextBreakdown;
+pub(crate) use prompt_estimate::estimate_request_context_breakdown;
 pub(crate) use provider_retry::ProviderRetryDecision;
 pub(crate) use provider_retry::provider_retry_decision;
 pub(crate) use provider_retry::wait_for_provider_retry;
@@ -119,14 +120,19 @@ fn hosted_tools_for_web_search(
 ///   budget is high; keeps a tail token window.
 /// - [`CompactionKind::Proactive`]: forced compaction after provider
 ///   `context_too_long`; keeps from the latest user message onward.
+struct CompactionModelRequest<'a> {
+    provider: &'a Arc<dyn ModelProviderSDK>,
+    model_slug: &'a str,
+    request_model: &'a str,
+    max_tokens: usize,
+}
+
 async fn summarize_and_compact(
     session: &mut SessionState,
     on_event: &Option<EventCallback>,
-    provider: &Arc<dyn ModelProviderSDK>,
-    model_slug: &str,
-    request_model: &str,
-    max_tokens: usize,
+    model: CompactionModelRequest<'_>,
     kind: CompactionKind,
+    cancel_token: Option<&CancellationToken>,
 ) {
     let items: Vec<ResponseItem> = session
         .prompt_source_messages()
@@ -147,19 +153,19 @@ async fn summarize_and_compact(
     };
 
     let summarizer = DefaultHistorySummarizer::with_models(
-        Arc::clone(provider),
-        model_slug,
-        request_model,
-        max_tokens,
+        Arc::clone(model.provider),
+        model.model_slug,
+        model.request_model,
+        model.max_tokens,
     );
 
     emit_query_event(on_event, QueryEvent::ContextCompactionStarted).await;
-    match compact_history(&items, &token_info, &summarizer, &config).await {
+    match compact_history(&items, &token_info, &summarizer, &config, cancel_token).await {
         Ok(CompactAction::Replaced(compacted_items)) => {
             let new_messages: Vec<Message> = compacted_items
-                .into_iter()
+                .iter()
                 .filter_map(|item| match item {
-                    ResponseItem::Message(msg) => Some(msg),
+                    ResponseItem::Message(msg) => Some(msg.clone()),
                     _ => None,
                 })
                 .collect();
@@ -169,7 +175,11 @@ async fn summarize_and_compact(
                 .saturating_sub(new_messages.len());
             info!("LLM compaction removed {removed} messages");
             session.set_prompt_messages(new_messages);
-            emit_query_event(on_event, QueryEvent::ContextCompactionCompleted).await;
+            emit_query_event(
+                on_event,
+                QueryEvent::ContextCompactionCompleted { compacted_items },
+            )
+            .await;
         }
         Ok(CompactAction::Skipped) => {
             debug!("LLM compaction skipped, nothing to compact");
@@ -503,11 +513,14 @@ pub async fn query(
             summarize_and_compact(
                 session,
                 &on_event,
-                &compaction_provider,
-                &compaction_model_slug,
-                &compaction_request_model,
-                turn_config.model.max_tokens.unwrap_or(4096) as usize,
+                CompactionModelRequest {
+                    provider: &compaction_provider,
+                    model_slug: &compaction_model_slug,
+                    request_model: &compaction_request_model,
+                    max_tokens: turn_config.model.max_tokens.unwrap_or(4096) as usize,
+                },
                 CompactionKind::Auto,
+                options.cancel_token.as_ref(),
             )
             .await;
         }
@@ -608,7 +621,9 @@ pub async fn query(
             reasoning_effort: request_reasoning_effort,
             extra_body,
         };
-        session.prompt_token_estimate = estimate_request_prompt_tokens(&request);
+        let breakdown = estimate_request_context_breakdown(&request);
+        session.prompt_token_estimate = breakdown.total().try_into().unwrap_or(usize::MAX);
+        session.raw_context_breakdown = Some(breakdown);
         debug!(
             prompt_source_messages = prompt_source_message_count,
             prompt_source_items = prompt_source_item_count,
@@ -659,11 +674,14 @@ pub async fn query(
                         summarize_and_compact(
                             session,
                             &on_event,
-                            &compaction_provider,
-                            &compaction_model_slug,
-                            &compaction_request_model,
-                            turn_config.model.max_tokens.unwrap_or(4096) as usize,
+                            CompactionModelRequest {
+                                provider: &compaction_provider,
+                                model_slug: &compaction_model_slug,
+                                request_model: &compaction_request_model,
+                                max_tokens: turn_config.model.max_tokens.unwrap_or(4096) as usize,
+                            },
                             CompactionKind::Proactive,
+                            options.cancel_token.as_ref(),
                         )
                         .await;
                         session.turn_count -= 1;

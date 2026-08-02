@@ -50,8 +50,6 @@ use crate::ui_consts::FOOTER_INDENT_COLS;
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
-use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -92,8 +90,6 @@ pub(crate) struct FooterProps {
 }
 
 const FOOTER_CONTEXT_GAP_COLS: u16 = 1;
-const MODE_SWITCH_HINT: &str = " SHIFT+TAB switch";
-const MODE_SWITCH_HINT_COLOR: Color = Color::Rgb(160, 163, 168);
 
 /// Selects which footer content is rendered.
 ///
@@ -273,16 +269,9 @@ fn left_side_line(input_mode_indicator: Option<InputMode>, state: LeftSideState)
 
 fn mode_indicator_spans(
     input_mode_indicator: InputMode,
-    show_switch_hint: bool,
+    _show_switch_hint: bool,
 ) -> Vec<Span<'static>> {
-    let mut spans = vec![input_mode_indicator.styled_span(/*show_cycle_hint*/ false)];
-    if show_switch_hint && matches!(input_mode_indicator, InputMode::Build | InputMode::Plan) {
-        spans.push(Span::styled(
-            MODE_SWITCH_HINT,
-            Style::default().fg(MODE_SWITCH_HINT_COLOR),
-        ));
-    }
-    spans
+    vec![input_mode_indicator.styled_span(/*show_cycle_hint*/ false)]
 }
 
 pub(crate) enum SummaryLeft {
@@ -600,7 +589,7 @@ pub(crate) fn status_line_with_input_mode(
     if let Some(input_mode_indicator) = input_mode_indicator {
         spans.extend(mode_indicator_spans(
             input_mode_indicator,
-            /*show_switch_hint*/ true,
+            /*show_switch_hint*/ false,
         ));
     }
     if let Some(status_line) = status_line {
@@ -728,6 +717,25 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect()
     }
+
+    #[test]
+    fn shortcut_overlay_lists_queue_delete_hint() {
+        let state = ShortcutsState {
+            use_shift_enter_hint: false,
+            esc_backtrack_hint: false,
+            is_wsl: false,
+            input_modes_enabled: false,
+        };
+        let rendered = shortcut_overlay_lines(state)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("ctrl + d to delete selected queue item"),
+            "overlay:\n{rendered}"
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -762,6 +770,9 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
     let mut shell_commands = Line::from("");
     let mut newline = Line::from("");
     let mut queue_message_tab = Line::from("");
+    let mut queue_steer = Line::from("");
+    let mut queue_edit = Line::from("");
+    let mut queue_delete = Line::from("");
     let mut file_paths = Line::from("");
     let mut paste_image = Line::from("");
     let mut external_editor = Line::from("");
@@ -777,6 +788,9 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
                 ShortcutId::ShellCommands => shell_commands = text,
                 ShortcutId::InsertNewline => newline = text,
                 ShortcutId::QueueMessageTab => queue_message_tab = text,
+                ShortcutId::QueueSteer => queue_steer = text,
+                ShortcutId::QueueEdit => queue_edit = text,
+                ShortcutId::QueueDelete => queue_delete = text,
                 ShortcutId::FilePaths => file_paths = text,
                 ShortcutId::PasteImage => paste_image = text,
                 ShortcutId::ExternalEditor => external_editor = text,
@@ -793,6 +807,9 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
         shell_commands,
         newline,
         queue_message_tab,
+        queue_steer,
+        queue_edit,
+        queue_delete,
         file_paths,
         paste_image,
         external_editor,
@@ -886,6 +903,9 @@ enum ShortcutId {
     ShellCommands,
     InsertNewline,
     QueueMessageTab,
+    QueueSteer,
+    QueueEdit,
+    QueueDelete,
     FilePaths,
     PasteImage,
     ExternalEditor,
@@ -1003,6 +1023,33 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
         }],
         prefix: "",
         label: " to queue message",
+    },
+    ShortcutDescriptor {
+        id: ShortcutId::QueueSteer,
+        bindings: &[ShortcutBinding {
+            key: key_hint::ctrl(KeyCode::Char('s')),
+            condition: DisplayCondition::Always,
+        }],
+        prefix: "",
+        label: " to steer selected queue item",
+    },
+    ShortcutDescriptor {
+        id: ShortcutId::QueueEdit,
+        bindings: &[ShortcutBinding {
+            key: key_hint::ctrl(KeyCode::Char('e')),
+            condition: DisplayCondition::Always,
+        }],
+        prefix: "",
+        label: " to edit selected queue item",
+    },
+    ShortcutDescriptor {
+        id: ShortcutId::QueueDelete,
+        bindings: &[ShortcutBinding {
+            key: key_hint::ctrl(KeyCode::Char('d')),
+            condition: DisplayCondition::Always,
+        }],
+        prefix: "",
+        label: " to delete selected queue item",
     },
     ShortcutDescriptor {
         id: ShortcutId::FilePaths,

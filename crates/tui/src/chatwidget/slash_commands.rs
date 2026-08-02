@@ -3,21 +3,24 @@
 //! The bottom pane parses slash commands, and this module translates them into
 //! chat-widget state changes or app commands sent back to the host loop.
 
-use ratatui::style::Stylize;
 use ratatui::text::Line;
 
 use crate::app_command::AppCommand;
 use crate::app_command::GoalObjectiveMode;
 use crate::app_event::AppEvent;
+use crate::app_event_sender::AppEventSender;
+use crate::bottom_pane::DeleteSessionConfirmView;
+use crate::bottom_pane::SessionTokenTotals;
+use crate::bottom_pane::StatusPanelSnapshot;
 use crate::get_git_diff::get_git_diff;
 use crate::history_cell;
 use crate::history_cell::PlainHistoryCell;
 use crate::slash_command::SlashCommand;
 use devo_protocol::MAX_THREAD_GOAL_OBJECTIVE_CHARS;
-use devo_protocol::PermissionPreset;
 use devo_protocol::ThreadGoalStatus;
 
 use super::ChatWidget;
+use super::permission_preset_label;
 
 impl ChatWidget {
     pub(super) fn can_change_configuration(&self) -> bool {
@@ -33,13 +36,13 @@ impl ChatWidget {
             SlashCommand::Delete => "session",
             SlashCommand::Resume => "session",
             SlashCommand::Permissions => "permissions",
+            SlashCommand::Settings => "settings",
             SlashCommand::Diff => "diff",
             SlashCommand::Mcp
             | SlashCommand::Skills
             | SlashCommand::Goal
             | SlashCommand::Exit
             | SlashCommand::Status
-            | SlashCommand::Clear
             | SlashCommand::ShowReasoning
             | SlashCommand::Rename
             | SlashCommand::Btw => {
@@ -64,56 +67,24 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::Exit(crate::app_event::ExitMode::ShutdownFirst));
             }
-            SlashCommand::Clear => {
-                self.clear_transcript_view();
-                self.set_status_message("Transcript cleared");
-            }
             SlashCommand::Status => {
-                let model = self
-                    .session
-                    .model
-                    .as_ref()
-                    .map(|m| m.slug.as_str())
-                    .unwrap_or("unknown");
-                let reasoning_effort_selection = self
-                    .reasoning_effort_selection
-                    .as_deref()
-                    .unwrap_or("default");
-                let cwd = self.session.cwd.display().to_string();
-                let turns = self.turn_count;
-                let tokens_in = Self::format_token_count(self.total_input_tokens);
-                let tokens_out = Self::format_token_count(self.total_output_tokens);
-                let lines = history_cell::with_border(vec![
-                    Line::from("Session Status".bold()),
-                    Line::from(""),
-                    Line::from(format!("  model:       {model}")),
-                    Line::from(format!(
-                        "  reasoning_effort_selection:    {reasoning_effort_selection}"
-                    )),
-                    Line::from(format!("  cwd:         {cwd}")),
-                    Line::from(format!(
-                        "  permissions: {}",
-                        match self.permission_preset {
-                            PermissionPreset::Default => "default",
-                            PermissionPreset::AutoReview => "auto-review",
-                            PermissionPreset::FullAccess => "full-access",
-                        }
-                    )),
-                    Line::from(format!(
-                        "  sandbox:     {}",
-                        self.sandbox_profile.as_deref().unwrap_or("workspace")
-                    )),
-                    Line::from(format!(
-                        "  reasoning:   {}",
-                        super::reasoning_view::reasoning_view_label(self.collapse_reasoning)
-                    )),
-                    Line::from(format!("  turns:       {turns}")),
-                    Line::from(format!(
-                        "  tokens:      \u{2191}{tokens_in} \u{2193}{tokens_out}",
-                    )),
-                ]);
-                self.add_to_history(PlainHistoryCell::new(lines));
-                self.set_status_message("Session status shown");
+                self.bottom_pane.open_status_panel(
+                    self.last_context_occupancy.clone(),
+                    SessionTokenTotals {
+                        input: self.total_input_tokens,
+                        output: self.total_output_tokens,
+                        cache_read: self.total_cache_read_tokens,
+                    },
+                    StatusPanelSnapshot {
+                        cwd: self.session.cwd.display().to_string(),
+                        permissions_label: permission_preset_label(self.permission_preset)
+                            .to_string(),
+                    },
+                );
+                self.set_status_message("Status shown");
+            }
+            SlashCommand::Settings => {
+                self.open_settings_hub();
             }
             SlashCommand::Permissions => {
                 self.open_permissions_picker();
@@ -122,7 +93,7 @@ impl ChatWidget {
                 self.open_reasoning_view_picker();
             }
             SlashCommand::Theme => {
-                self.open_theme_picker();
+                self.open_settings_hub_appearance();
             }
             SlashCommand::Model => {
                 if argument.is_empty() {
@@ -171,9 +142,7 @@ impl ChatWidget {
                 self.set_status_message("Renaming session");
             }
             SlashCommand::Delete => {
-                self.app_event_tx
-                    .send(AppEvent::Command(AppCommand::delete_session()));
-                self.set_status_message("Deleting session");
+                self.show_delete_session_confirmation();
             }
             SlashCommand::Resume => {
                 self.resume_browser = None;
@@ -285,5 +254,22 @@ impl ChatWidget {
                 GoalObjectiveMode::ConfirmIfExists,
             )));
         self.set_status_message("Setting goal");
+    }
+
+    pub(super) fn show_delete_session_confirmation(&mut self) {
+        self.bottom_pane
+            .open_popup_view(Box::new(DeleteSessionConfirmView::new(
+                self.app_event_tx.clone(),
+                self.active_accent_color(),
+                Box::new(|tx: &AppEventSender| {
+                    tx.send(AppEvent::Command(AppCommand::delete_session()));
+                }),
+                Box::new(|tx: &AppEventSender| {
+                    tx.send(AppEvent::StatusMessageChanged {
+                        message: "Session unchanged".to_string(),
+                    });
+                }),
+            )));
+        self.set_status_message("Confirm session delete");
     }
 }

@@ -240,6 +240,8 @@ fn session_projection_maps_core_record() {
         title_state: SessionTitleState::Final(SessionTitleFinalSource::ExplicitCreate),
         sandbox_policy: "workspace-write".into(),
         approval_mode: "never".into(),
+        effective_context_window: None,
+        permission_preset: None,
         tokens_used: 0,
         first_user_message: None,
         archived_at: None,
@@ -249,6 +251,7 @@ fn session_projection_maps_core_record() {
         parent_session_id: None,
         session_context: None,
         latest_turn_context: None,
+        collaboration_mode: None,
         schema_version: 2,
     };
 
@@ -276,6 +279,7 @@ fn turn_projection_preserves_turn_status_vocabulary() {
         input_token_estimate: None,
         usage: None,
         latest_query_usage: None,
+        context_occupancy: None,
         stop_reason: None,
         failure_reason: None,
         error: None,
@@ -364,8 +368,11 @@ fn session_title_updated_event_serializes_expected_kind() {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         },
     });
 
@@ -401,8 +408,11 @@ fn session_compaction_events_serialize_expected_kinds() {
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
+        effective_context_window: None,
+        permission_preset: None,
     };
 
     let started = ServerEvent::SessionCompactionStarted(devo_server::SessionEventPayload {

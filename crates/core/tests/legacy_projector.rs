@@ -81,6 +81,7 @@ fn session_record(n: u128) -> SessionRecord {
         title_state: SessionTitleState::Final(SessionTitleFinalSource::ModelGenerated),
         sandbox_policy: "workspace-write".into(),
         approval_mode: "on-request".into(),
+        effective_context_window: None,
         tokens_used: 12345,
         first_user_message: Some("Fix the flaky test".into()),
         archived_at: None,
@@ -90,6 +91,8 @@ fn session_record(n: u128) -> SessionRecord {
         parent_session_id: None,
         session_context: None,
         latest_turn_context: None,
+        collaboration_mode: None,
+        permission_preset: None,
         schema_version: 2,
     }
 }
@@ -118,6 +121,7 @@ fn turn_record(n: u128, session: u128) -> TurnRecord {
             total_tokens: Some(150),
         }),
         latest_query_usage: None,
+        context_occupancy: None,
         stop_reason: None,
         failure_reason: None,
         error: None,
@@ -292,6 +296,7 @@ fn basic_session_lines() -> Vec<RolloutLine> {
             turn_id: turn_id(turn),
             summary_item_id: item_id(0xb9),
             preserved_item_ids: vec![item_id(0xb3), item_id(0xb4)],
+            context_occupancy: None,
         })),
         RolloutLine::SessionRollback(Box::new(SessionRollbackLine {
             timestamp: ts(32),

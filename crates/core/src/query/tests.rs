@@ -1275,7 +1275,9 @@ fn recorded_compaction_events(events: &[QueryEvent]) -> Vec<RecordedCompactionEv
         .iter()
         .filter_map(|event| match event {
             QueryEvent::ContextCompactionStarted => Some(RecordedCompactionEvent::Started),
-            QueryEvent::ContextCompactionCompleted => Some(RecordedCompactionEvent::Completed),
+            QueryEvent::ContextCompactionCompleted { .. } => {
+                Some(RecordedCompactionEvent::Completed)
+            }
             QueryEvent::ContextCompactionFailed { message } => {
                 Some(RecordedCompactionEvent::Failed {
                     message: message.clone(),
@@ -1328,11 +1330,14 @@ async fn automatic_compaction_emits_started_then_completed_when_history_is_repla
     super::summarize_and_compact(
         &mut session,
         &on_event,
-        &provider_sdk,
-        "compaction-model",
-        "compaction-request-model",
-        /*max_tokens*/ 4096,
+        super::CompactionModelRequest {
+            provider: &provider_sdk,
+            model_slug: "compaction-model",
+            request_model: "compaction-request-model",
+            max_tokens: 4096,
+        },
         CompactionKind::Auto,
+        /*cancel_token*/ None,
     )
     .await;
 
@@ -1370,11 +1375,14 @@ async fn automatic_compaction_emits_failed_when_compaction_is_skipped() {
     super::summarize_and_compact(
         &mut session,
         &on_event,
-        &provider_sdk,
-        "compaction-model",
-        "compaction-request-model",
-        /*max_tokens*/ 4096,
+        super::CompactionModelRequest {
+            provider: &provider_sdk,
+            model_slug: "compaction-model",
+            request_model: "compaction-request-model",
+            max_tokens: 4096,
+        },
         CompactionKind::Auto,
+        /*cancel_token*/ None,
     )
     .await;
 
@@ -1406,11 +1414,14 @@ async fn proactive_compaction_emits_failed_when_compaction_errors() {
     super::summarize_and_compact(
         &mut session,
         &on_event,
-        &provider_sdk,
-        "compaction-model",
-        "compaction-request-model",
-        /*max_tokens*/ 4096,
+        super::CompactionModelRequest {
+            provider: &provider_sdk,
+            model_slug: "compaction-model",
+            request_model: "compaction-request-model",
+            max_tokens: 4096,
+        },
         CompactionKind::Proactive,
+        /*cancel_token*/ None,
     )
     .await;
 
@@ -1497,7 +1508,7 @@ async fn query_retries_transient_stream_event_errors_before_content() {
         .filter_map(|event| match event {
             QueryEvent::ProviderRetryStatus(status) => Some(status.clone()),
             QueryEvent::ContextCompactionStarted
-            | QueryEvent::ContextCompactionCompleted
+            | QueryEvent::ContextCompactionCompleted { .. }
             | QueryEvent::ContextCompactionFailed { .. }
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)
@@ -1587,7 +1598,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
         .filter_map(|event| match event {
             QueryEvent::ProviderRetryStatus(status) => Some(status.clone()),
             QueryEvent::ContextCompactionStarted
-            | QueryEvent::ContextCompactionCompleted
+            | QueryEvent::ContextCompactionCompleted { .. }
             | QueryEvent::ContextCompactionFailed { .. }
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)

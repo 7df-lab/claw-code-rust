@@ -464,6 +464,13 @@ impl ServerClientCore {
             .await
     }
 
+    pub(crate) async fn session_compaction_update(
+        &mut self,
+        params: SessionCompactionUpdateParams,
+    ) -> Result<SessionCompactionUpdateResult> {
+        self.request_devo("session/compaction/update", params).await
+    }
+
     pub(crate) async fn session_sandbox_profile_update(
         &mut self,
         params: SessionSandboxProfileUpdateParams,
@@ -475,8 +482,15 @@ impl ServerClientCore {
     pub(crate) async fn session_compact(
         &mut self,
         params: SessionCompactParams,
-    ) -> Result<SessionCompactResult> {
+    ) -> Result<TurnStartResult> {
         self.request_devo("session/compact", params).await
+    }
+
+    pub(crate) async fn session_cancel(
+        &mut self,
+        params: AcpCancelParams,
+    ) -> Result<AcpEmptyResult> {
+        self.request(ACP_SESSION_CANCEL_METHOD, params).await
     }
 
     pub(crate) async fn goal_create(
@@ -652,8 +666,46 @@ impl ServerClientCore {
         self.request_devo("turn/interrupt", params).await
     }
 
-    pub(crate) async fn turn_steer(&mut self, params: TurnSteerParams) -> Result<TurnSteerResult> {
-        self.request_devo("turn/steer", params).await
+    pub(crate) async fn session_queue_push(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueuePushParams,
+    ) -> Result<canonical::rpc_turn::SessionQueuePushResult> {
+        self.request_devo("session/queue/push", params).await
+    }
+
+    pub(crate) async fn session_queue_list(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueListParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueListResult> {
+        self.request_devo("session/queue/list", params).await
+    }
+
+    pub(crate) async fn session_queue_update(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueUpdateParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueUpdateResult> {
+        self.request_devo("session/queue/update", params).await
+    }
+
+    pub(crate) async fn session_queue_remove(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueRemoveParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueRemoveResult> {
+        self.request_devo("session/queue/remove", params).await
+    }
+
+    pub(crate) async fn session_queue_steer(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueSteerParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueSteerResult> {
+        self.request_devo("session/queue/steer", params).await
+    }
+
+    pub(crate) async fn subscription_create(
+        &mut self,
+        params: canonical::event::SubscriptionCreateParams,
+    ) -> Result<canonical::event::SubscriptionCreateResult> {
+        self.request_devo("subscription/create", params).await
     }
 
     pub(crate) async fn reference_search_start(
@@ -1028,8 +1080,11 @@ fn acp_session_metadata_from_start_params(
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
+        effective_context_window: None,
+        permission_preset: None,
     }
 }
 
@@ -1066,8 +1121,11 @@ fn acp_session_metadata_from_session_info(session_info: &AcpSessionInfo) -> Sess
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: Default::default(),
+        effective_context_window: None,
+        permission_preset: None,
     }
 }
 

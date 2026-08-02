@@ -199,14 +199,19 @@ Top-level keys in `DEVO_HOME/config.toml` also store a few UI preferences:
 ```toml
 theme = "aurora"
 collapse_reasoning = true
+compaction_token_limit = 250000
 ```
 
-- `theme` selects the TUI color theme (also set via `/theme`).
+- `theme` selects the TUI color theme (also set via Settings › Appearance).
 - `collapse_reasoning` controls reasoning display (also set via `/show-reasoning`):
   - `true` (default): while streaming, show only the latest 3 lines; when finished, keep short
     reasoning in full and collapse longer reasoning to a one-line `Thought · …`
     summary (full text remains available in Ctrl+T).
   - `false`: show full reasoning while streaming and after it finishes.
+- `compaction_token_limit` is the global absolute auto-compaction threshold in tokens
+  (also set via Settings › Compaction threshold). When set, every session clamps this
+  value to the active model's `context_window`. When unset, sessions use the model
+  effective context window.
 
 ### Migrating from `models.json`
 

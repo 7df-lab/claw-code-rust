@@ -76,7 +76,7 @@ impl ThemeSet {
             "Use Esc to interrupt an active task.",
             "Press Up/Down in the composer to browse input history.",
             "Use /model to switch between configured models.",
-            "Use /theme to change the UI color scheme.",
+            "Use /settings to change the UI color scheme.",
             "Use /status to see session configuration and token usage.",
             "Use /compact to reclaim context window space.",
             "Use /resume to pick up a previous chat.",

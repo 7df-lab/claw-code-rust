@@ -171,6 +171,7 @@ impl RolloutStore {
             title_state,
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
+            effective_context_window: None,
             tokens_used: 0,
             first_user_message: None,
             archived_at: None,
@@ -180,6 +181,8 @@ impl RolloutStore {
             parent_session_id,
             session_context: None,
             latest_turn_context: None,
+            collaboration_mode: None,
+            permission_preset: None,
             schema_version: 2,
         }
     }
@@ -1027,6 +1030,7 @@ struct ReplayState {
     latest_turn: Option<TurnRecord>,
     latest_turn_metadata: Option<TurnMetadata>,
     latest_query_usage: Option<devo_protocol::TurnUsage>,
+    latest_context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
     turn_records_by_id: HashMap<TurnId, TurnRecord>,
     loaded_item_count: u64,
     next_item_seq: u64,
@@ -1053,6 +1057,27 @@ struct ReplayState {
     superseded_turn_ids: HashSet<TurnId>,
     summarized_turn_ids: HashSet<TurnId>,
     last_activity_at: Option<chrono::DateTime<Utc>>,
+}
+
+/// Auto-compact / status pressure restored on resume.
+///
+/// Prefers post-compaction (or tip) occupancy so a prior large query total cannot
+/// re-trigger compaction after the context was already reduced. Falls back to
+/// latest-query display total, then the reconstituted prompt estimate.
+fn resume_context_pressure_tokens(
+    occupancy: Option<&devo_protocol::canonical::item::ContextOccupancy>,
+    latest_query_usage: Option<&devo_protocol::TurnUsage>,
+    prompt_token_estimate: usize,
+) -> (usize, usize) {
+    let last_turn_tokens = occupancy
+        .map(|occupancy| occupancy.total_tokens as usize)
+        .or_else(|| latest_query_usage.map(devo_protocol::TurnUsage::display_total_tokens))
+        .unwrap_or(prompt_token_estimate);
+    let last_input_tokens = latest_query_usage
+        .map(|usage| usage.input_tokens as usize)
+        .or_else(|| occupancy.map(|occupancy| occupancy.total_tokens as usize))
+        .unwrap_or(prompt_token_estimate);
+    (last_turn_tokens, last_input_tokens)
 }
 
 impl ReplayState {
@@ -1105,6 +1130,9 @@ impl ReplayState {
                     self.last_turn_tokens = 0;
                     self.latest_query_usage = None;
                 }
+                if let Some(occupancy) = turn.context_occupancy.clone() {
+                    self.latest_context_occupancy = Some(occupancy);
+                }
                 self.latest_turn_metadata = Some(turn_metadata_from_record(&turn));
                 self.turn_kinds_by_id.insert(turn.id, turn.kind.clone());
                 if let Some(session_context) = turn.session_context.clone() {
@@ -1153,6 +1181,9 @@ impl ReplayState {
                 self.session_context_recorded = true;
             }
             RolloutLine::CompactionSnapshot(line) => {
+                if let Some(occupancy) = line.context_occupancy.clone() {
+                    self.latest_context_occupancy = Some(occupancy);
+                }
                 self.latest_compaction_snapshot = Some(*line);
             }
             RolloutLine::MessageEditRecorded(line) => {
@@ -1310,6 +1341,29 @@ impl ReplayState {
         if let Some(latest_turn_context) = core_session.latest_turn_context.as_ref() {
             core_session.collaboration_mode = latest_turn_context.collaboration_mode;
         }
+        if let Some(mode) = record.collaboration_mode {
+            core_session.collaboration_mode = mode;
+        }
+        if let Some(preset) = record.permission_preset {
+            let safety_preset = match preset {
+                devo_protocol::PermissionPreset::Default => devo_safety::PermissionPreset::Default,
+                devo_protocol::PermissionPreset::AutoReview => {
+                    devo_safety::PermissionPreset::AutoReview
+                }
+                devo_protocol::PermissionPreset::FullAccess => {
+                    devo_safety::PermissionPreset::FullAccess
+                }
+            };
+            let profile = devo_safety::RuntimePermissionProfile::from_preset(
+                safety_preset,
+                record.cwd.clone(),
+            )
+            .with_additional_roots(record.additional_directories.clone());
+            let sandbox = Some(profile.implied_sandbox_profile().to_string());
+            core_session.config.permission_mode = profile.permission_mode();
+            core_session.config.permission_profile = profile;
+            core_session.config.sandbox_profile = sandbox;
+        }
         core_session.turn_count = self.turns_seen as usize;
         core_session.total_input_tokens = self.total_input_tokens;
         core_session.total_output_tokens = self.total_output_tokens;
@@ -1325,16 +1379,13 @@ impl ReplayState {
             devo_protocol::approx_tokens_from_byte_count(prompt_bytes)
                 .try_into()
                 .unwrap_or(usize::MAX);
-        core_session.last_input_tokens = self
-            .latest_query_usage
-            .as_ref()
-            .map(|usage| usage.input_tokens as usize)
-            .unwrap_or(core_session.prompt_token_estimate);
-        core_session.last_turn_tokens = self
-            .latest_query_usage
-            .as_ref()
-            .map(devo_protocol::TurnUsage::display_total_tokens)
-            .unwrap_or(core_session.prompt_token_estimate);
+        let (last_turn_tokens, last_input_tokens) = resume_context_pressure_tokens(
+            self.latest_context_occupancy.as_ref(),
+            self.latest_query_usage.as_ref(),
+            core_session.prompt_token_estimate,
+        );
+        core_session.last_input_tokens = last_input_tokens;
+        core_session.last_turn_tokens = last_turn_tokens;
         let pending_turn_queue = std::sync::Arc::clone(&core_session.pending_turn_queue);
         let steer_input_queue = std::sync::Arc::clone(&core_session.steer_input_queue);
         let summary_model_selection = self
@@ -1387,6 +1438,24 @@ impl ReplayState {
         record.model_binding_id = turn_config.model_binding_id.clone();
         record.reasoning_effort_selection = summary_reasoning_effort_selection.clone();
 
+        let global_compaction_limit = runtime_context
+            .config_store
+            .lock()
+            .expect("app config store mutex should not be poisoned")
+            .effective_config()
+            .compaction_token_limit;
+        let applied_compaction_limit = crate::runtime::context_occupancy::resolved_compaction_limit(
+            global_compaction_limit,
+            &turn_config.model,
+        );
+        // Apply before wrapping in Mutex so resume never needs to lock a
+        // single-owner Arc that `from_runtime_session` later unwraps.
+        // Prefer the global config preference; ignore legacy session overrides.
+        crate::runtime::context_occupancy::apply_resolved_compaction_limit(
+            &mut core_session.config,
+            applied_compaction_limit as usize,
+        );
+
         let summary = SessionMetadata {
             session_id: record.id,
             cwd: record.cwd.clone(),
@@ -1413,12 +1482,20 @@ impl ReplayState {
             prompt_token_estimate: core_session.prompt_token_estimate,
             last_query_usage: self.latest_query_usage.clone(),
             last_query_total_tokens: self
-                .latest_query_usage
+                .latest_context_occupancy
                 .as_ref()
-                .map(devo_protocol::TurnUsage::display_total_tokens)
+                .map(|occupancy| occupancy.total_tokens as usize)
+                .or_else(|| {
+                    self.latest_query_usage
+                        .as_ref()
+                        .map(devo_protocol::TurnUsage::display_total_tokens)
+                })
                 .unwrap_or(0),
+            last_context_occupancy: self.latest_context_occupancy.clone(),
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: core_session.collaboration_mode,
+            effective_context_window: Some(applied_compaction_limit),
+            permission_preset: record.permission_preset,
         };
 
         let config = core_session.config.clone();
@@ -1434,6 +1511,7 @@ impl ReplayState {
             history_items: replayed_history_items,
             persisted_turn_items: replayed_persisted_turn_items,
             latest_compaction_snapshot: self.latest_compaction_snapshot,
+            turn_records_by_id: self.turn_records_by_id,
             pending_turn_queue,
             steer_input_queue,
             agent_tool_policy: Default::default(),
@@ -1632,6 +1710,7 @@ impl ReplayState {
         self.last_input_tokens = 0;
         self.last_turn_tokens = 0;
         self.latest_query_usage = None;
+        self.latest_context_occupancy = None;
 
         for turn_id in &self.turn_order {
             let Some(turn) = self.turn_records_by_id.get(turn_id) else {
@@ -1655,6 +1734,16 @@ impl ReplayState {
                 self.last_turn_tokens = 0;
                 self.latest_query_usage = None;
             }
+            if let Some(occupancy) = turn.context_occupancy.clone() {
+                self.latest_context_occupancy = Some(occupancy);
+            }
+        }
+        if let Some(occupancy) = self
+            .latest_compaction_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.context_occupancy.clone())
+        {
+            self.latest_context_occupancy = Some(occupancy);
         }
     }
 
@@ -2197,12 +2286,21 @@ pub(crate) fn session_metadata_from_record(
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
         collaboration_mode: record
-            .latest_turn_context
-            .as_ref()
-            .map(|context| context.collaboration_mode)
+            .collaboration_mode
+            .or_else(|| {
+                record
+                    .latest_turn_context
+                    .as_ref()
+                    .map(|context| context.collaboration_mode)
+            })
             .unwrap_or_default(),
+        // Do not revive legacy session-record overrides. Applied window comes
+        // from AppConfig when the session is hydrated into a RuntimeSession.
+        effective_context_window: None,
+        permission_preset: record.permission_preset,
     }
 }
 
@@ -2230,6 +2328,7 @@ pub(crate) fn build_turn_record(
     session_context: Option<devo_core::SessionContext>,
     turn_context: Option<devo_core::TurnContext>,
     latest_query_usage: Option<devo_core::TurnUsage>,
+    context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
 ) -> TurnRecord {
     TurnRecord {
         id: turn.turn_id,
@@ -2247,6 +2346,7 @@ pub(crate) fn build_turn_record(
         input_token_estimate: None,
         usage: turn.usage.clone(),
         latest_query_usage,
+        context_occupancy,
         stop_reason: turn.stop_reason.clone(),
         failure_reason: turn.failure_reason,
         error: None,
@@ -2446,6 +2546,121 @@ mod tests {
     }
 
     #[test]
+    fn replay_prefers_compaction_occupancy_over_prior_turn() {
+        use devo_protocol::TurnUsage;
+        use pretty_assertions::assert_eq;
+
+        let now = Utc.with_ymd_and_hms(2026, 7, 8, 10, 0, 0).unwrap();
+        let session_id = SessionId::new();
+        let turn_id = TurnId::new();
+        let mut replay = ReplayState::default();
+        let turn_occupancy = devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
+        );
+        let compact_occupancy =
+            devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+                /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
+                /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 8_000,
+            );
+
+        replay
+            .apply_line(RolloutLine::Turn(Box::new(TurnLine {
+                timestamp: now,
+                turn: TurnRecord {
+                    id: turn_id,
+                    session_id,
+                    sequence: 1,
+                    started_at: now,
+                    completed_at: Some(now),
+                    status: TurnStatus::Completed,
+                    kind: TurnKind::Regular,
+                    model: "test-model".into(),
+                    model_binding_id: None,
+                    reasoning_effort_selection: None,
+                    request_model: "test-model".into(),
+                    request_thinking: None,
+                    input_token_estimate: None,
+                    usage: None,
+                    latest_query_usage: Some(TurnUsage {
+                        input_tokens: 50,
+                        output_tokens: 5,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        total_tokens: Some(55),
+                    }),
+                    context_occupancy: Some(turn_occupancy.clone()),
+                    stop_reason: None,
+                    failure_reason: None,
+                    error: None,
+                    session_context: None,
+                    turn_context: None,
+                    schema_version: 4,
+                },
+            })))
+            .expect("turn");
+        assert_eq!(replay.latest_context_occupancy, Some(turn_occupancy));
+        replay
+            .apply_line(RolloutLine::CompactionSnapshot(Box::new(
+                CompactionSnapshotLine {
+                    timestamp: now,
+                    session_id,
+                    turn_id,
+                    summary_item_id: ItemId::new(),
+                    preserved_item_ids: Vec::new(),
+                    context_occupancy: Some(compact_occupancy.clone()),
+                },
+            )))
+            .expect("compaction");
+        assert_eq!(replay.latest_context_occupancy, Some(compact_occupancy));
+    }
+
+    #[test]
+    fn resume_context_pressure_prefers_compaction_occupancy_over_large_query() {
+        use pretty_assertions::assert_eq;
+
+        use devo_protocol::TurnUsage;
+        use devo_protocol::canonical::item::ContextOccupancy;
+
+        let occupancy = ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 250_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
+        );
+        let usage = TurnUsage {
+            input_tokens: 300_000,
+            output_tokens: 20_000,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            reasoning_output_tokens: None,
+            total_tokens: Some(320_000),
+        };
+
+        let (last_turn, last_input) = super::resume_context_pressure_tokens(
+            Some(&occupancy),
+            Some(&usage),
+            /*prompt_token_estimate*/ 12_000,
+        );
+        assert_eq!(last_turn, 50_000);
+        assert_eq!(last_input, 300_000);
+
+        let (last_turn, last_input) = super::resume_context_pressure_tokens(
+            /*occupancy*/ None,
+            Some(&usage),
+            /*prompt_token_estimate*/ 12_000,
+        );
+        assert_eq!(last_turn, 320_000);
+        assert_eq!(last_input, 300_000);
+
+        let (last_turn, last_input) = super::resume_context_pressure_tokens(
+            /*occupancy*/ None, /*latest_query_usage*/ None,
+            /*prompt_token_estimate*/ 12_000,
+        );
+        assert_eq!(last_turn, 12_000);
+        assert_eq!(last_input, 12_000);
+    }
+
+    #[test]
     fn replay_preserves_latest_query_usage_when_latest_turn_has_no_usage() {
         use devo_protocol::TurnUsage;
 
@@ -2480,6 +2695,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: Some(usage.clone()),
                     latest_query_usage: Some(usage.clone()),
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2508,6 +2724,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: Some(devo_protocol::TurnFailureReason::MaxTurnRequests),
                     error: None,
@@ -2558,6 +2775,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: Some(aggregate_usage),
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2603,6 +2821,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2691,6 +2910,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2868,8 +3088,11 @@ mod tests {
                 prompt_token_estimate: 0,
                 last_query_usage: None,
                 last_query_total_tokens: 0,
+                last_context_occupancy: None,
                 status: SessionRuntimeStatus::Idle,
                 collaboration_mode: Default::default(),
+                effective_context_window: None,
+                permission_preset: None,
             },
             None,
         )
@@ -3029,6 +3252,54 @@ mod tests {
     }
 
     #[test]
+    fn replay_nameless_edit_tool_result_still_emits_edited_metadata() {
+        // edit is LiveOnly: start is not persisted, so resume only sees ToolResult
+        // with tool_name lost by the v2 canonical schema. Structured output must
+        // still produce Edited metadata for transcript restore.
+        let mut messages = Vec::new();
+        let mut history_items = Vec::new();
+        let mut tool_names_by_id = HashMap::new();
+
+        apply_turn_item(
+            &mut messages,
+            &mut history_items,
+            &mut tool_names_by_id,
+            &TurnKind::Regular,
+            TurnItem::ToolResult(ToolResultItem {
+                tool_call_id: "call-edit".to_string(),
+                tool_name: None,
+                output: serde_json::json!({
+                    "diff": "diff --git a/foo.txt b/foo.txt\n--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n",
+                    "files": [{
+                        "path": "foo.txt",
+                        "kind": "update",
+                        "diff": "--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n",
+                        "oldContent": "old\n",
+                        "postContent": "new\n",
+                        "additions": 1,
+                        "deletions": 1
+                    }],
+                    "output": "edited foo.txt"
+                }),
+                display_content: Some("edited foo.txt".to_string()),
+                is_error: false,
+            }),
+        );
+
+        assert_eq!(history_items.len(), 1);
+        assert_eq!(history_items[0].body, "edited foo.txt");
+        let Some(devo_protocol::SessionHistoryMetadata::Edited { changes }) =
+            &history_items[0].metadata
+        else {
+            panic!(
+                "expected Edited metadata, got {:?}",
+                history_items[0].metadata
+            );
+        };
+        assert!(changes.contains_key(&PathBuf::from("foo.txt")));
+    }
+
+    #[test]
     fn replay_uses_display_content_for_history_but_canonical_output_for_prompt() {
         let mut messages = Vec::new();
         let mut history_items = Vec::new();
@@ -3122,6 +3393,7 @@ mod tests {
                 turn_id: TurnId::new(),
                 summary_item_id,
                 preserved_item_ids: vec![preserved_item_id],
+                context_occupancy: None,
             },
         )
         .expect("prompt messages");
@@ -3205,6 +3477,7 @@ mod tests {
                     title_state: SessionTitleState::Unset,
                     sandbox_policy: "workspace-write".into(),
                     approval_mode: "on-request".into(),
+                    effective_context_window: None,
                     tokens_used: 0,
                     first_user_message: None,
                     archived_at: None,
@@ -3214,6 +3487,8 @@ mod tests {
                     parent_session_id: None,
                     session_context: None,
                     latest_turn_context: None,
+                    collaboration_mode: None,
+                    permission_preset: None,
                     schema_version: 2,
                 },
             })))
@@ -3237,6 +3512,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -3325,6 +3601,7 @@ mod tests {
                     title_state: SessionTitleState::Unset,
                     sandbox_policy: "workspace-write".into(),
                     approval_mode: "on-request".into(),
+                    effective_context_window: None,
                     tokens_used: 0,
                     first_user_message: None,
                     archived_at: None,
@@ -3334,6 +3611,8 @@ mod tests {
                     parent_session_id: None,
                     session_context: None,
                     latest_turn_context: None,
+                    collaboration_mode: None,
+                    permission_preset: None,
                     schema_version: 2,
                 },
             })))
@@ -3367,6 +3646,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -3431,6 +3711,7 @@ mod tests {
                     title_state: SessionTitleState::Unset,
                     sandbox_policy: "workspace-write".into(),
                     approval_mode: "on-request".into(),
+                    effective_context_window: None,
                     tokens_used: 0,
                     first_user_message: None,
                     archived_at: None,
@@ -3440,6 +3721,8 @@ mod tests {
                     parent_session_id: None,
                     session_context: None,
                     latest_turn_context: None,
+                    collaboration_mode: None,
+                    permission_preset: None,
                     schema_version: 2,
                 },
             })))
@@ -3473,6 +3756,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -3553,7 +3837,7 @@ mod tests {
                 .append_turn_deduped(
                     &record,
                     &mut session_context_recorded,
-                    super::build_turn_record(&metadata, None, None, None),
+                    super::build_turn_record(&metadata, None, None, None, None),
                     Some(session_context.clone()),
                 )
                 .expect("append deduped turn");
@@ -3690,7 +3974,7 @@ mod tests {
             .append_session_meta(&record)
             .expect("append session meta");
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         rollout_store
             .append_turn(&record, turn)
             .expect("append turn");
@@ -3742,7 +4026,7 @@ mod tests {
             .append_session_meta(&record)
             .expect("append session meta");
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         rollout_store
             .append_turn(&record, turn)
             .expect("append turn");
@@ -3865,7 +4149,7 @@ mod tests {
         store
             .append_turn(
                 &record,
-                super::build_turn_record(&metadata, None, None, None),
+                super::build_turn_record(&metadata, None, None, None, None),
             )
             .expect("append turn");
         let now = Utc::now();
@@ -3949,7 +4233,7 @@ mod tests {
 
         let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         let error = restarted_store
             .append_turn(&record, turn)
             .expect_err("append onto damaged history must fail");
@@ -3987,7 +4271,7 @@ mod tests {
 
         let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         restarted_store
             .append_turn(&record, turn)
             .expect("crash tail is tolerated");
@@ -4021,7 +4305,7 @@ mod tests {
             &[r#"{"v":2,"kind":"nope"}"#.to_string()],
         );
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         rollout_store
             .append_turn(&record, turn)
             .expect("append turn");
@@ -4093,7 +4377,7 @@ mod tests {
             })),
             RolloutLine::Turn(Box::new(TurnLine {
                 timestamp: Utc::now(),
-                turn: super::build_turn_record(&metadata, None, None, None),
+                turn: super::build_turn_record(&metadata, None, None, None, None),
             })),
             RolloutLine::Item(ItemLine {
                 timestamp: Utc::now(),
@@ -4194,7 +4478,7 @@ mod tests {
             .append_session_meta(&record)
             .expect("append session meta");
         let metadata = test_turn_metadata(record.id, TurnId::new());
-        let turn = super::build_turn_record(&metadata, None, None, None);
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
         rollout_store
             .append_turn(&record, turn)
             .expect("append turn");

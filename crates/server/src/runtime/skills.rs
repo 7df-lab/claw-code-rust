@@ -22,6 +22,8 @@ impl ServerRuntime {
         };
 
         let skills = match params.cwd.as_deref() {
+            // With cwd: workspace context (LRU-cached). Skill discovery uses that
+            // catalog so project skill overlays apply.
             Some(cwd) => match self.deps.context_for_workspace(cwd).await {
                 Ok(runtime_context) => {
                     runtime_context.discover_skills(Some(cwd), params.force_reload)

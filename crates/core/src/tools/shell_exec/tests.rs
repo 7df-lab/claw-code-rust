@@ -278,7 +278,7 @@ async fn execute_shell_command_error_output_is_text_only() {
     assert!(matches!(result.content, ToolContent::Text(text) if text.contains("exit code 7")));
 }
 
-use super::{platform_shell_program, preview, resolve_shell, truncate_output};
+use super::{platform_shell_program, resolve_shell, truncate_output};
 
 #[cfg(unix)]
 #[tokio::test]
@@ -410,13 +410,6 @@ fn resolve_shell_prefers_cmd_alias() {
 fn resolve_shell_defaults_to_platform_shell_login() {
     let spec = resolve_shell(None, true);
     assert_eq!(spec.program, platform_shell_program(true));
-}
-
-#[test]
-fn preview_truncates_long_text() {
-    let long = "a".repeat(30_001);
-    let result = preview(&long);
-    assert!(result.ends_with("\n\n..."));
 }
 
 #[test]

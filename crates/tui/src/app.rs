@@ -4,6 +4,7 @@ use crate::events::SavedModelEntry;
 use devo_core::PermissionPreset;
 use devo_core::PresetModelCatalog;
 use devo_core::ProviderWireApi;
+use devo_protocol::CollaborationMode;
 use devo_protocol::SessionId;
 
 /// Summary returned when the interactive TUI exits.
@@ -48,6 +49,10 @@ pub struct InitialTuiSession {
     pub permission_preset: PermissionPreset,
     /// Initial sandbox profile restored from project-level config.
     pub sandbox_profile: Option<String>,
+    /// Initial global compaction token limit from user `config.toml`, when set.
+    pub compaction_token_limit: Option<u64>,
+    /// Default collaboration mode from user `config.toml`.
+    pub default_collaboration_mode: CollaborationMode,
     /// Working directory used for the initial session.
     pub cwd: PathBuf,
 }

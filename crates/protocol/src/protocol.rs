@@ -64,6 +64,7 @@ pub enum ClientMethod {
     SessionFork,
     SessionRollback,
     SessionCompact,
+    SessionCompactionUpdate,
     SkillsList,
     SkillsChanged,
     SkillsSetEnabled,
@@ -79,9 +80,6 @@ pub enum ClientMethod {
     TurnStart,
     TurnShellCommand,
     TurnInterrupt,
-    TurnSteer,
-    TurnQueueRemove,
-    TurnQueueSteer,
     WorkspaceChangesRead,
     RequestUserInputRespond,
     SearchStart,
@@ -108,6 +106,7 @@ pub enum ClientMethod {
     McpList,
     McpTools,
     McpSetEnabled,
+    ContextUsageRead,
     // New Native API methods (canonical types; not part of the legacy
     // `_devo/*` alias surface).
     SessionTurnsList,
@@ -136,6 +135,7 @@ impl ClientMethod {
             Self::SessionFork => "session/fork",
             Self::SessionRollback => "session/rollback",
             Self::SessionCompact => "session/compact",
+            Self::SessionCompactionUpdate => "session/compaction/update",
             Self::SkillsList => "skills/list",
             Self::SkillsChanged => "skills/changed",
             Self::SkillsSetEnabled => "skills/set_enabled",
@@ -151,9 +151,6 @@ impl ClientMethod {
             Self::TurnStart => "turn/start",
             Self::TurnShellCommand => "turn/shell_command",
             Self::TurnInterrupt => "turn/interrupt",
-            Self::TurnSteer => "turn/steer",
-            Self::TurnQueueRemove => "turn/queue/remove",
-            Self::TurnQueueSteer => "turn/queue/steer",
             Self::WorkspaceChangesRead => "workspace/changes/read",
             Self::RequestUserInputRespond => "request_user_input/respond",
             Self::SearchStart => "search/start",
@@ -180,6 +177,7 @@ impl ClientMethod {
             Self::McpList => "mcp/list",
             Self::McpTools => "mcp/tools",
             Self::McpSetEnabled => "mcp/set_enabled",
+            Self::ContextUsageRead => "context/usage/read",
             Self::SessionTurnsList => "session/turns/list",
             Self::SessionItemsList => "session/items/list",
             Self::SessionRollbackPreview => "session/rollback/preview",
@@ -206,6 +204,7 @@ impl ClientMethod {
             "session/fork" => Self::SessionFork,
             "session/rollback" => Self::SessionRollback,
             "session/compact" => Self::SessionCompact,
+            "session/compaction/update" => Self::SessionCompactionUpdate,
             "skills/list" => Self::SkillsList,
             "skills/changed" => Self::SkillsChanged,
             "skills/set_enabled" => Self::SkillsSetEnabled,
@@ -221,9 +220,6 @@ impl ClientMethod {
             "turn/start" => Self::TurnStart,
             "turn/shell_command" => Self::TurnShellCommand,
             "turn/interrupt" => Self::TurnInterrupt,
-            "turn/steer" => Self::TurnSteer,
-            "turn/queue/remove" => Self::TurnQueueRemove,
-            "turn/queue/steer" => Self::TurnQueueSteer,
             "workspace/changes/read" => Self::WorkspaceChangesRead,
             "request_user_input/respond" => Self::RequestUserInputRespond,
             "search/start" => Self::SearchStart,
@@ -250,6 +246,7 @@ impl ClientMethod {
             "mcp/list" => Self::McpList,
             "mcp/tools" => Self::McpTools,
             "mcp/set_enabled" => Self::McpSetEnabled,
+            "context/usage/read" => Self::ContextUsageRead,
             "session/turns/list" => Self::SessionTurnsList,
             "session/items/list" => Self::SessionItemsList,
             "session/rollback/preview" => Self::SessionRollbackPreview,
@@ -773,6 +770,14 @@ mod tests {
         assert_eq!(
             ClientMethod::SessionSandboxProfileUpdate.as_str(),
             "session/sandbox_profile/update"
+        );
+        assert_eq!(
+            ClientMethod::SessionCompactionUpdate.as_str(),
+            "session/compaction/update"
+        );
+        assert_eq!(
+            ClientMethod::parse("session/compaction/update"),
+            Some(ClientMethod::SessionCompactionUpdate)
         );
     }
 }

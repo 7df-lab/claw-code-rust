@@ -184,6 +184,13 @@ impl StdioServerClient {
         self.core.session_permissions_update(params).await
     }
 
+    pub async fn session_compaction_update(
+        &mut self,
+        params: SessionCompactionUpdateParams,
+    ) -> Result<SessionCompactionUpdateResult> {
+        self.core.session_compaction_update(params).await
+    }
+
     pub async fn session_sandbox_profile_update(
         &mut self,
         params: SessionSandboxProfileUpdateParams,
@@ -194,8 +201,12 @@ impl StdioServerClient {
     pub async fn session_compact(
         &mut self,
         params: SessionCompactParams,
-    ) -> Result<SessionCompactResult> {
+    ) -> Result<TurnStartResult> {
         self.core.session_compact(params).await
+    }
+
+    pub async fn session_cancel(&mut self, params: AcpCancelParams) -> Result<AcpEmptyResult> {
+        self.core.session_cancel(params).await
     }
 
     pub async fn goal_create(&mut self, params: GoalCreateParams) -> Result<GoalCreateResult> {
@@ -357,8 +368,46 @@ impl StdioServerClient {
         self.core.turn_interrupt(params).await
     }
 
-    pub async fn turn_steer(&mut self, params: TurnSteerParams) -> Result<TurnSteerResult> {
-        self.core.turn_steer(params).await
+    pub async fn session_queue_push(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueuePushParams,
+    ) -> Result<canonical::rpc_turn::SessionQueuePushResult> {
+        self.core.session_queue_push(params).await
+    }
+
+    pub async fn session_queue_list(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueListParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueListResult> {
+        self.core.session_queue_list(params).await
+    }
+
+    pub async fn session_queue_update(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueUpdateParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueUpdateResult> {
+        self.core.session_queue_update(params).await
+    }
+
+    pub async fn session_queue_remove(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueRemoveParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueRemoveResult> {
+        self.core.session_queue_remove(params).await
+    }
+
+    pub async fn session_queue_steer(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueSteerParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueSteerResult> {
+        self.core.session_queue_steer(params).await
+    }
+
+    pub async fn subscription_create(
+        &mut self,
+        params: canonical::event::SubscriptionCreateParams,
+    ) -> Result<canonical::event::SubscriptionCreateResult> {
+        self.core.subscription_create(params).await
     }
 
     pub async fn approval_respond(&mut self, params: ApprovalResponseParams) -> Result<()> {
@@ -691,8 +740,11 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         };
         assert_eq!(session, expected);
 
@@ -783,8 +835,11 @@ mod tests {
                 prompt_token_estimate: 0,
                 last_query_usage: None,
                 last_query_total_tokens: 0,
+                last_context_occupancy: None,
                 status: SessionRuntimeStatus::Idle,
                 collaboration_mode: Default::default(),
+                effective_context_window: None,
+                permission_preset: None,
             }]
         );
 
@@ -833,8 +888,11 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         };
         let mut stdout_lines = BufReader::new(stdout).lines();
 

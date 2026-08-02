@@ -220,6 +220,7 @@ impl LegacyProjector {
                     .iter()
                     .map(|id| legacy_uuid(id).map(ItemId::from_legacy_uuid))
                     .collect::<Result<_, _>>()?,
+                context_occupancy: line.context_occupancy.clone(),
             }]),
             RolloutLine::MessageEditRecorded(line) => {
                 let record = &line.record;
@@ -389,6 +390,7 @@ impl LegacyProjector {
                 mode: None,
                 sandbox_profile: (!record.sandbox_policy.is_empty())
                     .then(|| record.sandbox_policy.clone()),
+                effective_context_window: record.effective_context_window,
             },
             git_info,
             preview: record.first_user_message.clone().unwrap_or_default(),
@@ -408,6 +410,8 @@ impl LegacyProjector {
                 session_context: record.session_context.clone(),
                 cli_version: record.cli_version.clone(),
                 source: record.source.clone(),
+                collaboration_mode: record.collaboration_mode,
+                permission_preset: record.permission_preset,
             })),
         }])
     }
@@ -424,6 +428,7 @@ impl LegacyProjector {
                 request_thinking: record.request_thinking.clone(),
                 input_token_estimate: record.input_token_estimate,
                 latest_query_usage: record.latest_query_usage.clone(),
+                context_occupancy: record.context_occupancy.clone(),
                 stop_reason: record.stop_reason.clone(),
                 failure_reason: record.failure_reason,
             })),

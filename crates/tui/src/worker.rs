@@ -79,7 +79,6 @@ use devo_server::TurnExecutionMode;
 use devo_server::TurnInterruptParams;
 use devo_server::TurnStartParams;
 use devo_server::TurnStartResult;
-use devo_server::TurnSteerParams;
 
 use crate::app_command::GoalObjectiveMode;
 use crate::app_command::InputHistoryDirection;
@@ -215,6 +214,8 @@ pub(crate) struct QueryWorkerConfig {
     pub(crate) reasoning_effort_selection: Option<String>,
     /// Permission preset to apply to the server session when it exists.
     pub(crate) permission_preset: PermissionPreset,
+    /// Default collaboration mode for newly prepared sessions.
+    pub(crate) default_collaboration_mode: CollaborationMode,
     /// Initial OS sandbox profile from project config (or permission-implied).
     pub(crate) initial_sandbox_profile: Option<String>,
     /// Agent client capabilities to advertise to the server session.
@@ -243,6 +244,11 @@ enum OperationCommand {
     SetModel {
         model: String,
         model_binding_id: Option<String>,
+        persist_scope: crate::app_command::PersistScope,
+    },
+    SetCollaborationMode {
+        collaboration_mode: CollaborationMode,
+        persist_scope: crate::app_command::PersistScope,
     },
     /// TODO: Same with model, should bind at session metadata.
     /// Update the reasoning effort selection used for future turns.
@@ -322,8 +328,12 @@ enum OperationCommand {
     SwitchSession(SessionId),
     /// Rename the current active session.
     RenameSession(String),
-    /// Delete the current active session and prepare a fresh local session.
-    DeleteSession,
+    /// Delete a session. `None` deletes the current active session and starts a
+    /// fresh local session; `Some(id)` deletes that session id (and only resets
+    /// local state when it is the active one).
+    DeleteSession {
+        session_id: Option<SessionId>,
+    },
     /// Roll back the active session using the server-selected user-turn cut mode.
     RollbackUserTurn {
         user_turn_index: u32,
@@ -333,10 +343,23 @@ enum OperationCommand {
     ForkAtUserTurn(u32),
     /// Interrupt the active turn when one is running.
     InterruptTurn,
-    /// Steer text into the currently active turn.
-    SteerTurn {
+    /// Push input onto the canonical session queue (busy path).
+    QueuePush {
         input: Vec<InputItem>,
+    },
+    /// Promote a queued entry into the active turn as a steer.
+    QueueSteer {
+        queue_item_id: String,
         expected_turn_id: TurnId,
+    },
+    /// Remove a queued entry (edit-from-queue).
+    QueueRemove {
+        queue_item_id: String,
+    },
+    /// Replace a queued entry's content in place, preserving its position.
+    QueueUpdate {
+        queue_item_id: String,
+        input: Vec<InputItem>,
     },
     /// Ask a side question in a one-turn forked agent.
     RunBtwQuestion {
@@ -357,6 +380,10 @@ enum OperationCommand {
     },
     UpdatePermissions {
         preset: devo_protocol::PermissionPreset,
+        persist_scope: crate::app_command::PersistScope,
+    },
+    UpdateEffectiveContextWindow {
+        effective_context_window: u64,
     },
     UpdateSandboxProfile {
         profile: String,
@@ -489,10 +516,24 @@ impl QueryWorkerHandle {
         model: String,
         model_binding_id: Option<String>,
     ) -> Result<()> {
+        self.set_model_selection_with_scope(
+            model,
+            model_binding_id,
+            crate::app_command::PersistScope::Session,
+        )
+    }
+
+    pub(crate) fn set_model_selection_with_scope(
+        &self,
+        model: String,
+        model_binding_id: Option<String>,
+        persist_scope: crate::app_command::PersistScope,
+    ) -> Result<()> {
         self.command_tx
             .send(OperationCommand::SetModel {
                 model,
                 model_binding_id,
+                persist_scope,
             })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
@@ -682,10 +723,10 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    /// Deletes the current active session and prepares a fresh local session.
-    pub(crate) fn delete_session(&self) -> Result<()> {
+    /// Deletes a session. When `session_id` is `None`, deletes the active session.
+    pub(crate) fn delete_session(&self, session_id: Option<SessionId>) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::DeleteSession)
+            .send(OperationCommand::DeleteSession { session_id })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -720,16 +761,40 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    /// Steer input into the currently active turn.
-    pub(crate) fn submit_steer(
+    /// Push input onto the session queue while a turn is active.
+    pub(crate) fn queue_push(&self, input: Vec<InputItem>) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::QueuePush { input })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Promote a queued item into the active turn as a steer.
+    pub(crate) fn queue_steer(
         &self,
-        input: Vec<InputItem>,
+        queue_item_id: String,
         expected_turn_id: TurnId,
     ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::SteerTurn {
-                input,
+            .send(OperationCommand::QueueSteer {
+                queue_item_id,
                 expected_turn_id,
+            })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Remove a queued item so it can be edited in the composer.
+    pub(crate) fn queue_remove(&self, queue_item_id: String) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::QueueRemove { queue_item_id })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Replace a queued item's content in place, preserving its position.
+    pub(crate) fn queue_update(&self, queue_item_id: String, input: Vec<InputItem>) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::QueueUpdate {
+                queue_item_id,
+                input,
             })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
@@ -777,9 +842,40 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    pub(crate) fn update_permissions(&self, preset: devo_protocol::PermissionPreset) -> Result<()> {
+    pub(crate) fn update_permissions(
+        &self,
+        preset: devo_protocol::PermissionPreset,
+        persist_scope: crate::app_command::PersistScope,
+    ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::UpdatePermissions { preset })
+            .send(OperationCommand::UpdatePermissions {
+                preset,
+                persist_scope,
+            })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    pub(crate) fn set_collaboration_mode(
+        &self,
+        collaboration_mode: CollaborationMode,
+        persist_scope: crate::app_command::PersistScope,
+    ) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::SetCollaborationMode {
+                collaboration_mode,
+                persist_scope,
+            })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    pub(crate) fn update_effective_context_window(
+        &self,
+        effective_context_window: u64,
+    ) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::UpdateEffectiveContextWindow {
+                effective_context_window,
+            })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -866,12 +962,17 @@ async fn run_worker_inner(
     // calls, then turns server notifications back into lightweight UI events.
     let mut client = spawn_client(&config.cwd, config.server_log_level.clone()).await?;
     let _ = client.initialize(&config.client_capabilities).await?;
+    let mut default_model = config.model.clone();
+    let mut default_model_binding_id = config.model_binding_id.clone();
+    let default_reasoning_effort_selection = config.reasoning_effort_selection.clone();
+    let mut default_permission_preset = config.permission_preset;
+    let mut default_collaboration_mode = config.default_collaboration_mode;
     let mut session_id: Option<SessionId> = None;
     let mut session_cwd = config.cwd.clone();
-    let mut model = config.model;
-    let mut model_binding_id = config.model_binding_id;
-    let mut reasoning_effort_selection = config.reasoning_effort_selection;
-    let mut permission_preset = config.permission_preset;
+    let mut model = default_model.clone();
+    let mut model_binding_id = default_model_binding_id.clone();
+    let mut reasoning_effort_selection = default_reasoning_effort_selection.clone();
+    let mut session_permission_preset: Option<PermissionPreset> = None;
     let initial_sandbox_profile = config.initial_sandbox_profile.clone();
     let mut active_turn_id: Option<TurnId> = None;
     let mut turn_count = 0usize;
@@ -890,6 +991,10 @@ async fn run_worker_inner(
     let mut active_reference_search_id: Option<ReferenceSearchId> = None;
     let mut active_shell_process_ids: HashSet<String> = HashSet::new();
     let mut next_shell_process_index = 1_u64;
+    // Session the worker currently holds a canonical event subscription for;
+    // `subscription/create` accumulates server-side, so subscribe at most once
+    // per activated session.
+    let mut subscribed_session_id: Option<SessionId> = None;
 
     if let Some(initial_session_id) = config.initial_session_id {
         match client
@@ -905,13 +1010,21 @@ async fn run_worker_inner(
                 let active_agent_label = active_agent_label_from_session(&resumed.session);
                 let (last_query_total, last_query_input) =
                     last_query_tokens_from_resume(&resumed.session);
+                model = resumed
+                    .session
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| default_model.clone());
+                model_binding_id = resumed.session.model_binding_id.clone();
+                reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
+                session_permission_preset = resumed.session.permission_preset;
                 let _ = event_tx.send(WorkerEvent::SessionSwitched {
                     session_id: initial_session_id.to_string(),
-                    cwd: resumed.session.cwd,
-                    title: resumed.session.title,
+                    cwd: resumed.session.cwd.clone(),
+                    title: resumed.session.title.clone(),
                     model: resumed.session.model.clone(),
-                    model_binding_id: resumed.session.model_binding_id.clone(),
-                    reasoning_effort_selection: resumed.session.reasoning_effort_selection.clone(),
+                    model_binding_id: model_binding_id.clone(),
+                    reasoning_effort_selection: reasoning_effort_selection.clone(),
                     reasoning_effort: resumed.session.reasoning_effort,
                     active_agent_label,
                     total_input_tokens: resumed.session.total_input_tokens,
@@ -926,10 +1039,19 @@ async fn run_worker_inner(
                     loaded_item_count: resumed.loaded_item_count,
                     pending_texts: resumed.pending_texts,
                     collaboration_mode: resumed.session.collaboration_mode,
+                    permission_preset: resumed.session.permission_preset,
+                    effective_context_window: resumed.session.effective_context_window,
                 });
-                model = resumed.session.model.clone().unwrap_or(model);
-                model_binding_id = resumed.session.model_binding_id.clone();
-                reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
+                if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
+                    let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                }
+                ensure_session_subscription(
+                    &mut client,
+                    initial_session_id,
+                    &mut subscribed_session_id,
+                    event_tx,
+                )
+                .await;
                 total_input_tokens = resumed.session.total_input_tokens;
                 total_output_tokens = resumed.session.total_output_tokens;
                 total_tokens = resumed.session.total_tokens;
@@ -971,7 +1093,9 @@ async fn run_worker_inner(
                                     &mut model_binding_id,
                                     &mut reasoning_effort_selection,
                                     &mut session_id,
-                                    permission_preset,
+                                    &mut subscribed_session_id,
+                                    session_permission_preset
+                                        .unwrap_or(default_permission_preset),
                                     initial_sandbox_profile.as_deref(),
                                     event_tx,
                                 )
@@ -1054,9 +1178,14 @@ async fn run_worker_inner(
                             Some(OperationCommand::SetModel {
                                 model: next_model,
                                 model_binding_id: next_model_binding_id,
+                                persist_scope,
                             }) => {
                                 model = next_model;
                                 model_binding_id = next_model_binding_id;
+                                if persist_scope == crate::app_command::PersistScope::Default {
+                                    default_model = model.clone();
+                                    default_model_binding_id = model_binding_id.clone();
+                                }
                                 input_history_cursor = None;
                                 if let Some(active_session_id) = session_id {
                                     let _ = client
@@ -1065,6 +1194,26 @@ async fn run_worker_inner(
                                             model: Some(model.clone()),
                                             model_binding_id: model_binding_id.clone(),
                                             reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                            collaboration_mode: None,
+                                        })
+                                        .await;
+                                }
+                            }
+                            Some(OperationCommand::SetCollaborationMode {
+                                collaboration_mode,
+                                persist_scope,
+                            }) => {
+                                if persist_scope == crate::app_command::PersistScope::Default {
+                                    default_collaboration_mode = collaboration_mode;
+                                }
+                                if let Some(active_session_id) = session_id {
+                                    let _ = client
+                                        .session_metadata_update(devo_server::SessionMetadataUpdateParams {
+                                            session_id: active_session_id,
+                                            model: Some(model.clone()),
+                                            model_binding_id: model_binding_id.clone(),
+                                            reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                            collaboration_mode: Some(collaboration_mode),
                                         })
                                         .await;
                                 }
@@ -1078,6 +1227,7 @@ async fn run_worker_inner(
                                             model: Some(model.clone()),
                                             model_binding_id: model_binding_id.clone(),
                                             reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                            collaboration_mode: None,
                                         })
                                         .await;
                                 }
@@ -1216,6 +1366,7 @@ async fn run_worker_inner(
                                 .await?;
                                 client.initialize(&config.client_capabilities).await?;
                                 session_id = None;
+                                subscribed_session_id = None;
                                 child_agent_sessions.clear();
                                 btw_agent_sessions.clear();
                                 active_turn_id = None;
@@ -1383,13 +1534,7 @@ async fn run_worker_inner(
                                     .await
                                 {
                                     Ok(result) => {
-                                        model = result
-                                            .session
-                                            .model
-                                            .clone()
-                                            .unwrap_or(model);
-                                        model_binding_id = result.session.model_binding_id.clone();
-                                        reasoning_effort_selection = result.session.reasoning_effort_selection.clone();
+                                        handle_turn_start_result(result, &mut active_turn_id);
                                         let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
                                     }
                                     Err(error) => {
@@ -1466,7 +1611,9 @@ async fn run_worker_inner(
                                     &mut model_binding_id,
                                     &mut reasoning_effort_selection,
                                     &mut session_id,
-                                    permission_preset,
+                                    &mut subscribed_session_id,
+                                    session_permission_preset
+                                        .unwrap_or(default_permission_preset),
                                     initial_sandbox_profile.as_deref(),
                                     event_tx,
                                 )
@@ -1669,6 +1816,7 @@ async fn run_worker_inner(
                                 }
                                 active_turn_id = None;
                                 session_id = None;
+                                subscribed_session_id = None;
                                 active_reference_search_id = None;
                                 session_cwd = config.cwd.clone();
                                 input_history_cursor = None;
@@ -1680,12 +1828,19 @@ async fn run_worker_inner(
                                 last_query_total_tokens = 0;
                                 last_query_input_tokens = 0;
                                 has_authoritative_usage_totals = true;
+                                model = default_model.clone();
+                                model_binding_id = default_model_binding_id.clone();
+                                reasoning_effort_selection =
+                                    default_reasoning_effort_selection.clone();
+                                session_permission_preset = None;
                                 let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
                                     cwd: session_cwd.clone(),
                                     model: model.clone(),
                                     model_binding_id: model_binding_id.clone(),
                                     reasoning_effort_selection: reasoning_effort_selection.clone(),
                                     reasoning_effort: None,
+                                    permission_preset: default_permission_preset,
+                                    collaboration_mode: default_collaboration_mode,
                                     active_agent_label: None,
                                     last_query_total_tokens,
                                     last_query_input_tokens,
@@ -1721,9 +1876,11 @@ async fn run_worker_inner(
                                     Ok(result) => {
                                         active_turn_id = None;
                                         session_id = Some(next_session_id);
+                                        subscribed_session_id = None;
                                         child_agent_sessions.clear();
                                         btw_agent_sessions.clear();
                                         session_cwd = result.session.cwd.clone();
+                                        session_permission_preset = result.session.permission_preset;
                                         input_history_cursor = None;
                                         let active_agent_label =
                                             active_agent_label_from_session(&result.session);
@@ -1750,8 +1907,20 @@ async fn run_worker_inner(
                                             rich_history_items: result.history_items.clone(),
                                             loaded_item_count: result.loaded_item_count,
                                             pending_texts: result.pending_texts,
-                                            collaboration_mode: result.session.collaboration_mode,
+                    collaboration_mode: result.session.collaboration_mode,
+                    permission_preset: result.session.permission_preset,
+                    effective_context_window: result.session.effective_context_window,
         });
+                                        if let Some(occupancy) = result.session.last_context_occupancy.clone() {
+                                            let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                                        }
+                                        ensure_session_subscription(
+                                            &mut client,
+                                            next_session_id,
+                                            &mut subscribed_session_id,
+                                            event_tx,
+                                        )
+                                        .await;
                                         model = result
                                             .session
                                             .model
@@ -1831,8 +2000,11 @@ async fn run_worker_inner(
                                     }
                                 }
                             }
-                            Some(OperationCommand::DeleteSession) => {
-                                let Some(active_session_id) = session_id else {
+                            Some(OperationCommand::DeleteSession {
+                                session_id: requested_session_id,
+                            }) => {
+                                let target_session_id = requested_session_id.or(session_id);
+                                let Some(target_session_id) = target_session_id else {
                                     let _ = event_tx.send(WorkerEvent::TurnFailed {
                                         message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
                                         hint: None,
@@ -1846,57 +2018,70 @@ async fn run_worker_inner(
                                     });
                                     continue;
                                 };
-                                match pause_active_goal_before_session_leave(
-                                    &mut client,
-                                    active_session_id,
-                                    active_turn_id,
-                                )
-                                .await
-                                {
-                                    Ok(()) => {}
-                                    Err(error) => {
-                                        emit_goal_leave_failure(event_tx, error);
-                                        continue;
+                                let deleting_active = session_id == Some(target_session_id);
+                                if deleting_active {
+                                    match pause_active_goal_before_session_leave(
+                                        &mut client,
+                                        target_session_id,
+                                        active_turn_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {}
+                                        Err(error) => {
+                                            emit_goal_leave_failure(event_tx, error);
+                                            continue;
+                                        }
                                     }
                                 }
                                 match client
                                     .session_delete(AcpDeleteSessionParams {
-                                        session_id: active_session_id,
+                                        session_id: target_session_id,
                                         meta: None,
                                     })
                                     .await
                                 {
                                     Ok(_) => {
                                         let _ = event_tx.send(WorkerEvent::SessionDeleted {
-                                            session_id: active_session_id.to_string(),
+                                            session_id: target_session_id.to_string(),
                                         });
-                                        active_turn_id = None;
-                                        session_id = None;
-                                        active_reference_search_id = None;
-                                        session_cwd = config.cwd.clone();
-                                        input_history_cursor = None;
-                                        turn_count = 0;
-                                        total_input_tokens = 0;
-                                        total_output_tokens = 0;
-                                        total_tokens = 0;
-                                        total_cache_read_tokens = 0;
-                                        last_query_total_tokens = 0;
-                                        last_query_input_tokens = 0;
-                                        has_authoritative_usage_totals = true;
-                                        let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
-                                            cwd: session_cwd.clone(),
-                                            model: model.clone(),
-                                            model_binding_id: model_binding_id.clone(),
-                                            reasoning_effort_selection: reasoning_effort_selection.clone(),
-                                            reasoning_effort: None,
-                                            active_agent_label: None,
-                                            last_query_total_tokens,
-                                            last_query_input_tokens,
-                                            total_cache_read_tokens,
-                                        });
-                                        let _ =
-                                            emit_skills_list(&mut client, &session_cwd, event_tx, false)
-                                                .await;
+                                        if deleting_active {
+                                            active_turn_id = None;
+                                            session_id = None;
+                                            subscribed_session_id = None;
+                                            active_reference_search_id = None;
+                                            session_cwd = config.cwd.clone();
+                                            input_history_cursor = None;
+                                            turn_count = 0;
+                                            total_input_tokens = 0;
+                                            total_output_tokens = 0;
+                                            total_tokens = 0;
+                                            total_cache_read_tokens = 0;
+                                            last_query_total_tokens = 0;
+                                            last_query_input_tokens = 0;
+                                            has_authoritative_usage_totals = true;
+                                            model = default_model.clone();
+                                            model_binding_id = default_model_binding_id.clone();
+                                            reasoning_effort_selection =
+                                                default_reasoning_effort_selection.clone();
+                                            session_permission_preset = None;
+                                            let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
+                                                cwd: session_cwd.clone(),
+                                                model: model.clone(),
+                                                model_binding_id: model_binding_id.clone(),
+                                                reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                                reasoning_effort: None,
+                                                permission_preset: default_permission_preset,
+                                                collaboration_mode: default_collaboration_mode,
+                                                active_agent_label: None,
+                                                last_query_total_tokens,
+                                                last_query_input_tokens,
+                                                total_cache_read_tokens,
+                                            });
+                                            let _ =
+                                                emit_skills_list(&mut client, &session_cwd, event_tx, false)
+                                                    .await;
+                                        }
                                     }
                                     Err(error) => {
                                         let _ = event_tx.send(WorkerEvent::TurnFailed {
@@ -1977,8 +2162,20 @@ async fn run_worker_inner(
                                             rich_history_items: result.history_items.clone(),
                                             loaded_item_count: result.loaded_item_count,
                                             pending_texts: result.pending_texts,
-                                            collaboration_mode: result.session.collaboration_mode,
+                    collaboration_mode: result.session.collaboration_mode,
+                    permission_preset: result.session.permission_preset,
+                    effective_context_window: result.session.effective_context_window,
         });
+                                        if let Some(occupancy) = result.session.last_context_occupancy.clone() {
+                                            let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                                        }
+                                        ensure_session_subscription(
+                                            &mut client,
+                                            active_session_id,
+                                            &mut subscribed_session_id,
+                                            event_tx,
+                                        )
+                                        .await;
                                         model = result.session.model.clone().unwrap_or(model);
                                         model_binding_id = result.session.model_binding_id.clone();
                                         reasoning_effort_selection = result.session.reasoning_effort_selection.clone();
@@ -2053,6 +2250,7 @@ async fn run_worker_inner(
                                             Ok(resumed) => {
                                                 active_turn_id = None;
                                                 session_id = Some(next_session_id);
+                                                subscribed_session_id = None;
                                                 child_agent_sessions.clear();
                                                 btw_agent_sessions.clear();
                                                 session_cwd = resumed.session.cwd.clone();
@@ -2082,7 +2280,19 @@ async fn run_worker_inner(
                                                     loaded_item_count: resumed.loaded_item_count,
                                                     pending_texts: resumed.pending_texts,
                                                     collaboration_mode: resumed.session.collaboration_mode,
+                                                    permission_preset: resumed.session.permission_preset,
+                                                    effective_context_window: resumed.session.effective_context_window,
         });
+                                                if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
+                                                    let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                                                }
+                                                ensure_session_subscription(
+                                                    &mut client,
+                                                    next_session_id,
+                                                    &mut subscribed_session_id,
+                                                    event_tx,
+                                                )
+                                                .await;
                                                 model = resumed.session.model.clone().unwrap_or(model);
                                                 model_binding_id = resumed.session.model_binding_id.clone();
                                                 reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
@@ -2125,7 +2335,8 @@ async fn run_worker_inner(
                                 }
                             }
                             Some(OperationCommand::InterruptTurn) => {
-                                if let (Some(turn_id), Some(active_session_id)) = (active_turn_id, session_id)
+                                if let (Some(turn_id), Some(active_session_id)) =
+                                    (active_turn_id, session_id)
                                     && let Err(error) = client
                                         .turn_interrupt(TurnInterruptParams {
                                             session_id: active_session_id,
@@ -2133,11 +2344,11 @@ async fn run_worker_inner(
                                             reason: Some("user requested interrupt".to_string()),
                                         })
                                         .await
-                                    {
+                                {
                                     let _ = event_tx.send(WorkerEvent::InterruptFailed {
                                         message: error.to_string(),
                                     });
-                                    }
+                                }
                             }
                             Some(OperationCommand::RunBtwQuestion { question }) => {
                                 let Some(active_session_id) = session_id else {
@@ -2168,24 +2379,76 @@ async fn run_worker_inner(
                                     }
                                 }
                             }
-                            Some(OperationCommand::SteerTurn {
-                                input,
-                                expected_turn_id,
-                            }) => {
-                                if let Some(active_session_id) = session_id {
-                                    match client
-                                        .turn_steer(TurnSteerParams {
-                                            session_id: active_session_id,
-                                            expected_turn_id,
-                                            input,
-                                        })
-                                        .await
-                                    {
-                                        Ok(result) => {
-                                            let _ = event_tx.send(WorkerEvent::SteerAccepted {
-                                                turn_id: result.turn_id,
-                                            });
+                            Some(OperationCommand::QueuePush { input }) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: "no active session for queue push".to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                let push_result = client
+                                    .session_queue_push(
+                                        devo_protocol::canonical::rpc_turn::SessionQueuePushParams {
+                                            session_id: canonical_session.clone(),
+                                            input: crate::queue_ops::user_input_from_input_items(
+                                                &input,
+                                            ),
+                                            client_user_message_id: None,
+                                            idempotency_key: format!(
+                                                "tui-queue-{}",
+                                                SessionId::new()
+                                            ),
+                                        },
+                                    )
+                                    .await;
+                                match push_result {
+                                    Ok(
+                                        devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Queued {
+                                            entry,
+                                        },
+                                    ) => {
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Added,
+                                            entry.queue_item_id,
+                                            /*started_turn_id*/ None,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Ok(
+                                        devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Started {
+                                            turn,
+                                        },
+                                    ) => {
+                                        let started_turn_id =
+                                            TurnId::try_from(turn.id.as_str()).ok();
+                                        if let Some(turn_id) = started_turn_id {
+                                            active_turn_id = Some(turn_id);
                                         }
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Drained,
+                                            devo_protocol::canonical::ids::QueueItemId::from_string(
+                                                String::new(),
+                                            ),
+                                            started_turn_id,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
                                     Err(error) => {
                                         let _ = event_tx.send(WorkerEvent::TurnFailed {
                                             message: error.to_string(),
@@ -2200,6 +2463,160 @@ async fn run_worker_inner(
                                         });
                                     }
                                 }
+                            }
+                            Some(OperationCommand::QueueSteer {
+                                queue_item_id,
+                                expected_turn_id,
+                            }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                match client
+                                    .session_queue_steer(
+                                        devo_protocol::canonical::rpc_turn::SessionQueueSteerParams {
+                                            session_id: canonical_session.clone(),
+                                            queue_item_id:
+                                                devo_protocol::canonical::ids::QueueItemId::from_string(
+                                                    queue_item_id,
+                                                ),
+                                            expected_turn_id:
+                                                devo_protocol::canonical::ids::TurnId::from_string(
+                                                    expected_turn_id.to_string(),
+                                                ),
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let _ = event_tx.send(WorkerEvent::SteerAccepted {
+                                            turn_id: expected_turn_id,
+                                        });
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Promoted,
+                                            devo_protocol::canonical::ids::QueueItemId::from_string(
+                                                String::new(),
+                                            ),
+                                            Some(expected_turn_id),
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::QueueRemove { queue_item_id }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                let removed_id =
+                                    devo_protocol::canonical::ids::QueueItemId::from_string(
+                                        queue_item_id.clone(),
+                                    );
+                                match client
+                                    .session_queue_remove(
+                                        devo_protocol::canonical::rpc_turn::SessionQueueRemoveParams {
+                                            session_id: canonical_session.clone(),
+                                            queue_item_id: removed_id.clone(),
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Removed,
+                                            removed_id,
+                                            /*started_turn_id*/ None,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::QueueUpdate {
+                                queue_item_id,
+                                input,
+                            }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                let updated_id =
+                                    devo_protocol::canonical::ids::QueueItemId::from_string(
+                                        queue_item_id.clone(),
+                                    );
+                                match client
+                                    .session_queue_update(
+                                        devo_protocol::canonical::rpc_turn::SessionQueueUpdateParams {
+                                            session_id: canonical_session.clone(),
+                                            queue_item_id: updated_id.clone(),
+                                            input: Some(
+                                                crate::queue_ops::user_input_from_input_items(
+                                                    &input,
+                                                ),
+                                            ),
+                                            position: None,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Updated,
+                                            updated_id,
+                                            /*started_turn_id*/ None,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
                                 }
                             }
                             Some(OperationCommand::ApprovalRespond {
@@ -2260,8 +2677,15 @@ async fn run_worker_inner(
                                     });
                                 }
                             }
-                            Some(OperationCommand::UpdatePermissions { preset }) => {
-                                permission_preset = preset;
+                            Some(OperationCommand::UpdatePermissions { preset, persist_scope }) => {
+                                match persist_scope {
+                                    crate::app_command::PersistScope::Default => {
+                                        default_permission_preset = preset;
+                                    }
+                                    crate::app_command::PersistScope::Session => {
+                                        session_permission_preset = Some(preset);
+                                    }
+                                }
                                 let Some(active_session_id) = session_id else {
                                     continue;
                                 };
@@ -2279,6 +2703,40 @@ async fn run_worker_inner(
                                         prompt_token_estimate: total_input_tokens,
                                         last_query_input_tokens,
                                     });
+                                }
+                            }
+                            Some(OperationCommand::UpdateEffectiveContextWindow {
+                                effective_context_window,
+                            }) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(
+                                        WorkerEvent::EffectiveContextWindowUpdated {
+                                            effective_context_window,
+                                        },
+                                    );
+                                    continue;
+                                };
+                                match client
+                                    .session_compaction_update(
+                                        devo_server::SessionCompactionUpdateParams {
+                                            session_id: active_session_id,
+                                            effective_context_window,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        let _ = event_tx.send(WorkerEvent::EffectiveContextWindowUpdated {
+                                            effective_context_window: result.effective_context_window,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::InterruptFailed {
+                                            message: format!(
+                                                "Failed to update compaction threshold: {error}"
+                                            ),
+                                        });
+                                    }
                                 }
                             }
                             Some(OperationCommand::UpdateSandboxProfile { profile }) => {
@@ -2438,6 +2896,13 @@ async fn run_worker_inner(
                                             let _ = event_tx.send(event);
                                         }
                                     }
+                                    continue;
+                                }
+                                if method == "queue/updated"
+                                    && let Ok(queue_event) =
+                                        parse_canonical_queue_updated(&params)
+                                {
+                                    let _ = event_tx.send(queue_event);
                                     continue;
                                 }
                                 let event: ServerEvent = serde_json::from_value(params)
@@ -2722,6 +3187,17 @@ async fn run_worker_inner(
                                             });
                                         }
                                     }
+                                    "context/usageUpdated" => {
+                                        if let ServerEvent::ContextUsageUpdated(payload) = event
+                                            && session_id.is_some_and(|id| id == payload.session_id)
+                                        {
+                                            last_query_total_tokens =
+                                                payload.occupancy.total_tokens as usize;
+                                            let _ = event_tx.send(WorkerEvent::ContextUsageUpdated {
+                                                occupancy: payload.occupancy,
+                                            });
+                                        }
+                                    }
                                     "turn/failed" => {
                                         if let ServerEvent::TurnFailed(TurnFailedPayload { turn, error, .. }) = event {
                                             active_turn_id = None;
@@ -2818,14 +3294,6 @@ async fn run_worker_inner(
                                             });
                                         }
                                     }
-                                    "inputQueue/updated" => {
-                                        if let ServerEvent::InputQueueUpdated(payload) = event {
-                                            let _ = event_tx.send(WorkerEvent::InputQueueUpdated {
-                                                pending_count: payload.pending_count,
-                                                pending_texts: payload.pending_texts,
-                                            });
-                                        }
-                                    }
                                     "search/updated" => {
                                         if let ServerEvent::ReferenceSearchUpdated(snapshot) = event {
                                             let _ =
@@ -2874,6 +3342,20 @@ async fn run_worker_inner(
                                                 });
                                             }
                                     }
+                                    "session/effective_context_window/updated" => {
+                                        if let ServerEvent::SessionEffectiveContextWindowUpdated(
+                                            payload,
+                                        ) = event
+                                            && session_id == Some(payload.session_id)
+                                        {
+                                            let _ = event_tx.send(
+                                                WorkerEvent::EffectiveContextWindowUpdated {
+                                                    effective_context_window: payload
+                                                        .effective_context_window,
+                                                },
+                                            );
+                                        }
+                                    }
                                     "session/compaction/started" => {
                                         if let ServerEvent::SessionCompactionStarted(_) = event {
                                             let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
@@ -2886,16 +3368,20 @@ async fn run_worker_inner(
                                             total_tokens = payload.session.total_tokens;
                                             let (compacted_last_query_total, compacted_last_query_input) =
                                                 last_query_tokens_from_resume(&payload.session);
-                                            last_query_total_tokens = if payload.session.prompt_token_estimate > 0 {
-                                                payload.session.prompt_token_estimate
-                                            } else {
-                                                compacted_last_query_total
-                                            };
-                                            last_query_input_tokens = if payload.session.prompt_token_estimate > 0 {
-                                                payload.session.prompt_token_estimate
-                                            } else {
-                                                compacted_last_query_input
-                                            };
+                                            last_query_total_tokens = payload
+                                                .session
+                                                .last_context_occupancy
+                                                .as_ref()
+                                                .map(|occupancy| occupancy.total_tokens as usize)
+                                                .filter(|tokens| *tokens > 0)
+                                                .unwrap_or(compacted_last_query_total);
+                                            last_query_input_tokens = payload
+                                                .session
+                                                .last_context_occupancy
+                                                .as_ref()
+                                                .map(|occupancy| occupancy.total_tokens as usize)
+                                                .filter(|tokens| *tokens > 0)
+                                                .unwrap_or(compacted_last_query_input);
                                             let _ = event_tx.send(WorkerEvent::SessionCompacted {
                                                 total_input_tokens,
                                                 total_output_tokens,
@@ -3024,7 +3510,9 @@ async fn ensure_session_started(
 /// follow-up. When no session is active yet, [`ensure_session_started`] creates one on the
 /// server; the returned metadata is merged into the worker's current model, model binding, and
 /// reasoning-effort selection. For a newly created session, this also notifies the UI via
-/// [`WorkerEvent::SessionActivated`] and applies the configured permission preset.
+/// [`WorkerEvent::SessionActivated`] and applies the configured permission preset. The
+/// canonical session event subscription is ensured on every call; it is a no-op once the
+/// active session is already subscribed.
 #[allow(clippy::too_many_arguments)]
 async fn prepare_session_for_command(
     client: &mut StdioServerClient,
@@ -3033,6 +3521,7 @@ async fn prepare_session_for_command(
     model_binding_id: &mut Option<String>,
     reasoning_effort_selection: &mut Option<String>,
     session_id: &mut Option<SessionId>,
+    subscribed_session_id: &mut Option<SessionId>,
     permission_preset: PermissionPreset,
     initial_sandbox_profile: Option<&str>,
     event_tx: &mpsc::UnboundedSender<WorkerEvent>,
@@ -3065,15 +3554,127 @@ async fn prepare_session_for_command(
                 .await?;
         }
     }
+    ensure_session_subscription(client, active_session_id, subscribed_session_id, event_tx).await;
     Ok(active_session_id)
 }
 
 /// Records the active turn returned by `turn/start`.
 ///
 /// When the server queues input (`TurnStartResult::Queued`), queue state for the UI is
-/// delivered asynchronously via `inputQueue/updated` notifications.
+/// delivered asynchronously via canonical `queue/updated` notifications.
 fn handle_turn_start_result(result: TurnStartResult, active_turn_id: &mut Option<TurnId>) {
     *active_turn_id = Some(result.active_turn_id());
+}
+
+fn canonical_session_id(session_id: SessionId) -> devo_protocol::canonical::ids::SessionId {
+    devo_protocol::canonical::ids::SessionId::from_string(session_id.to_string())
+}
+
+fn parse_canonical_queue_updated(params: &serde_json::Value) -> Result<WorkerEvent> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct QueueUpdatedParams {
+        change: devo_protocol::canonical::queue::QueueChange,
+        queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+        #[serde(default)]
+        started_turn_id: Option<devo_protocol::canonical::ids::TurnId>,
+        queue: Vec<devo_protocol::canonical::queue::QueueEntry>,
+    }
+    let parsed: QueueUpdatedParams =
+        serde_json::from_value(params.clone()).context("decode queue/updated params")?;
+    Ok(WorkerEvent::QueueUpdated {
+        change: parsed.change,
+        queue_item_id: parsed.queue_item_id,
+        started_turn_id: parsed
+            .started_turn_id
+            .as_ref()
+            .and_then(|id| TurnId::try_from(id.as_str()).ok()),
+        entries: parsed.queue,
+    })
+}
+
+async fn emit_queue_snapshot(
+    client: &mut StdioServerClient,
+    session_id: &devo_protocol::canonical::ids::SessionId,
+    change: devo_protocol::canonical::queue::QueueChange,
+    queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+    started_turn_id: Option<TurnId>,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<()> {
+    let listed = client
+        .session_queue_list(devo_protocol::canonical::rpc_turn::SessionQueueListParams {
+            session_id: session_id.clone(),
+        })
+        .await
+        .context("session/queue/list after queue mutation")?;
+    let _ = event_tx.send(WorkerEvent::QueueUpdated {
+        change,
+        queue_item_id,
+        started_turn_id,
+        entries: listed.entries,
+    });
+    Ok(())
+}
+
+/// Subscribes to canonical session events at most once per activated session.
+///
+/// Server-side `subscription/create` accumulates entries, so repeat calls for
+/// the same session would leak subscriptions. Callers reset
+/// `subscribed_session_id` when the active session changes so the next call
+/// re-subscribes. Failures are logged and left non-fatal so prompt submission
+/// is never blocked; the tracked id is only recorded on success, so a later
+/// call retries.
+async fn ensure_session_subscription(
+    client: &mut StdioServerClient,
+    session_id: SessionId,
+    subscribed_session_id: &mut Option<SessionId>,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) {
+    if *subscribed_session_id == Some(session_id) {
+        return;
+    }
+    match subscribe_session_events(client, session_id, event_tx).await {
+        Ok(()) => *subscribed_session_id = Some(session_id),
+        Err(error) => {
+            tracing::warn!(?session_id, %error, "failed to subscribe to session events");
+        }
+    }
+}
+
+async fn subscribe_session_events(
+    client: &mut StdioServerClient,
+    session_id: SessionId,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<()> {
+    let canonical = canonical_session_id(session_id);
+    let created = client
+        .subscription_create(devo_protocol::canonical::event::SubscriptionCreateParams {
+            selectors: vec![devo_protocol::canonical::event::StreamSelector::Session {
+                session_id: canonical.clone(),
+            }],
+            include_snapshot: true,
+            after: Vec::new(),
+        })
+        .await
+        .context("subscription/create for session queue")?;
+    for snapshot in created.snapshots {
+        if let devo_protocol::canonical::event::SnapshotData::Session { queue, .. } = snapshot.data
+        {
+            let queue_item_id = queue
+                .first()
+                .map(|entry| entry.queue_item_id.clone())
+                .unwrap_or_else(|| {
+                    devo_protocol::canonical::ids::QueueItemId::from_string(String::new())
+                });
+            let _ = event_tx.send(WorkerEvent::QueueUpdated {
+                change: devo_protocol::canonical::queue::QueueChange::Added,
+                queue_item_id,
+                started_turn_id: None,
+                entries: queue,
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn pause_active_goal_before_session_leave(
@@ -3915,6 +4516,7 @@ fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
             SessionHistoryItemKind::CommandExecution => TranscriptItemKind::ToolResult,
             SessionHistoryItemKind::Error => TranscriptItemKind::Error,
             SessionHistoryItemKind::TurnSummary => TranscriptItemKind::TurnSummary,
+            SessionHistoryItemKind::ContextCompaction => TranscriptItemKind::System,
         };
         let mut transcript_item = match item.kind {
             SessionHistoryItemKind::ToolCall => TranscriptItem::tool_call(item.title.clone()),
@@ -3934,6 +4536,14 @@ fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
             SessionHistoryItemKind::TurnSummary => {
                 // TurnSummary uses title for model name, duration_ms for duration in seconds
                 TranscriptItem::new(kind, item.title.clone(), item.body.clone())
+            }
+            SessionHistoryItemKind::ContextCompaction => {
+                let title = if item.title.is_empty() {
+                    "Context compacted".to_string()
+                } else {
+                    item.title.clone()
+                };
+                TranscriptItem::new(kind, title, String::new())
             }
             SessionHistoryItemKind::User
             | SessionHistoryItemKind::Assistant
@@ -6166,8 +6776,11 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         }
     }
 
@@ -6622,8 +7235,11 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         };
         let entry = SessionListEntry {
             session_id: summary.session_id,
@@ -6667,8 +7283,11 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         };
         let entry = SessionListEntry {
             session_id: summary.session_id,

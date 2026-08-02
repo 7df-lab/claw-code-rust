@@ -70,10 +70,6 @@ pub(crate) enum SessionCommand {
     EnqueuePendingTurnInput {
         item: PendingInputItem,
     },
-    RemoveQueuedTurnInput {
-        queued_input_id: devo_core::PendingInputId,
-        reply: oneshot::Sender<bool>,
-    },
     GetActiveTurnId {
         reply: oneshot::Sender<Option<TurnId>>,
     },
@@ -164,11 +160,16 @@ pub(crate) enum SessionCommand {
         model: Option<String>,
         model_binding_id: Option<String>,
         reasoning_effort_selection: Option<String>,
+        collaboration_mode: Option<CollaborationMode>,
         reply: oneshot::Sender<SessionMetadata>,
     },
     ApplyPermissionProfile {
         profile: devo_safety::RuntimePermissionProfile,
         reply: oneshot::Sender<()>,
+    },
+    ApplyEffectiveContextWindow {
+        limit: usize,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     ApplySandboxProfile {
         profile: String,

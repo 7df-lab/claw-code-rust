@@ -565,6 +565,9 @@ pub enum CompactionTrigger {
 /// Context-window occupancy snapshot (distinct from billing usage, see the
 /// usage module). `measured = false` marks parts that were not precisely
 /// metered.
+///
+/// Used on compaction items (`before` / `after`). Prefer [`ContextOccupancy`]
+/// for `context/usage/read` and `context/usageUpdated`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextUsage {
@@ -578,11 +581,220 @@ pub struct ContextUsage {
     pub measured: bool,
 }
 
+/// Category buckets for model-visible context occupancy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextCategoryId {
+    Base,
+    Skills,
+    ToolsBuiltin,
+    ToolsMcp,
+    Conversation,
+}
+
+/// One category's share of the current context window occupancy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextCategoryUsage {
+    pub id: ContextCategoryId,
+    pub tokens: u64,
+    /// Share in basis points (0..=10_000); categories sum to 10_000 when
+    /// `total_tokens > 0`.
+    pub share_bps: u16,
+}
+
+/// Category breakdown of how full the effective context window is.
+///
+/// Distinct from billing usage: this answers "what fills the window", not
+/// "how much was spent".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextOccupancy {
+    pub total_tokens: u64,
+    /// Effective context window (`context_window * percent / 100`).
+    pub context_window_tokens: u64,
+    pub categories: Vec<ContextCategoryUsage>,
+}
+
+impl ContextOccupancy {
+    pub fn empty(context_window_tokens: u64) -> Self {
+        Self {
+            total_tokens: 0,
+            context_window_tokens,
+            categories: Vec::new(),
+        }
+    }
+
+    /// Build occupancy from absolute category token counts.
+    ///
+    /// Categories are emitted in a stable order. `share_bps` uses largest-
+    /// remainder so shares sum to 10_000 when `total > 0`.
+    pub fn from_category_tokens(
+        context_window_tokens: u64,
+        base: u64,
+        skills: u64,
+        tools_builtin: u64,
+        tools_mcp: u64,
+        conversation: u64,
+    ) -> Self {
+        let parts = [
+            (ContextCategoryId::Base, base),
+            (ContextCategoryId::Skills, skills),
+            (ContextCategoryId::ToolsBuiltin, tools_builtin),
+            (ContextCategoryId::ToolsMcp, tools_mcp),
+            (ContextCategoryId::Conversation, conversation),
+        ];
+        let total_tokens = parts.iter().map(|(_, tokens)| *tokens).sum::<u64>();
+        let categories = if total_tokens == 0 {
+            Vec::new()
+        } else {
+            let mut shares = [0u16; 5];
+            let mut remainders = [0u128; 5];
+            let mut assigned = 0u32;
+            for (idx, (_, tokens)) in parts.iter().enumerate() {
+                let product = (*tokens as u128).saturating_mul(10_000);
+                shares[idx] = u16::try_from(product.checked_div(total_tokens as u128).unwrap_or(0))
+                    .unwrap_or(u16::MAX);
+                remainders[idx] = product % (total_tokens as u128);
+                assigned = assigned.saturating_add(u32::from(shares[idx]));
+            }
+            let mut leftover = 10_000u32.saturating_sub(assigned);
+            let mut order: Vec<usize> = (0..parts.len()).collect();
+            order.sort_by(|&a, &b| remainders[b].cmp(&remainders[a]).then_with(|| a.cmp(&b)));
+            for idx in order {
+                if leftover == 0 {
+                    break;
+                }
+                if parts[idx].1 == 0 {
+                    continue;
+                }
+                shares[idx] = shares[idx].saturating_add(1);
+                leftover = leftover.saturating_sub(1);
+            }
+            parts
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, tokens))| *tokens > 0)
+                .map(|(idx, (id, tokens))| ContextCategoryUsage {
+                    id: *id,
+                    tokens: *tokens,
+                    share_bps: shares[idx],
+                })
+                .collect()
+        };
+        Self {
+            total_tokens,
+            context_window_tokens,
+            categories,
+        }
+    }
+
+    /// Scale raw category estimates so they sum exactly to `anchor_total`.
+    pub fn scale_raw_to_total(
+        context_window_tokens: u64,
+        anchor_total: u64,
+        base: u64,
+        skills: u64,
+        tools_builtin: u64,
+        tools_mcp: u64,
+        conversation: u64,
+    ) -> Self {
+        let raw_total = base
+            .saturating_add(skills)
+            .saturating_add(tools_builtin)
+            .saturating_add(tools_mcp)
+            .saturating_add(conversation);
+        if anchor_total == 0 || raw_total == 0 {
+            return Self::empty(context_window_tokens);
+        }
+        let parts = [base, skills, tools_builtin, tools_mcp, conversation];
+        let mut scaled = [0u64; 5];
+        let mut remainders = [0u128; 5];
+        let mut assigned = 0u64;
+        for (idx, tokens) in parts.iter().enumerate() {
+            let product = (*tokens as u128).saturating_mul(anchor_total as u128);
+            scaled[idx] = (product / raw_total as u128) as u64;
+            remainders[idx] = product % raw_total as u128;
+            assigned = assigned.saturating_add(scaled[idx]);
+        }
+        let mut leftover = anchor_total.saturating_sub(assigned);
+        let mut order: Vec<usize> = (0..parts.len()).collect();
+        order.sort_by(|&a, &b| remainders[b].cmp(&remainders[a]).then_with(|| a.cmp(&b)));
+        for idx in order {
+            if leftover == 0 {
+                break;
+            }
+            if parts[idx] == 0 {
+                continue;
+            }
+            scaled[idx] = scaled[idx].saturating_add(1);
+            leftover = leftover.saturating_sub(1);
+        }
+        Self::from_category_tokens(
+            context_window_tokens,
+            scaled[0],
+            scaled[1],
+            scaled[2],
+            scaled[3],
+            scaled[4],
+        )
+    }
+
+    pub fn tokens_for(&self, id: ContextCategoryId) -> u64 {
+        self.categories
+            .iter()
+            .find(|category| category.id == id)
+            .map(|category| category.tokens)
+            .unwrap_or(0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn context_occupancy_share_bps_sum_to_10000() {
+        let occupancy = ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 100_000, /*base*/ 10, /*skills*/ 20,
+            /*tools_builtin*/ 30, /*tools_mcp*/ 40, /*conversation*/ 0,
+        );
+        assert_eq!(occupancy.total_tokens, 100);
+        let share_sum: u32 = occupancy
+            .categories
+            .iter()
+            .map(|category| u32::from(category.share_bps))
+            .sum();
+        assert_eq!(share_sum, 10_000);
+        assert_eq!(
+            occupancy
+                .categories
+                .iter()
+                .map(|category| category.tokens)
+                .sum::<u64>(),
+            100
+        );
+    }
+
+    #[test]
+    fn context_occupancy_scale_raw_matches_anchor() {
+        let occupancy = ContextOccupancy::scale_raw_to_total(
+            /*context_window_tokens*/ 100_000, /*anchor_total*/ 1_000, /*base*/ 1,
+            /*skills*/ 1, /*tools_builtin*/ 1, /*tools_mcp*/ 1,
+            /*conversation*/ 6,
+        );
+        assert_eq!(occupancy.total_tokens, 1_000);
+        assert_eq!(
+            occupancy
+                .categories
+                .iter()
+                .map(|category| category.tokens)
+                .sum::<u64>(),
+            1_000
+        );
+    }
 
     #[test]
     fn user_message_serializes_with_camel_case_tag_and_defaults() {

@@ -1191,31 +1191,53 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
         .await
         .context("timed out waiting for blocking tool to start")?;
 
-    let steer_response = runtime
+    // Canonical flow: push the input onto the busy session queue, then
+    // promote the queued entry into the running turn as a steer.
+    let push_response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 9,
-                "method": "_devo/turn/steer",
+                "method": "session/queue/push",
                 "params": {
-                    "session_id": session_id,
-                    "expected_turn_id": start_turn_id,
+                    "sessionId": session_id,
                     "input": [
                         { "type": "text", "text": "Apply this steer now." },
-                        { "type": "skill", "id": "steer-rust" }
-                    ]
+                        { "type": "skill", "name": "steer-rust" }
+                    ],
+                    "idempotencyKey": "steer-skill-push"
                 }
             }),
         )
         .await
-        .context("turn/steer response")?;
-    let steer_result: SuccessResponse<devo_server::TurnSteerResult> =
+        .context("session/queue/push response")?;
+    let push_result: SuccessResponse<devo_protocol::canonical::rpc_turn::SessionQueuePushResult> =
+        serde_json::from_value(push_response.clone())
+            .with_context(|| format!("push_response: {push_response}"))?;
+    let devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Queued { entry } =
+        push_result.result
+    else {
+        panic!("busy push must queue");
+    };
+
+    let steer_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 10,
+                "method": "session/queue/steer",
+                "params": {
+                    "sessionId": session_id,
+                    "queueItemId": entry.queue_item_id.as_str(),
+                    "expectedTurnId": start_turn_id.to_string()
+                }
+            }),
+        )
+        .await
+        .context("session/queue/steer response")?;
+    let steer_result: SuccessResponse<devo_protocol::canonical::rpc_turn::SessionQueueSteerResult> =
         serde_json::from_value(steer_response)?;
-    assert_eq!(steer_result.result.turn_id, start_turn_id);
-    assert_eq!(
-        steer_result.result.disposition,
-        devo_server::TurnInputDisposition::Steered
-    );
+    assert!(!steer_result.result.item_id.as_str().is_empty());
 
     release.notify_one();
     wait_for_turn_completed(&mut notifications_rx).await?;

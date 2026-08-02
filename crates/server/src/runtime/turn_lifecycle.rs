@@ -39,6 +39,13 @@ impl ServerRuntime {
             .await;
     }
 
+    /// Drop the abort handle so an interrupt cannot kill terminalization mid-flight.
+    ///
+    /// Cancellation via the turn token remains active; only hard abort is detached.
+    pub(crate) async fn detach_active_turn_abort(&self, session_id: SessionId) {
+        self.active_turns.remove_abort_handle(session_id).await;
+    }
+
     /// Cancels and aborts the active turn for `session_id` without clearing the
     /// full runtime handle (used while waiting for terminal status).
     pub(crate) async fn signal_active_turn_interrupt(&self, session_id: SessionId) {

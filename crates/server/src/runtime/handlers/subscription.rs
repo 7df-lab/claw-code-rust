@@ -29,6 +29,7 @@ use devo_protocol::canonical::turn::TurnStatus;
 use uuid::Uuid;
 
 use super::super::*;
+use super::queue::canonical_queue_entries;
 use crate::db::QueueType;
 
 /// One server-side subscription record (registry entry, 08 §4).
@@ -470,7 +471,7 @@ impl ServerRuntime {
         let stream_id = selector_stream_id(selector);
         match selector {
             StreamSelector::Session { session_id } => {
-                let Some(rollout_path) = self.resolve_rollout_path(session_id).await else {
+                let Some(rollout_path) = self.snapshot_rollout_path(session_id).await else {
                     return Ok(None);
                 };
                 let history = devo_core::read_canonical_history(&rollout_path)
@@ -486,7 +487,8 @@ impl ServerRuntime {
                     .cloned()
                     .map(Box::new);
                 let queue = self
-                    .queue_entries(session_id)
+                    .snapshot_queue_entries(session_id)
+                    .await
                     .map_err(|error| format!("failed to read session queue: {error}"))?;
                 Ok(Some(StreamSnapshot {
                     stream_id,
@@ -538,6 +540,67 @@ impl ServerRuntime {
         Ok(sessions)
     }
 
+    /// Mailbox-free rollout-path resolution for the subscription critical
+    /// section. `handle_subscription_create` holds the `connections` lock
+    /// across `build_snapshot`, and the session actor may be parked
+    /// broadcasting into that same lock (`broadcast_event` takes it on every
+    /// turn event), so waiting on the actor mailbox here — as
+    /// `resolve_rollout_path` does — is an ABBA deadlock. The in-flight
+    /// turn's inline record is read under `try_lock` only: on contention we
+    /// fall through to the persisted sources (SQLite index, then a rollout
+    /// store scan) rather than risk a lock-ordering inversion with
+    /// turn-event persistence.
+    async fn snapshot_rollout_path(
+        &self,
+        session_id: &CanonicalSessionId,
+    ) -> Option<std::path::PathBuf> {
+        let legacy_id = SessionId::try_from(session_id.as_str()).ok()?;
+        if let Some(stream) = self.active_stream_state(legacy_id).await
+            && let Ok(stream) = stream.try_lock()
+            && let Some(inline) = stream.turn_inline.as_ref()
+            && let Some(record) = inline.record.clone()
+        {
+            return Some(record.rollout_path);
+        }
+        if let Ok(Some(index)) = self.deps.db.get_session_index(&legacy_id)
+            && let Some(path) = index.rollout_path
+        {
+            return Some(path);
+        }
+        self.rollout_store
+            .find_rollout_by_session_id(&legacy_id)
+            .ok()
+            .flatten()
+    }
+
+    /// Queue source for session snapshots: the session's in-memory turn
+    /// queue while a turn is active (same source and 1-based positions as
+    /// `session/queue/list` and `queue/updated`, and the only source for
+    /// ephemeral sessions that skip DB writes). Falls back to the persisted
+    /// SQLite queue otherwise (idle or never-resumed sessions; the DB mirror
+    /// is written through on every mutation for durable sessions).
+    ///
+    /// Locking: `build_snapshot` runs inside the `connections` critical
+    /// section, so this must never wait on the session-actor mailbox — the
+    /// actor may be parked broadcasting into that same lock. The spawn
+    /// snapshot comes from the runtime registry only (mailbox-free), and the
+    /// queue std::Mutex is held only for the entry build.
+    async fn snapshot_queue_entries(
+        &self,
+        session_id: &CanonicalSessionId,
+    ) -> anyhow::Result<Vec<QueueEntry>> {
+        let legacy_id = SessionId::try_from(session_id.as_str())
+            .map_err(|error| anyhow::anyhow!("invalid session id: {error}"))?;
+        if let Some(spawn) = self.active_spawn_snapshot_for_session(legacy_id).await {
+            let queue = spawn
+                .pending_turn_queue
+                .lock()
+                .expect("pending turn queue mutex should not be poisoned");
+            return Ok(canonical_queue_entries(&queue));
+        }
+        self.queue_entries(session_id)
+    }
+
     fn queue_entries(&self, session_id: &CanonicalSessionId) -> anyhow::Result<Vec<QueueEntry>> {
         let legacy_id = SessionId::try_from(session_id.as_str())
             .map_err(|error| anyhow::anyhow!("invalid session id: {error}"))?;
@@ -549,7 +612,9 @@ impl ServerRuntime {
                 let (input, preview) = queue_entry_content(&item);
                 QueueEntry {
                     queue_item_id: QueueItemId::from_legacy_uuid(Uuid::from(item.id)),
-                    position: index as u32,
+                    // 1-based, matching `canonical_queue_entries` (in-memory
+                    // path) and `session/queue/list`.
+                    position: (index + 1) as u32,
                     input,
                     preview,
                     enqueued_at: item.created_at,

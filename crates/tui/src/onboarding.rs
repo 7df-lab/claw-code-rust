@@ -162,6 +162,28 @@ pub(crate) fn save_reasoning_effort_selection(selection: Option<&str>) -> Result
     Ok(())
 }
 
+pub(crate) fn save_compaction_token_limit(limit: u64) -> Result<()> {
+    let config_home = find_devo_home().context("could not determine user config path")?;
+    let mut store = devo_core::AppConfigStore::load(config_home, /*workspace_root*/ None)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    store
+        .set_compaction_token_limit(limit)
+        .context("failed to persist compaction_token_limit")?;
+    Ok(())
+}
+
+pub(crate) fn save_default_collaboration_mode(
+    mode: devo_protocol::CollaborationMode,
+) -> Result<()> {
+    let config_home = find_devo_home().context("could not determine user config path")?;
+    let mut store = devo_core::AppConfigStore::load(config_home, /*workspace_root*/ None)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    store
+        .set_default_collaboration_mode(mode)
+        .context("failed to persist default_collaboration_mode")?;
+    Ok(())
+}
+
 pub(crate) fn save_theme_selection(name: &str) -> Result<()> {
     let path = find_devo_home()
         .context("could not determine user config path")?

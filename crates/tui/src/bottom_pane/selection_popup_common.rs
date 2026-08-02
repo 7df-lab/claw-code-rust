@@ -7,7 +7,6 @@ use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
 use ratatui::widgets::Widget;
 use std::borrow::Cow;
 use unicode_width::UnicodeWidthChar;
@@ -17,7 +16,6 @@ use crate::key_hint::KeyBinding;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::Insets;
 use crate::render::RectExt as _;
-use crate::style::user_message_style;
 
 use super::scroll_state::ScrollState;
 
@@ -76,18 +74,18 @@ pub(crate) const fn menu_surface_padding_height() -> u16 {
     MENU_SURFACE_INSET_V * 2
 }
 
-/// Paint the shared menu background and return the inset content area.
+/// Paint the shared menu chrome and return the inset content area.
 ///
-/// This keeps the surface treatment consistent across selection-style overlays
+/// This keeps inset spacing consistent across selection-style overlays
 /// (for example `/model`, approvals, and request-user-input). Callers should
 /// render all inner content in the returned rect, not the original area.
-pub(crate) fn render_menu_surface(area: Rect, buf: &mut Buffer) -> Rect {
+///
+/// The surface no longer paints a tinted background; panels sit on the terminal
+/// background with inset padding only.
+pub(crate) fn render_menu_surface(area: Rect, _buf: &mut Buffer) -> Rect {
     if area.is_empty() {
         return area;
     }
-    Block::default()
-        .style(user_message_style())
-        .render(area, buf);
     menu_surface_inset(area)
 }
 
@@ -338,6 +336,14 @@ fn compute_item_window_start(
     start_idx
 }
 
+fn has_more_below(rows_len: usize, start_idx: usize, max_items: usize) -> bool {
+    max_items > 0 && start_idx.saturating_add(max_items) < rows_len
+}
+
+fn scroll_overflow_line() -> Line<'static> {
+    Line::from(Span::styled("↓ more".to_string(), Style::default().dim()))
+}
+
 fn is_selected_visible_in_wrapped_viewport(
     rows_all: &[GenericDisplayRow],
     start_idx: usize,
@@ -527,7 +533,15 @@ fn render_rows_inner(
     if max_items == 0 {
         return 0;
     }
-    let desc_measure_items = max_items.min(area.height.max(1) as usize);
+
+    // First pass: item window + overflow hint so we can reserve the ↓ more row
+    // before measuring wrapped selection visibility against the remaining height.
+    // Wrap-around lists only show ↓ more (not ↑ more).
+    let provisional_start = compute_item_window_start(rows_all, state, max_items);
+    let more_below = has_more_below(rows_all.len(), provisional_start, max_items);
+    let indicator_rows = u16::from(more_below);
+    let content_height = area.height.saturating_sub(indicator_rows);
+    let desc_measure_items = max_items.min(content_height.max(1) as usize);
 
     // Keep item-window semantics, then correct for wrapped row heights so the
     // selected row remains visible in a line-based viewport.
@@ -537,9 +551,10 @@ fn render_rows_inner(
         max_items,
         desc_measure_items,
         area.width,
-        area.height,
+        content_height,
         col_width_mode,
     );
+    let more_below = has_more_below(rows_all.len(), start_idx, max_items);
 
     let desc_col = compute_desc_col(
         rows_all,
@@ -549,12 +564,20 @@ fn render_rows_inner(
         col_width_mode,
     );
 
-    // Render items, wrapping descriptions and aligning wrapped lines under the
-    // shared description column. Stop when we run out of vertical space.
     let mut cur_y = area.y;
     let mut rendered_lines: u16 = 0;
+    let bottom_y = area.y.saturating_add(area.height);
+
+    let item_bottom_y = if more_below {
+        bottom_y.saturating_sub(1)
+    } else {
+        bottom_y
+    };
+
+    // Render items, wrapping descriptions and aligning wrapped lines under the
+    // shared description column. Stop when we run out of vertical space.
     for (i, row) in rows_all.iter().enumerate().skip(start_idx).take(max_items) {
-        if cur_y >= area.y + area.height {
+        if cur_y >= item_bottom_y {
             break;
         }
 
@@ -568,7 +591,7 @@ fn render_rows_inner(
 
         // Render the wrapped lines.
         for line in wrapped {
-            if cur_y >= area.y + area.height {
+            if cur_y >= item_bottom_y {
                 break;
             }
             line.render(
@@ -583,6 +606,19 @@ fn render_rows_inner(
             cur_y = cur_y.saturating_add(1);
             rendered_lines = rendered_lines.saturating_add(1);
         }
+    }
+
+    if more_below && cur_y < bottom_y {
+        scroll_overflow_line().render(
+            Rect {
+                x: area.x,
+                y: cur_y.min(item_bottom_y),
+                width: area.width,
+                height: 1,
+            },
+            buf,
+        );
+        rendered_lines = rendered_lines.saturating_add(1);
     }
 
     rendered_lines
@@ -860,6 +896,9 @@ fn measure_rows_height_inner(
     {
         let wrapped_lines = wrap_row_lines(row, desc_col, content_width).len();
         total = total.saturating_add(wrapped_lines as u16);
+    }
+    if has_more_below(rows_all.len(), start_idx, visible_items) {
+        total = total.saturating_add(1);
     }
     total.max(1)
 }

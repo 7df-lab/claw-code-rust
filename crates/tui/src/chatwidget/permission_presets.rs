@@ -6,24 +6,28 @@
 use devo_protocol::PermissionPreset;
 
 use crate::app_command::AppCommand;
+use crate::app_command::PersistScope;
 use crate::app_event::AppEvent;
 use crate::bottom_pane::list_selection_view::SelectionItem;
 
-pub(super) fn permission_preset_items(current: PermissionPreset) -> Vec<SelectionItem> {
+pub(super) fn permission_preset_items(
+    current: PermissionPreset,
+    persist_scope: PersistScope,
+) -> Vec<SelectionItem> {
     [
         (
             PermissionPreset::Default,
-            "Default",
-            "Workspace sandbox; read, write, and run commands in workspace; network blocked.",
+            "Ask for approval",
+            "Workspace sandbox; read, write, and run commands in workspace; network blocked. You approve sensitive tools.",
         ),
         (
             PermissionPreset::AutoReview,
-            "Auto-review",
-            "Workspace sandbox; same as Default, but auto-reviewer handles approvals first.",
+            "Approve for me",
+            "Same sandbox as Ask for approval. An AI reviewer may approve low-risk tools; uncertain ones still ask you.",
         ),
         (
             PermissionPreset::FullAccess,
-            "Full Access",
+            "Full-Access",
             "No OS sandbox and no approval prompts; use with caution.",
         ),
     ]
@@ -34,7 +38,10 @@ pub(super) fn permission_preset_items(current: PermissionPreset) -> Vec<Selectio
         is_current: preset == current,
         dismiss_on_select: true,
         actions: vec![Box::new(move |app_event_tx| {
-            app_event_tx.send(AppEvent::Command(AppCommand::UpdatePermissions { preset }));
+            app_event_tx.send(AppEvent::Command(AppCommand::update_permissions(
+                preset,
+                persist_scope,
+            )));
         })],
         ..Default::default()
     })
@@ -43,9 +50,9 @@ pub(super) fn permission_preset_items(current: PermissionPreset) -> Vec<Selectio
 
 pub(super) fn permission_preset_label(preset: PermissionPreset) -> &'static str {
     match preset {
-        PermissionPreset::Default => "Default",
-        PermissionPreset::AutoReview => "Auto-review",
-        PermissionPreset::FullAccess => "Full Access",
+        PermissionPreset::Default => "Ask for approval",
+        PermissionPreset::AutoReview => "Approve for me",
+        PermissionPreset::FullAccess => "Full-Access",
     }
 }
 
@@ -63,12 +70,15 @@ mod tests {
             permission_preset_label(PermissionPreset::FullAccess),
         ];
 
-        assert_eq!(actual, ["Default", "Auto-review", "Full Access"]);
+        assert_eq!(
+            actual,
+            ["Ask for approval", "Approve for me", "Full-Access"]
+        );
     }
 
     #[test]
     fn permission_preset_items_mark_current_selection() {
-        let items = permission_preset_items(PermissionPreset::AutoReview);
+        let items = permission_preset_items(PermissionPreset::AutoReview, PersistScope::Session);
         let actual: Vec<_> = items
             .iter()
             .map(|item| {
@@ -85,9 +95,9 @@ mod tests {
         assert_eq!(
             actual,
             vec![
-                ("Default", true, false, true, 1),
-                ("Auto-review", true, true, true, 1),
-                ("Full Access", true, false, true, 1),
+                ("Ask for approval", true, false, true, 1),
+                ("Approve for me", true, true, true, 1),
+                ("Full-Access", true, false, true, 1),
             ]
         );
     }

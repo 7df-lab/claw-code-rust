@@ -178,6 +178,7 @@ impl ServerRuntime {
                 );
             }
         }
+        self.deps.invalidate_workspace_contexts();
 
         let config_options = self.acp_model_config_options_for_context(&runtime_context);
         serde_json::to_value(SuccessResponse {

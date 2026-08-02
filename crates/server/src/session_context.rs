@@ -176,26 +176,50 @@ impl SessionRuntimeContext {
             .provider
             .is_operationally_equivalent_to(&inherited_config.provider)
             || config.provider_http != inherited_config.provider_http;
-        let (registry, mcp_manager) = if !has_provider_configuration
-            && !config.mcp.servers.iter().any(|record| record.enabled)
-        {
-            (
-                Arc::clone(&inherited_context.registry),
-                Arc::clone(&inherited_context.mcp_manager),
-            )
+        let workspace_cwd = workspace_root
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let workspace_mcp = config
+            .mcp
+            .clone()
+            .with_code_search_workspace_cwd(workspace_cwd.clone());
+        let inherited_mcp = inherited_config
+            .mcp
+            .clone()
+            .with_code_search_workspace_cwd(workspace_cwd);
+        let mcp_runtime_equivalent = workspace_mcp.is_operationally_equivalent_to(&inherited_mcp);
+        let oauth_credentials_equivalent = config.mcp_oauth_credentials_store.unwrap_or_default()
+            == inherited_config
+                .mcp_oauth_credentials_store
+                .unwrap_or_default();
+        let tool_plan = ToolPlanConfig::from_app_config(&config);
+        let inherited_tool_plan = ToolPlanConfig::from_app_config(&inherited_config);
+        // Reuse inherited MCP manager when config matches so we do not re-run
+        // discover_tools() (which starts lazy servers such as docker-backed MCP).
+        // Share the registry too when the tool plan is unchanged; otherwise rebuild
+        // the registry on top of the shared manager.
+        let (registry, mcp_manager) = if mcp_runtime_equivalent && oauth_credentials_equivalent {
+            if tool_plan == inherited_tool_plan {
+                (
+                    Arc::clone(&inherited_context.registry),
+                    Arc::clone(&inherited_context.mcp_manager),
+                )
+            } else {
+                let mcp_manager = Arc::clone(&inherited_context.mcp_manager);
+                let registry = Arc::new(StdMutex::new(Arc::new(
+                    handlers::build_registry_from_plan_with_mcp(
+                        &tool_plan,
+                        Arc::clone(&mcp_manager),
+                    )
+                    .await,
+                )));
+                (registry, mcp_manager)
+            }
         } else {
-            let workspace_cwd = workspace_root
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            let mcp_config = config
-                .mcp
-                .clone()
-                .with_code_search_workspace_cwd(workspace_cwd);
             let mcp_manager: Arc<dyn McpManager> = Arc::new(RmcpMcpManager::new(
-                mcp_config,
+                workspace_mcp,
                 config.mcp_oauth_credentials_store.unwrap_or_default(),
             ));
-            let tool_plan = ToolPlanConfig::from_app_config(&config);
             let registry = Arc::new(StdMutex::new(Arc::new(
                 handlers::build_registry_from_plan_with_mcp(&tool_plan, Arc::clone(&mcp_manager))
                     .await,

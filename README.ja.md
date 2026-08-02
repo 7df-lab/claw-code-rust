@@ -26,11 +26,11 @@
 ## スクリーンショット
 
 <p align="center">
-  <img width="100%" alt="Devo desktop coding agent app がリポジトリの会話、プロジェクトサイドバー、モデル制御を表示している画面" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo terminal TUI coding agent がローカルリポジトリでモデル、コンテキスト、token 状態を表示している画面" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
 </p>
 
 <p align="center">
-  <img width="100%" alt="Devo terminal TUI coding agent がローカルリポジトリでモデル、コンテキスト、token 状態を表示している画面" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo desktop coding agent app がリポジトリの会話、プロジェクトサイドバー、モデル制御を表示している画面" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
 </p>
 
 ## Devo を選ぶ理由

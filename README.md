@@ -27,11 +27,11 @@
 ## Screenshots
 
 <p align="center">
-  <img width="100%" alt="Devo desktop coding agent app showing a repository conversation, project sidebar, and model controls" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo terminal TUI coding agent running in a local repository with model, context, and token status" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
 </p>
 
 <p align="center">
-  <img width="100%" alt="Devo terminal TUI coding agent running in a local repository with model, context, and token status" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo desktop coding agent app showing a repository conversation, project sidebar, and model controls" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
 </p>
 
 ## Why Devo

@@ -135,18 +135,17 @@ impl Renderable for ChatWidget {
 
 impl ChatWidget {
     fn chat_layout_areas(&self, area: Rect) -> (Rect, Rect, Rect) {
-        let bottom_height = self
-            .bottom_pane
-            .desired_height(area.width)
-            .min(area.height);
+        let bottom_height = self.bottom_pane.desired_height(area.width).min(area.height);
         let subagent_height = self
             .subagent_live_list_desired_height()
             .min(area.height.saturating_sub(bottom_height));
-        let history_height = u16::try_from(
-            self.active_viewport_lines(area.width.max(1)).len(),
-        )
-        .unwrap_or(u16::MAX)
-        .min(area.height.saturating_sub(bottom_height).saturating_sub(subagent_height));
+        let history_height = u16::try_from(self.active_viewport_lines(area.width.max(1)).len())
+            .unwrap_or(u16::MAX)
+            .min(
+                area.height
+                    .saturating_sub(bottom_height)
+                    .saturating_sub(subagent_height),
+            );
         let [history_area, subagent_area, bottom_area] = Layout::vertical([
             Constraint::Length(history_height),
             Constraint::Length(subagent_height),

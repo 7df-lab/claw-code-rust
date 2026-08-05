@@ -98,4 +98,5 @@ pub(crate) struct ResolvedShellRun {
     pub(crate) yield_time_ms: u64,
     pub(crate) max_output_tokens: usize,
     pub(crate) sandbox_profile: Option<String>,
+    pub(crate) sandbox_permission_overlay: Option<devo_sandbox::SandboxPermissionOverlay>,
 }

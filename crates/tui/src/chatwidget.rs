@@ -301,6 +301,10 @@ pub(crate) struct ChatWidget {
     boundary_committed_assistant_items: HashSet<ItemId>,
     current_turn_has_user_shell_command: bool,
     pending_approval: Option<PendingApprovalRequest>,
+    /// Approval decision ids already rendered in the active session. The server
+    /// and the client ACP bridge can both emit the same decision item, so this
+    /// guards the transcript against duplicate permission lines.
+    seen_approval_decisions: HashSet<String>,
     active_proposed_plan: Option<ActiveProposedPlan>,
     pending_proposed_plan_actions: bool,
     permission_preset: devo_protocol::PermissionPreset,
@@ -575,6 +579,7 @@ impl ChatWidget {
             boundary_committed_assistant_items: HashSet::new(),
             current_turn_has_user_shell_command: false,
             pending_approval: None,
+            seen_approval_decisions: HashSet::new(),
             active_proposed_plan: None,
             pending_proposed_plan_actions: false,
             permission_preset: initial_permission_preset,

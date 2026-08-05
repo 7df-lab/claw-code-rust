@@ -569,7 +569,9 @@ impl ToolHandler for RecordingMutatingTool {
 
 struct AutoReviewProvider {
     decision: &'static str,
+    tool_input: serde_json::Value,
     reviewer_calls: Arc<std::sync::atomic::AtomicUsize>,
+    completion_failures_remaining: Arc<std::sync::atomic::AtomicUsize>,
     stream_calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -578,6 +580,20 @@ impl ModelProviderSDK for AutoReviewProvider {
     async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
         self.reviewer_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut remaining = self
+            .completion_failures_remaining
+            .load(std::sync::atomic::Ordering::SeqCst);
+        while remaining > 0 {
+            match self.completion_failures_remaining.compare_exchange(
+                remaining,
+                remaining - 1,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            ) {
+                Ok(_) => return Err(anyhow::anyhow!("test reviewer provider failure")),
+                Err(current) => remaining = current,
+            }
+        }
         Ok(ModelResponse {
             id: "review-1".into(),
             content: vec![ResponseContent::Text(format!(
@@ -603,7 +619,7 @@ impl ModelProviderSDK for AutoReviewProvider {
                     index: 0,
                     id: "tool-1".into(),
                     name: "mutating_tool".into(),
-                    input: json!({}),
+                    input: self.tool_input.clone(),
                 }),
                 Ok(StreamEvent::ToolCallInputDelta {
                     index: 0,
@@ -615,7 +631,7 @@ impl ModelProviderSDK for AutoReviewProvider {
                         content: vec![ResponseContent::ToolUse {
                             id: "tool-1".into(),
                             name: "mutating_tool".into(),
-                            input: json!({}),
+                            input: self.tool_input.clone(),
                         }],
                         stop_reason: Some(StopReason::ToolUse),
                         usage: Usage::default(),
@@ -1036,7 +1052,86 @@ async fn auto_review_approval_executes_mutating_tool_without_user_prompt() -> Re
         Some(workspace_root.clone()),
         Arc::new(AutoReviewProvider {
             decision: "approve",
+            tool_input: json!({}),
             reviewer_calls: Arc::clone(&reviewer_calls),
+            completion_failures_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            stream_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }),
+        auto_review_registry(Arc::clone(&tool_calls)),
+    );
+    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
+    let session_id = start_session(&runtime, connection_id, &workspace_root).await?;
+    update_permissions_to_auto_review(&runtime, connection_id, session_id).await?;
+
+    start_auto_review_turn(&runtime, connection_id, session_id).await?;
+    wait_for_turn_completed(&mut notifications_rx).await?;
+
+    assert_eq!(reviewer_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    Ok(())
+}
+
+/// Trace: L2-DES-SAFETY-002
+/// Verifies: explicit full sandbox escalation is routed through AutoReview.
+#[tokio::test]
+async fn auto_review_approval_executes_full_sandbox_escalation() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let user_skill_root = temp_dir.path().join("user-skills");
+    let workspace_root = temp_dir.path().join("workspace");
+    let tool_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reviewer_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runtime = build_runtime_with_registry(
+        temp_dir.path(),
+        user_skill_root,
+        Some(workspace_root.clone()),
+        Arc::new(AutoReviewProvider {
+            decision: "approve",
+            tool_input: json!({
+                "sandbox_permissions": "require_escalated"
+            }),
+            reviewer_calls: Arc::clone(&reviewer_calls),
+            completion_failures_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            stream_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }),
+        auto_review_registry(Arc::clone(&tool_calls)),
+    );
+    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
+    let session_id = start_session(&runtime, connection_id, &workspace_root).await?;
+    update_permissions_to_auto_review(&runtime, connection_id, session_id).await?;
+
+    start_auto_review_turn(&runtime, connection_id, session_id).await?;
+    wait_for_turn_completed(&mut notifications_rx).await?;
+
+    assert_eq!(reviewer_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    Ok(())
+}
+
+/// Trace: L2-DES-SAFETY-002
+/// Verifies: Tier1 additional permissions are routed through AutoReview.
+#[tokio::test]
+async fn auto_review_approval_executes_additional_permissions_request() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let user_skill_root = temp_dir.path().join("user-skills");
+    let workspace_root = temp_dir.path().join("workspace");
+    let tool_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reviewer_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runtime = build_runtime_with_registry(
+        temp_dir.path(),
+        user_skill_root,
+        Some(workspace_root.clone()),
+        Arc::new(AutoReviewProvider {
+            decision: "approve",
+            tool_input: json!({
+                "sandbox_permissions": "with_additional_permissions",
+                "additional_permissions": {
+                    "file_system": {
+                        "read": [workspace_root.join("external-input").display().to_string()]
+                    }
+                }
+            }),
+            reviewer_calls: Arc::clone(&reviewer_calls),
+            completion_failures_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             stream_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }),
         auto_review_registry(Arc::clone(&tool_calls)),
@@ -1066,7 +1161,9 @@ async fn auto_review_deny_blocks_mutating_tool() -> Result<()> {
         Some(workspace_root.clone()),
         Arc::new(AutoReviewProvider {
             decision: "deny",
+            tool_input: json!({}),
             reviewer_calls: Arc::clone(&reviewer_calls),
+            completion_failures_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             stream_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }),
         auto_review_registry(Arc::clone(&tool_calls)),
@@ -1096,7 +1193,77 @@ async fn auto_review_uncertain_falls_back_to_user_approval() -> Result<()> {
         Some(workspace_root.clone()),
         Arc::new(AutoReviewProvider {
             decision: "uncertain",
+            tool_input: json!({}),
             reviewer_calls: Arc::clone(&reviewer_calls),
+            completion_failures_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            stream_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }),
+        auto_review_registry(Arc::clone(&tool_calls)),
+    );
+    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
+    let session_id = start_session(&runtime, connection_id, &workspace_root).await?;
+    update_permissions_to_auto_review(&runtime, connection_id, session_id).await?;
+
+    start_auto_review_turn(&runtime, connection_id, session_id).await?;
+    wait_for_approval_request(&mut notifications_rx).await?;
+
+    assert_eq!(reviewer_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    Ok(())
+}
+
+/// Trace: L2-DES-SAFETY-002
+/// Verifies: provider failures retry once, then fall back to user approval.
+#[tokio::test]
+async fn auto_review_provider_failure_retries_once_then_falls_back() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let user_skill_root = temp_dir.path().join("user-skills");
+    let workspace_root = temp_dir.path().join("workspace");
+    let tool_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reviewer_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runtime = build_runtime_with_registry(
+        temp_dir.path(),
+        user_skill_root,
+        Some(workspace_root.clone()),
+        Arc::new(AutoReviewProvider {
+            decision: "approve",
+            tool_input: json!({}),
+            reviewer_calls: Arc::clone(&reviewer_calls),
+            completion_failures_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(2)),
+            stream_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }),
+        auto_review_registry(Arc::clone(&tool_calls)),
+    );
+    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
+    let session_id = start_session(&runtime, connection_id, &workspace_root).await?;
+    update_permissions_to_auto_review(&runtime, connection_id, session_id).await?;
+
+    start_auto_review_turn(&runtime, connection_id, session_id).await?;
+    wait_for_approval_request(&mut notifications_rx).await?;
+
+    assert_eq!(reviewer_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    Ok(())
+}
+
+/// Trace: L2-DES-SAFETY-002
+/// Verifies: invalid reviewer output falls back to user approval.
+#[tokio::test]
+async fn auto_review_invalid_output_falls_back_to_user_approval() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let user_skill_root = temp_dir.path().join("user-skills");
+    let workspace_root = temp_dir.path().join("workspace");
+    let tool_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reviewer_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runtime = build_runtime_with_registry(
+        temp_dir.path(),
+        user_skill_root,
+        Some(workspace_root.clone()),
+        Arc::new(AutoReviewProvider {
+            decision: "invalid",
+            tool_input: json!({}),
+            reviewer_calls: Arc::clone(&reviewer_calls),
+            completion_failures_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             stream_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }),
         auto_review_registry(Arc::clone(&tool_calls)),

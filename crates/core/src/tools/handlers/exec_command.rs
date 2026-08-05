@@ -217,7 +217,7 @@ impl ToolHandler for ExecCommandHandler {
             ));
         };
 
-        let spawned_process = UnifiedExecProcess::spawn_with_sandbox(
+        let spawned_process = UnifiedExecProcess::spawn_with_sandbox_overlay(
             process_id,
             &args.cmd,
             &cwd,
@@ -225,6 +225,7 @@ impl ToolHandler for ExecCommandHandler {
             args.login,
             args.tty,
             ctx.sandbox_profile.clone(),
+            crate::tools::sandbox_overlay_for_spawn(ctx.sandbox_permission_overlay.as_ref()),
         )
         .await;
         let (proc, _broadcast_rx) = match spawned_process {
@@ -619,6 +620,7 @@ mod tests {
             file_read_ledger: None,
             network_proxy: None,
             network_no_proxy: None,
+            sandbox_permission_overlay: None,
             sandbox_profile: None,
         }
     }

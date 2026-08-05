@@ -21,7 +21,7 @@ back.
 | --- | --- | --- |
 | Read Only | Read files in the current workspace. | Edits, shell commands, and internet access. |
 | Default | Read and edit files in the current workspace, and run shell commands. | Internet access and edits outside the workspace. |
-| Auto-review | Same workspace-write policy as Default. | Eligible approvals go to the auto-reviewer first; uncertain requests still ask you. |
+| Auto-review | Same workspace-write policy as Default. | Approval requests, including sandbox escalation requests, go to the auto-reviewer first; uncertain or failed reviews still ask you. |
 | Full Access | Edit files outside the workspace and access the internet without asking. | Nothing under the normal tool policy. |
 
 `Default` is the normal coding preset. `Read Only` is useful for audits and
@@ -57,18 +57,19 @@ Use the shown options to respond:
 
 `Esc` cancels the approval request and interrupts the turn.
 
-If a sandboxed shell command is denied by the OS sandbox after you already
-approved that call (once, session, prefix, or auto-review), Devo may retry it
-once with the sandbox off without asking again. If the call was never approved
-interactively (for example Default policy allowed it automatically), the denial
-is returned to the model so it can re-call with
-`sandbox_permissions: "require_escalated"` and a justification.
+If a sandboxed shell command is denied by the OS sandbox after a Tier 1
+`with_additional_permissions` approval, Devo keeps the command sandboxed and
+returns the denial so the model can request the missing capability. Tier 1
+approval never silently turns into full access. Only an approved
+`require_escalated` request runs without the sandbox.
 
 ## Auto-review
 
 The `Auto-review` preset uses the same base permissions as `Default`, but
 approval requests that are eligible for review are first sent to Devo's
-automatic approval reviewer.
+automatic approval reviewer. This includes both `require_escalated` and
+`with_additional_permissions` requests; the reviewer sees the requested tier
+and exact additional paths/network access.
 
 The reviewer can:
 
@@ -77,8 +78,10 @@ The reviewer can:
   high-impact actions;
 - return uncertain when user intent or risk is unclear.
 
-Uncertain requests are still shown to you. Auto-review is a filter before user
-interruption, not a replacement for your judgment.
+Uncertain requests are still shown to you. Reviewer timeouts, provider
+failures, and invalid output are also sent to you after one bounded retry for
+transient failures. Auto-review is a filter before user interruption, not a
+replacement for your judgment.
 
 ## Review Habits
 

@@ -104,6 +104,7 @@ fn macos_wrap_without_launcher_records_not_enforced() {
         /*sandbox_exec_available*/ false,
         WrapMode::PtyOnly,
         &logger,
+        false,
     )
     .expect("a missing launcher is a warn-and-release, not an error");
 
@@ -146,6 +147,7 @@ fn macos_wrap_success_records_profile_applied() {
         /*sandbox_exec_available*/ true,
         WrapMode::PtyOnly,
         &logger,
+        false,
     )
     .expect("wrap construction must not fail");
 

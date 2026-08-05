@@ -231,7 +231,7 @@ An `AdditionalPermissionProfile` is a partial overlay that may include:
 - `file_system.read`: additional readable paths
 - `file_system.write`: additional writable paths
 
-The additional permissions are merged with the active profile for the duration of one command. The merge uses the same precedence rules as the base policy (most specific wins). Additional permissions that overlap with explicit `none` entries in the base policy are ignored.
+The additional permissions are merged with the active profile for the duration of one command. The merge uses the same precedence rules as the base policy (most specific wins). Additional permissions that overlap with explicit deny entries in the base policy remain denied. The resulting command stays inside the OS sandbox; only `require_escalated` is allowed to disable it after authorization.
 
 ### Security Mode Interaction
 

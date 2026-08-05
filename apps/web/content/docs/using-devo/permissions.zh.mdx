@@ -19,7 +19,7 @@ Permissions 控制 Devo 哪些工具可以不询问直接运行，哪些必须�
 | --- | --- | --- |
 | Read Only | 读取当前 workspace 中的文件。 | 编辑、shell commands 和 internet access。 |
 | Default | 读取和编辑当前 workspace 中的文件，并运行 shell commands。 | Internet access 和 workspace 外编辑。 |
-| Auto-review | 与 Default 相同的 workspace-write policy。 | 合格 approval 先给 auto-reviewer；不确定请求仍询问你。 |
+| Auto-review | 与 Default 相同的 workspace-write policy。 | 包括 sandbox escalation 在内的 approval 先给 auto-reviewer；不确定或失败仍询问你。 |
 | Full Access | 不询问即可编辑 workspace 外文件并访问 internet。 | 正常 tool policy 下不再询问。 |
 
 `Default` 是正常编程 preset。`Read Only` 适合 audits 和提问。`Full Access` 很方便，但只应在你信任任务、workspace 和 tool calls 时使用。
@@ -53,12 +53,14 @@ Prompt 包含 action summary，可能还包括：
 
 `Esc` 取消 approval request 并打断当前 turn。
 
-如果沙箱拒绝了某次 shell 命令，且你已经批准过该调用（once / session / prefix / auto-review），Devo 可能在不二次询问的情况下，以关闭沙箱重试一次。若该调用从未经过交互批准（例如 Default 策略自动放行），则会把拒绝结果返回给模型，由其带着
-`sandbox_permissions: "require_escalated"` 和 justification 再调一次。
+如果某次 shell 命令的 Tier1 `with_additional_permissions` 请求已经获批，但
+OS sandbox 仍然拒绝，Devo 会保持 sandbox 开启并把拒绝原因返回给模型，要求
+它重新申请缺失的权限。Tier1 不会静默升级为 Full Access；只有获批的
+`require_escalated` 请求才会关闭 sandbox。
 
 ## Auto-review
 
-`Auto-review` preset 使用与 `Default` 相同的基础权限，但 eligible approval requests 会先发送给 Devo 的 automatic approval reviewer。
+`Auto-review` preset 使用与 `Default` 相同的基础权限，但 eligible approval requests 会先发送给 Devo 的 automatic approval reviewer。这包括 `require_escalated` 和 `with_additional_permissions`；reviewer 会看到请求层级以及具体的额外路径/网络权限。
 
 Reviewer 可以：
 
@@ -66,7 +68,7 @@ Reviewer 可以：
 - deny destructive、credential-related、privilege-escalating 或 ambiguous high-impact actions；
 - 当 user intent 或 risk 不清楚时返回 uncertain。
 
-Uncertain requests 仍会展示给你。Auto-review 是减少打断的过滤器，不替代你的判断。
+Uncertain requests 仍会展示给你。reviewer 超时、provider 失败或输出非法时，瞬时失败最多重试一次，之后转人工。Auto-review 是减少打断的过滤器，不替代你的判断。
 
 ## 审阅习惯
 

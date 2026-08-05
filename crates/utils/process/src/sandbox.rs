@@ -6,7 +6,10 @@
 
 use std::path::Path;
 
-pub use devo_sandbox::{ResolvedEnforcementPlan, resolve_enforcement_plan};
+pub use devo_sandbox::{
+    ResolvedEnforcementPlan, SandboxPermissionOverlay, resolve_enforcement_plan,
+    resolve_enforcement_plan_with_overlay,
+};
 
 /// Resolve a named profile in the parent process. See
 /// [`devo_sandbox::resolve_enforcement_plan`].
@@ -15,6 +18,16 @@ pub fn resolve_profile_for_spawn(
     workspace: &Path,
 ) -> std::io::Result<Option<ResolvedEnforcementPlan>> {
     resolve_enforcement_plan(profile, workspace)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::PermissionDenied, error))
+}
+
+/// Resolve a named profile with a per-invocation sandbox overlay.
+pub fn resolve_profile_for_spawn_with_overlay(
+    profile: Option<&str>,
+    workspace: &Path,
+    overlay: Option<&SandboxPermissionOverlay>,
+) -> std::io::Result<Option<ResolvedEnforcementPlan>> {
+    resolve_enforcement_plan_with_overlay(profile, workspace, overlay)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::PermissionDenied, error))
 }
 

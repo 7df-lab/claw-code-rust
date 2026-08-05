@@ -829,6 +829,7 @@ impl ChatWidget {
             } => {
                 self.commit_active_streams(DotStatus::Completed);
                 let action_summary = normalize_approval_action_summary(action_summary);
+                self.seen_approval_decisions.remove(&approval_id);
                 self.pending_approval = Some(PendingApprovalRequest {
                     session_id,
                     turn_id,
@@ -872,13 +873,17 @@ impl ChatWidget {
                 self.set_status_message("Input requested");
             }
             WorkerEvent::ApprovalDecision {
-                approval_id: _,
+                approval_id,
                 decision,
                 scope,
                 tool_name,
                 rationale,
             } => {
                 self.pending_approval = None;
+                if !self.seen_approval_decisions.insert(approval_id) {
+                    self.bottom_pane.set_task_running(self.busy);
+                    return;
+                }
                 if scope == "auto_review" {
                     let summary = tool_name.unwrap_or_else(|| "tool request".to_string());
                     let cell = if decision == "approve" {
@@ -1296,6 +1301,7 @@ impl ChatWidget {
                 self.promoted_input_modes.clear();
                 self.editing_queue_item_id = None;
                 self.bottom_pane.clear_pending_cells();
+                self.seen_approval_decisions.clear();
                 self.stream_chunking_policy.reset();
                 self.busy = false;
                 self.turn_count = 0;
@@ -1351,6 +1357,7 @@ impl ChatWidget {
                 self.reset_subagent_monitor();
                 self.history.clear();
                 self.next_history_flush_index = 0;
+                self.seen_approval_decisions.clear();
                 self.active_text_items.clear();
                 self.committed_server_assistant_in_turn = false;
                 self.active_proposed_plan = None;

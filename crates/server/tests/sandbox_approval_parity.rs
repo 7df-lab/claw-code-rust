@@ -30,6 +30,7 @@ fn escalation_bypass_maps_to_sandbox_profile_off() {
     let grant = PermissionGrant {
         bypass_sandbox: true,
         already_approved: true,
+        sandbox_permission_overlay: None,
     };
     let mut sandbox_profile = Some("workspace".to_string());
     if grant.bypass_sandbox {

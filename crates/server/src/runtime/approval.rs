@@ -87,7 +87,7 @@ impl ServerRuntime {
                 }
             };
         }
-        if request.requests_escalation
+        if request.sandbox_permissions.bypasses_sandbox()
             && let Err(reason) = self
                 .check_escalation_unsandboxed_forbidden(session_id, &request.cwd)
                 .await
@@ -163,41 +163,38 @@ impl ServerRuntime {
                     permission_profile.reviewer,
                     devo_safety::ApprovalsReviewer::AutoReview
                 ) {
-                    // Explicit sandbox escalation must always reach a human.
-                    if !request.requests_escalation {
-                        match self
-                            .auto_review_tool_request(
+                    match self
+                        .auto_review_tool_request(
+                            session_id,
+                            turn_id,
+                            &request,
+                            &permission_profile,
+                        )
+                        .await
+                    {
+                        AutoReviewOutcome::Approve => {
+                            trace_permission_decision(
                                 session_id,
-                                turn_id,
                                 &request,
-                                &permission_profile,
-                            )
-                            .await
-                        {
-                            AutoReviewOutcome::Approve => {
-                                trace_permission_decision(
-                                    session_id,
-                                    &request,
-                                    devo_protocol::canonical::item::ApprovalDecisionSource::AutoReview,
-                                    "allow",
-                                    None,
-                                );
-                                return Ok(approved_permission_grant(&request));
-                            }
-                            AutoReviewOutcome::Deny(reason) => {
-                                trace_permission_decision(
-                                    session_id,
-                                    &request,
-                                    devo_protocol::canonical::item::ApprovalDecisionSource::AutoReview,
-                                    "deny",
-                                    Some(reason.as_str()),
-                                );
-                                self.run_permission_denied_hook(session_id, &request, &reason)
-                                    .await;
-                                return Err(format!("rejected by auto-reviewer: {reason}"));
-                            }
-                            AutoReviewOutcome::AskUser => {}
+                                devo_protocol::canonical::item::ApprovalDecisionSource::AutoReview,
+                                "allow",
+                                None,
+                            );
+                            return Ok(approved_permission_grant(&request));
                         }
+                        AutoReviewOutcome::Deny(reason) => {
+                            trace_permission_decision(
+                                session_id,
+                                &request,
+                                devo_protocol::canonical::item::ApprovalDecisionSource::AutoReview,
+                                "deny",
+                                Some(reason.as_str()),
+                            );
+                            self.run_permission_denied_hook(session_id, &request, &reason)
+                                .await;
+                            return Err(format!("rejected by auto-reviewer: {reason}"));
+                        }
+                        AutoReviewOutcome::AskUser => {}
                     }
                 }
                 let result = self
@@ -280,16 +277,27 @@ impl ServerRuntime {
             Some(turn_id),
             devo_protocol::canonical::usage::UsagePurpose::AutoReview,
         );
-        let response = match provider.completion(model_request).await {
+        let response = match provider.completion(model_request.clone()).await {
             Ok(response) => response,
-            Err(error) => {
+            Err(first_error) => {
                 tracing::warn!(
                     session_id = %session_id,
                     tool = %request.tool_name,
-                    error = %error,
-                    "auto-review approval request failed"
+                    error = %first_error,
+                    "auto-review approval request failed; retrying once"
                 );
-                return AutoReviewOutcome::AskUser;
+                match provider.completion(model_request).await {
+                    Ok(response) => response,
+                    Err(error) => {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            tool = %request.tool_name,
+                            error = %error,
+                            "auto-review approval request failed after retry"
+                        );
+                        return AutoReviewOutcome::AskUser;
+                    }
+                }
             }
         };
         match parse_reviewer_decision(&response.content) {
@@ -723,10 +731,12 @@ impl ServerRuntime {
             host: request.host.clone(),
             command_prefix: request.command_prefix.clone(),
             command_pattern: request.command_pattern.clone(),
-            requests_escalation: request.requests_escalation,
+            requests_escalation: request.sandbox_permissions.requests_escalation(),
             command: devo_core::tools::command_str_for_permission_request(&request),
             cwd: request.cwd.clone(),
-            sandbox_permissions: devo_core::tools::sandbox_permissions_from_input(&request.input),
+            sandbox_permissions: devo_core::tools::sandbox_permission_cache_key_from_input(
+                &request.input,
+            ),
             persisted: persisted_approval.clone(),
             tx,
         };
@@ -1403,13 +1413,16 @@ fn cache_grant(
     cache: &crate::execution::ApprovalGrantCache,
     request: &ToolPermissionRequest,
 ) -> Option<PermissionGrant> {
-    if let Some(key) = sandbox_bypass_key_from_request(request)
-        && cache.sandbox_bypass_commands.contains(&key)
-    {
-        return Some(PermissionGrant::from_approval(/*bypass_sandbox*/ true));
+    if request.sandbox_permissions.requests_escalation() {
+        let key = sandbox_bypass_key_from_request(request)?;
+        return cache
+            .sandbox_bypass_commands
+            .contains(&key)
+            .then(|| PermissionGrant::from_approval(&request.sandbox_permissions));
     }
-    permission_cache_matches(cache, request)
-        .then(|| PermissionGrant::from_approval(/*bypass_sandbox*/ false))
+    permission_cache_matches(cache, request).then(|| {
+        PermissionGrant::from_approval(&devo_core::tools::SandboxPermissionRequest::Default)
+    })
 }
 
 fn permission_cache_matches(
@@ -1453,18 +1466,19 @@ fn permission_cache_matches(
 }
 
 fn request_forces_approval(request: &ToolPermissionRequest) -> bool {
-    request.requests_escalation
+    request.sandbox_permissions.requests_escalation()
 }
 
 fn escalation_permission_grant(request: &ToolPermissionRequest) -> PermissionGrant {
     PermissionGrant {
-        bypass_sandbox: request.requests_escalation,
+        bypass_sandbox: request.sandbox_permissions.bypasses_sandbox(),
         already_approved: false,
+        sandbox_permission_overlay: request.sandbox_permissions.overlay(),
     }
 }
 
 fn approved_permission_grant(request: &ToolPermissionRequest) -> PermissionGrant {
-    PermissionGrant::from_approval(request.requests_escalation)
+    PermissionGrant::from_approval(&request.sandbox_permissions)
 }
 
 fn sandbox_bypass_key_from_request(
@@ -1474,7 +1488,9 @@ fn sandbox_bypass_key_from_request(
     Some(crate::execution::SandboxBypassKey {
         command,
         cwd: request.cwd.clone(),
-        sandbox_permissions: devo_core::tools::sandbox_permissions_from_input(&request.input),
+        sandbox_permissions: devo_core::tools::sandbox_permission_cache_key_from_input(
+            &request.input,
+        ),
     })
 }
 
@@ -1779,7 +1795,7 @@ mod tests {
     #[test]
     fn explicit_escalation_forces_approval() {
         let mut request = test_permission_request("exec_command");
-        request.requests_escalation = true;
+        request.sandbox_permissions = devo_core::tools::SandboxPermissionRequest::FullEscalation;
 
         assert!(request_forces_approval(&request));
     }
@@ -1808,7 +1824,7 @@ mod tests {
     #[test]
     fn yolo_grants_sandbox_bypass_for_escalation() {
         let mut request = test_permission_request("shell_command");
-        request.requests_escalation = true;
+        request.sandbox_permissions = devo_core::tools::SandboxPermissionRequest::FullEscalation;
         request.input = serde_json::json!({
             "command": "npm install",
             "sandbox_permissions": "require_escalated"
@@ -1825,6 +1841,7 @@ mod tests {
             PermissionGrant {
                 bypass_sandbox: true,
                 already_approved: false,
+                sandbox_permission_overlay: None,
             }
         );
     }
@@ -1838,7 +1855,7 @@ mod tests {
         );
         profile.yolo = true;
         let mut request = test_permission_request("shell_command");
-        request.requests_escalation = true;
+        request.sandbox_permissions = devo_core::tools::SandboxPermissionRequest::FullEscalation;
         request.input = serde_json::json!({
             "command": "npm install",
             "sandbox_permissions": "require_escalated"
@@ -1855,6 +1872,7 @@ mod tests {
             PermissionGrant {
                 bypass_sandbox: true,
                 already_approved: false,
+                sandbox_permission_overlay: None,
             }
         );
     }
@@ -2157,7 +2175,7 @@ mod tests {
             "sandbox_permissions": "require_escalated"
         });
         request.target = Some("npm install".to_string());
-        request.requests_escalation = true;
+        request.sandbox_permissions = devo_core::tools::SandboxPermissionRequest::FullEscalation;
         let key = sandbox_bypass_key_from_request(&request).expect("bypass key");
         cache.sandbox_bypass_commands.insert(key);
 
@@ -2166,6 +2184,7 @@ mod tests {
             Some(PermissionGrant {
                 bypass_sandbox: true,
                 already_approved: true,
+                sandbox_permission_overlay: None,
             })
         );
     }
@@ -2179,7 +2198,7 @@ mod tests {
             "sandbox_permissions": "require_escalated"
         });
         request.target = Some("npm install".to_string());
-        request.requests_escalation = true;
+        request.sandbox_permissions = devo_core::tools::SandboxPermissionRequest::FullEscalation;
         let key = sandbox_bypass_key_from_request(&request).expect("bypass key");
         cache.sandbox_bypass_commands.insert(key);
 
@@ -2211,7 +2230,7 @@ mod tests {
             command_prefix: None,
             command_argv: None,
             command_pattern: None,
-            requests_escalation: false,
+            sandbox_permissions: devo_core::tools::SandboxPermissionRequest::Default,
         }
     }
 

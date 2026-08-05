@@ -66,10 +66,21 @@ pub(crate) async fn handle_acp_request_permission(
         return Err("session/request_permission options must include an allow option".to_string());
     }
 
-    let approval_id = format!(
-        "acp-permission-{}",
-        ACP_PERMISSION_NEXT_ID.fetch_add(1, Ordering::SeqCst)
-    );
+    // Reuse the server's tool-call id so the bridged ApprovalRequest /
+    // ApprovalDecision events share the same approval identity as the
+    // server-emitted item events (the TUI deduplicates by this id).
+    let approval_id = params
+        .get("toolCall")
+        .and_then(|tool_call| tool_call.get("toolCallId"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|tool_call_id| !tool_call_id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "acp-permission-{}",
+                ACP_PERMISSION_NEXT_ID.fetch_add(1, Ordering::SeqCst)
+            )
+        });
     let pending = AcpPendingPermission {
         request_id,
         session_id,
@@ -78,12 +89,13 @@ pub(crate) async fn handle_acp_request_permission(
         options,
     };
     let notification = acp_approval_request_notification(&approval_id, &params, &pending);
+    let pending_key = pending_permission_key(&pending.session_id, &pending.turn_id, &approval_id);
     pending_permissions
         .lock()
         .await
-        .insert(approval_id.clone(), pending);
+        .insert(pending_key.clone(), pending);
     if let Err(error) = notifications_tx.send(notification) {
-        pending_permissions.lock().await.remove(&approval_id);
+        pending_permissions.lock().await.remove(&pending_key);
         return Err(format!("failed to deliver permission request: {error}"));
     }
     Ok(())
@@ -93,14 +105,21 @@ pub(crate) async fn resolve_acp_permission_response(
     pending_permissions: &AcpPendingPermissions,
     params: &ApprovalResponseParams,
 ) -> Option<(serde_json::Value, ServerNotificationMessage)> {
-    let pending = pending_permissions
-        .lock()
-        .await
-        .remove(&params.approval_id.to_string())?;
+    let pending_key =
+        pending_permission_key(&params.session_id, &params.turn_id, &params.approval_id);
+    let pending = pending_permissions.lock().await.remove(&pending_key)?;
     let decision = acp_permission_response_from_approval(params, &pending);
     let response = acp_success_response(pending.request_id.clone(), decision);
     let notification = acp_approval_decision_notification(params, &pending);
     Some((response, notification))
+}
+
+fn pending_permission_key(
+    session_id: &devo_protocol::SessionId,
+    turn_id: &TurnId,
+    approval_id: &str,
+) -> String {
+    format!("{session_id}:{turn_id}:{approval_id}")
 }
 
 fn acp_permission_options(
@@ -486,6 +505,8 @@ mod tests {
                 .expect("decode approval request payload");
         let turn_id = request_item.context.turn_id.expect("request turn id");
         let item_id = request_item.context.item_id.expect("request item id");
+
+        assert_eq!(request_payload.approval_id, "call-1");
 
         assert_eq!(
             request_item.context,

@@ -1165,6 +1165,53 @@ fn approval_request_bottom_pane_menu_denies_with_n_shortcut() {
 }
 
 #[test]
+fn duplicate_approval_decision_renders_once() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_worker_event(crate::events::WorkerEvent::ApprovalDecision {
+        approval_id: "approval-call-1".to_string(),
+        decision: "approve".to_string(),
+        scope: "once".to_string(),
+        tool_name: None,
+        rationale: None,
+    });
+    widget.handle_worker_event(crate::events::WorkerEvent::ApprovalDecision {
+        approval_id: "approval-call-1".to_string(),
+        decision: "approve".to_string(),
+        scope: "once".to_string(),
+        tool_name: None,
+        rationale: None,
+    });
+
+    let lines = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    assert_eq!(
+        lines.matches("Permission request approve (once)").count(),
+        1,
+        "duplicate decision notifications should render one permission line:\n{lines}"
+    );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::ApprovalDecision {
+        approval_id: "approval-call-2".to_string(),
+        decision: "approve".to_string(),
+        scope: "once".to_string(),
+        tool_name: None,
+        rationale: None,
+    });
+
+    let lines = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    assert_eq!(
+        lines.matches("Permission request approve (once)").count(),
+        1,
+        "a distinct approval decision should still render:\n{lines}"
+    );
+}
+
+#[test]
 fn submitted_prompt_omits_approval_policy() {
     let model = Model {
         slug: "test-model".to_string(),
@@ -1910,7 +1957,7 @@ fn permissions_command_opens_bottom_pane_picker_and_updates_default() {
     assert!(rendered.contains("Update Permissions"));
     assert!(rendered.contains("● 1. Ask for approval"));
     assert!(rendered.contains("Approve for me"));
-    assert!(rendered.contains("Full-Access"));
+    assert!(rendered.contains("Full access"));
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
 
@@ -1995,7 +2042,7 @@ fn permissions_command_marks_initial_project_preset_current() {
     });
 
     let rendered = rendered_rows(&widget, 100, 18).join("\n");
-    assert!(rendered.contains("● 3. Full-Access"));
+    assert!(rendered.contains("● 3. Full access"));
 }
 
 #[test]

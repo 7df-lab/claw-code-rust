@@ -54,12 +54,14 @@ impl SandboxLaunchPlan {
     /// Prepare a pipe-mode launch (`WrapMode::PipeComposed` + optional `pre_exec`).
     pub(crate) fn prepare_pipe(
         sandbox_profile: Option<&str>,
+        sandbox_permission_overlay: Option<&devo_sandbox::SandboxPermissionOverlay>,
         workdir: &Path,
         shell: &ShellSpec,
         command: &str,
     ) -> Result<Self, String> {
         Self::prepare(
             sandbox_profile,
+            sandbox_permission_overlay,
             workdir,
             shell,
             command,
@@ -71,12 +73,14 @@ impl SandboxLaunchPlan {
     /// Prepare a PTY-mode launch (`WrapMode::PtyOnly`; no `pre_exec`).
     pub(crate) fn prepare_pty(
         sandbox_profile: Option<&str>,
+        sandbox_permission_overlay: Option<&devo_sandbox::SandboxPermissionOverlay>,
         workdir: &Path,
         shell: &ShellSpec,
         command: &str,
     ) -> Result<Self, String> {
         Self::prepare(
             sandbox_profile,
+            sandbox_permission_overlay,
             workdir,
             shell,
             command,
@@ -87,6 +91,7 @@ impl SandboxLaunchPlan {
 
     fn prepare(
         sandbox_profile: Option<&str>,
+        sandbox_permission_overlay: Option<&devo_sandbox::SandboxPermissionOverlay>,
         workdir: &Path,
         shell: &ShellSpec,
         command: &str,
@@ -98,11 +103,12 @@ impl SandboxLaunchPlan {
         // - Linux → optional bwrap / linux-sandbox helper (composes with pre_exec)
         // - Windows → SandboxWrap::None; see try_windows_sandbox_launch below
         #[cfg(unix)]
-        let wrap = match devo_sandbox::wrap_command_for_profile(
+        let wrap = match devo_sandbox::wrap_command_for_profile_with_overlay(
             sandbox_profile,
             workdir,
             mode,
             &devo_sandbox::SandboxLogger::new(),
+            sandbox_permission_overlay,
         ) {
             Ok(wrap) => wrap,
             Err(error) => return Err(format!("failed to set up sandbox: {error}")),
@@ -114,7 +120,13 @@ impl SandboxLaunchPlan {
         };
 
         #[cfg(not(unix))]
-        let windows_launch = try_windows_sandbox_launch(sandbox_profile, workdir, shell, command)?;
+        let windows_launch = try_windows_sandbox_launch(
+            sandbox_profile,
+            sandbox_permission_overlay,
+            workdir,
+            shell,
+            command,
+        )?;
         #[cfg(unix)]
         let _ = (shell, command);
 
@@ -123,7 +135,11 @@ impl SandboxLaunchPlan {
             // `requires_child_apply` is false on macOS (Seatbelt is only via
             // `sandbox-exec`) and when a Linux wrapper already enforces the full
             // policy. Otherwise resolve Landlock/seccomp for `pre_exec`.
-            match devo_util_process::sandbox::resolve_profile_for_spawn(sandbox_profile, workdir) {
+            match devo_util_process::sandbox::resolve_profile_for_spawn_with_overlay(
+                sandbox_profile,
+                workdir,
+                sandbox_permission_overlay,
+            ) {
                 Ok(plan) => plan,
                 Err(error) => {
                     return Err(format!("failed to resolve sandbox profile: {error}"));
@@ -302,6 +318,7 @@ impl SandboxLaunchPlan {
 /// and embeds the shell command line in that launch.
 fn try_windows_sandbox_launch(
     sandbox_profile: Option<&str>,
+    sandbox_permission_overlay: Option<&devo_sandbox::SandboxPermissionOverlay>,
     workdir: &Path,
     shell: &ShellSpec,
     command: &str,
@@ -316,9 +333,23 @@ fn try_windows_sandbox_launch(
         .map_err(|error| format!("invalid sandbox profile '{profile}': {error}"))?;
     let config = devo_sandbox::load_sandbox_config(workdir)
         .map_err(|error| format!("failed to set up Windows sandbox: {error}"))?;
-    let resolved = profile_name
+    let mut resolved = profile_name
         .resolve_profile(workdir, &config)
         .map_err(|error| format!("failed to set up Windows sandbox: {error}"))?;
+    if let Some(overlay) = sandbox_permission_overlay {
+        resolved
+            .read_only
+            .extend(overlay.read_paths.iter().cloned());
+        resolved
+            .read_write
+            .extend(overlay.write_paths.iter().cloned());
+        if matches!(
+            overlay.network,
+            devo_sandbox::SandboxNetworkPermission::Enabled
+        ) {
+            resolved.restrict_network = false;
+        }
+    }
     let request = devo_windows_sandbox::WindowsSandboxRequest {
         command: command.to_string(),
         shell_program: shell.program.to_string(),
@@ -332,6 +363,12 @@ fn try_windows_sandbox_launch(
     match devo_windows_sandbox::prepare_windows_sandbox_launch(&request) {
         Ok(Some(launch)) => Ok(Some(launch)),
         Ok(None) => {
+            if sandbox_permission_overlay.is_some() {
+                return Err(
+                    "Windows sandbox overlay could not be applied; refusing an unsandboxed launch"
+                        .to_string(),
+                );
+            }
             static WARNED: Once = Once::new();
             WARNED.call_once(|| {
                 tracing::warn!(

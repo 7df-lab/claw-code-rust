@@ -27,7 +27,7 @@ pub(super) fn permission_preset_items(
         ),
         (
             PermissionPreset::FullAccess,
-            "Full-Access",
+            "Full access",
             "No OS sandbox and no approval prompts; use with caution.",
         ),
     ]
@@ -52,7 +52,7 @@ pub(super) fn permission_preset_label(preset: PermissionPreset) -> &'static str 
     match preset {
         PermissionPreset::Default => "Ask for approval",
         PermissionPreset::AutoReview => "Approve for me",
-        PermissionPreset::FullAccess => "Full-Access",
+        PermissionPreset::FullAccess => "Full access",
     }
 }
 
@@ -72,7 +72,7 @@ mod tests {
 
         assert_eq!(
             actual,
-            ["Ask for approval", "Approve for me", "Full-Access"]
+            ["Ask for approval", "Approve for me", "Full access"]
         );
     }
 
@@ -97,7 +97,7 @@ mod tests {
             vec![
                 ("Ask for approval", true, false, true, 1),
                 ("Approve for me", true, true, true, 1),
-                ("Full-Access", true, false, true, 1),
+                ("Full access", true, false, true, 1),
             ]
         );
     }

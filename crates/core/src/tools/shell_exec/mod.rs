@@ -58,6 +58,7 @@ pub(crate) struct ShellExecRequest {
     pub yield_time_ms: u64,
     pub max_output_tokens: usize,
     pub sandbox_profile: Option<String>,
+    pub sandbox_permission_overlay: Option<devo_sandbox::SandboxPermissionOverlay>,
 }
 
 /// Run a shell command from a [`ShellExecRequest`].
@@ -80,6 +81,7 @@ pub(crate) async fn execute_shell_command(
         yield_time_ms,
         max_output_tokens,
         sandbox_profile,
+        sandbox_permission_overlay,
     } = request;
 
     if !workdir.exists() {
@@ -100,6 +102,7 @@ pub(crate) async fn execute_shell_command(
         yield_time_ms,
         max_output_tokens,
         sandbox_profile,
+        sandbox_permission_overlay,
     };
 
     if tty {

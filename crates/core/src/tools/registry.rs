@@ -505,6 +505,7 @@ mod tests {
             file_read_ledger: None,
             network_proxy: None,
             network_no_proxy: None,
+            sandbox_permission_overlay: None,
             sandbox_profile: None,
         }
     }

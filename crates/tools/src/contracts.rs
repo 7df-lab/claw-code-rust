@@ -25,6 +25,29 @@ pub struct ToolBudgets {
     pub wall_time_limit_ms: Option<u64>,
 }
 
+/// Network access requested by a single sandboxed tool invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SandboxNetworkPermission {
+    /// Preserve the active profile's network policy.
+    Unchanged,
+    /// Allow network access while preserving filesystem sandboxing.
+    Enabled,
+}
+
+impl Default for SandboxNetworkPermission {
+    fn default() -> Self {
+        Self::Unchanged
+    }
+}
+
+/// Additional sandbox capabilities granted to one tool invocation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct SandboxPermissionOverlay {
+    pub network: SandboxNetworkPermission,
+    pub read_paths: Vec<PathBuf>,
+    pub write_paths: Vec<PathBuf>,
+}
+
 // ── ToolContext ──────────────────────────────────────────────────────
 
 /// Whether a tool invocation is running in a top-level session or a child agent.
@@ -59,6 +82,9 @@ pub struct ToolContext {
     /// `None` means no sandboxing; otherwise the value is a profile name such
     /// as `"workspace"`, `"strict"`, or `"off"`.
     pub sandbox_profile: Option<String>,
+    /// Per-invocation capabilities merged into `sandbox_profile` without
+    /// disabling the operating-system sandbox.
+    pub sandbox_permission_overlay: Option<SandboxPermissionOverlay>,
 }
 
 impl std::fmt::Debug for ToolContext {

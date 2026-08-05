@@ -21,6 +21,9 @@ use crate::exec_cell::spinner;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::live_wrap::take_prefix_by_width;
 use crate::markdown::append_markdown;
+use crate::markdown::render_markdown_with_metadata;
+use crate::markdown_render::RenderedMarkdownLine;
+use crate::markdown_render::wrap_rendered_markdown;
 use crate::render::line_utils::prefix_lines;
 use crate::render::line_utils::push_owned_lines;
 use crate::render::renderable::Renderable;
@@ -107,6 +110,20 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
             .unwrap_or(0)
     }
 
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        let lines = self.display_lines(area.width);
+        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+        let y = if area.height == 0 {
+            0
+        } else {
+            let overflow = paragraph
+                .line_count(area.width)
+                .saturating_sub(usize::from(area.height));
+            u16::try_from(overflow).unwrap_or(u16::MAX)
+        };
+        paragraph.scroll((y, 0)).render(area, buf);
+    }
+
     /// Returns lines for the transcript overlay (`Ctrl+T`).
     ///
     /// Defaults to `display_lines`. Override when the transcript
@@ -162,17 +179,7 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
 
 impl Renderable for Box<dyn HistoryCell> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let lines = self.display_lines(area.width);
-        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-        let y = if area.height == 0 {
-            0
-        } else {
-            let overflow = paragraph
-                .line_count(area.width)
-                .saturating_sub(usize::from(area.height));
-            u16::try_from(overflow).unwrap_or(u16::MAX)
-        };
-        paragraph.scroll((y, 0)).render(area, buf);
+        HistoryCell::render(self.as_ref(), area, buf);
     }
     fn desired_height(&self, width: u16) -> u16 {
         HistoryCell::desired_height(self.as_ref(), width)
@@ -506,6 +513,7 @@ impl HistoryCell for ReasoningSummaryCell {
 #[derive(Debug)]
 pub(crate) struct AgentMessageCell {
     lines: Vec<Line<'static>>,
+    no_wrap_lines: Vec<bool>,
     initial_prefix: Line<'static>,
     subsequent_prefix: Line<'static>,
     is_stream_continuation: bool,
@@ -515,6 +523,7 @@ impl AgentMessageCell {
     pub(crate) fn new(lines: Vec<Line<'static>>, is_first_line: bool) -> Self {
         Self {
             lines,
+            no_wrap_lines: Vec::new(),
             initial_prefix: if is_first_line {
                 "▌ ".dim().into()
             } else {
@@ -533,6 +542,7 @@ impl AgentMessageCell {
     ) -> Self {
         Self {
             lines,
+            no_wrap_lines: Vec::new(),
             initial_prefix: initial_prefix.into(),
             subsequent_prefix: subsequent_prefix.into(),
             is_stream_continuation,
@@ -547,6 +557,24 @@ impl AgentMessageCell {
     ) -> Self {
         Self {
             lines,
+            no_wrap_lines: Vec::new(),
+            initial_prefix: initial_prefix.into(),
+            subsequent_prefix: subsequent_prefix.into(),
+            is_stream_continuation,
+        }
+    }
+
+    pub(crate) fn new_with_rendered_lines(
+        rendered_lines: Vec<RenderedMarkdownLine>,
+        initial_prefix: impl Into<Line<'static>>,
+        subsequent_prefix: impl Into<Line<'static>>,
+        is_stream_continuation: bool,
+    ) -> Self {
+        let no_wrap_lines = rendered_lines.iter().map(|line| line.no_wrap).collect();
+        let lines = rendered_lines.into_iter().map(|line| line.line).collect();
+        Self {
+            lines,
+            no_wrap_lines,
             initial_prefix: initial_prefix.into(),
             subsequent_prefix: subsequent_prefix.into(),
             is_stream_continuation,
@@ -556,12 +584,66 @@ impl AgentMessageCell {
 
 impl HistoryCell for AgentMessageCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        collapse_consecutive_blank_lines(adaptive_wrap_lines(
-            &self.lines,
-            RtOptions::new(width as usize)
-                .initial_indent(self.initial_prefix.clone())
-                .subsequent_indent(self.subsequent_prefix.clone()),
-        ))
+        let lines = if self.no_wrap_lines.len() == self.lines.len() {
+            let rendered = self
+                .lines
+                .iter()
+                .cloned()
+                .zip(self.no_wrap_lines.iter().copied())
+                .map(|(line, no_wrap)| RenderedMarkdownLine { line, no_wrap })
+                .collect::<Vec<_>>();
+            wrap_rendered_markdown(
+                &rendered,
+                RtOptions::new(width as usize)
+                    .initial_indent(self.initial_prefix.clone())
+                    .subsequent_indent(self.subsequent_prefix.clone()),
+            )
+        } else {
+            adaptive_wrap_lines(
+                &self.lines,
+                RtOptions::new(width as usize)
+                    .initial_indent(self.initial_prefix.clone())
+                    .subsequent_indent(self.subsequent_prefix.clone()),
+            )
+        };
+        collapse_consecutive_blank_lines(lines)
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        if self.no_wrap_lines.iter().any(|no_wrap| *no_wrap) {
+            self.display_lines(width)
+                .len()
+                .try_into()
+                .unwrap_or(u16::MAX)
+        } else {
+            Paragraph::new(Text::from(self.display_lines(width)))
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .try_into()
+                .unwrap_or(0)
+        }
+    }
+
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        if self.no_wrap_lines.iter().any(|no_wrap| *no_wrap) {
+            let lines = self.display_lines(area.width);
+            let scroll = lines.len().saturating_sub(usize::from(area.height));
+            Paragraph::new(Text::from(lines))
+                .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0))
+                .render(area, buf);
+        } else {
+            let lines = self.display_lines(area.width);
+            let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+            let y = if area.height == 0 {
+                0
+            } else {
+                let overflow = paragraph
+                    .line_count(area.width)
+                    .saturating_sub(usize::from(area.height));
+                u16::try_from(overflow).unwrap_or(u16::MAX)
+            };
+            paragraph.scroll((y, 0)).render(area, buf);
+        }
     }
 
     fn is_stream_continuation(&self) -> bool {
@@ -595,20 +677,32 @@ impl AgentMarkdownCell {
 
 impl HistoryCell for AgentMarkdownCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        append_markdown(
+        let rendered = render_markdown_with_metadata(
             &self.markdown_source,
             /*width*/ None,
             Some(self.cwd.as_path()),
-            &mut lines,
         );
-        let lines = collapse_consecutive_blank_lines(lines);
-        collapse_consecutive_blank_lines(adaptive_wrap_lines(
-            &lines,
+        collapse_consecutive_blank_lines(wrap_rendered_markdown(
+            &rendered.lines,
             RtOptions::new(width as usize)
                 .initial_indent(self.initial_prefix.clone())
                 .subsequent_indent(self.subsequent_prefix.clone()),
         ))
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.display_lines(width)
+            .len()
+            .try_into()
+            .unwrap_or(u16::MAX)
+    }
+
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        let lines = self.display_lines(area.width);
+        let scroll = lines.len().saturating_sub(usize::from(area.height));
+        Paragraph::new(Text::from(lines))
+            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0))
+            .render(area, buf);
     }
 }
 
@@ -1805,6 +1899,8 @@ fn pluralize(count: u64, singular: &'static str, plural: &'static str) -> &'stat
 
 #[cfg(test)]
 mod tests {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
     use ratatui::style::Color;
 
     use crate::bottom_pane::InputMode;
@@ -1812,6 +1908,7 @@ mod tests {
     use super::HistoryCell;
     use pretty_assertions::assert_eq;
 
+    use super::AgentMarkdownCell;
     use super::format_duration_hms;
     use super::new_user_prompt;
 
@@ -1986,6 +2083,39 @@ mod tests {
                 .iter()
                 .any(|span| { span.content.contains('■') && span.style.fg == Some(ALERT_COLOR) }),
             "expected orange alert color: {line:?}"
+        );
+    }
+
+    #[test]
+    fn agent_markdown_math_is_structural_and_not_viewport_wrapped() {
+        let cell = AgentMarkdownCell::new(
+            "$$\n\\frac{a}{b}\n$$".to_string(),
+            std::path::Path::new("."),
+            "  ",
+            "  ",
+        );
+        let lines = cell.display_lines(4);
+        let plain = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(plain.iter().any(|line| line.contains('a')));
+        assert!(plain.iter().any(|line| line.contains('b')));
+        assert!(plain.iter().any(|line| line.contains('─')));
+        assert_eq!(cell.desired_height(4), lines.len() as u16);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, lines.len() as u16));
+        cell.render(Rect::new(0, 0, 4, lines.len() as u16), &mut buffer);
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .any(|cell| cell.symbol().contains('a'))
         );
     }
 }

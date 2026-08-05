@@ -386,7 +386,7 @@ Token delta → MarkdownStreamCollector → StreamCore → queued HistoryCell �
 |--------|---------|
 | `markdown_stream.rs` | `MarkdownStreamCollector`: buffers raw markdown source and commits only at newline boundaries. Exposes `committed_source_len` to track progress. |
 | `markdown.rs` | `append_markdown`: renders markdown source into ratatui `Line`s, resolving local file-link paths relative to the session working directory. |
-| `markdown_render.rs` | Full markdown-to-`Text` renderer using `pulldown-cmark`. Handles headings, lists, code blocks (with syntax highlighting via `syntect`), inline code, bold/italic emphasis, links, blockquotes, and citations. |
+| `markdown_render.rs` | Full markdown-to-`Text` renderer using `pulldown-cmark` (with `ENABLE_MATH`). Handles headings, lists, code blocks (with syntax highlighting via `syntect`), inline code, inline/display math, bold/italic emphasis, links, blockquotes, and citations. Display math renders as a LaTeX-highlighted block that is never text-wrapped; unclosed `$$` stays raw during streaming and is rebuilt when the block completes. Note: pulldown-cmark 0.13 still treats `\$` as a math delimiter rather than an escaped dollar. |
 
 ### Rendering Utilities — `render/`
 

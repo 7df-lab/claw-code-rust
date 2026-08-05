@@ -84,13 +84,15 @@ impl MarkdownStreamCollector {
         &self.buffer[self.committed_source_len..]
     }
 
-    /// Commit newly completed raw markdown source up to the last newline.
+    /// Commit newly completed raw markdown source up to the last safe newline.
     ///
     /// This returns only source that has not been returned by a previous commit. Calling it after a
     /// delta without a newline returns `None`, which prevents the live stream from rendering
-    /// incomplete markdown blocks that may change meaning when the rest of the line arrives.
+    /// incomplete markdown blocks that may change meaning when the rest of the line arrives. A
+    /// newline inside a fenced code block or display-math block is also held until its block
+    /// closes, because pulldown-cmark cannot render that structure correctly from a partial source.
     pub fn commit_complete_source(&mut self) -> Option<String> {
-        let commit_end = self.buffer.rfind('\n').map(|idx| idx + 1)?;
+        let commit_end = self.last_safe_commit_end()?;
         if commit_end <= self.committed_source_len {
             return None;
         }
@@ -98,6 +100,37 @@ impl MarkdownStreamCollector {
         let out = self.buffer[self.committed_source_len..commit_end].to_string();
         self.committed_source_len = commit_end;
         Some(out)
+    }
+
+    fn last_safe_commit_end(&self) -> Option<usize> {
+        let mut offset = 0;
+        let mut safe_end = 0;
+        let mut in_fence = false;
+        let mut in_display_math = false;
+
+        for segment in self.buffer.split_inclusive('\n') {
+            let line = segment.strip_suffix('\n').unwrap_or(segment).trim();
+            if in_fence {
+                if is_fence_marker(line) {
+                    in_fence = false;
+                }
+            } else if in_display_math {
+                if line == "$$" {
+                    in_display_math = false;
+                }
+            } else if line == "$$" {
+                in_display_math = true;
+            } else if is_fence_marker(line) {
+                in_fence = true;
+            }
+
+            offset += segment.len();
+            if segment.ends_with('\n') && !in_fence && !in_display_math {
+                safe_end = offset;
+            }
+        }
+
+        (safe_end > self.committed_source_len).then_some(safe_end)
     }
 
     /// Finalize the stream and return any remaining raw source.
@@ -196,6 +229,10 @@ impl MarkdownStreamCollector {
     }
 }
 
+fn is_fence_marker(line: &str) -> bool {
+    line.starts_with("```") || line.starts_with("~~~")
+}
+
 #[cfg(test)]
 fn test_cwd() -> PathBuf {
     // These tests only need a stable absolute cwd; using temp_dir() avoids baking Unix- or
@@ -244,6 +281,22 @@ mod tests {
         c.push_delta("Line without newline");
         let out = c.finalize_and_drain();
         assert_eq!(out.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn display_math_waits_until_closing_delimiter() {
+        let mut c = super::MarkdownStreamCollector::new(/*width*/ None, &super::test_cwd());
+        c.push_delta("$$\n");
+        assert!(c.commit_complete_source().is_none());
+
+        c.push_delta("\\frac{a}{b}\n");
+        assert!(c.commit_complete_source().is_none());
+
+        c.push_delta("$$\n");
+        assert_eq!(
+            c.commit_complete_source(),
+            Some("$$\n\\frac{a}{b}\n$$\n".to_string())
+        );
     }
 
     #[tokio::test]
@@ -852,5 +905,33 @@ mod tests {
     #[tokio::test]
     async fn table_like_lines_inside_fenced_code_are_not_held() {
         assert_streamed_equals_full(&["```\n", "| a | b |\n", "```\n"]).await;
+    }
+
+    #[tokio::test]
+    async fn streaming_inline_math_matches_full() {
+        assert_streamed_equals_full(&["Inline $E = ", "mc^2$ done\n", "next\n"]).await;
+    }
+
+    #[tokio::test]
+    async fn streaming_display_math_keeps_raw_source_until_block_closes() {
+        let mut c = MarkdownStreamCollector::new(/*width*/ None, &super::test_cwd());
+        c.push_delta("$$\n\\frac{a}{b}\n$$");
+        assert!(c.commit_complete_source().is_none());
+        let finalized = c.finalize_and_drain_source();
+        assert_eq!(finalized, "$$\n\\frac{a}{b}\n$$\n");
+
+        // Rendering the finalized full source rebuilds the display math block.
+        let mut rendered: Vec<ratatui::text::Line<'static>> = Vec::new();
+        let test_cwd = super::test_cwd();
+        crate::markdown::append_markdown(
+            "$$\n\\frac{a}{b}\n$$\n",
+            /*width*/ None,
+            Some(test_cwd.as_path()),
+            &mut rendered,
+        );
+        let rendered_strs = lines_to_plain_strings(&rendered);
+        assert!(rendered_strs.iter().any(|s| s.contains('a')));
+        assert!(rendered_strs.iter().any(|s| s.contains('b')));
+        assert!(rendered_strs.iter().any(|s| s.contains('─')));
     }
 }

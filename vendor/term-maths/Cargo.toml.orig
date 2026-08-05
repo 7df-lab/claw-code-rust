@@ -1,0 +1,40 @@
+[package]
+name = "term-maths"
+version = "1.0.0"
+edition = "2024"
+description = "Character-grid mathematical notation renderer for terminals --- LaTeX math to 2D Unicode art"
+license = "MIT OR Apache-2.0"
+keywords = ["math", "latex", "terminal", "unicode", "rendering"]
+categories = ["command-line-interface", "text-processing", "visualization"]
+exclude = [
+    "python/",
+    "pyproject.toml",
+    ".github/",
+    "docs/",
+    ".venv/",
+]
+
+[lib]
+# rlib for Rust consumers; cdylib for the Python extension (required by maturin)
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+crossterm = { version = "0.29.0", optional = true }
+pulldown-latex = { version = "0.7.1", optional = true }
+ratatui = { version = "0.30.0", optional = true }
+rust-latex-parser = "0.1.0"
+unicode-segmentation = "1.13.2"
+unicode-width = "0.2.1"
+pyo3 = { version = "0.23", features = ["experimental-inspect", "abi3-py310"], optional = true }
+pyo3-stub-gen = { version = "0.7", optional = true }
+
+[features]
+ratatui = ["dep:ratatui"]
+crossterm = ["dep:crossterm"]
+pulldown-latex = ["dep:pulldown-latex"]
+python = ["dep:pyo3", "dep:pyo3-stub-gen"]
+
+[[bin]]
+name = "stub_gen"
+path = "src/bin/stub_gen.rs"
+required-features = ["python"]

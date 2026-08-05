@@ -7280,6 +7280,36 @@ fn session_compaction_live_rows_use_live_prefix_cols() {
 }
 
 #[test]
+fn session_compaction_started_flushes_live_explored_cell_before_marker() {
+    let mut widget = widget_with_live_explored_cell();
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionCompactionStarted);
+
+    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    let explored_index = history
+        .find("▌ Explored")
+        .expect("compaction should flush the live explored cell into history");
+    let compaction_index = history
+        .find("▌ Compaction started")
+        .expect("compaction start marker should be in history");
+    assert!(
+        explored_index < compaction_index,
+        "explored cell should appear before compaction marker:\n{history}"
+    );
+
+    let active_display = widget
+        .active_cell_display_lines_for_test(100)
+        .into_iter()
+        .flat_map(|line| line.spans)
+        .map(|span| span.content.to_string())
+        .collect::<String>();
+    assert!(
+        !active_display.contains("Explored"),
+        "explored cell should no longer remain live after compaction starts:\n{active_display}"
+    );
+}
+
+#[test]
 fn context_compaction_completed_clears_compacting_status_indicator() {
     let model = Model {
         slug: "test-model".to_string(),

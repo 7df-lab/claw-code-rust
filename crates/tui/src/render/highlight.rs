@@ -511,6 +511,7 @@ fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {
     let patched = match lang {
         "csharp" | "c-sharp" => "c#",
         "golang" => "go",
+        "math" => "latex",
         "python3" => "python",
         "shell" => "bash",
         _ => lang,
@@ -1149,7 +1150,7 @@ mod tests {
             );
         }
         // Patched aliases that two-face cannot resolve on its own.
-        for alias in ["csharp", "c-sharp", "golang", "python3", "shell"] {
+        for alias in ["csharp", "c-sharp", "golang", "python3", "shell", "math"] {
             assert!(
                 find_syntax(alias).is_some(),
                 "find_syntax({alias:?}) returned None — patched alias broken"

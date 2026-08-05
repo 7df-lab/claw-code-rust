@@ -1467,6 +1467,7 @@ impl ChatWidget {
             }
             WorkerEvent::SessionCompactionStarted => {
                 if self.status_message != "Session compaction in progress" {
+                    self.flush_active_cell();
                     self.add_to_history(history_cell::new_live_aligned_info_event(
                         "Compaction started".to_string(),
                         None,

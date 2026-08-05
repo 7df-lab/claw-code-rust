@@ -12,7 +12,10 @@
 
 use crate::history_cell::HistoryCell;
 use crate::history_cell::{self};
-use crate::markdown::append_markdown;
+use crate::markdown::render_markdown_with_metadata;
+use crate::markdown_render::RenderedMarkdownLine;
+use ratatui::style::Stylize;
+#[cfg(test)]
 use ratatui::text::Line;
 use std::path::Path;
 use std::path::PathBuf;
@@ -32,7 +35,7 @@ struct StreamCore {
     state: StreamState,
     width: Option<usize>,
     raw_source: String,
-    rendered_lines: Vec<Line<'static>>,
+    rendered_lines: Vec<RenderedMarkdownLine>,
     enqueued_len: usize,
     emitted_len: usize,
     cwd: PathBuf,
@@ -68,33 +71,28 @@ impl StreamCore {
         false
     }
 
-    fn finalize_remaining(&mut self) -> Vec<Line<'static>> {
+    fn finalize_remaining(&mut self) -> Vec<RenderedMarkdownLine> {
         let remainder_source = self.state.collector.finalize_and_drain_source();
         if !remainder_source.is_empty() {
             self.raw_source.push_str(&remainder_source);
         }
 
-        let mut rendered = Vec::new();
-        append_markdown(
-            &self.raw_source,
-            self.width,
-            Some(self.cwd.as_path()),
-            &mut rendered,
-        );
-        if self.emitted_len >= rendered.len() {
+        let rendered =
+            render_markdown_with_metadata(&self.raw_source, self.width, Some(self.cwd.as_path()));
+        if self.emitted_len >= rendered.lines.len() {
             Vec::new()
         } else {
-            rendered[self.emitted_len..].to_vec()
+            rendered.lines[self.emitted_len..].to_vec()
         }
     }
 
-    fn tick(&mut self) -> Vec<Line<'static>> {
+    fn tick(&mut self) -> Vec<RenderedMarkdownLine> {
         let step = self.state.step();
         self.emitted_len += step.len();
         step
     }
 
-    fn tick_batch(&mut self, max_lines: usize) -> Vec<Line<'static>> {
+    fn tick_batch(&mut self, max_lines: usize) -> Vec<RenderedMarkdownLine> {
         if max_lines == 0 {
             return Vec::new();
         }
@@ -168,12 +166,9 @@ impl StreamCore {
 
     fn recompute_render(&mut self) {
         self.rendered_lines.clear();
-        append_markdown(
-            &self.raw_source,
-            self.width,
-            Some(self.cwd.as_path()),
-            &mut self.rendered_lines,
-        );
+        let rendered =
+            render_markdown_with_metadata(&self.raw_source, self.width, Some(self.cwd.as_path()));
+        self.rendered_lines = rendered.lines;
     }
 
     /// Append newly rendered lines to the live queue without replaying already queued rows.
@@ -292,30 +287,42 @@ impl StreamController {
         self.core.live_source()
     }
 
-    pub(crate) fn live_lines(&self) -> Vec<Line<'static>> {
+    pub(crate) fn live_rendered_lines(&self) -> Vec<RenderedMarkdownLine> {
         let source = self.core.live_source();
         if source.is_empty() {
             return Vec::new();
         }
-        let mut rendered = Vec::new();
-        append_markdown(
-            &source,
-            self.core.width,
-            Some(self.core.cwd.as_path()),
-            &mut rendered,
-        );
-        history_cell::collapse_consecutive_blank_lines(rendered)
+        let rendered =
+            render_markdown_with_metadata(&source, self.core.width, Some(self.core.cwd.as_path()));
+        rendered.lines
     }
 
-    fn emit(&mut self, lines: Vec<Line<'static>>) -> Option<Box<dyn HistoryCell>> {
+    #[cfg(test)]
+    fn live_lines(&self) -> Vec<Line<'static>> {
+        self.live_rendered_lines()
+            .into_iter()
+            .map(|line| line.line)
+            .collect()
+    }
+
+    fn emit(&mut self, lines: Vec<RenderedMarkdownLine>) -> Option<Box<dyn HistoryCell>> {
         if lines.is_empty() {
             return None;
         }
-        Some(Box::new(history_cell::AgentMessageCell::new(lines, {
-            let header_emitted = self.header_emitted;
-            self.header_emitted = true;
-            !header_emitted
-        })))
+        let is_first_line = !self.header_emitted;
+        self.header_emitted = true;
+        Some(Box::new(
+            history_cell::AgentMessageCell::new_with_rendered_lines(
+                lines,
+                if is_first_line {
+                    "▌ ".dim()
+                } else {
+                    "  ".into()
+                },
+                "  ",
+                !is_first_line,
+            ),
+        ))
     }
 }
 
@@ -473,5 +480,27 @@ mod tests {
     fn simple_lines_stream_in_order() {
         let actual = collect_streamed_lines(&["hello\n", "world\n"], Some(80));
         assert_eq!(actual, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn streamed_display_math_keeps_terminal_rows_intact() {
+        let mut ctrl = stream_controller(Some(4));
+        assert!(ctrl.push("$$\n\\frac{a}{b}\n$$\n"));
+
+        let (cell, idle) = ctrl.on_commit_tick_batch(usize::MAX);
+        assert!(idle);
+        let lines = cell.expect("expected streamed math cell").display_lines(4);
+        let plain = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(plain.iter().any(|line| line.contains('a')));
+        assert!(plain.iter().any(|line| line.contains('b')));
+        assert!(plain.iter().any(|line| line.contains('─')));
     }
 }

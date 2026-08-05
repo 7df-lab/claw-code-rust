@@ -35,6 +35,7 @@ mod key_hint;
 mod line_truncation;
 mod live_wrap;
 mod markdown;
+mod math_render;
 pub mod markdown_render;
 mod markdown_stream;
 #[cfg(test)]

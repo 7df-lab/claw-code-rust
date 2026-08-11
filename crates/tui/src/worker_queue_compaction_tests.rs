@@ -35,6 +35,8 @@ fn widget_with_model() -> ChatWidget {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -62,7 +64,7 @@ fn scrollback_plain_lines(lines: &[ScrollbackLine]) -> Vec<String> {
 }
 
 #[test]
-fn input_queue_update_growth_adds_pending_cell_from_server_snapshot() {
+fn queue_updated_drain_promotes_pending_into_history() {
     let mut widget = widget_with_model();
     widget.handle_app_event(AppEvent::ClearTranscript);
     widget.handle_worker_event(WorkerEvent::TurnStarted {
@@ -73,19 +75,34 @@ fn input_queue_update_growth_adds_pending_cell_from_server_snapshot() {
         turn_id: TurnId::new(),
     });
 
-    widget.handle_worker_event(WorkerEvent::InputQueueUpdated {
-        pending_count: 1,
-        pending_texts: vec!["remote queued".to_string()],
+    let queue_item_id = devo_protocol::canonical::ids::QueueItemId::from_string("qit_test".into());
+    widget.handle_worker_event(WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Added,
+        queue_item_id: queue_item_id.clone(),
+        started_turn_id: None,
+        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+            queue_item_id: queue_item_id.clone(),
+            position: 1,
+            input: vec![devo_protocol::canonical::item::UserInput::Text {
+                text: "remote queued".to_string(),
+            }],
+            preview: "remote queued".to_string(),
+            enqueued_at: chrono::Utc::now(),
+        }],
     });
-    widget.handle_worker_event(WorkerEvent::InputQueueUpdated {
-        pending_count: 0,
-        pending_texts: Vec::new(),
+    assert!(widget.bottom_pane_has_pending_for_test());
+
+    widget.handle_worker_event(WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Drained,
+        queue_item_id,
+        started_turn_id: Some(TurnId::new()),
+        entries: Vec::new(),
     });
 
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
     assert!(
         history.contains("remote queued"),
-        "expected queued server snapshot to be promoted into history:\n{history}"
+        "expected drained queue entry to be promoted into history:\n{history}"
     );
 }
 
@@ -115,6 +132,7 @@ fn completed_context_compaction_item_emits_worker_event() {
                 turn_id: Some(TurnId::new()),
                 item_id: None,
                 seq: 1,
+                item_seq: None,
             },
             item: ItemEnvelope {
                 item_id: ItemId::new(),

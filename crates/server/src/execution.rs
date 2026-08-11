@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,10 +9,13 @@ use std::sync::Mutex as StdMutex;
 
 use devo_core::AppConfigStore;
 use devo_core::ProviderVendorCatalog;
+use devo_core::normalize_canonical_path;
+use lru::LruCache;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
 use devo_core::AgentsMdConfig;
+use devo_core::McpManager;
 use devo_core::ModelCatalog;
 use devo_core::SessionConfig;
 use devo_core::SessionRecord;
@@ -20,6 +25,7 @@ use devo_core::SkillError;
 #[cfg(test)]
 use devo_core::TurnConfig;
 use devo_core::TurnId;
+use devo_core::TurnRecord;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::ApprovalDecisionValue;
 use devo_protocol::PendingInputItem;
@@ -37,6 +43,19 @@ use crate::session::SessionMetadata;
 use crate::session_context::ResolvedInput;
 use crate::session_context::SessionRuntimeContext;
 use crate::turn::TurnMetadata;
+
+/// Mirrors parent-session LRU capacity so workspace contexts stay bounded.
+const WORKSPACE_CONTEXT_CACHE_CAPACITY: usize = 16;
+
+fn workspace_context_cache(capacity: usize) -> LruCache<PathBuf, Arc<SessionRuntimeContext>> {
+    LruCache::new(NonZeroUsize::new(capacity.max(1)).expect("workspace context cache capacity"))
+}
+
+/// Cache key for workspace contexts: canonicalize so `cwd` and `cwd/.` share one entry.
+fn canonicalize_workspace_root(path: &Path) -> PathBuf {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    normalize_canonical_path(canonical)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PersistedTurnItem {
@@ -66,6 +85,7 @@ pub(crate) fn sandbox_bypass_key_from_pending(
 
 pub(crate) struct PendingApproval {
     pub(crate) owner_session_id: devo_protocol::SessionId,
+    pub(crate) turn_id: TurnId,
     pub(crate) tool_name: String,
     pub(crate) resource: Option<devo_safety::ResourceKind>,
     pub(crate) path: Option<PathBuf>,
@@ -76,12 +96,24 @@ pub(crate) struct PendingApproval {
     pub(crate) command: Option<String>,
     pub(crate) cwd: PathBuf,
     pub(crate) sandbox_permissions: String,
+    pub(crate) persisted: Option<PersistedLivingItem>,
     pub(crate) tx: oneshot::Sender<ApprovalDecisionValue>,
 }
 
 pub(crate) struct PendingUserInput {
     pub(crate) turn_id: TurnId,
+    /// The questions the tool asked; kept so subscription snapshots can
+    /// rebuild the waiting `UserInputRequest` item (08 §4).
+    pub(crate) questions: Vec<devo_protocol::RequestUserInputQuestion>,
+    pub(crate) persisted: Option<PersistedLivingItem>,
     pub(crate) tx: oneshot::Sender<RequestUserInputResponse>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PersistedLivingItem {
+    pub(crate) item_id: devo_protocol::canonical::ids::ItemId,
+    pub(crate) seq: u64,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -114,6 +146,21 @@ pub struct ServerRuntimeDependencies {
     pub(crate) config_store: Arc<std::sync::Mutex<AppConfigStore>>,
     /// User-level process context used before a concrete session exists.
     pub(crate) process_context: Arc<SessionRuntimeContext>,
+    /// LRU of workspace-scoped contexts (canonical cwd → context).
+    ///
+    /// Avoids rebuilding MCP/tool registry/skill catalog on every
+    /// `skills/list`, session cwd switch, or other `context_for_workspace` call.
+    /// Invalidate via [`Self::invalidate_workspace_contexts`] when user MCP,
+    /// skills, provider, or model config mutates.
+    workspace_contexts: StdMutex<LruCache<PathBuf, Arc<SessionRuntimeContext>>>,
+}
+
+/// Builds an empty MCP manager for tests and bootstrap paths without servers.
+pub fn empty_mcp_manager() -> Arc<dyn McpManager> {
+    Arc::new(devo_mcp::manager::RmcpMcpManager::new(
+        devo_core::McpConfig::default(),
+        Default::default(),
+    ))
 }
 
 impl ServerRuntimeDependencies {
@@ -124,6 +171,7 @@ impl ServerRuntimeDependencies {
         provider: Arc<dyn ModelProviderSDK>,
         provider_router: Arc<dyn ProviderRouter>,
         registry: Arc<ToolRegistry>,
+        mcp_manager: Arc<dyn McpManager>,
         default_model: String,
         model_catalog: Arc<dyn ModelCatalog>,
         provider_vendor_catalog: Arc<ProviderVendorCatalog>,
@@ -137,6 +185,7 @@ impl ServerRuntimeDependencies {
             Arc::clone(&provider),
             Arc::clone(&provider_router),
             Arc::clone(&registry),
+            mcp_manager,
             default_model.clone(),
             Arc::clone(&model_catalog),
             Arc::clone(&skill_catalog),
@@ -150,6 +199,9 @@ impl ServerRuntimeDependencies {
             db,
             config_store,
             process_context,
+            workspace_contexts: StdMutex::new(workspace_context_cache(
+                WORKSPACE_CONTEXT_CACHE_CAPACITY,
+            )),
         }
     }
 
@@ -157,18 +209,54 @@ impl ServerRuntimeDependencies {
         &self,
         workspace_root: &Path,
     ) -> anyhow::Result<Arc<SessionRuntimeContext>> {
+        let cache_key = canonicalize_workspace_root(workspace_root);
+        {
+            let mut cache = self
+                .workspace_contexts
+                .lock()
+                .expect("workspace context cache mutex should not be poisoned");
+            if let Some(cached) = cache.get(&cache_key) {
+                return Ok(Arc::clone(cached));
+            }
+        }
+
         let user_config_dir = self
             .config_store
             .lock()
             .expect("app config store mutex should not be poisoned")
             .user_config_dir()
             .to_path_buf();
-        SessionRuntimeContext::load_for_workspace(
+        // Miss path: load workspace-merged config. MCP/registry are reused from
+        // `process_context` when operationally equivalent (see load_for_workspace).
+        let loaded = SessionRuntimeContext::load_for_workspace(
             user_config_dir,
             Some(workspace_root),
             &self.process_context,
         )
-        .await
+        .await?;
+
+        let mut cache = self
+            .workspace_contexts
+            .lock()
+            .expect("workspace context cache mutex should not be poisoned");
+        // Another task may have filled the same key while we loaded.
+        if let Some(cached) = cache.get(&cache_key) {
+            return Ok(Arc::clone(cached));
+        }
+        cache.put(cache_key, Arc::clone(&loaded));
+        Ok(loaded)
+    }
+
+    /// Clears the workspace context LRU so the next lookup reloads from disk.
+    ///
+    /// Call after user-global config mutations (MCP enable, skills enable,
+    /// provider upsert, model/config/set). Already-running sessions keep their
+    /// own `Arc<SessionRuntimeContext>`; only subsequent lookups are affected.
+    pub(crate) fn invalidate_workspace_contexts(&self) {
+        self.workspace_contexts
+            .lock()
+            .expect("workspace context cache mutex should not be poisoned")
+            .clear();
     }
 
     /// Resolves the full turn configuration used by the core query loop.
@@ -199,8 +287,11 @@ impl ServerRuntimeDependencies {
         enabled: bool,
         workspace_root: Option<&Path>,
     ) -> anyhow::Result<Vec<SkillRecord>> {
-        self.process_context
-            .set_skill_enabled(path, enabled, workspace_root)
+        let skills = self
+            .process_context
+            .set_skill_enabled(path, enabled, workspace_root)?;
+        self.invalidate_workspace_contexts();
+        Ok(skills)
     }
 
     /// Renders turn input items and resolves any referenced skills into prompt-visible messages.
@@ -239,10 +330,12 @@ pub(crate) struct RuntimeSession {
     pub(crate) persisted_turn_items: Vec<PersistedTurnItem>,
     /// Latest compaction snapshot used to rebuild the model-facing prompt view.
     pub(crate) latest_compaction_snapshot: Option<devo_core::CompactionSnapshotLine>,
+    /// Completed turn records keyed by turn id (for fork/rollback occupancy cuts).
+    pub(crate) turn_records_by_id: HashMap<TurnId, TurnRecord>,
     /// Shared handle to the pending-turn queue owned by `core_session`.
     pub(crate) pending_turn_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
-    /// Shared handle to the `/btw` queue owned by `core_session`.
-    pub(crate) btw_input_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
+    /// Shared handle to the active-turn steer queue owned by `core_session`.
+    pub(crate) steer_input_queue: Arc<StdMutex<VecDeque<PendingInputItem>>>,
     /// Tool exposure policy for turns run in this session.
     pub(crate) agent_tool_policy: devo_protocol::AgentToolPolicy,
     /// Optional maximum number of turns allowed in this session.
@@ -340,6 +433,7 @@ mod tests {
             Arc::clone(&provider),
             Arc::new(SingleProviderRouter::new(provider)),
             Arc::new(ToolRegistry::new()),
+            empty_mcp_manager(),
             "catalog-slug".to_string(),
             Arc::new(PresetModelCatalog::new(vec![
                 Model {
@@ -568,6 +662,122 @@ proxy_url = "http://workspace-proxy.example:8080"
         assert_eq!(context.provider.name(), "openai");
 
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[tokio::test]
+    async fn context_for_workspace_caches_same_canonical_cwd() {
+        let deps = test_deps("");
+        let workspace = unique_temp_dir("session-context-cache");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+
+        let first = deps
+            .context_for_workspace(&workspace)
+            .await
+            .expect("load workspace context");
+        let via_dot = workspace.join(".");
+        let second = deps
+            .context_for_workspace(&via_dot)
+            .await
+            .expect("load cached workspace context");
+
+        assert!(Arc::ptr_eq(&first, &second));
+
+        deps.invalidate_workspace_contexts();
+        let third = deps
+            .context_for_workspace(&workspace)
+            .await
+            .expect("reload workspace context");
+        assert!(!Arc::ptr_eq(&first, &third));
+
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[tokio::test]
+    async fn context_for_workspace_reuses_mcp_manager_when_provider_configured() {
+        let deps = test_deps(
+            r#"
+[defaults]
+model_binding = "main"
+
+[providers.openrouter]
+enabled = true
+name = "OpenRouter"
+wire_apis = ["openai_chat_completions"]
+
+[model_bindings.main]
+enabled = true
+model_slug = "catalog-slug"
+provider = "openrouter"
+request_model = "vendor/model-name"
+invocation_method = "openai_chat_completions"
+"#,
+        );
+        let workspace = unique_temp_dir("session-context-mcp-reuse");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+
+        let context = deps
+            .context_for_workspace(&workspace)
+            .await
+            .expect("load workspace context");
+
+        assert!(Arc::ptr_eq(
+            &context.mcp_manager,
+            &deps.process_context.mcp_manager
+        ));
+        assert!(Arc::ptr_eq(
+            &context.tool_registry(),
+            &deps.process_context.tool_registry()
+        ));
+
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[tokio::test]
+    async fn context_for_workspace_evicts_oldest_when_over_capacity() {
+        let deps = test_deps("");
+        {
+            let mut cache = deps
+                .workspace_contexts
+                .lock()
+                .expect("workspace context cache mutex should not be poisoned");
+            *cache = workspace_context_cache(2);
+        }
+
+        let root = unique_temp_dir("session-context-lru");
+        let workspace_a = root.join("a");
+        let workspace_b = root.join("b");
+        let workspace_c = root.join("c");
+        for workspace in [&workspace_a, &workspace_b, &workspace_c] {
+            std::fs::create_dir_all(workspace).expect("create workspace");
+        }
+
+        let context_a = deps
+            .context_for_workspace(&workspace_a)
+            .await
+            .expect("load a");
+        let _context_b = deps
+            .context_for_workspace(&workspace_b)
+            .await
+            .expect("load b");
+        let _context_c = deps
+            .context_for_workspace(&workspace_c)
+            .await
+            .expect("load c");
+
+        let reloaded_a = deps
+            .context_for_workspace(&workspace_a)
+            .await
+            .expect("reload a");
+        assert!(!Arc::ptr_eq(&context_a, &reloaded_a));
+        assert_eq!(
+            deps.workspace_contexts
+                .lock()
+                .expect("workspace context cache mutex should not be poisoned")
+                .len(),
+            2
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

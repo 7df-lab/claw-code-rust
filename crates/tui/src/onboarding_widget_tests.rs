@@ -96,6 +96,29 @@ fn deepseek_model() -> Model {
     .into()
 }
 
+fn toggle_only_model() -> Model {
+    devo_core::ModelPreset {
+        slug: "laguna-s-2.1".to_string(),
+        display_name: "laguna-s-2.1".to_string(),
+        reasoning_capability: ReasoningCapability::Toggle,
+        supported_reasoning_levels: Vec::new(),
+        default_reasoning_effort: Some(ReasoningEffort::Medium),
+        ..devo_core::ModelPreset::default()
+    }
+    .into()
+}
+
+fn toggle_only_provider_vendor() -> ProviderVendor {
+    ProviderVendor {
+        name: "Poolside".to_string(),
+        base_url: Some("https://api.poolside.ai".to_string()),
+        credential: Some("poolside_api_key".to_string()),
+        headers: None,
+        wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
+        enabled: true,
+    }
+}
+
 fn deepseek_provider_vendor() -> ProviderVendor {
     ProviderVendor {
         name: "Deepseek".to_string(),
@@ -159,7 +182,7 @@ fn failed_validation_widget() -> (OnboardingWidget, mpsc::UnboundedReceiver<AppE
 
     let command = next_shell_command(&mut app_event_rx);
     assert_eq!(command.starts_with("onboard "), true);
-    widget.on_validation_failed("probe failed".to_string());
+    widget.on_validation_failed("probe failed".to_string(), /*recovery_hint*/ None);
     (widget, app_event_rx)
 }
 
@@ -257,7 +280,7 @@ fn onboarding_validation_failure_defaults_to_add_model_anyway() {
     let (widget, _app_event_rx) = failed_validation_widget();
 
     let view = rendered_rows(&widget, 160, 40).join("\n");
-    assert_eq!(view.contains("> Add model anyway"), true);
+    assert_eq!(view.contains("› Add model anyway"), true);
     assert_eq!(view.contains("  Retry with current settings"), true);
 }
 
@@ -277,7 +300,7 @@ fn onboarding_existing_provider_validation_payload_preserves_edited_model_name()
 fn onboarding_existing_provider_bypass_payload_preserves_edited_model_name() {
     let (mut widget, mut app_event_rx) = edited_existing_provider_widget();
     let _ = next_shell_command(&mut app_event_rx);
-    widget.on_validation_failed("probe failed".to_string());
+    widget.on_validation_failed("probe failed".to_string(), /*recovery_hint*/ None);
 
     widget.handle_key_event(press(KeyCode::Enter));
 
@@ -515,13 +538,14 @@ fn onboarding_invocation_and_reasoning_popups_render_inline_and_use_model_preset
         invocation_view.contains("Invocation Method: OpenAI Chat Completions"),
         true
     );
-    assert_eq!(invocation_view.contains("> OpenAI Chat Completions"), true);
+    assert_eq!(invocation_view.contains("› OpenAI Chat Completions"), true);
 
     widget.handle_key_event(press(KeyCode::Enter));
 
     let reasoning_view = rendered_rows(&widget, 160, 60).join("\n");
     assert_eq!(reasoning_view.contains("Reason Effort: High"), true);
-    assert_eq!(reasoning_view.contains("> High"), true);
+    assert_eq!(reasoning_view.contains(" Off"), true);
+    assert_eq!(reasoning_view.contains("› High"), true);
     assert_eq!(reasoning_view.contains(" Max"), true);
     assert_eq!(reasoning_view.contains("Medium"), false);
     assert_eq!(reasoning_view.contains("XHigh"), false);
@@ -546,6 +570,48 @@ fn onboarding_invocation_and_reasoning_popups_render_inline_and_use_model_preset
 }
 
 #[test]
+fn onboarding_toggle_model_reasoning_popup_shows_off_and_on() {
+    let models = vec![toggle_only_model()];
+    let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = OnboardingWidget::new(
+        &models,
+        AppEventSender::new(app_event_tx),
+        FrameRequester::test_dummy(),
+        true,
+    );
+    assert_eq!(
+        next_shell_command(&mut app_event_rx),
+        "provider list".to_string()
+    );
+
+    widget.on_provider_vendors_listed(vec![toggle_only_provider_vendor()]);
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+
+    let reasoning_view = rendered_rows(&widget, 160, 60).join("\n");
+    assert_eq!(reasoning_view.contains("Reason Effort: On"), true);
+    assert_eq!(reasoning_view.contains(" Off"), true);
+    assert_eq!(reasoning_view.contains("› On"), true);
+    assert_eq!(reasoning_view.contains("Medium"), false);
+
+    widget.handle_key_event(press(KeyCode::Enter));
+
+    let command = next_shell_command(&mut app_event_rx);
+    let payload = command
+        .strip_prefix("onboard ")
+        .expect("onboard command prefix");
+    let payload: serde_json::Value = serde_json::from_str(payload).expect("valid onboarding json");
+
+    assert_eq!(
+        payload["default_reasoning_effort"],
+        serde_json::Value::String("enabled".to_string())
+    );
+}
+
+#[test]
 fn onboarding_invocation_popup_keeps_active_section_visible_when_short() {
     let widget = widget_at_invocation_method_popup();
 
@@ -560,7 +626,7 @@ fn onboarding_invocation_popup_keeps_active_section_visible_when_short() {
         "expected invocation hint in short viewport:\n{invocation_view}"
     );
     assert!(
-        invocation_view.contains("> OpenAI Chat Completions"),
+        invocation_view.contains("› OpenAI Chat Completions"),
         "expected selected invocation option in short viewport:\n{invocation_view}"
     );
 }
@@ -580,7 +646,7 @@ fn onboarding_reasoning_popup_keeps_active_section_visible_when_short_and_narrow
         "expected wrapped reasoning hint in short viewport:\n{reasoning_view}"
     );
     assert!(
-        reasoning_view.contains("> High"),
+        reasoning_view.contains("› High"),
         "expected selected reasoning effort in short viewport:\n{reasoning_view}"
     );
 }

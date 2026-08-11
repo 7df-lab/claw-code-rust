@@ -26,11 +26,11 @@
 ## 截圖
 
 <p align="center">
-  <img width="100%" alt="Devo desktop coding agent app 展示儲存庫對話、專案側邊欄和模型控制" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo 終端機 TUI coding agent 在本地儲存庫中顯示模型、上下文和 token 狀態" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
 </p>
 
 <p align="center">
-  <img width="100%" alt="Devo 終端機 TUI coding agent 在本地儲存庫中顯示模型、上下文和 token 狀態" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo desktop coding agent app 展示儲存庫對話、專案側邊欄和模型控制" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
 </p>
 
 ## 為什麼選擇 Devo
@@ -45,18 +45,18 @@ Desktop 體驗、終端機工作流以及工作區執行邊界的團隊。
   可以指向內部端點，不依賴託管式 agent 服務。
 - **Desktop 與終端機雙入口** - 用 Desktop app 完成可視化上手和日常編碼，也可以在需要
   終端機原生自動化、遠端 shell 或腳本化流程時使用 CLI/TUI。
-- **面向 Agent Runtime 擴展** - MCP server、可重用 skills、本地語義程式碼搜尋、
-  可稽核會話、權限控制和多 agent 流程都是執行階段能力，不是一次性 prompt。
+- **面向 Agent Runtime 擴展** - MCP server、可重用 skills、可稽核會話、權限控制
+  和多 agent 流程都是執行階段能力，不是一次性 prompt。
 
 ## 功能
 
-- **內建語義程式碼搜尋** - 執行本地 CPU 程式碼嵌入模型，並結合密集檢索
-  與 BM25 關鍵字比對，相比僅使用 grep/find 的代理減少程式碼搜尋上下文。
 - **模型中立的 provider runtime** - 透過 provider/model 綁定接入 OpenAI 相容、
   Anthropic 相容、DeepSeek、Qwen、Kimi、GLM、MiniMax、Xiaomi MiMo、
   OpenRouter 或本地端點。
 - **MCP 支援** - 透過
   [Model Context Protocol](https://modelcontextprotocol.io/) 伺服器連接外部工具和上下文。
+  可用 CLI 管理：`devo mcp add|list|enable|disable|remove`（見
+  [配置](./docs/configuration.zh-Hant.md#mcp-伺服器)）。
 - **Skill 支援** - 將可重複工作流程、說明、腳本和參考資料打包成可重用的
   [Agent Skills](https://agentskills.io/)。
 - **長時間任務支援** - 讓 Devo 在多輪工作中自動管理上下文，避免任務變長後丟失脈絡。
@@ -69,6 +69,10 @@ Desktop 體驗、終端機工作流以及工作區執行邊界的團隊。
 - **成本和上下文可見性** - 在供應商支援時顯示輸入/輸出 token、快取 token
   和上下文視窗用量。
 - **輕量級 Rust 執行階段** - 使用 Rust 建構，記憶體開銷低，本地執行階段緊湊。
+- **內建語義程式碼搜尋（MCP）** - 可選的捆綁 MCP 伺服器（`code_search` /
+  `devo-code-search-mcp`），**預設關閉**。在本地 CPU 執行程式碼嵌入模型，並結合
+  密集檢索與 BM25 關鍵字比對，相比僅用 grep/find 的代理減少程式碼搜尋上下文。用
+  `devo mcp enable code_search` 或 TUI `/mcps` 啟用。
 
 ## 已測試模型
 
@@ -195,9 +199,20 @@ devo resume <session-id>
 
 ## 配置
 
-`devo onboard` 是推薦的設定路徑。如需手動 `config.toml` 路徑、
-provider/model 綁定欄位和自訂模型目錄範例，請參閱
-[配置](./docs/configuration.zh-Hant.md)。
+`devo onboard` 是推薦的設定路徑。它會把 provider 和 model binding 寫入
+`config.toml`，並把 API key 保存在使用者級 `auth.json`。
+
+如需手動接入自有 API key 與自訂模型：
+
+1. 在 `config.toml` 中定義 `[model.<slug>]` 參數、`[providers.<id>]` 和
+   `[model_bindings.<id>]`。
+2. 把密鑰寫入 `DEVO_HOME/auth.json`，並在 `[providers.<id>].credential` 中引用該
+   credential id — 不要把 API key 本身寫進 `config.toml`。
+3. 將 `invocation_method` 設為與端點協議一致：`openai_chat_completions`、
+   `openai_responses` 或 `anthropic_messages`。
+
+完整範例（自訂模型參數 + API key）與協議說明見
+[配置](./docs/configuration.zh-Hant.md#接入自有-api-key)。
 
 ## Docs
 
@@ -217,6 +232,13 @@ Devo 仍處於 1.0 之前並在積極開發中。它已經適合本地評估、�
 任何支援 OpenAI 相容 Chat Completions、OpenAI 相容 Responses 或
 Anthropic Messages API 的模型端點，都可以透過 provider/model 綁定接入。
 
+### 如何接入自有 API key？
+
+使用 `devo onboard`，或在 `config.toml` 中手動定義自訂 `[model.<slug>]`、
+provider 與 binding，把 key 存入使用者級 `auth.json`，並將 `invocation_method`
+設為 `openai_chat_completions`、`openai_responses` 或 `anthropic_messages`。詳見
+[配置](./docs/configuration.zh-Hant.md#接入自有-api-key)。
+
 ### 應該使用 Desktop app 還是 TUI/CLI？
 
 如果你需要可視化上手、會話瀏覽和圖形化 coding workspace，請使用 Desktop app。
@@ -233,16 +255,6 @@ Anthropic Messages API 的模型端點，都可以透過 provider/model 綁定�
 - 帶驗證命令和迴歸測試的聚焦修復。
 
 請開啟 issue 或 pull request 討論變更。
-
-## Star 歷史
-
-<a href="https://www.star-history.com/?repos=7df-lab%2Fdevo&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left" />
- </picture>
-</a>
 
 ## 授權
 

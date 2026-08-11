@@ -27,11 +27,11 @@
 ## Screenshots
 
 <p align="center">
-  <img width="100%" alt="Devo desktop coding agent app showing a repository conversation, project sidebar, and model controls" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo terminal TUI coding agent running in a local repository with model, context, and token status" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
 </p>
 
 <p align="center">
-  <img width="100%" alt="Devo terminal TUI coding agent running in a local repository with model, context, and token status" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo desktop coding agent app showing a repository conversation, project sidebar, and model controls" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
 </p>
 
 ## Why Devo
@@ -50,19 +50,18 @@ runtime behavior, and workspace execution under your control.
   onboarding and daily coding, or the CLI/TUI for terminal-native automation,
   remote shells, and scriptable workflows.
 - **Built for agent runtime extensibility** - MCP servers, reusable skills,
-  local semantic code search, auditable sessions, permissions, and multi-agent
-  flows are runtime features rather than one-off prompts.
+  auditable sessions, permissions, and multi-agent flows are runtime features
+  rather than one-off prompts.
 
 ## Features
 
-- **Built-in semantic code search** - Runs a local CPU code-embedding model and
-  combines dense retrieval with BM25 keyword matching, reducing code-search
-  context compared with grep/find-only agent.
 - **Model-neutral provider runtime** - Use provider/model bindings for
   OpenAI-compatible, Anthropic-compatible, DeepSeek, Qwen, Kimi, GLM, MiniMax,
   Xiaomi MiMo, OpenRouter, or local endpoints.
 - **MCP support** - Connect external tools and context through
-  [Model Context Protocol](https://modelcontextprotocol.io/) servers.
+  [Model Context Protocol](https://modelcontextprotocol.io/) servers. Add and
+  manage servers from the CLI with `devo mcp add|list|enable|disable|remove`
+  (see [Configuration](./docs/configuration.md#mcp-servers)).
 - **Skill support** - Package repeatable workflows, instructions, scripts, and
   references as reusable [Agent Skills](https://agentskills.io/).
 - **Long-running task support** - Let Devo manage context automatically across
@@ -81,6 +80,11 @@ runtime behavior, and workspace execution under your control.
   context-window usage where providers expose them.
 - **Lightweight Rust runtime** - Built in Rust with low memory overhead and a
   compact local runtime.
+- **Built-in semantic code search (MCP)** - Optional bundled MCP server
+  (`code_search` / `devo-code-search-mcp`), **disabled by default**. Runs a
+  local CPU code-embedding model and combines dense retrieval with BM25 keyword
+  matching to reduce code-search context versus grep/find-only agents. Enable
+  with `devo mcp enable code_search` or TUI `/mcps`.
 
 ## Tested Models
 
@@ -213,9 +217,21 @@ devo resume <session-id>
 
 ## Configuration
 
-`devo onboard` is the recommended setup path. For manual `config.toml` paths,
-provider/model binding fields, and custom model catalog examples, see
-[Configuration](./docs/configuration.md).
+`devo onboard` is the recommended setup path. It writes provider and model
+bindings to `config.toml` and stores your API key in user-scoped `auth.json`.
+
+To bring your own key with a custom model manually:
+
+1. Define `[model.<slug>]` parameters, `[providers.<id>]`, and
+   `[model_bindings.<id>]` in `config.toml`.
+2. Put the secret in `DEVO_HOME/auth.json` and reference that credential id from
+   `[providers.<id>].credential` — never put the API key itself in
+   `config.toml`.
+3. Set `invocation_method` to match the endpoint protocol:
+   `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
+
+Full worked example (custom model parameters + API key) and protocol details:
+[Configuration](./docs/configuration.md#bring-your-own-api-key).
 
 ## Docs
 
@@ -237,6 +253,14 @@ families. Any model endpoint that supports OpenAI-compatible Chat Completions,
 OpenAI-compatible Responses, or the Anthropic Messages API can be connected through
 provider/model bindings.
 
+### How do I bring my own API key?
+
+Use `devo onboard`, or manually define a custom `[model.<slug>]`, provider, and
+binding in `config.toml`, store the key in user-scoped `auth.json`, and set
+`invocation_method` to `openai_chat_completions`, `openai_responses`, or
+`anthropic_messages`. See
+[Configuration](./docs/configuration.md#bring-your-own-api-key).
+
 ### Should I use the Desktop app or the TUI/CLI?
 
 Use the Desktop app when you want visual onboarding, session browsing, and a
@@ -255,16 +279,6 @@ Contributions are welcome while the project is still early:
 - Focused fixes with validation commands and regression tests.
 
 Open an issue or pull request to discuss changes.
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=7df-lab%2Fdevo&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&theme=dark&legend=top-left&sealed_token=MnUnrvz2y0jVX7ra8V0X5Z6AvrYDpTndpzZkHP-0ilm9g4EpwuNEvvmJfE8I2qMI8tDhAkn5a2T5dks7vIrGvP1eVw3ov01-m4_l7zJyWuuAFP-f4MSHSvyRJVhkhWmoioiwBNutxCcNuvDtZkufcwHISOkZglpGH7tZhIZDj-ITupTBDzZmBVfI-_DU" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left&sealed_token=MnUnrvz2y0jVX7ra8V0X5Z6AvrYDpTndpzZkHP-0ilm9g4EpwuNEvvmJfE8I2qMI8tDhAkn5a2T5dks7vIrGvP1eVw3ov01-m4_l7zJyWuuAFP-f4MSHSvyRJVhkhWmoioiwBNutxCcNuvDtZkufcwHISOkZglpGH7tZhIZDj-ITupTBDzZmBVfI-_DU" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left&sealed_token=MnUnrvz2y0jVX7ra8V0X5Z6AvrYDpTndpzZkHP-0ilm9g4EpwuNEvvmJfE8I2qMI8tDhAkn5a2T5dks7vIrGvP1eVw3ov01-m4_l7zJyWuuAFP-f4MSHSvyRJVhkhWmoioiwBNutxCcNuvDtZkufcwHISOkZglpGH7tZhIZDj-ITupTBDzZmBVfI-_DU" />
- </picture>
-</a>
 
 ## License
 

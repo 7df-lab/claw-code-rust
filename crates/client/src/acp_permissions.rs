@@ -218,6 +218,7 @@ fn acp_approval_request_notification(
                 turn_id: Some(pending.turn_id),
                 item_id: Some(pending.item_id),
                 seq: 0,
+                item_seq: None,
             },
             item: ItemEnvelope {
                 item_id: pending.item_id,
@@ -236,6 +237,7 @@ fn acp_approval_decision_notification(
         approval_id: params.approval_id.clone(),
         decision: acp_approval_decision_label(&params.decision).to_string(),
         scope: acp_approval_scope_label(&params.scope).to_string(),
+        decision_source: Some(devo_protocol::canonical::item::ApprovalDecisionSource::User),
     };
     acp_item_notification(
         "item/completed",
@@ -245,6 +247,7 @@ fn acp_approval_decision_notification(
                 turn_id: Some(pending.turn_id),
                 item_id: Some(pending.item_id),
                 seq: 0,
+                item_seq: None,
             },
             item: ItemEnvelope {
                 item_id: ItemId::new(),
@@ -491,6 +494,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 0,
+                item_seq: None,
             }
         );
         assert_eq!(request_item.item.item_id, item_id);
@@ -559,6 +563,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 0,
+                item_seq: None,
             }
         );
         assert_eq!(decision_item.item.item_kind, ItemKind::ApprovalDecision);
@@ -568,6 +573,7 @@ mod tests {
                 approval_id: request_payload.approval_id,
                 decision: "approve".to_string(),
                 scope: "once".to_string(),
+                decision_source: Some(devo_protocol::canonical::item::ApprovalDecisionSource::User,),
             }
         );
     }

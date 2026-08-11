@@ -1,0 +1,19 @@
+{
+  "id": "item_019b1c2d3e4f7890abcdef1234567892",
+  "sessionId": "ses_019b1c2d3e4f7890abcdef1234567893",
+  "turnId": "turn_019b1c2d3e4f7890abcdef1234567891",
+  "seq": 7,
+  "revision": 1,
+  "createdAt": "2026-08-01T00:00:01Z",
+  "updatedAt": "2026-08-01T00:00:01Z",
+  "state": "waiting",
+  "item": {
+    "type": "approval",
+    "approvalId": "appr-42",
+    "actionSummary": "run `cargo test`",
+    "justification": "verify the change",
+    "resource": "command",
+    "availableScopes": ["once", "turn", "session"],
+    "target": { "kind": "command", "command": "cargo test" }
+  }
+}

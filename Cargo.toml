@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/core",
-    "crates/code-search",
+    "crates/code-search-mcp",
     "crates/execpolicy",
     "crates/tools",
     "crates/provider",
@@ -37,7 +37,7 @@ resolver = "3"
 edition = "2024"
 license = "MIT"
 rust-version = "1.88.0"
-version = "0.1.31"
+version = "0.1.33"
 
 [workspace.dependencies]
 agent-client-protocol = "0.14.0"
@@ -59,7 +59,7 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 derive_more = "2"
 devo-arg0 = { path = "crates/arg0" }
 devo-client = { path = "crates/client" }
-devo-code-search = { path = "crates/code-search" }
+devo-code-search-mcp = { path = "crates/code-search-mcp" }
 devo-config = { path = "crates/config" }
 devo-core = { path = "crates/core" }
 devo-execpolicy = { path = "crates/execpolicy" }
@@ -102,6 +102,7 @@ itertools = "0.14.0"
 keyring = { version = "3.6", default-features = false }
 lazy_static = "1"
 libc = "0.2.182"
+lru = "0.12"
 multimap = "0.10.1"
 model2vec = "0.3.0"
 notify = "8.2.0"

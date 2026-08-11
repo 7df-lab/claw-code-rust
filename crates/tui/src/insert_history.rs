@@ -443,7 +443,7 @@ mod tests {
 
         let lines = vec![
             ScrollbackLine::new(Line::from("  ")),
-            ScrollbackLine::new(Line::from("▌ hello")),
+            ScrollbackLine::new(Line::from("❯ hello")),
             ScrollbackLine::new(Line::from("  ")),
         ];
         insert_history_lines(&mut term, lines).expect("insert history");
@@ -451,7 +451,7 @@ mod tests {
         let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
         let user_row = rows
             .iter()
-            .position(|row| row.contains("▌ hello"))
+            .position(|row| row.contains("❯ hello"))
             .unwrap_or_else(|| panic!("expected user row, rows: {rows:?}"));
 
         assert!(

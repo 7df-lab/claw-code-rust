@@ -1709,7 +1709,7 @@ checksum = "abd57806937c9cc163efc8ea3910e00a62e2aeb0b8119f1793a978088f8f6b04"
 
 [[package]]
 name = "devo-arg0"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "clap",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "devo-cli"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "devo-client"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1775,8 +1775,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "devo-code-search"
-version = "0.1.31"
+name = "devo-code-search-mcp"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "bm25",
@@ -1792,11 +1792,13 @@ dependencies = [
  "pretty_assertions",
  "rayon",
  "reqwest 0.13.4",
+ "rmcp",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-c",
@@ -1827,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "devo-config"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "devo-protocol",
@@ -1843,14 +1845,13 @@ dependencies = [
 
 [[package]]
 name = "devo-core"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bm25",
  "chrono",
- "devo-code-search",
  "devo-config",
  "devo-execpolicy",
  "devo-network-proxy",
@@ -1890,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "devo-execpolicy"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "clap",
@@ -1907,7 +1908,7 @@ dependencies = [
 
 [[package]]
 name = "devo-file-search"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "clap",
@@ -1923,7 +1924,7 @@ dependencies = [
 
 [[package]]
 name = "devo-keyring-store"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "keyring",
  "tracing",
@@ -1931,7 +1932,7 @@ dependencies = [
 
 [[package]]
 name = "devo-linux-sandbox"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "clap",
@@ -1943,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "devo-mcp"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1959,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "devo-network-proxy"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "pretty_assertions",
@@ -1971,7 +1972,7 @@ dependencies = [
 
 [[package]]
 name = "devo-protocol"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "agent-client-protocol",
  "chrono",
@@ -1990,7 +1991,7 @@ dependencies = [
 
 [[package]]
 name = "devo-provider"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2011,7 +2012,7 @@ dependencies = [
 
 [[package]]
 name = "devo-rmcp-client"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "axum",
@@ -2045,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "devo-safety"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "async-trait",
  "devo-config",
@@ -2065,7 +2066,7 @@ dependencies = [
 
 [[package]]
 name = "devo-sandbox"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2091,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "devo-sandbox-network-proxy"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "devo-sandbox",
@@ -2103,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "devo-server"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2111,7 +2112,6 @@ dependencies = [
  "chrono",
  "clap",
  "devo-client",
- "devo-code-search",
  "devo-core",
  "devo-execpolicy",
  "devo-file-search",
@@ -2128,6 +2128,7 @@ dependencies = [
  "diffy",
  "fs2",
  "futures",
+ "lru",
  "pretty_assertions",
  "rusqlite",
  "serde",
@@ -2148,7 +2149,7 @@ dependencies = [
 
 [[package]]
 name = "devo-skills"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "chrono",
  "include_dir",
@@ -2165,7 +2166,7 @@ dependencies = [
 
 [[package]]
 name = "devo-tasks"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2181,7 +2182,7 @@ dependencies = [
 
 [[package]]
 name = "devo-tools"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "async-trait",
  "devo-protocol",
@@ -2196,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "devo-tui"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -2257,14 +2258,14 @@ dependencies = [
 
 [[package]]
 name = "devo-util-fuzzy"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "pretty_assertions",
 ]
 
 [[package]]
 name = "devo-util-git"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "assert_matches",
  "devo-util-paths",
@@ -2282,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "devo-util-paths"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "dirs",
  "pretty_assertions",
@@ -2295,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "devo-util-process"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "devo-sandbox",
@@ -2312,7 +2313,7 @@ dependencies = [
 
 [[package]]
 name = "devo-util-shell-command"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2332,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "devo-windows-sandbox"
-version = "0.1.31"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

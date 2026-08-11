@@ -94,8 +94,7 @@ fn should_preserve_original_tool_event(event: &ServerEvent) -> bool {
                 | ItemKind::CommandExecution
                 | ItemKind::FileChange
         ),
-        // Keep status updates on the ACP surface so terminal content can still
-        // arrive via tool_call_update; TUI ignores title-less status updates.
+        // Keep status updates on the ACP surface; TUI ignores title-less status updates.
         _ => false,
     }
 }
@@ -186,28 +185,17 @@ pub(crate) fn acp_update_from_server_event(event: &ServerEvent) -> Option<AcpSes
                 meta: Some(meta),
             })
         }
-        ServerEvent::ToolCallStatusUpdated(payload) => {
-            let content = payload
-                .terminal_id
-                .as_ref()
-                .map(|terminal_id| {
-                    vec![AcpToolCallContent::Terminal {
-                        terminal_id: terminal_id.clone(),
-                    }]
-                })
-                .unwrap_or_default();
-            Some(AcpSessionUpdate::ToolCallUpdate {
-                tool_call_id: payload.tool_call_id.clone(),
-                title: None,
-                kind: None,
-                status: acp_tool_call_status_from_str(payload.status.as_str()),
-                raw_input: None,
-                raw_output: None,
-                content,
-                locations: Vec::new(),
-                meta: Some(acp_activity_meta_from_turn_id(&payload.turn_id)),
-            })
-        }
+        ServerEvent::ToolCallStatusUpdated(payload) => Some(AcpSessionUpdate::ToolCallUpdate {
+            tool_call_id: payload.tool_call_id.clone(),
+            title: None,
+            kind: None,
+            status: acp_tool_call_status_from_str(payload.status.as_str()),
+            raw_input: None,
+            raw_output: None,
+            content: Vec::new(),
+            locations: Vec::new(),
+            meta: Some(acp_activity_meta_from_turn_id(&payload.turn_id)),
+        }),
         ServerEvent::ItemDelta {
             delta_kind,
             payload,

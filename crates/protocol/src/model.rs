@@ -300,6 +300,15 @@ impl Model {
         self.provider
     }
 
+    /// Whether this model should receive the `apply_patch` tool in requests.
+    ///
+    /// Only OpenAI-channel models get `apply_patch`. Other models tend to misuse
+    /// the patch dialect and produce frequent format errors; they should use
+    /// `edit` / `write` instead.
+    pub fn supports_apply_patch(&self) -> bool {
+        self.channel.as_deref() == Some("OpenAI")
+    }
+
     pub fn reasoning_effort_options(&self) -> Vec<ReasoningEffortPreset> {
         match &self.reasoning_capability {
             ReasoningCapability::Levels(levels) => levels
@@ -691,6 +700,20 @@ mod tests {
             .resolve_for_turn(Some("test"))
             .expect("resolve explicit");
         assert_eq!(resolved.slug, "test");
+    }
+
+    #[test]
+    fn supports_apply_patch_only_for_openai_channel() {
+        let mut openai = model("gpt-5.5");
+        openai.channel = Some("OpenAI".into());
+        assert_eq!(openai.supports_apply_patch(), true);
+
+        let mut poolside = model("laguna-s-2.1");
+        poolside.channel = Some("Poolside".into());
+        assert_eq!(poolside.supports_apply_patch(), false);
+
+        let unset = model("custom");
+        assert_eq!(unset.supports_apply_patch(), false);
     }
 
     #[test]

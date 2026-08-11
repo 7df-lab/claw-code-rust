@@ -6,6 +6,7 @@ use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use devo_protocol::ApprovalDecisionValue;
 use devo_protocol::ApprovalScopeValue;
+use devo_protocol::CollaborationMode;
 use devo_protocol::InputItem;
 use devo_protocol::ItemId;
 use devo_protocol::Model;
@@ -30,6 +31,7 @@ use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event_sender::AppEventSender;
+use crate::bottom_pane::InputMode;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ChatWidgetInit;
 use crate::chatwidget::ReasoningEffortListEntry;
@@ -64,6 +66,8 @@ fn widget_with_model_and_reasoning_effort(
         initial_reasoning_effort_selection,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -104,6 +108,8 @@ fn onboarding_widget_with_model(
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -140,6 +146,8 @@ fn onboarding_widget_with_available_model_and_exit_after_onboarding(
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -274,7 +282,7 @@ fn user_prompt_multiline_has_single_marker_and_aligned_continuation_rows() {
 
     assert_eq!(
         user_lines,
-        ["  ", "▌ line one", "  line two", "  line three"]
+        [&"─".repeat(80), "❯ line one", "  line two", "  line three"]
     );
 }
 
@@ -714,6 +722,9 @@ fn session_switched_clears_resume_blocking_state() {
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     assert!(!widget.is_resuming_session_for_test());
@@ -1077,6 +1088,37 @@ fn approval_request_does_not_duplicate_already_committed_assistant_text() {
 }
 
 #[test]
+fn approval_request_apply_patch_uses_friendly_label() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    let session_id = SessionId::new();
+    let turn_id = TurnId::new();
+
+    widget.handle_worker_event(crate::events::WorkerEvent::ApprovalRequest {
+        session_id,
+        turn_id,
+        approval_id: "approval-call-friendly".to_string(),
+        action_summary: "apply_patch".to_string(),
+        justification: "Tool execution requires approval.".to_string(),
+        resource: Some("FileWrite".to_string()),
+        available_scopes: vec!["once".to_string()],
+        path: Some("src/main.rs".to_string()),
+        host: None,
+        target: None,
+        command_pattern: None,
+        command_prefix: None,
+    });
+
+    let rendered = rendered_rows(&widget, 80, 24).join("\n");
+    assert!(rendered.contains("Permission approval required"));
+    assert!(rendered.contains("Patch"));
+}
+
+#[test]
 fn approval_request_bottom_pane_menu_denies_with_n_shortcut() {
     let model = Model {
         slug: "test-model".to_string(),
@@ -1123,7 +1165,7 @@ fn approval_request_bottom_pane_menu_denies_with_n_shortcut() {
 }
 
 #[test]
-fn submitted_prompt_requests_on_request_approval_policy() {
+fn submitted_prompt_omits_approval_policy() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
@@ -1140,7 +1182,8 @@ fn submitted_prompt_requests_on_request_approval_policy() {
     else {
         panic!("expected user turn command");
     };
-    assert_eq!(approval_policy, Some("on-request".to_string()));
+    // None keeps the server's session permission mode (do not force Interactive).
+    assert_eq!(approval_policy, None);
 }
 
 /// Trace: L2-DES-TUI-003
@@ -1156,6 +1199,11 @@ fn shift_tab_plan_submission_marks_user_turn_plan_mode() {
     let (mut widget, mut app_event_rx) = widget_with_model(model, cwd);
 
     widget.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    // Mode change persists collaboration mode before the user turn is submitted.
+    assert!(matches!(
+        app_event_rx.try_recv().expect("collaboration mode event"),
+        AppEvent::Command(AppCommand::SetCollaborationMode { .. })
+    ));
     paste_and_submit(&mut widget, "plan this");
 
     let AppEvent::Command(AppCommand::UserTurn {
@@ -1182,13 +1230,13 @@ fn composer_marker_color(widget: &ChatWidget) -> Color {
         let row_text = (0..area.width)
             .map(|col| buf[(col, row)].symbol())
             .collect::<String>();
-        if !row_text.contains("Ask Devo") {
+        if !row_text.contains("Tip:") {
             continue;
         }
 
         for col in 0..area.width {
             let cell = &buf[(col, row)];
-            if cell.symbol() == "┃" {
+            if cell.symbol() == "❯" {
                 return cell.fg;
             }
         }
@@ -1211,7 +1259,7 @@ fn scrollback_marker_color_for_text(widget: &mut ChatWidget, needle: &str) -> Co
         }
 
         for span in &line.line.spans {
-            if span.content.contains('▌')
+            if span.content.contains('❯')
                 && let Some(color) = span.style.fg
             {
                 return color;
@@ -1231,9 +1279,9 @@ fn paste_and_submit(widget: &mut ChatWidget, text: &str) {
 }
 
 /// Trace: L2-DES-TUI-003
-/// Verifies: Mode labels and switch hints render as the first bottom status-line field.
+/// Verifies: Mode labels render as the first bottom status-line field.
 #[test]
-fn mode_label_and_switch_hint_render_at_left_of_status_line() {
+fn mode_label_renders_at_left_of_status_line() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
@@ -1243,25 +1291,21 @@ fn mode_label_and_switch_hint_render_at_left_of_status_line() {
 
     let rows = rendered_rows(&widget, 100, 12);
     let build_row = status_row_starting_with(&rows, "BUILD");
+    assert!(build_row.trim_start().starts_with("BUILD ·"));
     assert!(
-        build_row
-            .trim_start()
-            .starts_with("BUILD SHIFT+TAB switch ·")
+        !build_row.contains("SHIFT+TAB switch"),
+        "mode switch hint should not appear in the status line:\n{build_row}"
     );
 
     widget.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     let rows = rendered_rows(&widget, 100, 12);
     let plan_row = status_row_starting_with(&rows, "PLAN");
-    assert!(plan_row.trim_start().starts_with("PLAN SHIFT+TAB switch ·"));
+    assert!(plan_row.trim_start().starts_with("PLAN ·"));
 
     widget.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     let rows = rendered_rows(&widget, 100, 12);
     let build_row = status_row_starting_with(&rows, "BUILD");
-    assert!(
-        build_row
-            .trim_start()
-            .starts_with("BUILD SHIFT+TAB switch ·")
-    );
+    assert!(build_row.trim_start().starts_with("BUILD ·"));
     assert!(
         rows.iter()
             .all(|row| !row.trim_start().starts_with("SHELL")),
@@ -1273,6 +1317,46 @@ fn mode_label_and_switch_hint_render_at_left_of_status_line() {
     let rows = rendered_rows(&widget, 100, 12);
     let shell_row = status_row_starting_with(&rows, "SHELL");
     assert!(shell_row.trim_start().starts_with("SHELL ·"));
+}
+
+#[test]
+fn status_line_shows_branch_left_and_context_right() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    widget.handle_app_event(AppEvent::StatusLineBranchUpdated {
+        cwd: PathBuf::from("."),
+        branch: Some("feat/status-bar".to_string()),
+    });
+
+    let rows = rendered_rows(&widget, 100, 12);
+    let status_row = status_row_starting_with(&rows, "BUILD");
+    let trimmed = status_row.trim_end();
+    assert!(
+        trimmed.contains("BUILD · Test Model · feat/status-bar"),
+        "expected mode/model/branch on the left:\n{trimmed}"
+    );
+    assert!(
+        !trimmed.contains("SHIFT+TAB switch"),
+        "mode switch hint should be absent:\n{trimmed}"
+    );
+    // Context meter is right-aligned; look for the token fraction suffix.
+    assert!(
+        trimmed.contains('/') && (trimmed.contains('▰') || trimmed.contains('▱')),
+        "expected right-aligned context meter on the status row:\n{trimmed}"
+    );
+    let branch_idx = trimmed
+        .find("feat/status-bar")
+        .expect("branch should be present");
+    let context_idx = trimmed.find('▰').or_else(|| trimmed.find('▱'));
+    let context_idx = context_idx.expect("context meter should be present");
+    assert!(
+        branch_idx < context_idx,
+        "context should render to the right of the branch:\n{trimmed}"
+    );
 }
 
 /// Trace: L2-DES-TUI-003
@@ -1389,9 +1473,26 @@ fn queued_prompt_keeps_submitted_mode_when_promoted_to_history() {
 
     widget.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     paste_and_submit(&mut widget, "queued plan");
-    widget.handle_worker_event(crate::events::WorkerEvent::InputQueueUpdated {
-        pending_count: 0,
-        pending_texts: Vec::new(),
+    let queue_item_id = devo_protocol::canonical::ids::QueueItemId::from_string("qit_plan".into());
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Added,
+        queue_item_id: queue_item_id.clone(),
+        started_turn_id: None,
+        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+            queue_item_id: queue_item_id.clone(),
+            position: 1,
+            input: vec![devo_protocol::canonical::item::UserInput::Text {
+                text: "queued plan".to_string(),
+            }],
+            preview: "queued plan".to_string(),
+            enqueued_at: chrono::Utc::now(),
+        }],
+    });
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Drained,
+        queue_item_id,
+        started_turn_id: Some(TurnId::new()),
+        entries: Vec::new(),
     });
 
     assert_eq!(
@@ -1457,10 +1558,36 @@ fn queued_prompt_promotes_after_active_assistant_stream() {
     });
 
     paste_and_submit(&mut widget, "queued prompt");
-    widget.handle_worker_event(crate::events::WorkerEvent::InputQueueUpdated {
-        pending_count: 0,
-        pending_texts: Vec::new(),
+    let queue_item_id =
+        devo_protocol::canonical::ids::QueueItemId::from_string("qit_prompt".into());
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Added,
+        queue_item_id: queue_item_id.clone(),
+        started_turn_id: None,
+        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+            queue_item_id: queue_item_id.clone(),
+            position: 1,
+            input: vec![devo_protocol::canonical::item::UserInput::Text {
+                text: "queued prompt".to_string(),
+            }],
+            preview: "queued prompt".to_string(),
+            enqueued_at: chrono::Utc::now(),
+        }],
     });
+    assert!(
+        widget.bottom_pane_has_pending_for_test(),
+        "queued entry should appear in the pending queue UI"
+    );
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Drained,
+        queue_item_id,
+        started_turn_id: Some(TurnId::new()),
+        entries: Vec::new(),
+    });
+    assert!(
+        !widget.bottom_pane_has_pending_for_test(),
+        "drained entry should leave the pending queue UI"
+    );
     widget.handle_worker_event(crate::events::WorkerEvent::TextItemCompleted {
         item_id,
         kind: TextItemKind::Assistant,
@@ -1468,6 +1595,11 @@ fn queued_prompt_promotes_after_active_assistant_stream() {
     });
 
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100));
+    assert!(
+        history.iter().any(|line| line.contains("queued prompt")),
+        "queued prompt should be promoted:\n{}",
+        history.join("\n")
+    );
     let assistant_indexes = history
         .iter()
         .enumerate()
@@ -1487,6 +1619,151 @@ fn queued_prompt_promotes_after_active_assistant_stream() {
         assistant_indexes[0] < queued_index,
         "assistant stream should stay before queued prompt:\n{}",
         history.join("\n")
+    );
+}
+
+fn drain_commands(rx: &mut mpsc::UnboundedReceiver<AppEvent>) -> Vec<AppCommand> {
+    let mut commands = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::Command(command) = event {
+            commands.push(command);
+        }
+    }
+    commands
+}
+
+fn test_queue_entry(id: &str, text: &str) -> devo_protocol::canonical::queue::QueueEntry {
+    devo_protocol::canonical::queue::QueueEntry {
+        queue_item_id: devo_protocol::canonical::ids::QueueItemId::from_string(id.to_string()),
+        position: 1,
+        input: vec![devo_protocol::canonical::item::UserInput::Text {
+            text: text.to_string(),
+        }],
+        preview: text.to_string(),
+        enqueued_at: chrono::Utc::now(),
+    }
+}
+
+fn start_busy_turn(widget: &mut ChatWidget) {
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: TurnId::new(),
+    });
+}
+
+fn push_queue_snapshot(
+    widget: &mut ChatWidget,
+    change: devo_protocol::canonical::queue::QueueChange,
+    queue_item_id: &str,
+    entries: Vec<devo_protocol::canonical::queue::QueueEntry>,
+) {
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change,
+        queue_item_id: devo_protocol::canonical::ids::QueueItemId::from_string(
+            queue_item_id.to_string(),
+        ),
+        started_turn_id: None,
+        entries,
+    });
+}
+
+#[test]
+fn queue_edit_resubmit_updates_item_in_place() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    start_busy_turn(&mut widget);
+    push_queue_snapshot(
+        &mut widget,
+        devo_protocol::canonical::queue::QueueChange::Added,
+        "qit_edit",
+        vec![test_queue_entry("qit_edit", "original text")],
+    );
+    drain_commands(&mut app_event_rx);
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+    assert_eq!(
+        drain_commands(&mut app_event_rx),
+        Vec::new(),
+        "queue edit must not remove the item"
+    );
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    // Flush the composer's held first char (paste-burst flicker suppression)
+    // before submitting, same idiom as paste_and_submit.
+    std::thread::sleep(crate::bottom_pane::ChatComposer::recommended_paste_flush_delay());
+    widget.pre_draw_tick();
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        drain_commands(&mut app_event_rx),
+        vec![AppCommand::QueueUpdate {
+            queue_item_id: "qit_edit".to_string(),
+            input: vec![devo_protocol::InputItem::Text {
+                text: "original textx".to_string(),
+            }],
+        }],
+        "busy resubmit after edit should update the queued item in place"
+    );
+
+    // The edit flag is consumed: a subsequent busy submit pushes a new entry.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    std::thread::sleep(crate::bottom_pane::ChatComposer::recommended_paste_flush_delay());
+    widget.pre_draw_tick();
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        drain_commands(&mut app_event_rx),
+        vec![AppCommand::QueuePush {
+            input: vec![devo_protocol::InputItem::Text {
+                text: "y".to_string(),
+            }],
+        }],
+        "submit after the edit was applied should push a fresh queue entry"
+    );
+}
+
+#[test]
+fn queue_edit_falls_back_to_push_when_item_vanishes() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    start_busy_turn(&mut widget);
+    push_queue_snapshot(
+        &mut widget,
+        devo_protocol::canonical::queue::QueueChange::Added,
+        "qit_edit",
+        vec![test_queue_entry("qit_edit", "original text")],
+    );
+    widget.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+    drain_commands(&mut app_event_rx);
+
+    // The item is removed (or drained) while its text sits in the composer.
+    push_queue_snapshot(
+        &mut widget,
+        devo_protocol::canonical::queue::QueueChange::Removed,
+        "qit_edit",
+        Vec::new(),
+    );
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        drain_commands(&mut app_event_rx),
+        vec![AppCommand::QueuePush {
+            input: vec![devo_protocol::InputItem::Text {
+                text: "original text".to_string(),
+            }],
+        }],
+        "submit should fall back to a queue push once the edited item is gone"
     );
 }
 
@@ -1631,9 +1908,9 @@ fn permissions_command_opens_bottom_pane_picker_and_updates_default() {
 
     let rendered = rendered_rows(&widget, 100, 18).join("\n");
     assert!(rendered.contains("Update Permissions"));
-    assert!(rendered.contains("● 1. Default"));
-    assert!(rendered.contains("Auto-review"));
-    assert!(rendered.contains("Full Access"));
+    assert!(rendered.contains("● 1. Ask for approval"));
+    assert!(rendered.contains("Approve for me"));
+    assert!(rendered.contains("Full-Access"));
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
 
@@ -1642,6 +1919,7 @@ fn permissions_command_opens_bottom_pane_picker_and_updates_default() {
         event,
         AppEvent::Command(AppCommand::UpdatePermissions {
             preset: devo_protocol::PermissionPreset::Default,
+            persist_scope: crate::app_command::PersistScope::Session,
         })
     );
 }
@@ -1698,6 +1976,8 @@ fn permissions_command_marks_initial_project_preset_current() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::FullAccess,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -1715,7 +1995,7 @@ fn permissions_command_marks_initial_project_preset_current() {
     });
 
     let rendered = rendered_rows(&widget, 100, 18).join("\n");
-    assert!(rendered.contains("● 3. Full Access"));
+    assert!(rendered.contains("● 3. Full-Access"));
 }
 
 #[test]
@@ -1813,55 +2093,20 @@ fn trailing_space_exit_slash_command_exits() {
 }
 
 #[test]
-fn typed_clear_slash_command_clears_history_and_active_streams() {
+fn trailing_space_quit_slash_command_exits() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
         ..Model::default()
     };
-    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
-    widget.handle_app_event(AppEvent::ClearTranscript);
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    paste_and_submit(&mut widget, "old prompt");
-    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
-        model: "test-model".to_string(),
+    widget.handle_paste("/quit ".to_string());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        model_binding_id: None,
-        reasoning_effort_selection: None,
-        reasoning_effort: None,
-        turn_id: TurnId::new(),
-    });
-    widget.handle_worker_event(crate::events::WorkerEvent::TextDelta(
-        "active stream body".to_string(),
-    ));
-    let before_scrollback = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join(
-        "
-",
-    );
-    assert!(before_scrollback.contains("old prompt"));
-    let before = rendered_rows(&widget, 100, 16).join(
-        "
-",
-    );
-    assert!(before.contains("active stream body"));
-
-    paste_and_submit(&mut widget, "/clear");
-
-    let after_scrollback = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join(
-        "
-",
-    );
-    let after = rendered_rows(&widget, 100, 16).join(
-        "
-",
-    );
-    assert!(
-        !after_scrollback.contains("old prompt") && !after.contains("active stream body"),
-        "typed /clear should remove visible history and active streams:
-scrollback:
-{after_scrollback}
-rendered:
-{after}"
+    assert_eq!(
+        app_event_rx.try_recv().ok(),
+        Some(AppEvent::Exit(crate::app_event::ExitMode::ShutdownFirst))
     );
 }
 
@@ -1977,6 +2222,204 @@ fn goal_slash_command_emits_set_goal_objective() {
             mode: crate::app_command::GoalObjectiveMode::ConfirmIfExists,
         })
     );
+}
+
+#[test]
+fn rename_slash_command_emits_rename_session() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_paste("/rename My New Title".to_string());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app_event_rx.try_recv().expect("rename command event"),
+        AppEvent::Command(AppCommand::RenameSession {
+            title: "My New Title".to_string(),
+        })
+    );
+}
+
+#[test]
+fn rename_slash_command_without_title_shows_usage() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_paste("/rename".to_string());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app_event_rx.try_recv().is_err());
+    let rendered = widget
+        .transcript_overlay_lines(100)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Usage: /rename <new title>"),
+        "expected rename usage hint:\n{rendered}"
+    );
+}
+
+#[test]
+fn delete_slash_command_requires_confirmation_before_emitting() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_paste("/delete".to_string());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        app_event_rx.try_recv().is_err(),
+        "delete should wait for confirmation"
+    );
+    let rows = rendered_rows(&widget, 80, 16).join("\n");
+    assert!(
+        rows.contains("Delete session?"),
+        "expected delete confirmation:\n{rows}"
+    );
+    assert!(
+        rows.contains("[Cancel]") && rows.contains("Delete"),
+        "expected horizontal Cancel/Delete chips:\n{rows}"
+    );
+
+    // Select Delete with ←/→ then confirm.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app_event_rx.try_recv().expect("confirmed delete command"),
+        AppEvent::Command(AppCommand::DeleteSession { session_id: None })
+    );
+}
+
+#[test]
+fn delete_slash_command_esc_cancels_without_deleting() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_paste("/delete".to_string());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        rendered_rows(&widget, 80, 16)
+            .join("\n")
+            .contains("Delete session?"),
+        "expected delete confirmation open"
+    );
+
+    // Esc must dismiss even if Delete chip is selected.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    let rows = rendered_rows(&widget, 80, 16).join("\n");
+    assert!(
+        !rows.contains("Delete session?"),
+        "esc should dismiss delete confirmation:\n{rows}"
+    );
+    let mut saw_delete = false;
+    while let Ok(event) = app_event_rx.try_recv() {
+        if matches!(event, AppEvent::Command(AppCommand::DeleteSession { .. })) {
+            saw_delete = true;
+        }
+    }
+    assert!(!saw_delete, "esc must not emit delete");
+}
+
+#[test]
+fn resume_browser_delete_requires_confirmation() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    let target = SessionId::new();
+    let other = SessionId::new();
+    widget.open_resume_browser_for_test(vec![
+        crate::events::SessionListEntry {
+            session_id: target,
+            title: "Keep me".to_string(),
+            updated_at: "2026-05-18 10:00".to_string(),
+            is_active: false,
+        },
+        crate::events::SessionListEntry {
+            session_id: other,
+            title: "Other".to_string(),
+            updated_at: "2026-05-18 11:00".to_string(),
+            is_active: true,
+        },
+    ]);
+    // Active session is selected by default; move to the non-active row.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(widget.resume_browser_selection_for_test(), Some(0));
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert_eq!(
+        widget.resume_browser_pending_delete_for_test(),
+        Some(target)
+    );
+    assert!(app_event_rx.try_recv().is_err());
+
+    let rows = rendered_rows(&widget, 100, 16).join("\n");
+    assert!(
+        rows.contains("Delete \"Keep me\"?"),
+        "expected pending delete footer:\n{rows}"
+    );
+    assert!(
+        rows.contains("[Cancel]") && rows.contains("Delete"),
+        "expected horizontal Cancel/Delete chips:\n{rows}"
+    );
+    assert!(
+        rows.lines()
+            .any(|line| line.contains("[Cancel]") && line.starts_with("  [")),
+        "expected left-padded chip row:\n{rows}"
+    );
+    assert!(
+        rows.lines()
+            .any(|line| line.contains("Resume Session") && line.starts_with("  Resume")),
+        "expected left-padded Resume Session title:\n{rows}"
+    );
+    assert!(
+        !rows.contains("Devo Sessions"),
+        "block title Devo Sessions should be removed:\n{rows}"
+    );
+    assert!(rows.contains("choose"), "expected choose hint:\n{rows}");
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(widget.resume_browser_pending_delete_for_test(), None);
+    assert!(widget.is_resume_browser_open());
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    // Default Cancel: Enter dismisses confirm without deleting.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(widget.resume_browser_pending_delete_for_test(), None);
+    assert!(app_event_rx.try_recv().is_err());
+
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app_event_rx.try_recv().expect("delete command"),
+        AppEvent::Command(AppCommand::DeleteSession {
+            session_id: Some(target)
+        })
+    );
+    assert!(widget.is_resume_browser_open());
 }
 
 #[test]
@@ -2278,7 +2721,7 @@ fn submit_text_emits_user_turn_with_model_and_reasoning_effort() {
             model_binding_id: None,
             reasoning_effort_selection: Some("disabled".to_string()),
             sandbox: None,
-            approval_policy: Some("on-request".to_string()),
+            approval_policy: None,
             collaboration_mode: devo_protocol::CollaborationMode::Build,
         })
     );
@@ -2314,7 +2757,7 @@ fn typed_character_submits_after_paste_burst_flush() {
             model_binding_id: None,
             reasoning_effort_selection: None,
             sandbox: None,
-            approval_policy: Some("on-request".to_string()),
+            approval_policy: None,
             collaboration_mode: devo_protocol::CollaborationMode::Build,
         })
     );
@@ -2425,7 +2868,7 @@ fn key_release_does_not_duplicate_text_input() {
             model_binding_id: None,
             reasoning_effort_selection: None,
             sandbox: None,
-            approval_policy: Some("on-request".to_string()),
+            approval_policy: None,
             collaboration_mode: devo_protocol::CollaborationMode::Build,
         })
     );
@@ -2514,7 +2957,7 @@ fn proposed_plan_keeps_assistant_preamble_before_plan() {
         .expect("assistant preamble is rendered");
     let plan_index = lines
         .iter()
-        .position(|line| line.contains("Proposed Plan"))
+        .position(|line| line.contains("Build the feature"))
         .expect("proposed plan is rendered");
     assert!(
         preamble_index < plan_index,
@@ -2561,7 +3004,7 @@ fn proposed_plan_completion_does_not_duplicate_boundary_preamble() {
 }
 
 #[test]
-fn proposed_plan_cell_header_has_actions_without_bullet() {
+fn proposed_plan_cell_renders_markdown_body_only() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let cell = crate::history_cell::new_proposed_plan(
         "## Summary\n\nBuild the feature.".to_string(),
@@ -2570,10 +3013,271 @@ fn proposed_plan_cell_header_has_actions_without_bullet() {
     let lines = line_texts(cell.display_lines(100));
     let rendered = lines.join("\n");
 
-    assert!(lines.first().is_some_and(|line| line == "Proposed Plan"));
-    assert!(!rendered.contains("• Proposed Plan"));
-    assert!(rendered.contains("Implement Plan"));
-    assert!(rendered.contains("修改建议"));
+    assert!(rendered.contains("Summary"));
+    assert!(rendered.contains("Build the feature."));
+    assert!(!rendered.contains("Proposed Plan"));
+    assert!(!rendered.contains("Implement Plan"));
+    assert!(!rendered.contains("Revise Plan"));
+}
+
+#[test]
+fn session_switch_restores_plan_mode_and_proposed_plan_actions() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-plan".to_string(),
+        cwd,
+        title: Some("Plan session".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: Vec::new(),
+        rich_history_items: vec![devo_protocol::SessionHistoryItem {
+            tool_call_id: None,
+            kind: devo_protocol::SessionHistoryItemKind::Assistant,
+            title: String::new(),
+            body: "## Approach\n\n1. Inspect\n2. Patch\n".to_string(),
+            tool_io: None,
+            metadata: Some(devo_protocol::SessionHistoryMetadata::ProposedPlan),
+            duration_ms: None,
+        }],
+        loaded_item_count: 1,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Plan,
+        permission_preset: None,
+        effective_context_window: None,
+    });
+
+    assert_eq!(
+        widget.input_mode_for_test(),
+        crate::bottom_pane::InputMode::Plan
+    );
+    assert!(widget.has_bottom_pane_view_for_test());
+    assert_eq!(widget.status_message_for_test(), "Choose plan action");
+
+    let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        rendered.contains("Inspect") && rendered.contains("Patch"),
+        "expected Proposed Plan body after resume:\n{rendered}"
+    );
+}
+
+#[test]
+fn session_switch_restores_plan_turn_summary_label() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-plan-summary".to_string(),
+        cwd,
+        title: Some("Plan session".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: Vec::new(),
+        rich_history_items: vec![
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::Assistant,
+                title: String::new(),
+                body: "## Approach\n\n1. Inspect\n2. Patch\n".to_string(),
+                tool_io: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::ProposedPlan),
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::TurnSummary,
+                title: "Test Model".to_string(),
+                body: String::new(),
+                tool_io: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
+                    collaboration_mode: CollaborationMode::Plan,
+                }),
+                duration_ms: Some(5),
+            },
+        ],
+        loaded_item_count: 2,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Plan,
+        permission_preset: None,
+        effective_context_window: None,
+    });
+
+    assert_eq!(
+        widget.input_mode_for_test(),
+        crate::bottom_pane::InputMode::Plan
+    );
+    let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        rendered.contains("▣ PLAN · Test Model"),
+        "expected Plan mode in restored turn summary:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("▣ BUILD · Test Model"),
+        "did not expect Build mode in restored plan turn summary:\n{rendered}"
+    );
+}
+
+#[test]
+fn session_switch_restores_context_compaction_info_row() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-compaction-row".to_string(),
+        cwd,
+        title: Some("Compacted session".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 50_000,
+        last_query_input_tokens: 45_000,
+        prompt_token_estimate: 50_000,
+        history_items: Vec::new(),
+        rich_history_items: vec![
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::User,
+                title: String::new(),
+                body: "before compact".to_string(),
+                tool_io: None,
+                metadata: None,
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::ContextCompaction,
+                title: "Context compacted".to_string(),
+                body: String::new(),
+                tool_io: None,
+                metadata: None,
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::Assistant,
+                title: String::new(),
+                body: "after compact".to_string(),
+                tool_io: None,
+                metadata: None,
+                duration_ms: None,
+            },
+        ],
+        loaded_item_count: 3,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
+    });
+
+    let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        rendered.contains("Context compacted"),
+        "expected restored Context compacted row:\n{rendered}"
+    );
+}
+
+#[test]
+fn session_switch_after_implement_stays_in_build_without_plan_actions() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-build".to_string(),
+        cwd,
+        title: Some("Build session".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: Vec::new(),
+        rich_history_items: vec![
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::Assistant,
+                title: String::new(),
+                body: "## Approach\n\n1. Inspect\n2. Patch\n".to_string(),
+                tool_io: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::ProposedPlan),
+                duration_ms: None,
+            },
+            devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::User,
+                title: String::new(),
+                body: "Implement Plan".to_string(),
+                tool_io: None,
+                metadata: None,
+                duration_ms: None,
+            },
+        ],
+        loaded_item_count: 2,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
+    });
+
+    assert_eq!(
+        widget.input_mode_for_test(),
+        crate::bottom_pane::InputMode::Build
+    );
+    assert!(!widget.has_bottom_pane_view_for_test());
+    assert_eq!(widget.status_message_for_test(), "Session switched");
 }
 
 #[test]
@@ -2593,11 +3297,6 @@ fn proposed_plan_implement_action_sends_build_turn() {
         item_id: plan_id,
         final_text: "## Summary\n\nBuild the feature.".to_string(),
     });
-    widget.handle_app_event(AppEvent::PreparePlanSuggestionInput);
-    assert_eq!(
-        widget.input_mode_for_test(),
-        crate::bottom_pane::InputMode::Plan
-    );
     widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     let event = app_event_rx.try_recv().expect("implement event is emitted");
@@ -2626,14 +3325,14 @@ fn proposed_plan_implement_action_sends_build_turn() {
 }
 
 #[test]
-fn proposed_plan_revise_action_switches_composer_to_plan_mode() {
+fn proposed_plan_revise_action_submits_plan_turn_with_feedback() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
         ..Model::default()
     };
-    let (mut widget, mut app_event_rx) = widget_with_model(model, cwd);
+    let (mut widget, mut app_event_rx) = widget_with_model(model, cwd.clone());
     let plan_id = ItemId::new();
 
     widget
@@ -2643,14 +3342,33 @@ fn proposed_plan_revise_action_switches_composer_to_plan_mode() {
         final_text: "## Summary\n\nBuild the feature.".to_string(),
     });
     widget.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    for ch in "Skip migrations".chars() {
+        widget.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
     widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     let event = app_event_rx.try_recv().expect("revise event is emitted");
-    assert_eq!(event, AppEvent::PreparePlanSuggestionInput);
-    widget.handle_app_event(event);
+    widget.handle_app_event(event.clone());
     assert_eq!(
         widget.input_mode_for_test(),
         crate::bottom_pane::InputMode::Plan
+    );
+    let AppEvent::Command(AppCommand::UserTurn {
+        input,
+        cwd: event_cwd,
+        collaboration_mode,
+        ..
+    }) = event
+    else {
+        panic!("expected plan user turn");
+    };
+    assert_eq!(event_cwd, Some(cwd));
+    assert_eq!(collaboration_mode, devo_protocol::CollaborationMode::Plan);
+    assert_eq!(
+        input,
+        vec![InputItem::Text {
+            text: "Skip migrations".to_string(),
+        }]
     );
     assert!(app_event_rx.try_recv().is_err());
 }
@@ -2706,6 +3424,9 @@ fn session_switch_restores_plan_metadata_into_progress() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     assert_eq!(widget.last_plan_progress_for_test(), Some((1, 2)));
@@ -2756,6 +3477,9 @@ fn session_switch_restores_explored_metadata_into_history() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -2819,6 +3543,9 @@ fn session_switch_restores_edited_metadata_into_history() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -2890,6 +3617,9 @@ fn session_switch_merges_consecutive_explored_items() {
         ],
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -2947,6 +3677,9 @@ fn session_switch_restores_error_via_tool_result_cell_style() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -3028,6 +3761,9 @@ fn rich_session_restore_orders_terminal_error_before_single_failed_footer() {
         ],
         loaded_item_count: 4,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -3105,6 +3841,9 @@ fn live_and_resume_error_share_same_rendering_chain() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
     let resume_blob = scrollback_plain_lines(&resume_widget.drain_scrollback_lines(80))
         .into_iter()
@@ -3209,10 +3948,9 @@ fn onboarding_validation_succeeded_waits_for_provider_upsert() {
     );
     assert_eq!(app_event_rx.try_recv().is_err(), true);
     assert_eq!(widget.is_onboarding_active(), false);
-    assert_eq!(widget.placeholder_text(), "Ask Devo");
     assert_eq!(
-        widget.current_model().map(|model| model.slug.as_str()),
-        Some("deepseek-v4-flash")
+        widget.placeholder_text(),
+        format!("Tip: {}", crate::status_indicator_widget::WORKING_TIPS[0])
     );
     assert_eq!(
         widget.status_summary_text().contains("DeepSeek-V4-Flash"),
@@ -3319,6 +4057,7 @@ fn onboarding_validation_bypassed_exits_when_configured() {
 
     widget.handle_worker_event(crate::events::WorkerEvent::ProviderValidationFailed {
         message: "validation failed".to_string(),
+        hint: None,
     });
     widget.handle_key_event(press_key(KeyCode::Enter));
     match app_event_rx.try_recv().expect("skip validation command") {
@@ -3776,6 +4515,9 @@ fn session_switch_restores_header_and_spacing_before_user_input() {
         rich_history_items: Vec::new(),
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let committed_lines = widget.drain_scrollback_lines(80);
@@ -3801,12 +4543,11 @@ fn session_switch_restores_header_and_spacing_before_user_input() {
     assert!(committed_text.contains("world"));
     assert!(!committed_text.contains("session 1 lingering line"));
     assert!(
-        committed_rows
-            .windows(5)
-            .any(|window| window[0].contains("▌ hello")
-                && window[1].trim().is_empty()
-                && window[2].trim().is_empty()
-                && window[3].contains("world")),
+        committed_rows.windows(3).any(|window| {
+            window[0].contains("❯ hello")
+                && window[1].chars().all(|ch| ch == '─')
+                && window[2].contains("world")
+        }),
         "expected restored spaced user prompt before assistant response: {committed_lines:?}"
     );
 }
@@ -3865,12 +4606,15 @@ fn restored_user_spacing_matches_live_turn_batch_spacing() {
         ],
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
     let restored_rows = scrollback_plain_lines(&restored_widget.drain_scrollback_lines(80));
 
     let live_user = live_rows
         .iter()
-        .position(|row| row.contains("▌ hello"))
+        .position(|row| row.contains("❯ hello"))
         .expect("live user row");
     let live_assistant = live_rows
         .iter()
@@ -3878,7 +4622,7 @@ fn restored_user_spacing_matches_live_turn_batch_spacing() {
         .expect("live assistant row");
     let restored_user = restored_rows
         .iter()
-        .position(|row| row.contains("▌ hello"))
+        .position(|row| row.contains("❯ hello"))
         .expect("restored user row");
     let restored_assistant = restored_rows
         .iter()
@@ -3938,16 +4682,18 @@ fn rich_session_switch_restores_user_spacing_before_assistant_response() {
         ],
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let committed_rows = scrollback_plain_lines(&widget.drain_scrollback_lines(80));
     assert!(
-        committed_rows
-            .windows(5)
-            .any(|window| window[0].contains("▌ hello")
-                && window[1].trim().is_empty()
-                && window[2].trim().is_empty()
-                && window[3].contains("world")),
+        committed_rows.windows(3).any(|window| {
+            window[0].contains("❯ hello")
+                && window[1].chars().all(|ch| ch == '─')
+                && window[2].contains("world")
+        }),
         "expected restored rich user prompt to keep live spacing before assistant response: {committed_rows:?}"
     );
 }
@@ -5008,6 +5754,7 @@ fn paired_failed_turn_events_finalize_ui_once_in_order() {
 
     widget.handle_worker_event(crate::events::WorkerEvent::TurnFailed {
         message: provider_error.to_string(),
+        hint: None,
         turn_count: 0,
         total_input_tokens: 10,
         total_output_tokens: 2,
@@ -5039,19 +5786,19 @@ fn paired_failed_turn_events_finalize_ui_once_in_order() {
     );
     let authoritative_summary = widget.status_summary_text();
     assert!(
-        authoritative_summary.contains("↑20"),
-        "summary should use TurnFinished input total: {authoritative_summary}"
+        !authoritative_summary.contains("↑"),
+        "status summary should omit session input totals: {authoritative_summary}"
     );
     assert!(
-        authoritative_summary.contains("cached 2 10%"),
-        "summary should use TurnFinished cache total: {authoritative_summary}"
+        !authoritative_summary.contains("cached"),
+        "status summary should omit cache totals: {authoritative_summary}"
     );
     assert!(
-        authoritative_summary.contains("↓4"),
-        "summary should use TurnFinished output total: {authoritative_summary}"
+        !authoritative_summary.contains("↓"),
+        "status summary should omit session output totals: {authoritative_summary}"
     );
     assert!(
-        authoritative_summary.contains("14/200k"),
+        authoritative_summary.contains("14/190.0k"),
         "summary should use TurnFinished latest-query total: {authoritative_summary}"
     );
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -5070,6 +5817,35 @@ fn paired_failed_turn_events_finalize_ui_once_in_order() {
     );
     assert_eq!(history.matches(" · failed").count(), 1);
     assert!(!history.contains("interrupted"), "history:\n{history}");
+}
+
+#[test]
+fn turn_failed_renders_recovery_hint() {
+    let mut widget = widget_with_live_explored_cell();
+    let provider_error = "model provider error: provider timeout: stream idle timeout";
+    let recovery_hint = devo_provider::NETWORK_PROXY_HINT;
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnFailed {
+        message: provider_error.to_string(),
+        hint: Some(recovery_hint.to_string()),
+        turn_count: 0,
+        total_input_tokens: 10,
+        total_output_tokens: 2,
+        total_tokens: 12,
+        total_cache_read_tokens: 1,
+        prompt_token_estimate: 10,
+        last_query_input_tokens: 10,
+    });
+
+    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        history.contains(provider_error),
+        "history should contain provider error:\n{history}"
+    );
+    assert!(
+        history.contains(recovery_hint),
+        "history should contain recovery hint:\n{history}"
+    );
 }
 
 #[test]
@@ -5328,6 +6104,9 @@ fn restored_reasoning_text_is_visible_in_transcript() {
         rich_history_items: Vec::new(),
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let scrollback = widget.drain_scrollback_lines(80);
@@ -5756,6 +6535,8 @@ fn slash_model_opens_model_picker_instead_of_printing_current_model() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -5775,7 +6556,10 @@ fn slash_model_opens_model_picker_instead_of_printing_current_model() {
         command: "model".to_string(),
     });
 
-    assert_eq!(widget.placeholder_text(), "Ask Devo");
+    assert_eq!(
+        widget.placeholder_text(),
+        format!("Tip: {}", crate::status_indicator_widget::WORKING_TIPS[0])
+    );
     assert_eq!(
         widget.current_model().map(|m| m.slug.as_str()),
         Some("test-model")
@@ -5819,6 +6603,9 @@ fn session_switch_updates_session_identity_projection() {
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     assert_eq!(widget.current_cwd(), resumed_cwd.as_path());
@@ -5862,13 +6649,16 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let idle_summary = widget.status_summary_text();
-    assert!(idle_summary.contains("↑12"));
-    assert!(idle_summary.contains("cached 4 33%"));
-    assert!(idle_summary.contains("↓18"));
-    assert!(idle_summary.contains("42/200k"));
+    assert!(!idle_summary.contains("↑"));
+    assert!(!idle_summary.contains("cached"));
+    assert!(!idle_summary.contains("↓"));
+    assert!(idle_summary.contains("42/190.0k"));
 
     widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
         model: "test-model".to_string(),
@@ -5888,9 +6678,9 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
     });
 
     let busy_summary = widget.status_summary_text();
-    assert!(busy_summary.contains("↑7"));
-    assert!(busy_summary.contains("cached 6 86%"));
-    assert!(busy_summary.contains("9/200k"));
+    assert!(!busy_summary.contains("↑"));
+    assert!(!busy_summary.contains("cached"));
+    assert!(busy_summary.contains("9/190.0k"));
 
     widget.handle_worker_event(crate::events::WorkerEvent::TurnFinished {
         stop_reason: "stop".to_string(),
@@ -5905,9 +6695,9 @@ fn status_summary_uses_last_turn_total_when_idle_and_live_estimate_while_busy() 
     });
 
     let finished_summary = widget.status_summary_text();
-    assert!(finished_summary.contains("↑19"));
-    assert!(finished_summary.contains("cached 6 32%"));
-    assert!(finished_summary.contains("9/200k"));
+    assert!(!finished_summary.contains("↑"));
+    assert!(!finished_summary.contains("cached"));
+    assert!(finished_summary.contains("9/190.0k"));
 }
 
 #[test]
@@ -5940,6 +6730,9 @@ fn session_compacted_updates_context_bar_to_compacted_prompt_estimate() {
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     widget.handle_worker_event(crate::events::WorkerEvent::SessionCompacted {
@@ -5952,9 +6745,9 @@ fn session_compacted_updates_context_bar_to_compacted_prompt_estimate() {
     });
 
     let summary = widget.status_summary_text();
-    assert!(summary.contains("↑10k"));
-    assert!(summary.contains("1k/200k"));
-    assert!(!summary.contains("9k/200k"));
+    assert!(!summary.contains("↑"));
+    assert!(summary.contains("1.2k/190.0k"));
+    assert!(!summary.contains("9.0k/190.0k"));
 }
 
 #[test]
@@ -5988,12 +6781,15 @@ fn usage_updated_keeps_context_bar_on_last_query_not_cumulative_totals() {
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let idle_summary = widget.status_summary_text();
-    assert!(idle_summary.contains("↑500"));
-    assert!(idle_summary.contains("42/200k"));
-    assert!(!idle_summary.contains("500/200k"));
+    assert!(!idle_summary.contains("↑"));
+    assert!(idle_summary.contains("42/190.0k"));
+    assert!(!idle_summary.contains("500/190.0k"));
 
     widget.handle_worker_event(crate::events::WorkerEvent::UsageUpdated {
         total_input_tokens: 550,
@@ -6005,9 +6801,9 @@ fn usage_updated_keeps_context_bar_on_last_query_not_cumulative_totals() {
     });
 
     let busy_summary = widget.status_summary_text();
-    assert!(busy_summary.contains("↑550"));
-    assert!(busy_summary.contains("48/200k"));
-    assert!(!busy_summary.contains("550/200k"));
+    assert!(!busy_summary.contains("↑"));
+    assert!(busy_summary.contains("48/190.0k"));
+    assert!(!busy_summary.contains("550/190.0k"));
 }
 
 #[test]
@@ -6301,6 +7097,42 @@ fn interrupt_request_switches_working_status_to_stopping_immediately() {
     assert!(history.contains("interrupted"), "history:\n{history}");
 }
 
+/// Trace: L2-DES-AGENT-002
+/// Verifies: Esc interrupt is accepted while a compaction turn is active.
+#[test]
+fn interrupt_during_session_compaction_is_accepted() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    let turn_id = TurnId::new();
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id,
+    });
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionCompactionStarted);
+    widget.handle_key_event(press_key(KeyCode::Esc));
+    assert!(app_event_rx.try_recv().is_err());
+    widget.handle_key_event(press_key(KeyCode::Esc));
+    assert_eq!(app_event_rx.try_recv(), Ok(AppEvent::Interrupt));
+    assert!(widget.request_interrupt());
+    let rows = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(rows.contains("Stopping…"), "rows:\n{rows}");
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionCompactionFailed {
+        message: "compaction canceled".to_string(),
+    });
+    let rows = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(!rows.contains("Stopping…"), "rows:\n{rows}");
+    assert!(!rows.contains("Compacting session"), "rows:\n{rows}");
+}
+
 #[test]
 fn interrupt_failure_restores_working_status() {
     let model = Model {
@@ -6344,7 +7176,7 @@ fn session_compaction_live_rows_use_live_prefix_cols() {
     assert!(
         started_history
             .iter()
-            .any(|line| line.starts_with(&format!("{live_prefix}Compaction started"))),
+            .any(|line| line.starts_with("▌ Compaction started")),
         "context compaction start should be visible in history:\n{}",
         started_history.join("\n")
     );
@@ -6370,7 +7202,7 @@ fn session_compaction_live_rows_use_live_prefix_cols() {
     assert!(
         history
             .iter()
-            .any(|line| { line.starts_with(&format!("{live_prefix}Context compacted")) }),
+            .any(|line| line.starts_with("▌ Context compacted")),
         "compaction completion history should align with live prefix:\n{}",
         history.join("\n")
     );
@@ -6401,6 +7233,51 @@ fn session_compaction_live_rows_use_live_prefix_cols() {
 }
 
 #[test]
+fn context_compaction_completed_clears_compacting_status_indicator() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    // Mid-turn auto-compaction: start → item completed (no SessionCompacted).
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: TurnId::new(),
+    });
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionCompactionStarted);
+    let rows = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(rows.contains("Compacting session"), "rows:\n{rows}");
+
+    widget.handle_worker_event(crate::events::WorkerEvent::ContextCompactionCompleted {
+        title: "Context compacted".to_string(),
+    });
+    let rows = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(!rows.contains("Compacting session"), "rows:\n{rows}");
+    assert!(rows.contains("Working"), "rows:\n{rows}");
+
+    // Standalone compaction (no active turn): item completed should hide indicator.
+    let (mut widget, _app_event_rx) = widget_with_model(
+        Model {
+            slug: "test-model".to_string(),
+            display_name: "Test Model".to_string(),
+            ..Model::default()
+        },
+        PathBuf::from("."),
+    );
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionCompactionStarted);
+    widget.handle_worker_event(crate::events::WorkerEvent::ContextCompactionCompleted {
+        title: "Context compacted".to_string(),
+    });
+    let rows = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(!rows.contains("Compacting session"), "rows:\n{rows}");
+}
+
+#[test]
 fn context_compaction_item_lifecycle_emits_worker_events() {
     let session_id = SessionId::new();
     let turn_id = TurnId::new();
@@ -6410,6 +7287,7 @@ fn context_compaction_item_lifecycle_emits_worker_events() {
         turn_id: Some(turn_id),
         item_id: Some(item_id),
         seq: 1,
+        item_seq: None,
     };
     let item = devo_server::ItemEnvelope {
         item_id,
@@ -6453,6 +7331,7 @@ fn failed_context_compaction_item_emits_failure_event() {
                 turn_id: Some(TurnId::new()),
                 item_id: None,
                 seq: 1,
+                item_seq: None,
             },
             item: devo_server::ItemEnvelope {
                 item_id: ItemId::new(),
@@ -7094,6 +7973,9 @@ fn session_switch_sets_active_agent_footer_label() {
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let rows = rendered_rows(&widget, 160, 16);
@@ -7136,6 +8018,9 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
         rich_history_items: Vec::new(),
         loaded_item_count: 0,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
     widget.add_to_history(crate::history_cell::new_info_event(
         "old session line".to_string(),
@@ -7153,6 +8038,8 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
         last_query_total_tokens: 25,
         last_query_input_tokens: 20,
         total_cache_read_tokens: 12,
+        permission_preset: devo_protocol::PermissionPreset::Default,
+        collaboration_mode: devo_protocol::CollaborationMode::Build,
     });
 
     assert_eq!(widget.current_cwd(), initial_cwd.as_path());
@@ -7162,10 +8049,10 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
     );
 
     let summary = widget.status_summary_text();
-    assert!(summary.contains("↑0"));
-    assert!(summary.contains("cached 0 0%"));
-    assert!(summary.contains("↓0"));
-    assert!(summary.contains("0/200k"));
+    assert!(!summary.contains("↑"));
+    assert!(!summary.contains("cached"));
+    assert!(!summary.contains("↓"));
+    assert!(summary.contains("0/190.0k"));
 
     let transcript_lines = scrollback_plain_lines(
         &widget
@@ -7181,6 +8068,215 @@ fn new_session_prepared_appends_header_after_existing_history_and_resets_status(
     let header_index =
         find_row_index(&transcript_lines, "Workspace").expect("new session header is appended");
     assert!(header_index > old_line_index);
+}
+
+#[test]
+fn new_session_prepared_clears_pending_queue() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
+
+    let queue_item_id = devo_protocol::canonical::ids::QueueItemId::from_string("qit_stale".into());
+    widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange::Added,
+        queue_item_id: queue_item_id.clone(),
+        started_turn_id: None,
+        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+            queue_item_id,
+            position: 1,
+            input: vec![devo_protocol::canonical::item::UserInput::Text {
+                text: "stale queued".to_string(),
+            }],
+            preview: "stale queued".to_string(),
+            enqueued_at: chrono::Utc::now(),
+        }],
+    });
+    assert!(widget.bottom_pane_has_pending_for_test());
+
+    widget.handle_worker_event(crate::events::WorkerEvent::NewSessionPrepared {
+        cwd,
+        model: "new-session-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        total_cache_read_tokens: 0,
+        permission_preset: devo_protocol::PermissionPreset::Default,
+        collaboration_mode: devo_protocol::CollaborationMode::Build,
+    });
+
+    assert!(
+        !widget.bottom_pane_has_pending_for_test(),
+        "new session should clear the previous session queue UI"
+    );
+}
+
+#[test]
+fn new_session_prepared_restores_default_compaction_limit() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        context_window: 200_000,
+        effective_context_window_percent: Some(95),
+        ..Model::default()
+    };
+    let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = ChatWidget::new_with_app_event(ChatWidgetInit {
+        frame_requester: FrameRequester::test_dummy(),
+        app_event_tx: AppEventSender::new(app_event_tx),
+        initial_session: TuiSessionState::new(cwd.clone(), Some(model)),
+        initial_reasoning_effort_selection: None,
+        initial_permission_preset: devo_protocol::PermissionPreset::Default,
+        initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: Some(100_000),
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
+        initial_user_message: None,
+        enhanced_keys_supported: true,
+        is_first_run: false,
+        available_models: Vec::new(),
+        saved_models: Vec::new(),
+        show_model_onboarding: false,
+        exit_after_onboarding: false,
+        startup_tooltip_override: None,
+        initial_theme_name: None,
+        initial_collapse_reasoning: false,
+    });
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-1".to_string(),
+        cwd: cwd.clone(),
+        title: Some("Resumed".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: Vec::new(),
+        rich_history_items: Vec::new(),
+        loaded_item_count: 0,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: Some(50_000),
+    });
+    assert!(
+        widget.status_summary_text().contains("50.0k"),
+        "session override should use 50K compaction threshold: {}",
+        widget.status_summary_text()
+    );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::NewSessionPrepared {
+        cwd,
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        permission_preset: devo_protocol::PermissionPreset::Default,
+        collaboration_mode: devo_protocol::CollaborationMode::Build,
+        active_agent_label: None,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        total_cache_read_tokens: 0,
+    });
+    assert!(
+        widget.status_summary_text().contains("100.0k"),
+        "new session should restore the default 100K compaction threshold: {}",
+        widget.status_summary_text()
+    );
+}
+
+#[test]
+fn new_session_prepared_restores_default_permissions_and_mode() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = ChatWidget::new_with_app_event(ChatWidgetInit {
+        frame_requester: FrameRequester::test_dummy(),
+        app_event_tx: AppEventSender::new(app_event_tx),
+        initial_session: TuiSessionState::new(cwd.clone(), Some(model)),
+        initial_reasoning_effort_selection: None,
+        initial_permission_preset: PermissionPreset::Default,
+        initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: CollaborationMode::Plan,
+        initial_user_message: None,
+        enhanced_keys_supported: true,
+        is_first_run: false,
+        available_models: Vec::new(),
+        saved_models: Vec::new(),
+        show_model_onboarding: false,
+        exit_after_onboarding: false,
+        startup_tooltip_override: None,
+        initial_theme_name: None,
+        initial_collapse_reasoning: false,
+    });
+
+    widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+        session_id: "session-1".to_string(),
+        cwd: cwd.clone(),
+        title: Some("Resumed".to_string()),
+        model: Some("test-model".to_string()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        active_agent_label: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+        history_items: Vec::new(),
+        rich_history_items: Vec::new(),
+        loaded_item_count: 0,
+        pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: Some(PermissionPreset::FullAccess),
+        effective_context_window: None,
+    });
+    assert_eq!(widget.input_mode_for_test(), InputMode::Build);
+    assert_eq!(
+        widget.permission_preset_for_test(),
+        PermissionPreset::FullAccess
+    );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::NewSessionPrepared {
+        cwd,
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        permission_preset: PermissionPreset::Default,
+        collaboration_mode: CollaborationMode::Plan,
+        active_agent_label: None,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        total_cache_read_tokens: 0,
+    });
+    assert_eq!(widget.input_mode_for_test(), InputMode::Plan);
+    assert_eq!(
+        widget.permission_preset_for_test(),
+        PermissionPreset::Default
+    );
 }
 
 #[test]
@@ -7204,11 +8300,13 @@ fn new_session_prepared_does_not_duplicate_startup_header_without_history() {
         last_query_total_tokens: 10,
         last_query_input_tokens: 10,
         total_cache_read_tokens: 4,
+        permission_preset: devo_protocol::PermissionPreset::Default,
+        collaboration_mode: devo_protocol::CollaborationMode::Build,
     });
 
     let rows = rendered_rows(&widget, 80, 16);
     assert_eq!(rows.iter().filter(|row| row.contains("Devo")).count(), 1);
-    assert!(widget.status_summary_text().contains("cached 0 0%"));
+    assert!(!widget.status_summary_text().contains("cached"));
 }
 
 #[test]
@@ -7237,6 +8335,8 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -7255,7 +8355,6 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
     widget.handle_app_event(AppEvent::ModelSelected {
         model: "second-model".to_string(),
     });
-    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     widget.submit_text("hello".to_string());
 
     assert_eq!(widget.current_model(), Some(&alt_model));
@@ -7269,6 +8368,7 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
             reasoning_effort_selection: Some(Some("high".to_string())),
             sandbox: None,
             approval_policy: None,
+            persist_scope: crate::app_command::PersistScope::Session,
         })
     );
     assert_eq!(
@@ -7283,14 +8383,17 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
             model_binding_id: None,
             reasoning_effort_selection: Some("high".to_string()),
             sandbox: None,
-            approval_policy: Some("on-request".to_string()),
+            approval_policy: None,
             collaboration_mode: devo_protocol::CollaborationMode::Build,
         })
     );
 }
 
 #[test]
-fn model_selection_with_reasoning_effort_support_waits_for_second_step() {
+/// Trace: L2-DES-TUI-CMD-002
+/// Verifies: selecting a reasoning-capable model via AppEvent applies model and
+/// default effort in one step (no second picker).
+fn model_selection_with_reasoning_effort_support_applies_default_immediately() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
         slug: "test-model".to_string(),
@@ -7315,6 +8418,8 @@ fn model_selection_with_reasoning_effort_support_waits_for_second_step() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -7332,10 +8437,6 @@ fn model_selection_with_reasoning_effort_support_waits_for_second_step() {
     });
 
     assert_eq!(widget.current_model(), Some(&alt_model));
-    assert!(app_event_rx.try_recv().is_err());
-
-    widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
     assert_eq!(
         app_event_rx
             .try_recv()
@@ -7346,6 +8447,7 @@ fn model_selection_with_reasoning_effort_support_waits_for_second_step() {
             reasoning_effort_selection: Some(Some("high".to_string())),
             sandbox: None,
             approval_policy: None,
+            persist_scope: crate::app_command::PersistScope::Session,
         })
     );
 }
@@ -7372,6 +8474,8 @@ fn model_selection_without_reasoning_effort_support_finishes_immediately() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -7399,6 +8503,7 @@ fn model_selection_without_reasoning_effort_support_finishes_immediately() {
             reasoning_effort_selection: Some(None),
             sandbox: None,
             approval_policy: None,
+            persist_scope: crate::app_command::PersistScope::Session,
         })
     );
 }
@@ -7631,6 +8736,8 @@ fn collapsed_reasoning_live_view_keeps_only_latest_lines() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -7674,8 +8781,98 @@ fn collapsed_reasoning_live_view_keeps_only_latest_lines() {
         "collapsed live view should drop older reasoning lines:\n{live}"
     );
     assert!(
+        live.contains("Thinking:"),
+        "collapsed live view should keep sticky Thinking heading while body tails:\n{live}"
+    );
+    assert!(
         live.contains("ctrl + t to view transcript"),
         "collapsed live reasoning should hint Ctrl+T:\n{live}"
+    );
+}
+
+#[test]
+fn collapsed_reasoning_live_view_caps_wrapped_visual_rows() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = ChatWidget::new_with_app_event(ChatWidgetInit {
+        frame_requester: FrameRequester::test_dummy(),
+        app_event_tx: AppEventSender::new(app_event_tx),
+        initial_session: TuiSessionState::new(PathBuf::from("."), Some(model)),
+        initial_reasoning_effort_selection: None,
+        initial_permission_preset: PermissionPreset::Default,
+        initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
+        initial_user_message: None,
+        enhanced_keys_supported: true,
+        is_first_run: false,
+        available_models: Vec::new(),
+        saved_models: Vec::new(),
+        show_model_onboarding: false,
+        exit_after_onboarding: false,
+        startup_tooltip_override: None,
+        initial_theme_name: None,
+        initial_collapse_reasoning: true,
+    });
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: Default::default(),
+    });
+    // One logical line that wraps to many visual rows at a narrow width.
+    let long_line = "word ".repeat(80);
+    widget.handle_worker_event(crate::events::WorkerEvent::ReasoningDelta(long_line));
+
+    let width = 40u16;
+    let live_lines = widget.active_viewport_lines_for_test(width);
+    let content_rows: Vec<String> = live_lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .filter(|text| !text.contains("ctrl + t to view transcript"))
+        .collect();
+    let body_rows = content_rows
+        .iter()
+        .filter(|text| !text.contains("Thinking:"))
+        .count();
+    assert!(
+        content_rows.iter().any(|text| text.contains("Thinking:")),
+        "collapsed live view should keep sticky Thinking heading:\n{}",
+        content_rows.join("\n")
+    );
+    assert!(
+        body_rows <= 3,
+        "collapsed live view should cap wrapped body rows to 3, got {body_rows}:\n{}",
+        content_rows.join("\n")
+    );
+    let live = live_lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        live.contains("Thinking:"),
+        "sticky Thinking heading must remain while body wraps:\n{live}"
+    );
+    assert!(
+        live.contains("ctrl + t to view transcript"),
+        "collapsed live reasoning should still hint Ctrl+T:\n{live}"
     );
 }
 
@@ -7694,6 +8891,8 @@ fn collapsed_short_reasoning_stays_full_after_completion() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -7732,6 +8931,68 @@ fn collapsed_short_reasoning_stays_full_after_completion() {
 }
 
 #[test]
+fn collapsed_wrapping_reasoning_compacts_after_completion() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = ChatWidget::new_with_app_event(ChatWidgetInit {
+        frame_requester: FrameRequester::test_dummy(),
+        app_event_tx: AppEventSender::new(app_event_tx),
+        initial_session: TuiSessionState::new(PathBuf::from("."), Some(model)),
+        initial_reasoning_effort_selection: None,
+        initial_permission_preset: PermissionPreset::Default,
+        initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
+        initial_user_message: None,
+        enhanced_keys_supported: true,
+        is_first_run: false,
+        available_models: Vec::new(),
+        saved_models: Vec::new(),
+        show_model_onboarding: false,
+        exit_after_onboarding: false,
+        startup_tooltip_override: None,
+        initial_theme_name: None,
+        initial_collapse_reasoning: true,
+    });
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: Default::default(),
+    });
+    // Single logical paragraph that wraps past the collapsed visual budget.
+    let long_thought = format!("alpha {}", "word ".repeat(80).trim());
+    widget.handle_worker_event(crate::events::WorkerEvent::ReasoningDelta(
+        long_thought.clone(),
+    ));
+    widget.handle_worker_event(crate::events::WorkerEvent::ReasoningCompleted(
+        long_thought.clone(),
+    ));
+
+    let width = 40u16;
+    let scrollback = scrollback_plain_lines(&widget.drain_scrollback_lines(width)).join("\n");
+    assert!(
+        scrollback.contains("Thought ·"),
+        "wrapping collapsed reasoning should compact to Thought summary:\n{scrollback}"
+    );
+    assert!(
+        scrollback.contains('…') || scrollback.contains("ctrl + t to view transcript"),
+        "wrapping collapsed reasoning should truncate or hint transcript:\n{scrollback}"
+    );
+    // Full body must not appear as multi-row Thought: content.
+    assert!(
+        !scrollback.contains("Thought:"),
+        "wrapping collapsed reasoning should not keep the full Thought: body:\n{scrollback}"
+    );
+}
+
+#[test]
 fn collapsed_long_reasoning_compacts_to_one_line_after_completion() {
     let model = Model {
         slug: "test-model".to_string(),
@@ -7746,6 +9007,8 @@ fn collapsed_long_reasoning_compacts_to_one_line_after_completion() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -7854,12 +9117,8 @@ fn transcript_overlay_lines_include_full_completed_tool_output() {
         "inline output should include the transcript hint when truncated: {inline}"
     );
     assert!(
-        inline.contains("line 7") && inline.contains("line 8"),
-        "inline output should include the tail of the preview: {inline}"
-    );
-    assert!(
-        !inline.contains("line 3") && !inline.contains("line 6"),
-        "inline output should stay compact: {inline}"
+        !inline.contains("line 3") && !inline.contains("line 7") && !inline.contains("line 8"),
+        "inline output should keep only the head plus fold hint: {inline}"
     );
     assert!(
         transcript.contains("line 5") && transcript.contains("line 8"),
@@ -8221,6 +9480,9 @@ fn restored_session_transcript_overlay_preserves_paired_tool_io() {
         ],
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
@@ -8287,6 +9549,9 @@ fn legacy_restored_session_without_tool_io_keeps_existing_tool_result_rendering(
         ],
         loaded_item_count: 2,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
@@ -9488,6 +10753,38 @@ fn patch_applied_event_with_diff_only_reports_non_zero_counts() {
 }
 
 #[test]
+fn patch_applied_event_with_empty_update_is_not_rendered() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    let mut changes = std::collections::HashMap::new();
+    changes.insert(
+        PathBuf::from("foo.txt"),
+        devo_protocol::protocol::FileChange::Update {
+            unified_diff: String::new(),
+            old_text: None,
+            new_text: None,
+            move_path: None,
+        },
+    );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::PatchApplied {
+        tool_use_id: "tool-1".to_string(),
+        changes,
+    });
+
+    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    assert!(
+        !blob.contains("Edited"),
+        "empty patch summary should not be rendered:\n{blob}"
+    );
+}
+
+#[test]
 fn session_switch_without_rich_edited_metadata_degrades_to_tool_result_path() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
@@ -9521,6 +10818,9 @@ fn session_switch_without_rich_edited_metadata_degrades_to_tool_result_path() {
         rich_history_items: Vec::new(),
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
@@ -9576,6 +10876,9 @@ fn session_switch_restores_added_file_content_in_edited_block() {
         }],
         loaded_item_count: 1,
         pending_texts: Vec::new(),
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
@@ -9631,6 +10934,9 @@ fn session_switch_without_rich_edited_metadata_still_restores_edited_block() {
         }],
         loaded_item_count: 1,
         pending_texts: vec![],
+        collaboration_mode: CollaborationMode::Build,
+        permission_preset: None,
+        effective_context_window: None,
     });
 
     let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");

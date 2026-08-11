@@ -28,7 +28,6 @@ use crate::client_core::ServerClientCore;
 use crate::protocol_trace::ProtocolTrace;
 use crate::protocol_trace::TraceDirection;
 
-pub use crate::acp_terminal::ACP_TERMINAL_OUTPUT_NOTIFICATION_METHOD;
 pub use crate::client_core::ServerNotificationMessage;
 
 const SERVER_CHILD_STDIN_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
@@ -127,13 +126,6 @@ impl StdioServerClient {
         Ok(result)
     }
 
-    pub async fn acp_terminal_output_snapshot(
-        &self,
-        terminal_id: &str,
-    ) -> Result<AcpTerminalOutputResult> {
-        self.core.acp_terminal_output_snapshot(terminal_id).await
-    }
-
     pub async fn session_start(
         &mut self,
         params: SessionStartParams,
@@ -171,6 +163,13 @@ impl StdioServerClient {
         self.core.session_title_update(params).await
     }
 
+    pub async fn session_delete(
+        &mut self,
+        params: AcpDeleteSessionParams,
+    ) -> Result<AcpDeleteSessionResult> {
+        self.core.session_delete(params).await
+    }
+
     pub async fn session_metadata_update(
         &mut self,
         params: SessionMetadataUpdateParams,
@@ -185,6 +184,13 @@ impl StdioServerClient {
         self.core.session_permissions_update(params).await
     }
 
+    pub async fn session_compaction_update(
+        &mut self,
+        params: SessionCompactionUpdateParams,
+    ) -> Result<SessionCompactionUpdateResult> {
+        self.core.session_compaction_update(params).await
+    }
+
     pub async fn session_sandbox_profile_update(
         &mut self,
         params: SessionSandboxProfileUpdateParams,
@@ -195,8 +201,12 @@ impl StdioServerClient {
     pub async fn session_compact(
         &mut self,
         params: SessionCompactParams,
-    ) -> Result<SessionCompactResult> {
+    ) -> Result<TurnStartResult> {
         self.core.session_compact(params).await
+    }
+
+    pub async fn session_cancel(&mut self, params: AcpCancelParams) -> Result<AcpEmptyResult> {
+        self.core.session_cancel(params).await
     }
 
     pub async fn goal_create(&mut self, params: GoalCreateParams) -> Result<GoalCreateResult> {
@@ -260,6 +270,27 @@ impl StdioServerClient {
         params: SkillSetEnabledParams,
     ) -> Result<SkillSetEnabledResult> {
         self.core.skills_set_enabled(params).await
+    }
+
+    pub async fn mcp_list(
+        &mut self,
+        params: devo_protocol::canonical::rpc_admin::McpListParams,
+    ) -> Result<devo_protocol::canonical::rpc_admin::McpListResult> {
+        self.core.mcp_list(params).await
+    }
+
+    pub async fn mcp_tools(
+        &mut self,
+        params: devo_protocol::canonical::rpc_admin::McpToolsParams,
+    ) -> Result<devo_protocol::canonical::rpc_admin::McpToolsResult> {
+        self.core.mcp_tools(params).await
+    }
+
+    pub async fn mcp_set_enabled(
+        &mut self,
+        params: devo_protocol::canonical::rpc_admin::McpSetEnabledParams,
+    ) -> Result<devo_protocol::canonical::rpc_admin::McpSetEnabledResult> {
+        self.core.mcp_set_enabled(params).await
     }
 
     pub async fn model_catalog(
@@ -337,8 +368,46 @@ impl StdioServerClient {
         self.core.turn_interrupt(params).await
     }
 
-    pub async fn turn_steer(&mut self, params: TurnSteerParams) -> Result<TurnSteerResult> {
-        self.core.turn_steer(params).await
+    pub async fn session_queue_push(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueuePushParams,
+    ) -> Result<canonical::rpc_turn::SessionQueuePushResult> {
+        self.core.session_queue_push(params).await
+    }
+
+    pub async fn session_queue_list(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueListParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueListResult> {
+        self.core.session_queue_list(params).await
+    }
+
+    pub async fn session_queue_update(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueUpdateParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueUpdateResult> {
+        self.core.session_queue_update(params).await
+    }
+
+    pub async fn session_queue_remove(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueRemoveParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueRemoveResult> {
+        self.core.session_queue_remove(params).await
+    }
+
+    pub async fn session_queue_steer(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueSteerParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueSteerResult> {
+        self.core.session_queue_steer(params).await
+    }
+
+    pub async fn subscription_create(
+        &mut self,
+        params: canonical::event::SubscriptionCreateParams,
+    ) -> Result<canonical::event::SubscriptionCreateResult> {
+        self.core.subscription_create(params).await
     }
 
     pub async fn approval_respond(&mut self, params: ApprovalResponseParams) -> Result<()> {
@@ -504,7 +573,7 @@ mod tests {
                 write_text_file: true,
                 meta: None,
             },
-            terminal: true,
+            terminal: false,
             meta: None,
         }
     }
@@ -561,7 +630,7 @@ mod tests {
                 write_text_file: false,
                 meta: None,
             },
-            terminal: true,
+            terminal: false,
             meta: None,
         };
         let (mut client, pending) =
@@ -671,7 +740,11 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         };
         assert_eq!(session, expected);
 
@@ -762,7 +835,11 @@ mod tests {
                 prompt_token_estimate: 0,
                 last_query_usage: None,
                 last_query_total_tokens: 0,
+                last_context_occupancy: None,
                 status: SessionRuntimeStatus::Idle,
+                collaboration_mode: Default::default(),
+                effective_context_window: None,
+                permission_preset: None,
             }]
         );
 
@@ -811,7 +888,11 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         };
         let mut stdout_lines = BufReader::new(stdout).lines();
 

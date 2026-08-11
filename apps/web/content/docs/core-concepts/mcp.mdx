@@ -51,16 +51,20 @@ first use, or only by explicit request.
 
 ## Listing Servers
 
-Use `/mcp` in the TUI to list configured MCP servers.
+Use `/mcps` in the TUI for an interactive server list (detail → tools; Enable/Disable
+writes config and may need a session restart for live runtime), or manage user-level
+entries with the CLI:
 
-The transcript output shows each server's id, display name, enabled state,
-startup policy, transport kind, and target command or URL. If no servers are
-configured, Devo shows:
-
-```text
-No MCP servers configured.
+```bash
+devo mcp add time -- docker run -i --rm mcp/time
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+devo mcp list
+devo mcp remove time
 ```
 
+Clients can also call the `mcp/list` / `mcp/tools` RPCs for runtime status and tool
+catalogs. If no servers are configured, the picker shows an empty state.
 ## Mentions
 
 The `@` reference popup includes MCP servers. Selecting one inserts a stable

@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{ItemId, ResponseItem, SessionId, SummaryModelSelection, TurnId};
+use devo_protocol::approx_tokens_from_byte_count;
 use devo_protocol::{ContentBlock, Message, Model, Role};
 
 // ---------------------------------------------------------------------------
@@ -258,7 +259,9 @@ impl TokenEstimator for ByteTokenEstimator {
 }
 
 fn bytes_to_tokens(bytes: usize) -> u32 {
-    bytes.div_ceil(4).try_into().unwrap_or(u32::MAX)
+    approx_tokens_from_byte_count(bytes)
+        .try_into()
+        .unwrap_or(u32::MAX)
 }
 
 /// Stores the summary payload created during compaction.
@@ -472,6 +475,26 @@ mod tests {
 
         assert_eq!(budget.should_compact(950_000), false);
         assert_eq!(budget.should_compact(950_001), true);
+    }
+
+    #[test]
+    fn session_override_sets_effective_context_window_and_auto_compact() {
+        let model = Model {
+            context_window: 200_000,
+            effective_context_window_percent: Some(95),
+            max_tokens: Some(8_192),
+            ..Model::default()
+        };
+        let turn = crate::TurnConfig::new(model, None);
+        let budget = turn.token_budget_for_session(Some(100_000));
+        assert_eq!(budget.context_window, 100_000);
+        assert_eq!(budget.auto_compact_token_limit, Some(100_000));
+        assert!(!budget.should_compact(100_000));
+        assert!(budget.should_compact(100_001));
+
+        let clamped = turn.token_budget_for_session(Some(500_000));
+        assert_eq!(clamped.context_window, 200_000);
+        assert_eq!(clamped.auto_compact_token_limit, Some(200_000));
     }
 
     #[test]

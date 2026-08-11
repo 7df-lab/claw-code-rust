@@ -1,3 +1,5 @@
+use devo_protocol::approx_bytes_for_tokens;
+use devo_protocol::approx_tokens_from_byte_count;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -561,15 +563,13 @@ pub async fn collect_output(
 }
 
 fn approximate_token_count(byte_len: usize) -> usize {
-    if byte_len == 0 {
-        0
-    } else {
-        byte_len.div_ceil(4)
-    }
+    approx_tokens_from_byte_count(byte_len)
+        .try_into()
+        .unwrap_or(usize::MAX)
 }
 
 fn formatted_truncate_tokens(content: &str, max_output_tokens: usize) -> (String, bool) {
-    let max_bytes = max_output_tokens.saturating_mul(4);
+    let max_bytes = approx_bytes_for_tokens(max_output_tokens);
     if content.len() <= max_bytes {
         return (content.to_string(), false);
     }

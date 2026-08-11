@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+use devo_protocol::CollaborationMode;
 use devo_protocol::PermissionPreset;
 use devo_protocol::ProviderModelBinding;
 use devo_protocol::ProviderVendor;
@@ -42,6 +43,10 @@ use crate::resolve_provider_settings_from_config_and_auth;
 use crate::upsert_user_auth_api_key;
 use crate::write_atomic;
 use crate::write_provider_config;
+
+mod mcp_store;
+
+pub use mcp_store::mcp_server_record_for_cli;
 
 /// Stores the fully normalized runtime configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +93,15 @@ pub struct AppConfig {
     pub project_root_markers: Vec<String>,
     /// User-level settings remembered per project key.
     pub projects: BTreeMap<String, ProjectConfig>,
+    /// Global absolute auto-compaction token limit.
+    ///
+    /// When set, sessions clamp this value to each model's `context_window`.
+    /// When unset, sessions use the model effective context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_token_limit: Option<u64>,
+    /// Default collaboration/input mode (Build or Plan) for new sessions.
+    #[serde(default)]
+    pub default_collaboration_mode: CollaborationMode,
 }
 
 /// Settings remembered for one project.
@@ -180,6 +194,8 @@ impl Default for AppConfig {
             },
             project_root_markers: vec![".git".into()],
             projects: BTreeMap::new(),
+            compaction_token_limit: None,
+            default_collaboration_mode: CollaborationMode::Build,
         }
     }
 }
@@ -365,6 +381,65 @@ impl AppConfigStore {
         }
 
         write_provider_config(target_config_file, &config)?;
+
+        self.config = self
+            .loader
+            .load(self.workspace_root.as_deref())
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(())
+    }
+
+    /// Persists the global compaction token limit and refreshes effective config.
+    pub fn set_compaction_token_limit(&mut self, limit: u64) -> anyhow::Result<()> {
+        if limit == 0 {
+            anyhow::bail!("compaction_token_limit must be at least 1");
+        }
+
+        let target_config_file = self.user_config_file.as_path();
+        if let Some(parent) = target_config_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut document = read_provider_config_document(target_config_file)?;
+        let document = ensure_toml_table(&mut document);
+        let limit_i64 = i64::try_from(limit).map_err(|_| {
+            anyhow::anyhow!("compaction_token_limit is too large to store in config.toml")
+        })?;
+        document.insert(
+            "compaction_token_limit".to_string(),
+            toml::Value::Integer(limit_i64),
+        );
+
+        let data = toml::to_string_pretty(&document)?;
+        write_atomic(target_config_file, data.as_bytes())?;
+
+        self.config = self
+            .loader
+            .load(self.workspace_root.as_deref())
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(())
+    }
+
+    /// Persists the default collaboration mode and refreshes effective config.
+    pub fn set_default_collaboration_mode(
+        &mut self,
+        mode: CollaborationMode,
+    ) -> anyhow::Result<()> {
+        let target_config_file = self.user_config_file.as_path();
+        if let Some(parent) = target_config_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut document = read_provider_config_document(target_config_file)?;
+        let document = ensure_toml_table(&mut document);
+        document.insert(
+            "default_collaboration_mode".to_string(),
+            toml::Value::String(match mode {
+                CollaborationMode::Build => "build".to_string(),
+                CollaborationMode::Plan => "plan".to_string(),
+            }),
+        );
+
+        let data = toml::to_string_pretty(&document)?;
+        write_atomic(target_config_file, data.as_bytes())?;
 
         self.config = self
             .loader
@@ -564,7 +639,9 @@ fn provider_section_from_value(
         })
 }
 
-fn ensure_toml_table(value: &mut toml::Value) -> &mut toml::map::Map<String, toml::Value> {
+pub(crate) fn ensure_toml_table(
+    value: &mut toml::Value,
+) -> &mut toml::map::Map<String, toml::Value> {
     if !value.is_table() {
         *value = toml::Value::Table(Default::default());
     }
@@ -656,6 +733,7 @@ impl AppConfigLoader for FileSystemAppConfigLoader {
                     message: source.to_string(),
                 })?;
         config.provider = provider_config;
+        config.mcp.ensure_bundled_servers();
         validate_app_config(&config)?;
         Ok(config)
     }

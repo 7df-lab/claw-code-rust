@@ -16,7 +16,8 @@ client-to-server ACP methods are:
 - `session/prompt`: submit a prompt to an active session. The JSON-RPC response
   returns when the turn completes (`AcpPromptResult.stopReason`). Streaming
   progress is delivered through `session/update` notifications during the turn.
-- `session/cancel`: cancel the active session turn.
+- `session/cancel`: cancel the active session turn (including manual
+  `/compact`, which is admitted as a `ManualCompaction` turn).
 
 Event-driven clients that need an immediate turn acknowledgement should use the
 Devo extension `_devo/turn/start`, which returns `TurnStartResult::Started`
@@ -50,13 +51,6 @@ The current server-to-client ACP request methods are:
   runtime action.
 - `fs/read_text_file`: ask the client to read an absolute text-file path.
 - `fs/write_text_file`: ask the client to write text to an absolute file path.
-- `terminal/create`: ask the client to create a terminal-backed process.
-- `terminal/output`: ask the client for a terminal output snapshot.
-- `terminal/wait_for_exit`: ask the client to wait for a terminal process to
-  exit.
-- `terminal/kill`: ask the client to kill a terminal process.
-- `terminal/release`: ask the client to release a terminal process and clean up
-  associated state.
 
 Devo-specific client-to-server APIs are sent with the `_devo/` method prefix.
 The prefix is applied by the client transport, then removed by the server before
@@ -70,7 +64,8 @@ behavior that is not represented by the portable ACP method set.
 - `_devo/session/metadata/update`: update session metadata such as the active
   model or reasoning-effort selection.
 - `_devo/session/permissions/update`: update the current permission preset.
-- `_devo/session/compact`: proactively compact a session context.
+- `_devo/session/compact`: start a manual compaction turn (`TurnStartResult`);
+  keep emitting `session/compaction/*` for UI.
 - `_devo/session/fork`: fork a new session from an existing turn.
 - `_devo/session/rollback`: roll back a session to a selected user turn.
 

@@ -78,8 +78,8 @@ impl CommandPopup {
 
         if let Some(stripped) = first_line.strip_prefix('/') {
             // Extract the *first* token (sequence of non-whitespace
-            // characters) after the slash so that `/clear something` still
-            // shows the help for `/clear`.
+            // characters) after the slash so that `/status something` still
+            // shows the help for `/status`.
             let token = stripped.trim_start();
             let cmd_token = token.split_whitespace().next().unwrap_or("");
 
@@ -131,29 +131,31 @@ impl CommandPopup {
         let mut prefix: Vec<(CommandItem, Option<Vec<usize>>)> = Vec::new();
         let indices_for = |offset| Some((offset..offset + filter_chars).collect());
 
-        let mut push_match =
-            |item: CommandItem, display: &str, name: Option<&str>, name_offset: usize| {
-                let display_lower = display.to_lowercase();
-                let name_lower = name.map(str::to_lowercase);
-                let display_exact = display_lower == filter_lower;
-                let name_exact = name_lower.as_deref() == Some(filter_lower.as_str());
-                if display_exact || name_exact {
-                    let offset = if display_exact { 0 } else { name_offset };
-                    exact.push((item, indices_for(offset)));
-                    return;
-                }
-                let display_prefix = display_lower.starts_with(&filter_lower);
-                let name_prefix = name_lower
-                    .as_ref()
-                    .is_some_and(|name| name.starts_with(&filter_lower));
-                if display_prefix || name_prefix {
-                    let offset = if display_prefix { 0 } else { name_offset };
-                    prefix.push((item, indices_for(offset)));
-                }
-            };
+        let mut push_match = |item: CommandItem, display: &str, aliases: &[&str]| {
+            let display_lower = display.to_lowercase();
+            let display_exact = display_lower == filter_lower;
+            let alias_exact = aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(filter));
+            if display_exact || alias_exact {
+                // Alias-only hits keep the canonical display name without a
+                // misleading highlight span (filter text is not a substring).
+                let indices = if display_exact { indices_for(0) } else { None };
+                exact.push((item, indices));
+                return;
+            }
+            let display_prefix = display_lower.starts_with(&filter_lower);
+            let alias_prefix = aliases
+                .iter()
+                .any(|alias| alias.to_lowercase().starts_with(&filter_lower));
+            if display_prefix || alias_prefix {
+                let indices = if display_prefix { indices_for(0) } else { None };
+                prefix.push((item, indices));
+            }
+        };
 
         for (_, cmd) in self.builtins.iter() {
-            push_match(CommandItem::Builtin(*cmd), cmd.command(), None, 0);
+            push_match(CommandItem::Builtin(*cmd), cmd.command(), cmd.aliases());
         }
 
         out.extend(exact);
@@ -235,6 +237,11 @@ impl WidgetRef for CommandPopup {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::WidgetRef;
+
+    use super::super::popup_consts::MAX_POPUP_ROWS;
 
     #[test]
     fn filter_returns_empty_for_unknown_prefix() {
@@ -278,7 +285,7 @@ mod tests {
                 CommandItem::Builtin(cmd) => cmd.command(),
             })
             .collect();
-        assert_eq!(cmds, vec!["model", "mcp"]);
+        assert_eq!(cmds, vec!["model", "mcps"]);
     }
 
     #[test]
@@ -311,6 +318,30 @@ mod tests {
     }
 
     #[test]
+    fn quit_alias_prefix_selects_exit_without_listing_quit() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
+        popup.on_composer_text_change("/".to_string());
+        let listed: Vec<&str> = popup
+            .filtered_items()
+            .into_iter()
+            .map(|item| match item {
+                CommandItem::Builtin(cmd) => cmd.command(),
+            })
+            .collect();
+        assert!(listed.contains(&"exit"));
+        assert!(!listed.contains(&"quit"));
+
+        popup.on_composer_text_change("/qu".to_string());
+        match popup.selected_item() {
+            Some(CommandItem::Builtin(cmd)) => {
+                assert_eq!(cmd.command(), "exit");
+                assert_eq!(cmd.aliases(), &["quit"]);
+            }
+            other => panic!("expected exit via quit alias, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn popup_lists_only_supported_commands() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
         popup.on_composer_text_change("/".to_string());
@@ -325,17 +356,18 @@ mod tests {
         assert_eq!(
             cmds,
             vec![
-                "theme",
                 "model",
                 "skills",
-                "mcp",
+                "mcps",
                 "compact",
                 "resume",
                 "new",
+                "rename",
+                "delete",
                 "status",
+                "settings",
                 "permissions",
                 "show-reasoning",
-                "clear",
                 "diff",
                 "goal",
                 "btw",
@@ -389,6 +421,60 @@ mod tests {
         assert!(
             !cmds.iter().any(|name| name.starts_with("debug")),
             "expected no /debug* command in popup menu, got {cmds:?}"
+        );
+    }
+
+    fn render_popup(popup: &CommandPopup, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        popup.render_ref(area, &mut buf);
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|col| buf[(col, row)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn full_command_list_shows_more_below_when_overflowing() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
+        popup.on_composer_text_change("/".to_string());
+        assert!(
+            popup.filtered_items().len() > MAX_POPUP_ROWS,
+            "expected more commands than visible popup rows"
+        );
+
+        let height = popup.calculate_required_height(80);
+        let rendered = render_popup(&popup, 80, height);
+        assert!(
+            rendered.contains("↓ more"),
+            "expected ↓ more when command list overflows:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("↑ more"),
+            "wrap-around slash lists should not show ↑ more:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn scrolled_command_list_does_not_show_more_above() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
+        popup.on_composer_text_change("/".to_string());
+        let len = popup.filtered_items().len();
+        assert!(len > MAX_POPUP_ROWS);
+
+        for _ in 0..MAX_POPUP_ROWS {
+            popup.move_down();
+        }
+
+        let height = popup.calculate_required_height(80);
+        let rendered = render_popup(&popup, 80, height);
+        assert!(
+            !rendered.contains("↑ more"),
+            "wrap-around slash lists should not show ↑ more after scrolling:\n{rendered}"
         );
     }
 }

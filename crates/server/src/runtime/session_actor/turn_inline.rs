@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use devo_core::CompactionSnapshotLine;
 use devo_core::SessionRecord;
 use devo_core::TurnId;
 use devo_core::TurnKind;
@@ -33,6 +34,7 @@ pub(crate) struct TurnInlineState {
     pub(crate) active_turn_usage: Option<TurnUsage>,
     pub(crate) collaboration_mode: CollaborationMode,
     pub(crate) hook_context: HookContextSnapshot,
+    pub(crate) latest_compaction_snapshot: Option<CompactionSnapshotLine>,
 }
 
 impl TurnInlineState {
@@ -59,6 +61,7 @@ impl TurnInlineState {
                 summary: state.summary.clone(),
                 config: state.config.clone(),
             },
+            latest_compaction_snapshot: None,
         }
     }
 
@@ -88,6 +91,9 @@ impl TurnInlineState {
         state.core.total_tokens = self.summary.total_tokens;
         state.core.total_cache_creation_tokens = self.summary.total_cache_creation_tokens;
         state.core.total_cache_read_tokens = self.summary.total_cache_read_tokens;
+        if let Some(snapshot) = self.latest_compaction_snapshot {
+            state.latest_compaction_snapshot = Some(snapshot);
+        }
         if let Some(active_turn) = state.active_turn.as_mut()
             && active_turn.turn_id == self.turn_id
         {

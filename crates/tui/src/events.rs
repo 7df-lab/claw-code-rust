@@ -9,6 +9,7 @@ use devo_core::SessionId;
 use devo_protocol::AcpAvailableCommand;
 use devo_protocol::AcpCost;
 use devo_protocol::AcpSessionConfigOption;
+use devo_protocol::CollaborationMode;
 use devo_protocol::ProviderModelBinding;
 use devo_protocol::ProviderRetryPhase;
 use devo_protocol::ProviderVendor;
@@ -19,6 +20,7 @@ use devo_protocol::RequestUserInputQuestion;
 use devo_protocol::SessionHistoryItem;
 use devo_protocol::SessionRuntimeStatus;
 use devo_protocol::ThreadGoal;
+use devo_protocol::canonical::item::ContextOccupancy;
 use devo_protocol::parse_command::ParsedCommand;
 use devo_protocol::protocol::ExecCommandSource;
 use devo_protocol::protocol::FileChange;
@@ -175,10 +177,12 @@ pub(crate) enum WorkerEvent {
     },
     /// The active session identifier is now known.
     SessionActivated { session_id: SessionId },
-    /// Input queue state updated by the server.
-    InputQueueUpdated {
-        pending_count: usize,
-        pending_texts: Vec<String>,
+    /// Canonical session queue snapshot (`queue/updated` / list / push).
+    QueueUpdated {
+        change: devo_protocol::canonical::queue::QueueChange,
+        queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+        started_turn_id: Option<TurnId>,
+        entries: Vec<devo_protocol::canonical::queue::QueueEntry>,
     },
     /// A steer (/btw) was accepted by the server.
     SteerAccepted { turn_id: TurnId },
@@ -375,6 +379,11 @@ pub(crate) enum WorkerEvent {
         /// Estimated prompt tokens for the just-completed request.
         prompt_token_estimate: usize,
     },
+    /// Live context-window occupancy breakdown for the active session.
+    ContextUsageUpdated {
+        /// Category occupancy anchored to the latest query display total.
+        occupancy: ContextOccupancy,
+    },
     /// The interrupt request could not be delivered or accepted.
     InterruptFailed {
         /// Human-readable failure reason to restore into the working status.
@@ -384,6 +393,8 @@ pub(crate) enum WorkerEvent {
     TurnFailed {
         /// Human-readable error text to surface in the transcript and status bar.
         message: String,
+        /// Optional user-facing next step for recovering from this failure.
+        hint: Option<String>,
         /// Total turns completed in the session so far.
         turn_count: usize,
         /// Total input tokens accumulated in the session.
@@ -408,6 +419,8 @@ pub(crate) enum WorkerEvent {
     ProviderValidationFailed {
         /// Human-readable failure reason from the probe request.
         message: String,
+        /// Optional user-facing next step for recovering from this failure.
+        hint: Option<String>,
     },
     /// Current provider vendors were listed from the server.
     ProviderVendorsListed {
@@ -486,13 +499,30 @@ pub(crate) enum WorkerEvent {
     SubagentMonitor { event: SubagentMonitorEvent },
     /// Current known skills were listed from the server.
     SkillsListed {
-        /// Pre-rendered skill summary shown in the bottom panel.
-        body: String,
         /// Structured skill metadata used by the composer `@skill` popup.
         skills: Vec<SkillMetadata>,
-        /// Whether this list should be rendered into the transcript.
-        show_in_transcript: bool,
+        /// Full skill list used by the interactive `/skills` picker.
+        picker_skills: Vec<crate::skills_picker::SkillPickerEntry>,
+        /// Whether `/skills` should open the interactive picker.
+        open_picker: bool,
     },
+    /// MCP server runtime statuses from `mcp/list`.
+    McpServersListed {
+        servers: Vec<devo_protocol::canonical::rpc_admin::McpServerInfo>,
+    },
+    /// Tools for one MCP server from `mcp/tools`.
+    McpToolsListed {
+        name: String,
+        tools: Vec<devo_protocol::canonical::rpc_admin::McpToolEntry>,
+    },
+    /// MCP enable/disable applied via `mcp/set_enabled`.
+    McpServerEnabled {
+        name: String,
+        enabled: bool,
+        servers: Vec<devo_protocol::canonical::rpc_admin::McpServerInfo>,
+    },
+    /// MCP enable/disable failed.
+    McpServerEnableFailed { name: String, message: String },
     /// ACP-native available commands changed for the active session.
     AcpAvailableCommandsUpdated {
         /// Commands advertised through `session/update`.
@@ -534,6 +564,8 @@ pub(crate) enum WorkerEvent {
         reasoning_effort_selection: Option<String>,
         /// Effective reasoning effort currently configured for the next session.
         reasoning_effort: Option<ReasoningEffort>,
+        permission_preset: devo_protocol::PermissionPreset,
+        collaboration_mode: CollaborationMode,
         /// Contextual footer label for the active child agent, when viewing one.
         active_agent_label: Option<String>,
         /// Latest completed query display total for the fresh session.
@@ -583,6 +615,12 @@ pub(crate) enum WorkerEvent {
         loaded_item_count: u64,
         /// Pending turn input texts queued for the next turn.
         pending_texts: Vec<String>,
+        /// Collaboration mode restored from the resumed session metadata.
+        collaboration_mode: CollaborationMode,
+        /// Permission preset restored from the resumed session metadata.
+        permission_preset: Option<devo_protocol::PermissionPreset>,
+        /// Session auto-compaction token limit override, when one is set.
+        effective_context_window: Option<u64>,
     },
     /// The current session title changed.
     SessionRenamed {
@@ -590,6 +628,16 @@ pub(crate) enum WorkerEvent {
         session_id: String,
         /// The new session title.
         title: String,
+    },
+    /// The current session was deleted.
+    SessionDeleted {
+        /// The deleted session identifier.
+        session_id: String,
+    },
+    /// Server confirmed a compaction-threshold hot update.
+    EffectiveContextWindowUpdated {
+        /// Absolute token threshold applied for the active session (model-clamped).
+        effective_context_window: u64,
     },
     /// The active session or its context-compaction transcript item started compaction.
     SessionCompactionStarted,

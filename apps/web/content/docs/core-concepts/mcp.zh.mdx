@@ -44,13 +44,15 @@ Startup policy 控制 enabled server 是 eager start、首次使用 lazy start�
 
 ## 列出 Servers
 
-在 TUI 中使用 `/mcp` 列出 configured MCP servers。
+在 TUI 中使用 `/mcps` 交互浏览 MCP servers（详情 → 工具；Enable/Disable 仅写配置，运行时可能需重启会话），也可用 CLI 管理用户级配置：
 
-Transcript output 会显示每个 server 的 id、display name、enabled state、startup policy、transport kind 和 target command 或 URL。没有配置 servers 时，Devo 显示：
-
-```text
-No MCP servers configured.
+```bash
+devo mcp add time -- docker run -i --rm mcp/time
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+devo mcp list
 ```
+
+客户端也可调用 `mcp/list` / `mcp/tools` RPC 获取运行时状态与工具目录。没有配置 servers 时，picker 显示空状态。
 
 ## Mentions
 

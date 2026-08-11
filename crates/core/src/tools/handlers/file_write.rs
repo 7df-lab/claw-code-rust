@@ -203,7 +203,6 @@ mod tests {
                     collaboration_mode: devo_protocol::CollaborationMode::Build,
                     agent_coordinator: None,
                     client_filesystem: Some(client_filesystem),
-                    client_terminal: None,
                     file_read_ledger: None,
                     network_proxy: None,
                     network_no_proxy: None,

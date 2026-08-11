@@ -40,6 +40,7 @@ impl ServerRuntime {
         let Some(session_handle) = self.session(session_id).await else {
             return;
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
         let _ = session_handle
             .set_first_user_input_if_unset(user_input.to_string())
             .await;
@@ -131,6 +132,7 @@ impl ServerRuntime {
         let Some(session_handle) = self.session(session_id).await else {
             return;
         };
+        let state_change_guard = session_handle.lock_state_change().await;
         let Some(title_context) = session_handle.title_generation_context().await else {
             return;
         };
@@ -165,6 +167,7 @@ impl ServerRuntime {
 
         self.persist_session_summary_if_persistent(session_id, &updated_summary)
             .await;
+        drop(state_change_guard);
 
         self.broadcast_event(ServerEvent::SessionTitleUpdated(SessionEventPayload {
             session: updated_summary,
@@ -209,18 +212,18 @@ impl ServerRuntime {
             let catalog_request_model = resolved_request.request_model.clone();
             let request_model = turn_config.provider_request_model(&catalog_request_model);
 
-            let response = match runtime_context
-                .provider_router
-                .complete(
-                    turn_config.provider_route.clone(),
-                    build_title_generation_request(
-                        catalog_request_model,
-                        request_model.clone(),
-                        &first_user_input,
-                    ),
-                )
-                .await
-            {
+            let provider = self.usage_ledger.instrumented_provider(
+                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                session_id,
+                None,
+                devo_protocol::canonical::usage::UsagePurpose::TitleGeneration,
+            );
+            let model_request = build_title_generation_request(
+                catalog_request_model,
+                request_model.clone(),
+                &first_user_input,
+            );
+            let response = match provider.completion(model_request).await {
                 Ok(response) => response,
                 Err(error) => {
                     tracing::warn!(
@@ -263,6 +266,7 @@ impl ServerRuntime {
             let Some(session_handle) = self.session(session_id).await else {
                 return;
             };
+            let state_change_guard = session_handle.lock_state_change().await;
             let Some(updated_summary) = session_handle
                 .update_title(
                     generated_title.clone(),
@@ -286,6 +290,7 @@ impl ServerRuntime {
 
             self.persist_session_summary_if_persistent(session_id, &updated_summary)
                 .await;
+            drop(state_change_guard);
 
             self.broadcast_event(ServerEvent::SessionTitleUpdated(SessionEventPayload {
                 session: updated_summary,
@@ -328,16 +333,25 @@ impl ServerRuntime {
     ) -> (ItemId, u64) {
         let item_id = ItemId::new();
         let item_seq = self.allocate_item_sequence(session_id).await;
-        self.emit_item_started(session_id, turn_id, item_id, item_kind, payload)
-            .await;
+        self.emit_item_started(
+            session_id,
+            turn_id,
+            item_id,
+            Some(item_seq),
+            item_kind,
+            payload,
+        )
+        .await;
         (item_id, item_seq)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn emit_item_started(
         &self,
         session_id: SessionId,
         turn_id: TurnId,
         item_id: ItemId,
+        item_seq: Option<u64>,
         item_kind: ItemKind,
         payload: serde_json::Value,
     ) {
@@ -347,6 +361,7 @@ impl ServerRuntime {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 0,
+                item_seq,
             },
             item: ItemEnvelope {
                 item_id,
@@ -357,11 +372,13 @@ impl ServerRuntime {
         .await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn emit_item_completed(
         &self,
         session_id: SessionId,
         turn_id: TurnId,
         item_id: ItemId,
+        item_seq: Option<u64>,
         item_kind: ItemKind,
         payload: serde_json::Value,
     ) {
@@ -371,6 +388,7 @@ impl ServerRuntime {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 0,
+                item_seq,
             },
             item: ItemEnvelope {
                 item_id,
@@ -402,8 +420,15 @@ impl ServerRuntime {
             None,
         )
         .await;
-        self.emit_item_completed(session_id, turn_id, item_id, item_kind, payload)
-            .await;
+        self.emit_item_completed(
+            session_id,
+            turn_id,
+            item_id,
+            Some(item_seq),
+            item_kind,
+            payload,
+        )
+        .await;
     }
 
     #[allow(clippy::too_many_arguments)]

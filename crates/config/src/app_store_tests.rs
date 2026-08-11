@@ -115,3 +115,68 @@ model_reasoning_effort_selection = "medium"
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn loader_reads_compaction_token_limit_from_user_config() {
+    let root = unique_temp_dir("compaction-limit-load");
+    let home = root.join(".devo");
+    fs::create_dir_all(&home).expect("create config dir");
+    fs::write(
+        home.join(APP_CONFIG_FILE_NAME),
+        "compaction_token_limit = 250000\n",
+    )
+    .expect("write config");
+
+    let store = AppConfigStore::load(home, None).expect("load config");
+    assert_eq!(
+        store.effective_config().compaction_token_limit,
+        Some(250_000)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn set_compaction_token_limit_writes_user_config_and_refreshes() {
+    let root = unique_temp_dir("compaction-limit-set");
+    let home = root.join(".devo");
+    fs::create_dir_all(&home).expect("create config dir");
+    fs::write(home.join(APP_CONFIG_FILE_NAME), "theme = \"aurora\"\n").expect("write config");
+
+    let mut store = AppConfigStore::load(home.clone(), None).expect("load config");
+    store
+        .set_compaction_token_limit(250_000)
+        .expect("write compaction limit");
+
+    let config_text = fs::read_to_string(home.join(APP_CONFIG_FILE_NAME)).expect("read config");
+    let document: toml::Value = toml::from_str(&config_text).expect("parse config");
+    assert_eq!(document["theme"].as_str(), Some("aurora"));
+    assert_eq!(
+        document["compaction_token_limit"].as_integer(),
+        Some(250_000)
+    );
+    assert_eq!(
+        store.effective_config().compaction_token_limit,
+        Some(250_000)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn set_compaction_token_limit_rejects_values_above_i64_max() {
+    let root = unique_temp_dir("compaction-limit-overflow");
+    let home = root.join(".devo");
+    fs::create_dir_all(&home).expect("create config dir");
+
+    let mut store = AppConfigStore::load(home, None).expect("load config");
+    let err = store
+        .set_compaction_token_limit(u64::MAX)
+        .expect_err("overflow must fail");
+    assert!(
+        err.to_string().contains("too large"),
+        "unexpected error: {err}"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}

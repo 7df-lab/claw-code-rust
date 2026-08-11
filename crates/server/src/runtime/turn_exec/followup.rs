@@ -6,6 +6,17 @@ use devo_core::{SessionId, TurnId, TurnStatus};
 use super::super::*;
 use super::types::{ExecuteTurnRequest, QueuedTurnInput};
 
+/// Whether a queued-input drain may pop while a turn is still active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::runtime) enum QueueDrainPolicy {
+    /// Pop regardless of active-turn state (post-turn chain, interrupt
+    /// recovery): the caller knows the turn is winding down.
+    Always,
+    /// Pop only when no turn is active, so a race-recovery kick can never
+    /// double-admit a turn.
+    OnlyWhenIdle,
+}
+
 impl ServerRuntime {
     /// Pop the first queued input and start a new turn in a background task.
     /// Used from the interrupt handler where the calling function must return
@@ -14,13 +25,50 @@ impl ServerRuntime {
         self: &Arc<Self>,
         session_id: SessionId,
     ) -> bool {
+        self.spawn_next_turn_from_queue_with_policy(session_id, QueueDrainPolicy::Always)
+            .await
+    }
+
+    /// Starts a queued turn only when the session is idle. Gate-free busy
+    /// enqueues (`handle_turn_start_with_queue_policy`) can race the
+    /// post-turn drain: if the active turn ended between the pusher's
+    /// snapshot and the enqueue and the followup chain already found an
+    /// empty queue, this kick is what keeps the entry from stranding.
+    pub(in crate::runtime) async fn drain_queue_if_idle(self: &Arc<Self>, session_id: SessionId) {
+        let Some(reservation) = self.session_turn_reservation_snapshot(session_id).await else {
+            return;
+        };
+        if reservation.active_turn.is_some()
+            || reservation
+                .pending_turn_queue
+                .lock()
+                .expect("pending turn queue mutex should not be poisoned")
+                .is_empty()
+        {
+            return;
+        }
+        self.spawn_next_turn_from_queue_with_policy(session_id, QueueDrainPolicy::OnlyWhenIdle)
+            .await;
+    }
+
+    async fn spawn_next_turn_from_queue_with_policy(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        policy: QueueDrainPolicy,
+    ) -> bool {
+        let Some(session_handle) = self.session(session_id).await else {
+            return false;
+        };
+        let state_change_guard = session_handle.lock_state_change().await;
         let Some(queued) = self
-            .pop_next_queued_turn_input(session_id, /*require_idle_session*/ false)
+            .pop_next_queued_turn_input(
+                session_id,
+                /*require_idle_session*/ matches!(policy, QueueDrainPolicy::OnlyWhenIdle),
+            )
             .await
         else {
             return false;
         };
-        self.broadcast_updated_queue(session_id).await;
         let Some((turn, turn_config)) = self.prepare_queued_turn_start(session_id, &queued).await
         else {
             return false;
@@ -31,10 +79,23 @@ impl ServerRuntime {
         }
         self.activate_queued_turn(session_id, &turn, &turn_config)
             .await;
+        drop(state_change_guard);
         self.broadcast_event(crate::ServerEvent::TurnStarted(TurnEventPayload {
             session_id,
             turn: turn.clone(),
         }))
+        .await;
+        // `drained` carries queueItemId + startedTurnId, emitted in the same
+        // session-actor operation as the matching turn/started so handles
+        // bind atomically (01 §4.3).
+        self.broadcast_queue_updated(
+            session_id,
+            devo_protocol::canonical::queue::QueueChange::Drained,
+            queued.queued_item_id,
+            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(
+                uuid::Uuid::from(turn.turn_id),
+            )),
+        )
         .await;
         let runtime = Arc::clone(self);
         tokio::spawn(async move {
@@ -59,13 +120,16 @@ impl ServerRuntime {
         self: &Arc<Self>,
         session_id: SessionId,
     ) -> bool {
+        let Some(session_handle) = self.session(session_id).await else {
+            return false;
+        };
+        let state_change_guard = session_handle.lock_state_change().await;
         let Some(queued) = self
             .pop_next_queued_turn_input(session_id, /*require_idle_session*/ false)
             .await
         else {
             return false;
         };
-        self.broadcast_updated_queue(session_id).await;
         let Some((turn, turn_config)) = self.prepare_queued_turn_start(session_id, &queued).await
         else {
             return false;
@@ -76,10 +140,20 @@ impl ServerRuntime {
         }
         self.activate_queued_turn(session_id, &turn, &turn_config)
             .await;
+        drop(state_change_guard);
         self.broadcast_event(crate::ServerEvent::TurnStarted(TurnEventPayload {
             session_id,
             turn: turn.clone(),
         }))
+        .await;
+        self.broadcast_queue_updated(
+            session_id,
+            devo_protocol::canonical::queue::QueueChange::Drained,
+            queued.queued_item_id.clone(),
+            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(
+                uuid::Uuid::from(turn.turn_id),
+            )),
+        )
         .await;
         Box::pin(Arc::clone(self).execute_turn(ExecuteTurnRequest {
             session_id,
@@ -93,24 +167,6 @@ impl ServerRuntime {
         }))
         .await;
         true
-    }
-
-    /// Read the current steering queue and broadcast its state to connected clients.
-    pub(in crate::runtime) async fn broadcast_updated_queue(&self, session_id: SessionId) {
-        let Some(session_handle) = self.session(session_id).await else {
-            return;
-        };
-        let Some(snapshot) = session_handle.pending_queue_snapshot().await else {
-            return;
-        };
-        self.broadcast_event(crate::ServerEvent::InputQueueUpdated(
-            devo_core::InputQueueUpdatedPayload {
-                session_id,
-                pending_count: snapshot.pending_count,
-                pending_texts: snapshot.pending_texts,
-            },
-        ))
-        .await;
     }
 
     async fn pop_next_queued_turn_input(
@@ -136,6 +192,9 @@ impl ServerRuntime {
             );
         }
         Some(QueuedTurnInput {
+            queued_item_id: devo_protocol::canonical::ids::QueueItemId::from_legacy_uuid(
+                uuid::Uuid::from(popped.queued_input_id),
+            ),
             display_input: popped.display_input,
             input_text: popped.input_text,
             input_messages: popped.input_messages,

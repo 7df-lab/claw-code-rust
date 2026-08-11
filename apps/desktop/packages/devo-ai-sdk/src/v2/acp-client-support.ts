@@ -365,20 +365,15 @@ function enrichedToolInput(
 function outputFromAcpToolContent(content: unknown): string {
 	if (!Array.isArray(content)) return ""
 	const textParts: string[] = []
-	const terminalParts: string[] = []
 	for (const item of content) {
 		if (!item || typeof item !== "object") continue
 		const value = item as Record<string, unknown>
 		if (value.type === "content") {
 			const text = textFromUpdate({ content: value.content })
 			if (text) textParts.push(text)
-			continue
-		}
-		if (value.type === "terminal" && typeof value.terminalId === "string") {
-			terminalParts.push(`Terminal ${value.terminalId}`)
 		}
 	}
-	return [...textParts, ...terminalParts].join("\n\n")
+	return textParts.join("\n\n")
 }
 
 function toolStateStatus(value: unknown, existingStatus: unknown): "completed" | "error" | "pending" | "running" {

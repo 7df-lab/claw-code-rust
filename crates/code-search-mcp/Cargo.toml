@@ -1,0 +1,76 @@
+[package]
+description = "Semantic code retrieval and bundled code_search MCP server"
+edition.workspace = true
+license.workspace = true
+name = "devo-code-search-mcp"
+version.workspace = true
+
+[[bin]]
+name = "devo-code-search-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "devo_code_search_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+bm25 = { workspace = true }
+devo-network-proxy = { workspace = true }
+devo-util-paths = { workspace = true }
+dirs = { workspace = true }
+hf-hub = { workspace = true }
+hnsw_rs = { workspace = true }
+ignore = { workspace = true }
+model2vec = { workspace = true }
+notify = { workspace = true }
+pathdiff = { workspace = true }
+rayon = { workspace = true }
+reqwest-hf = { package = "reqwest", version = "0.13", default-features = false, features = [
+    "rustls",
+    "socks",
+] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+rmcp = { workspace = true, default-features = false, features = [
+    "macros",
+    "server",
+    "transport-async-rw",
+] }
+tokio = { workspace = true, features = [
+    "io-std",
+    "macros",
+    "rt-multi-thread",
+] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-bash = { workspace = true }
+tree-sitter-c = { workspace = true }
+tree-sitter-c-sharp = { workspace = true }
+tree-sitter-containerfile = { workspace = true }
+tree-sitter-cpp = { workspace = true }
+tree-sitter-go = { workspace = true }
+tree-sitter-ini = { workspace = true }
+tree-sitter-java = { workspace = true }
+tree-sitter-javascript = { workspace = true }
+tree-sitter-json = { workspace = true }
+tree-sitter-kotlin-ng = { workspace = true }
+tree-sitter-lua = { workspace = true }
+tree-sitter-php = { workspace = true }
+tree-sitter-powershell = { workspace = true }
+tree-sitter-python = { workspace = true }
+tree-sitter-r = { workspace = true }
+tree-sitter-ruby = { workspace = true }
+tree-sitter-rust = { workspace = true }
+tree-sitter-scala = { workspace = true }
+tree-sitter-sequel = { workspace = true }
+tree-sitter-swift = { workspace = true }
+tree-sitter-toml-ng = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+tree-sitter-xml = { workspace = true }
+tree-sitter-yaml = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

@@ -39,6 +39,7 @@ impl ServerRuntime {
                 return;
             }
 
+            let _state_change_guard = session_handle.lock_state_change().await;
             let Some(reservation) = session_handle.turn_reservation_snapshot().await else {
                 return;
             };

@@ -1012,7 +1012,6 @@ describe("ACP desktop SDK session mapping", () => {
 				rawInput: {},
 				content: [
 					{ type: "diff", path: "src/main.rs", oldText: "old\n", newText: "new\n" },
-					{ type: "terminal", terminalId: "term-1" },
 					{ type: "content", content: { type: "text", text: "applied" } },
 				],
 				locations: [{ path: "src/main.rs", line: 12 }],
@@ -1057,12 +1056,11 @@ describe("ACP desktop SDK session mapping", () => {
 							newString: "new\n",
 							path: "src/main.rs",
 						},
-						output: "applied\n\nTerminal term-1",
+						output: "applied",
 						title: "Patch file",
 						metadata: {
 							acpContent: [
 								{ type: "diff", path: "src/main.rs", oldText: "old\n", newText: "new\n" },
-								{ type: "terminal", terminalId: "term-1" },
 								{ type: "content", content: { type: "text", text: "applied" } },
 							],
 							acpLocations: [{ path: "src/main.rs", line: 12 }],

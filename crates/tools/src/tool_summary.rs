@@ -66,7 +66,7 @@ pub fn tool_summary(name: &str, input: &serde_json::Value, cwd: &Path) -> String
     match name {
         "bash" | "shell_command" => {
             let cmd = string_arg_any(input, &["command", "cmd"], "");
-            format!("{name}: {cmd}")
+            format!("Shell: {cmd}")
         }
         "exec_command" => {
             let cmd = string_arg_any(input, &["cmd", "command"], "");
@@ -111,7 +111,7 @@ pub fn tool_summary(name: &str, input: &serde_json::Value, cwd: &Path) -> String
             let rel = make_relative(cwd, path);
             format!("grep: '{pattern}' in {rel}")
         }
-        "code_search" => {
+        "code_search" | "mcp__code_search__code_search" => {
             let operation = string_arg(input, "operation", "search");
             match operation {
                 "find_related" => {
@@ -143,7 +143,7 @@ pub fn tool_summary(name: &str, input: &serde_json::Value, cwd: &Path) -> String
             let rel = make_relative(cwd, path);
             format!("{name}: {pattern} in {rel}")
         }
-        "apply_patch" => "apply_patch".to_string(),
+        "apply_patch" => "Patch".to_string(),
         "webfetch" | "web_fetch" | "web-fetch" | "fetch_url" | "fetch-url" => {
             let url = string_arg(input, "url", "");
             format!("web_fetch: {url}")
@@ -205,14 +205,21 @@ mod tests {
     fn bash_summary() {
         let input = json!({"cmd": "echo hello"});
         let s = tool_summary("bash", &input, &cwd());
-        assert_eq!(s, "bash: echo hello");
+        assert_eq!(s, "Shell: echo hello");
     }
 
     #[test]
     fn shell_command_summary() {
         let input = json!({"command": "npm run build"});
         let s = tool_summary("shell_command", &input, &cwd());
-        assert_eq!(s, "shell_command: npm run build");
+        assert_eq!(s, "Shell: npm run build");
+    }
+
+    #[test]
+    fn apply_patch_summary() {
+        let input = json!({});
+        let s = tool_summary("apply_patch", &input, &cwd());
+        assert_eq!(s, "Patch");
     }
 
     #[test]

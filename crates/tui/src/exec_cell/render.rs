@@ -172,33 +172,14 @@ pub(crate) fn output_lines(
         out.push(line);
     }
 
-    let show_ellipsis = total > 2 * line_limit;
+    let show_ellipsis = total > line_limit;
     let omitted = if show_ellipsis {
-        Some(total - 2 * line_limit)
+        Some(total - line_limit)
     } else {
         None
     };
     if show_ellipsis {
-        let omitted = total - 2 * line_limit;
-        out.push(ExecCell::output_ellipsis_line(omitted));
-    }
-
-    let tail_start = if show_ellipsis {
-        total - line_limit
-    } else {
-        head_end
-    };
-    for raw in lines[tail_start..].iter() {
-        let mut line = ansi_escape_line(raw);
-        if include_prefix {
-            line.spans.insert(0, "    ".into());
-        }
-        if dim {
-            line.spans.iter_mut().for_each(|span| {
-                span.style = span.style.add_modifier(Modifier::DIM);
-            });
-        }
-        out.push(line);
+        out.push(ExecCell::output_ellipsis_line(total - line_limit));
     }
 
     OutputLines {
@@ -644,8 +625,7 @@ impl ExecCell {
     }
 
     /// Truncates a list of lines to fit within `max_rows` viewport rows,
-    /// keeping a head portion and a tail portion with an ellipsis line
-    /// in between.
+    /// keeping a head portion followed by an ellipsis line.
     ///
     /// `max_rows` is measured in viewport rows (the actual space a line
     /// occupies after `Paragraph::wrap`), not logical lines. Each line's
@@ -707,14 +687,12 @@ impl ExecCell {
         }
 
         let available_rows = max_rows - ellipsis_rows;
-        let head_budget = available_rows / 2;
-        let tail_budget = available_rows - head_budget;
         let mut head_lines: Vec<Line<'static>> = Vec::new();
         let mut head_rows = 0usize;
         let mut head_end = 0usize;
         while head_end < lines.len() {
             let line_row_count = line_rows[head_end];
-            if head_rows + line_row_count > head_budget {
+            if head_rows + line_row_count > available_rows {
                 break;
             }
             head_rows += line_row_count;
@@ -722,32 +700,16 @@ impl ExecCell {
             head_end += 1;
         }
 
-        let mut tail_lines_reversed: Vec<Line<'static>> = Vec::new();
-        let mut tail_rows = 0usize;
-        let mut tail_start = lines.len();
-        while tail_start > head_end {
-            let idx = tail_start - 1;
-            let line_row_count = line_rows[idx];
-            if tail_rows + line_row_count > tail_budget {
-                break;
-            }
-            tail_rows += line_row_count;
-            tail_lines_reversed.push(lines[idx].clone());
-            tail_start -= 1;
-        }
-
         let mut out = head_lines;
         let base = omitted_hint.unwrap_or(0);
         let additional = lines
             .len()
-            .saturating_sub(out.len() + tail_lines_reversed.len())
+            .saturating_sub(out.len())
             .saturating_sub(usize::from(omitted_hint.is_some()));
         out.push(Self::output_ellipsis_line_with_prefix(
             base + additional,
             ellipsis_prefix.as_ref(),
         ));
-
-        out.extend(tail_lines_reversed.into_iter().rev());
 
         out
     }
@@ -826,7 +788,7 @@ impl ExecDisplayLayout {
 const EXEC_DISPLAY_LAYOUT: ExecDisplayLayout = ExecDisplayLayout::new(
     PrefixedBlock::new("  │ ", "  │ "),
     PrefixedBlock::new("  └ ", "    "),
-    /*output_max_lines*/ 5,
+    /*output_max_lines*/ 3,
 );
 
 #[cfg(test)]

@@ -37,6 +37,7 @@ pub(crate) struct SessionHandle {
     session_id: SessionId,
     tx: mpsc::Sender<SessionCommand>,
     max_turns: Option<u32>,
+    state_change_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SessionHandle {
@@ -65,13 +66,20 @@ impl SessionHandle {
             session_id,
             tx,
             max_turns,
+            state_change_gate: Arc::new(tokio::sync::Mutex::new(())),
         };
-        tokio::spawn(super::loop_::run_session_actor(state, rx, runtime));
+        tokio::spawn(super::actor_loop::run_session_actor(state, rx, runtime));
         handle
     }
 
     async fn send(&self, command: SessionCommand) -> bool {
         self.tx.send(command).await.is_ok()
+    }
+
+    /// Serializes idle-session state changes that must not overlap turn
+    /// admission, such as two-phase rollback commit and message edit.
+    pub(crate) async fn lock_state_change(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.state_change_gate).lock_owned().await
     }
 
     /// Non-blocking enqueue. Used by turn event streams so they never park on a
@@ -447,23 +455,6 @@ impl SessionHandle {
             .await;
     }
 
-    pub(crate) async fn remove_queued_turn_input(
-        &self,
-        queued_input_id: devo_core::PendingInputId,
-    ) -> Option<bool> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if !self
-            .send(SessionCommand::RemoveQueuedTurnInput {
-                queued_input_id,
-                reply: reply_tx,
-            })
-            .await
-        {
-            return None;
-        }
-        reply_rx.await.ok()
-    }
-
     pub(crate) async fn activate_queued_turn(&self, turn: TurnMetadata, turn_config: TurnConfig) {
         let _ = self
             .send(SessionCommand::ActivateQueuedTurn { turn, turn_config })
@@ -559,6 +550,7 @@ impl SessionHandle {
         model: Option<String>,
         model_binding_id: Option<String>,
         reasoning_effort_selection: Option<String>,
+        collaboration_mode: Option<devo_protocol::CollaborationMode>,
     ) -> Option<SessionMetadata> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if !self
@@ -566,6 +558,7 @@ impl SessionHandle {
                 model,
                 model_binding_id,
                 reasoning_effort_selection,
+                collaboration_mode,
                 reply: reply_tx,
             })
             .await
@@ -590,6 +583,24 @@ impl SessionHandle {
             return false;
         }
         reply_rx.await.is_ok()
+    }
+
+    /// Hot-updates the session auto-compaction token limit.
+    pub(crate) async fn apply_effective_context_window(
+        &self,
+        limit: usize,
+    ) -> Option<Result<(), String>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if !self
+            .send(SessionCommand::ApplyEffectiveContextWindow {
+                limit,
+                reply: reply_tx,
+            })
+            .await
+        {
+            return None;
+        }
+        reply_rx.await.ok()
     }
 
     /// Applies a new sandbox profile to the session. Returns `None` when the
@@ -645,6 +656,19 @@ impl SessionHandle {
             return false;
         }
         reply_rx.await.is_ok()
+    }
+
+    pub(crate) async fn runtime_context(
+        &self,
+    ) -> Option<Arc<crate::session_context::SessionRuntimeContext>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if !self
+            .send(SessionCommand::GetRuntimeContext { reply: reply_tx })
+            .await
+        {
+            return None;
+        }
+        reply_rx.await.ok()
     }
 
     pub(crate) async fn resume_snapshot(&self) -> Option<super::snapshots::SessionResumeSnapshot> {

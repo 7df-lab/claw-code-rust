@@ -29,11 +29,14 @@ use tracing_subscriber::filter::LevelFilter;
 
 mod agent_command;
 mod doctor_command;
+mod mcp_command;
 mod prompt_command;
 mod upgrade_command;
 
 use agent_command::run_agent;
 use doctor_command::run_doctor;
+use mcp_command::McpCommand;
+use mcp_command::run_mcp;
 use prompt_command::PromptOutputFormat;
 use prompt_command::run_prompt;
 use upgrade_command::run_upgrade;
@@ -211,6 +214,10 @@ async fn run_cli() -> Result<()> {
             let _logging = install_logging(&cli)?;
             run_doctor().await
         }
+        Some(Command::Mcp { command }) => {
+            let _logging = install_logging(&cli)?;
+            run_mcp(command)
+        }
         Some(Command::Upgrade) => run_upgrade(),
         Some(Command::Resume { session_id }) => {
             maybe_print_startup_update(&cli).await;
@@ -297,6 +304,7 @@ fn server_process_args_from_cli(cli: &Cli) -> Option<ServerProcessArgs> {
         | Some(Command::Resume { .. })
         | Some(Command::Prompt { .. })
         | Some(Command::Doctor)
+        | Some(Command::Mcp { .. })
         | Some(Command::Upgrade)
         | None => None,
     }
@@ -321,6 +329,11 @@ enum Command {
     },
     /// Diagnose configuration, provider connectivity, and system health.
     Doctor,
+    /// Manage MCP server entries in the user config.
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
     /// Upgrade Devo to the latest released version.
     Upgrade,
     /// Start the runtime server process.
@@ -420,10 +433,12 @@ mod tests {
 
     use super::Cli;
     use super::Command;
+    use super::McpCommand;
     use super::PromptOutputFormat;
     use super::cli_logging_overrides;
     use super::exit_messages;
     use super::format_token_usage_line;
+    use super::mcp_command::McpTransportKind;
     use super::onboarding_exit_messages;
 
     #[test]
@@ -608,6 +623,135 @@ mod tests {
         match cli.command {
             Some(Command::Upgrade) => {}
             other => panic!("expected upgrade command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_mcp_add_stdio_trailing_command() {
+        let cli = Cli::try_parse_from([
+            "devo", "mcp", "add", "time", "--", "docker", "run", "-i", "mcp/time",
+        ])
+        .expect("parse mcp add stdio");
+
+        match cli.command {
+            Some(Command::Mcp {
+                command:
+                    McpCommand::Add {
+                        name,
+                        transport,
+                        rest,
+                        ..
+                    },
+            }) => {
+                assert_eq!(name, "time");
+                assert_eq!(transport, McpTransportKind::Stdio);
+                assert_eq!(
+                    rest,
+                    vec![
+                        "docker".to_string(),
+                        "run".to_string(),
+                        "-i".to_string(),
+                        "mcp/time".to_string(),
+                    ]
+                );
+            }
+            other => panic!("expected mcp add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_mcp_add_http_and_sse() {
+        let http = Cli::try_parse_from([
+            "devo",
+            "mcp",
+            "add",
+            "--transport",
+            "http",
+            "hello",
+            "http://localhost:8080/mcp",
+        ])
+        .expect("parse mcp add http");
+        match http.command {
+            Some(Command::Mcp {
+                command:
+                    McpCommand::Add {
+                        name,
+                        transport,
+                        rest,
+                        ..
+                    },
+            }) => {
+                assert_eq!(name, "hello");
+                assert_eq!(transport, McpTransportKind::Http);
+                assert_eq!(rest, vec!["http://localhost:8080/mcp".to_string()]);
+            }
+            other => panic!("expected mcp add http, got {other:?}"),
+        }
+
+        let sse = Cli::try_parse_from([
+            "devo",
+            "mcp",
+            "add",
+            "--transport",
+            "sse",
+            "legacy",
+            "https://example.com/mcp/sse",
+        ])
+        .expect("parse mcp add sse");
+        match sse.command {
+            Some(Command::Mcp {
+                command:
+                    McpCommand::Add {
+                        name,
+                        transport,
+                        rest,
+                        ..
+                    },
+            }) => {
+                assert_eq!(name, "legacy");
+                assert_eq!(transport, McpTransportKind::Sse);
+                assert_eq!(rest, vec!["https://example.com/mcp/sse".to_string()]);
+            }
+            other => panic!("expected mcp add sse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_mcp_list_remove_enable_disable() {
+        for (args, expected) in [
+            (vec!["devo", "mcp", "list"], "list"),
+            (vec!["devo", "mcp", "remove", "time"], "remove"),
+            (vec!["devo", "mcp", "enable", "time"], "enable"),
+            (vec!["devo", "mcp", "disable", "time"], "disable"),
+        ] {
+            let cli = Cli::try_parse_from(args).expect("parse mcp management");
+            match (expected, cli.command) {
+                (
+                    "list",
+                    Some(Command::Mcp {
+                        command: McpCommand::List,
+                    }),
+                ) => {}
+                (
+                    "remove",
+                    Some(Command::Mcp {
+                        command: McpCommand::Remove { name },
+                    }),
+                ) => assert_eq!(name, "time"),
+                (
+                    "enable",
+                    Some(Command::Mcp {
+                        command: McpCommand::Enable { name },
+                    }),
+                ) => assert_eq!(name, "time"),
+                (
+                    "disable",
+                    Some(Command::Mcp {
+                        command: McpCommand::Disable { name },
+                    }),
+                ) => assert_eq!(name, "time"),
+                (label, other) => panic!("expected {label}, got {other:?}"),
+            }
         }
     }
 

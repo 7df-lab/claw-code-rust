@@ -41,6 +41,7 @@ The short `ws://` listen target uses `127.0.0.1:3210`.
   `session_permissions_update`, `session_sandbox_profile_update`: update session
   metadata shown by clients.
 - `session_compact`, `session_fork`, `session_rollback`: manage session history
+  (`session_compact` returns `TurnStartResult` for the compaction turn)
   and derived sessions.
 - `agent_list`, `agent_spawn`, `agent_close`: inspect and manage background
   agents.

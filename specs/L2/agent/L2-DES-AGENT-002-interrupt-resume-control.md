@@ -61,8 +61,16 @@ An interrupt request may target:
 - The entire active turn.
 - A tracked background process associated with the session or turn.
 - A waiting approval or question prompt.
+- Manual session compaction started via `session/compact` (client `/compact`),
+  which is an active `ManualCompaction` turn.
 
 The server should resolve the target into a runtime cancellation token, tool supervisor command, provider stream cancellation, or waiting-state transition. If the target is no longer active, the server should return an idempotent success or a structured stale-state error.
+
+Manual `/compact` is canceled with `turn/interrupt` or ACP `session/cancel`
+(which routes to interrupt when a turn is active). Cancellation dual-emits
+`session/compaction/failed` with a canceled message plus the normal interrupted
+turn lifecycle; turn-scoped automatic compaction remains under the parent turn's
+cancel token / `turn/interrupt`.
 
 ## Interrupt Flow
 

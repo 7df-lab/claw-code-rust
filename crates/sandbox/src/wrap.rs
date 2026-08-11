@@ -4,10 +4,10 @@
 //!
 //! Two composition modes:
 //!
-//! - [`WrapMode::PipeComposed`]: pipe spawns already apply the profile via
-//!   `pre_exec` Landlock/Seatbelt, so the wrapper only adds what those kernel
-//!   primitives cannot express (Linux read-deny bind-overs and network
-//!   restriction).
+//! - [`WrapMode::PipeComposed`]: Linux pipe spawns apply the profile via
+//!   `pre_exec` Landlock, so the wrapper only adds what Landlock cannot express.
+//!   macOS pipe spawns use `sandbox-exec`, because applying Seatbelt after
+//!   `fork()` is not safe in a multi-threaded process.
 //! - [`WrapMode::PtyOnly`]: PTY spawns have no `pre_exec` hook, so the
 //!   wrapper carries the full profile policy.
 //!
@@ -68,6 +68,20 @@ pub enum SandboxWrap {
     Wrapped(WrappedCommand),
 }
 
+impl SandboxWrap {
+    /// Whether the spawner must still apply a resolved profile in `pre_exec`.
+    ///
+    /// macOS never applies Seatbelt after `fork()`: active profiles use the
+    /// `sandbox-exec` wrapper, while an unavailable wrapper preserves the
+    /// existing warn-and-run-unwrapped behavior.
+    pub fn requires_child_apply(&self) -> bool {
+        if cfg!(target_os = "macos") {
+            return false;
+        }
+        !matches!(self, Self::Wrapped(wrapped) if wrapped.helper_enforces)
+    }
+}
+
 /// A launcher invocation that sandboxes the original command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrappedCommand {
@@ -81,8 +95,8 @@ pub struct WrappedCommand {
     /// [`remove_placeholder_dir`] [`PLACEHOLDER_CLEANUP_DELAY`] after a
     /// successful spawn (mounts are not up when `spawn` returns).
     pub placeholder_dir: Option<PathBuf>,
-    /// When true, the Linux helper applies Landlock/seccomp inside the wrap;
-    /// the parent must not also apply a `pre_exec` plan onto the helper.
+    /// When true, the launcher applies the complete sandbox policy; the parent
+    /// must not also apply a `pre_exec` plan onto it.
     pub helper_enforces: bool,
 }
 
@@ -263,21 +277,14 @@ fn wrap_for_platform(
     {
         // `config` and bwrap availability are Linux-only inputs.
         let _ = (config, launchers.bwrap);
-        match mode {
-            // Pipe children get full Seatbelt enforcement via pre_exec; a
-            // wrapper would add nothing on macOS.
-            WrapMode::PipeComposed => Ok(SandboxWrap::None),
-            // PTY spawns have no pre_exec hook: `sandbox-exec -p <sbpl>`
-            // carries the full profile.
-            WrapMode::PtyOnly => macos_pty_wrap(
-                profile_name,
-                resolved,
-                workspace,
-                launchers.sandbox_exec,
-                mode,
-                logger,
-            ),
-        }
+        macos_wrap(
+            profile_name,
+            resolved,
+            workspace,
+            launchers.sandbox_exec,
+            mode,
+            logger,
+        )
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -295,11 +302,11 @@ fn wrap_for_platform(
     }
 }
 
-/// macOS PTY wrap: `sandbox-exec -p <sbpl>` carrying the full profile. Never
-/// fails closed — a missing launcher, a build failure, or a failed precheck
-/// warns, records an event, and runs unwrapped (user decision).
+/// macOS wrap: `sandbox-exec -p <sbpl>` carrying the full profile for both pipe
+/// and PTY children. Never fails closed — a missing launcher, a build failure,
+/// or a failed precheck warns, records an event, and runs unwrapped.
 #[cfg(all(feature = "enforce", target_os = "macos"))]
-fn macos_pty_wrap(
+fn macos_wrap(
     profile_name: &ProfileName,
     resolved: &SandboxProfile,
     workspace: &Path,
@@ -310,7 +317,7 @@ fn macos_pty_wrap(
     if !sandbox_exec_available {
         tracing::warn!(
             profile = %profile_name,
-            "sandbox-exec is not available; PTY child runs WITHOUT sandbox enforcement \
+            "sandbox-exec is not available; child runs WITHOUT sandbox enforcement \
              (deny paths, filesystem policy, and network restriction are NOT enforced)"
         );
         log_wrap_event(
@@ -331,7 +338,7 @@ fn macos_pty_wrap(
             tracing::warn!(
                 profile = %profile_name,
                 error = %error,
-                "could not build the Seatbelt profile; PTY child runs WITHOUT \
+                "could not build the Seatbelt profile; child runs WITHOUT \
                  sandbox enforcement"
             );
             log_wrap_event(
@@ -346,7 +353,7 @@ fn macos_pty_wrap(
     if !crate::seatbelt::sandbox_exec_accepts_profile(&sbpl) {
         tracing::warn!(
             profile = %profile_name,
-            "sandbox-exec rejected the generated Seatbelt profile; PTY child runs \
+            "sandbox-exec rejected the generated Seatbelt profile; child runs \
              WITHOUT sandbox enforcement"
         );
         log_wrap_event(
@@ -363,7 +370,8 @@ fn macos_pty_wrap(
     }
     tracing::info!(
         profile = %profile_name,
-        "spawning PTY command inside sandbox-exec (Seatbelt)"
+        mode = ?mode,
+        "spawning command inside sandbox-exec (Seatbelt)"
     );
     log_wrap_event(
         logger,
@@ -375,14 +383,14 @@ fn macos_pty_wrap(
         program: "/usr/bin/sandbox-exec".to_string(),
         prefix_args: vec!["-p".to_string(), sbpl],
         placeholder_dir: None,
-        helper_enforces: false,
+        helper_enforces: true,
     }))
 }
 
 /// Without the `enforce` feature there is no sbpl emitter; warn, record, and
 /// run unwrapped (never fail closed).
 #[cfg(all(not(feature = "enforce"), target_os = "macos"))]
-fn macos_pty_wrap(
+fn macos_wrap(
     profile_name: &ProfileName,
     _resolved: &SandboxProfile,
     workspace: &Path,
@@ -392,7 +400,7 @@ fn macos_pty_wrap(
 ) -> anyhow::Result<SandboxWrap> {
     tracing::warn!(
         profile = %profile_name,
-        "built without the 'enforce' feature; PTY child runs WITHOUT sandbox enforcement"
+        "built without the 'enforce' feature; child runs WITHOUT sandbox enforcement"
     );
     log_wrap_event(
         logger,
@@ -622,313 +630,4 @@ fn cleanup_stale_placeholder_dirs_in(root: &Path, now: SystemTime) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    fn temp_workspace(tag: &str, toml_body: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("system clock after Unix epoch")
-            .as_nanos();
-        let workspace =
-            std::env::temp_dir().join(format!("devo-wrap-{tag}-{}-{nanos}", std::process::id()));
-        let devo = workspace.join(".devo");
-        std::fs::create_dir_all(&devo).expect("create sandbox config directory");
-        std::fs::write(devo.join("sandbox.toml"), toml_body).expect("write sandbox config");
-        workspace
-    }
-
-    fn resolved_profile(deny: &[&str], restrict_network: bool) -> SandboxProfile {
-        SandboxProfile {
-            name: "test".to_string(),
-            read_only: vec![],
-            read_write: vec![],
-            deny: deny.iter().map(PathBuf::from).collect(),
-            default_read: true,
-            restrict_network,
-        }
-    }
-
-    #[test]
-    fn none_and_off_profiles_never_wrap() {
-        let workspace = Path::new("/tmp");
-        let logger = SandboxLogger::new();
-        for profile in [None, Some("off"), Some("none")] {
-            for mode in [WrapMode::PtyOnly, WrapMode::PipeComposed] {
-                assert_eq!(
-                    wrap_command_for_profile(profile, workspace, mode, &logger)
-                        .expect("off/None profiles are not errors"),
-                    SandboxWrap::None,
-                    "profile {profile:?} in mode {mode:?} must not wrap"
-                );
-            }
-        }
-        assert!(
-            logger.take_events().is_empty(),
-            "off/None profiles must not record events"
-        );
-    }
-
-    #[test]
-    fn undefined_custom_profile_is_an_error() {
-        let workspace = temp_workspace("missing", "");
-        let error = wrap_command_for_profile(
-            Some("devo-test-missing-profile-xyz"),
-            &workspace,
-            WrapMode::PipeComposed,
-            &SandboxLogger::new(),
-        )
-        .expect_err("an unresolvable profile name must fail, not silently unwrap");
-        assert!(
-            error.to_string().contains("not found"),
-            "unexpected error: {error:#}"
-        );
-        let _ = std::fs::remove_dir_all(&workspace);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn macos_pipe_never_wraps_and_pty_wraps_via_sandbox_exec() {
-        let workspace = temp_workspace(
-            "macos",
-            "[profiles.wrapdeny]\nextends = \"workspace\"\ndeny = [\"secret.txt\"]\n",
-        );
-        // Pipe children enforce via pre_exec Seatbelt, so they never wrap.
-        assert_eq!(
-            wrap_command_for_profile(
-                Some("wrapdeny"),
-                &workspace,
-                WrapMode::PipeComposed,
-                &SandboxLogger::new(),
-            )
-            .expect("valid profile resolves"),
-            SandboxWrap::None,
-            "macOS PipeComposed must not wrap"
-        );
-        match wrap_command_for_profile(
-            Some("wrapdeny"),
-            &workspace,
-            WrapMode::PtyOnly,
-            &SandboxLogger::new(),
-        )
-        .expect("valid profile resolves")
-        {
-            SandboxWrap::Wrapped(wrapped) => {
-                assert_eq!(wrapped.program, "/usr/bin/sandbox-exec");
-                assert_eq!(wrapped.prefix_args.len(), 2, "{wrapped:?}");
-                assert_eq!(wrapped.prefix_args[0], "-p");
-                let sbpl = &wrapped.prefix_args[1];
-                assert!(sbpl.contains("(deny default)"), "{sbpl}");
-                assert!(sbpl.contains("(allow pseudo-tty)"), "{sbpl}");
-                assert!(sbpl.contains("(deny file-read*"), "{sbpl}");
-                assert_eq!(wrapped.placeholder_dir, None);
-            }
-            SandboxWrap::None => assert!(
-                !Path::new("/usr/bin/sandbox-exec").is_file(),
-                "sandbox-exec exists but the PTY wrap was declined"
-            ),
-        }
-        let _ = std::fs::remove_dir_all(&workspace);
-    }
-
-    #[test]
-    #[cfg(all(feature = "enforce", target_os = "macos"))]
-    fn macos_pty_wrap_without_launcher_records_not_enforced() {
-        let logger = SandboxLogger::new();
-        let wrap = macos_pty_wrap(
-            &ProfileName::Workspace,
-            &resolved_profile(&["secret.txt"], false),
-            Path::new("/tmp"),
-            /*sandbox_exec_available*/ false,
-            WrapMode::PtyOnly,
-            &logger,
-        )
-        .expect("a missing launcher is a warn-and-release, not an error");
-
-        assert_eq!(wrap, SandboxWrap::None);
-        let events = logger.take_events();
-        assert_eq!(events.len(), 1, "expected exactly one event: {events:?}");
-        let event = &events[0];
-        assert!(matches!(
-            event.event_type,
-            crate::types::SandboxEventType::NotEnforced
-        ));
-        assert_eq!(event.profile, "workspace");
-        assert_eq!(event.mode.as_deref(), Some("PtyOnly"));
-        assert_eq!(event.launcher.as_deref(), Some("sandbox-exec"));
-        assert_eq!(event.enforced, Some(false));
-    }
-
-    #[test]
-    #[cfg(all(feature = "enforce", target_os = "macos"))]
-    fn macos_pty_wrap_success_records_profile_applied() {
-        if !Path::new("/usr/bin/sandbox-exec").is_file() {
-            eprintln!("skipping: sandbox-exec not available on this machine");
-            return;
-        }
-        let workspace = temp_workspace(
-            "macoslog",
-            "[profiles.wraplog]\nextends = \"workspace\"\ndeny = [\"secret.txt\"]\n",
-        );
-        let profile: ProfileName = "wraplog".parse().expect("valid custom profile name");
-        let config = load_sandbox_config(&workspace).expect("load sandbox config");
-        let resolved = profile
-            .resolve_profile(&workspace, &config)
-            .expect("custom profile resolves");
-        let logger = SandboxLogger::new();
-
-        let wrap = macos_pty_wrap(
-            &profile,
-            &resolved,
-            &workspace,
-            /*sandbox_exec_available*/ true,
-            WrapMode::PtyOnly,
-            &logger,
-        )
-        .expect("wrap construction must not fail");
-
-        assert!(matches!(wrap, SandboxWrap::Wrapped(_)), "{wrap:?}");
-        let events = logger.take_events();
-        assert_eq!(events.len(), 1, "expected exactly one event: {events:?}");
-        let event = &events[0];
-        assert!(matches!(
-            event.event_type,
-            crate::types::SandboxEventType::ProfileApplied
-        ));
-        assert_eq!(event.profile, "wraplog");
-        assert_eq!(event.mode.as_deref(), Some("PtyOnly"));
-        assert_eq!(event.launcher.as_deref(), Some("/usr/bin/sandbox-exec"));
-        assert_eq!(event.enforced, Some(true));
-        assert_eq!(
-            event.deny_paths.as_deref(),
-            Some(&["secret.txt".to_string()][..])
-        );
-        let _ = std::fs::remove_dir_all(&workspace);
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn linux_wrap_without_bwrap_records_not_enforced() {
-        let logger = SandboxLogger::new();
-        let wrap = linux_wrap(
-            &ProfileName::Workspace,
-            &SandboxConfig::default(),
-            &resolved_profile(&["secret.txt"], false),
-            Path::new("/tmp"),
-            WrapMode::PipeComposed,
-            LauncherAvailability {
-                sandbox_exec: false,
-                bwrap: false,
-            },
-            &logger,
-        )
-        .expect("a missing bwrap is a warn-and-release, not an error");
-
-        assert_eq!(wrap, SandboxWrap::None);
-        let events = logger.take_events();
-        assert_eq!(events.len(), 1, "expected exactly one event: {events:?}");
-        let event = &events[0];
-        assert!(matches!(
-            event.event_type,
-            crate::types::SandboxEventType::NotEnforced
-        ));
-        assert_eq!(event.profile, "workspace");
-        assert_eq!(event.mode.as_deref(), Some("PipeComposed"));
-        assert_eq!(event.launcher.as_deref(), Some("bwrap"));
-        assert_eq!(event.enforced, Some(false));
-    }
-
-    #[test]
-    fn launcher_override_values() {
-        assert_eq!(launcher_override(None), LauncherOverride::Auto);
-        assert_eq!(launcher_override(Some("auto")), LauncherOverride::Auto);
-        assert_eq!(launcher_override(Some("none")), LauncherOverride::None);
-        assert_eq!(launcher_override(Some("bwrap")), LauncherOverride::Bwrap);
-        assert_eq!(
-            launcher_override(Some("sandbox-exec")),
-            LauncherOverride::SandboxExec
-        );
-        assert_eq!(launcher_override(Some("garbage")), LauncherOverride::Auto);
-    }
-
-    #[test]
-    fn linux_wrap_adds_enforcement_only_for_deny_or_network_in_pipe_mode() {
-        let deny_profile = resolved_profile(&["secret.txt"], false);
-        let net_profile = resolved_profile(&[], true);
-        let plain_profile = resolved_profile(&[], false);
-
-        assert!(linux_wrap_adds_enforcement(
-            &deny_profile,
-            WrapMode::PipeComposed
-        ));
-        assert!(linux_wrap_adds_enforcement(
-            &net_profile,
-            WrapMode::PipeComposed
-        ));
-        assert!(!linux_wrap_adds_enforcement(
-            &plain_profile,
-            WrapMode::PipeComposed
-        ));
-        for profile in [&deny_profile, &net_profile, &plain_profile] {
-            assert!(
-                linux_wrap_adds_enforcement(profile, WrapMode::PtyOnly),
-                "PTY wraps always carry the full policy"
-            );
-        }
-    }
-
-    #[test]
-    fn placeholder_dir_name_guard_rejects_other_paths() {
-        assert!(is_placeholder_dir_name(Path::new(
-            "/home/u/.devo/bwrap-placeholder.abc123"
-        )));
-        assert!(!is_placeholder_dir_name(Path::new("/home/u/.devo")));
-        assert!(!is_placeholder_dir_name(Path::new("/")));
-        assert!(!is_placeholder_dir_name(Path::new(
-            "/home/u/.devo/bwrap-placeholder"
-        )));
-    }
-
-    #[test]
-    fn remove_placeholder_dir_refuses_foreign_directories() {
-        let root = std::env::temp_dir().join(format!(
-            "devo-wrap-guard-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("system clock after Unix epoch")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(root.join("keep")).expect("create foreign directory");
-        remove_placeholder_dir(&root.join("keep"));
-        assert!(root.join("keep").is_dir(), "foreign directory must survive");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn janitor_removes_only_stale_placeholder_dirs() {
-        let nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("system clock after Unix epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("devo-janitor-{}-{nanos}", std::process::id()));
-        let placeholder = root.join("bwrap-placeholder.test01");
-        std::fs::create_dir_all(&placeholder).expect("create placeholder directory");
-        std::fs::write(placeholder.join("sandbox-blocked-0"), "x").expect("write placeholder file");
-        std::fs::create_dir_all(root.join("keep")).expect("create foreign directory");
-
-        // Young placeholders survive a normal sweep.
-        cleanup_stale_placeholder_dirs_in(&root, SystemTime::now());
-        assert!(placeholder.is_dir(), "young placeholder must survive");
-
-        // A clock far in the future makes everything look stale: the
-        // placeholder goes, the foreign directory stays.
-        let far_future = SystemTime::now() + Duration::from_secs(72 * 60 * 60);
-        cleanup_stale_placeholder_dirs_in(&root, far_future);
-        assert!(!placeholder.exists(), "stale placeholder must be removed");
-        assert!(root.join("keep").is_dir(), "foreign directory must survive");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-}
+mod tests;

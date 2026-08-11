@@ -45,10 +45,7 @@ import type {
 	GoalStatusResult,
 	InputItem,
 	ThreadGoalStatus,
-	TurnQueueRemoveResult,
-	TurnQueueSteerResult,
 	TurnStartResult,
-	TurnSteerResult,
 	RequestUserInputRespondParams,
 	WorkspaceChangeCoverage,
 	WorkspaceChangeScope,
@@ -836,8 +833,6 @@ class AcpClient {
 	}
 
 	turn = {
-		// User requirement: busy composer follow-ups can be queued first, then converted
-		// to steer from the composer status stack without creating transcript-only state.
 		start: async (params: {
 			sessionID: string
 			parts: PromptPartInput[]
@@ -858,37 +853,6 @@ class AcpClient {
 				cwd: params.cwd ?? null,
 				collaboration_mode: params.collaborationMode ?? "build",
 			})) as TurnStartResult
-			return { data: result }
-		},
-		steer: async (params: {
-			sessionID: string
-			expectedTurnID: string
-			parts: PromptPartInput[]
-		}) => {
-			const result = (await this.request("turn/steer", {
-				session_id: params.sessionID,
-				expected_turn_id: params.expectedTurnID,
-				input: inputItemsFromPromptParts(params.parts),
-			})) as TurnSteerResult
-			return { data: result }
-		},
-		removeQueued: async (params: { sessionID: string; queuedInputID: string }) => {
-			const result = (await this.request("turn/queue/remove", {
-				session_id: params.sessionID,
-				queued_input_id: params.queuedInputID,
-			})) as TurnQueueRemoveResult
-			return { data: result }
-		},
-		steerQueued: async (params: {
-			sessionID: string
-			expectedTurnID: string
-			queuedInputID: string
-		}) => {
-			const result = (await this.request("turn/queue/steer", {
-				session_id: params.sessionID,
-				expected_turn_id: params.expectedTurnID,
-				queued_input_id: params.queuedInputID,
-			})) as TurnQueueSteerResult
 			return { data: result }
 		},
 	}

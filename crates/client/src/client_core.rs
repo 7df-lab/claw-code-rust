@@ -5,7 +5,7 @@
 //! delegate protocol logic here. Incoming messages are classified as:
 //!
 //! - **Server → client requests** (`id` + `method`): handled asynchronously; the
-//!   response echoes the same JSON-RPC `id` (see `fs/read`, permissions, terminal).
+//!   response echoes the same JSON-RPC `id` (see `fs/read`, permissions).
 //! - **Server responses** (`id` + `result`/`error`, no `method`): matched against
 //!   [`PendingResponses`] via numeric `id` to complete a client-initiated `request`.
 //! - **Notifications** (no `id`): forwarded on the notification channel.
@@ -37,8 +37,6 @@ use crate::acp_fs::handle_acp_fs_request;
 use crate::acp_permissions::AcpPendingPermissions;
 use crate::acp_permissions::handle_acp_request_permission;
 use crate::acp_permissions::resolve_acp_permission_response;
-use crate::acp_terminal::AcpTerminalManager;
-use crate::acp_terminal::handle_acp_terminal_request;
 
 pub const ACP_PROMPT_STARTED_NOTIFICATION_METHOD: &str = "_devo/acp_prompt/started";
 pub const ACP_PROMPT_COMPLETED_NOTIFICATION_METHOD: &str = "_devo/acp_prompt/completed";
@@ -92,7 +90,6 @@ pub(crate) struct ServerClientReaderState {
     writer: ClientWriter,
     pending: PendingResponses,
     acp_pending_permissions: AcpPendingPermissions,
-    acp_terminals: AcpTerminalManager,
     notifications_tx: mpsc::UnboundedSender<ServerNotificationMessage>,
 }
 
@@ -100,7 +97,6 @@ pub(crate) struct ServerClientCore {
     writer: ClientWriter,
     pending: PendingResponses,
     acp_pending_permissions: AcpPendingPermissions,
-    acp_terminals: AcpTerminalManager,
     acp_agent_capabilities: Option<AcpAgentCapabilities>,
     client_capabilities: AcpClientCapabilities,
     next_request_id: AtomicU64,
@@ -115,7 +111,6 @@ impl ServerClientCore {
             writer,
             pending: Arc::new(Mutex::new(HashMap::new())),
             acp_pending_permissions: Arc::new(Mutex::new(HashMap::new())),
-            acp_terminals: AcpTerminalManager::new(),
             acp_agent_capabilities: None,
             client_capabilities,
             next_request_id: AtomicU64::new(1),
@@ -129,7 +124,6 @@ impl ServerClientCore {
             writer: self.writer.clone(),
             pending: Arc::clone(&self.pending),
             acp_pending_permissions: Arc::clone(&self.acp_pending_permissions),
-            acp_terminals: self.acp_terminals.clone(),
             notifications_tx: self.notifications_tx.clone(),
         }
     }
@@ -195,16 +189,6 @@ impl ServerClientCore {
                 .map(PathBuf::from)
                 .unwrap_or_default(),
         })
-    }
-
-    pub(crate) async fn acp_terminal_output_snapshot(
-        &self,
-        terminal_id: &str,
-    ) -> Result<AcpTerminalOutputResult> {
-        self.acp_terminals
-            .output(terminal_id)
-            .await
-            .map_err(anyhow::Error::msg)
     }
 
     pub(crate) async fn session_start(
@@ -431,7 +415,6 @@ impl ServerClientCore {
 
     pub(crate) async fn shutdown(&self) {
         self.writer.close();
-        self.acp_terminals.release_all().await;
     }
 
     pub(crate) async fn agent_list(&mut self, params: AgentListParams) -> Result<AgentListResult> {
@@ -459,6 +442,13 @@ impl ServerClientCore {
         self.request_devo("session/title/update", params).await
     }
 
+    pub(crate) async fn session_delete(
+        &mut self,
+        params: AcpDeleteSessionParams,
+    ) -> Result<AcpDeleteSessionResult> {
+        self.request(ACP_SESSION_DELETE_METHOD, params).await
+    }
+
     pub(crate) async fn session_metadata_update(
         &mut self,
         params: SessionMetadataUpdateParams,
@@ -474,6 +464,13 @@ impl ServerClientCore {
             .await
     }
 
+    pub(crate) async fn session_compaction_update(
+        &mut self,
+        params: SessionCompactionUpdateParams,
+    ) -> Result<SessionCompactionUpdateResult> {
+        self.request_devo("session/compaction/update", params).await
+    }
+
     pub(crate) async fn session_sandbox_profile_update(
         &mut self,
         params: SessionSandboxProfileUpdateParams,
@@ -485,8 +482,15 @@ impl ServerClientCore {
     pub(crate) async fn session_compact(
         &mut self,
         params: SessionCompactParams,
-    ) -> Result<SessionCompactResult> {
+    ) -> Result<TurnStartResult> {
         self.request_devo("session/compact", params).await
+    }
+
+    pub(crate) async fn session_cancel(
+        &mut self,
+        params: AcpCancelParams,
+    ) -> Result<AcpEmptyResult> {
+        self.request(ACP_SESSION_CANCEL_METHOD, params).await
     }
 
     pub(crate) async fn goal_create(
@@ -562,6 +566,27 @@ impl ServerClientCore {
         params: SkillSetEnabledParams,
     ) -> Result<SkillSetEnabledResult> {
         self.request_devo("skills/set_enabled", params).await
+    }
+
+    pub(crate) async fn mcp_list(
+        &mut self,
+        params: devo_protocol::canonical::rpc_admin::McpListParams,
+    ) -> Result<devo_protocol::canonical::rpc_admin::McpListResult> {
+        self.request_devo("mcp/list", params).await
+    }
+
+    pub(crate) async fn mcp_tools(
+        &mut self,
+        params: devo_protocol::canonical::rpc_admin::McpToolsParams,
+    ) -> Result<devo_protocol::canonical::rpc_admin::McpToolsResult> {
+        self.request_devo("mcp/tools", params).await
+    }
+
+    pub(crate) async fn mcp_set_enabled(
+        &mut self,
+        params: devo_protocol::canonical::rpc_admin::McpSetEnabledParams,
+    ) -> Result<devo_protocol::canonical::rpc_admin::McpSetEnabledResult> {
+        self.request_devo("mcp/set_enabled", params).await
     }
 
     pub(crate) async fn model_catalog(
@@ -641,8 +666,46 @@ impl ServerClientCore {
         self.request_devo("turn/interrupt", params).await
     }
 
-    pub(crate) async fn turn_steer(&mut self, params: TurnSteerParams) -> Result<TurnSteerResult> {
-        self.request_devo("turn/steer", params).await
+    pub(crate) async fn session_queue_push(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueuePushParams,
+    ) -> Result<canonical::rpc_turn::SessionQueuePushResult> {
+        self.request_devo("session/queue/push", params).await
+    }
+
+    pub(crate) async fn session_queue_list(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueListParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueListResult> {
+        self.request_devo("session/queue/list", params).await
+    }
+
+    pub(crate) async fn session_queue_update(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueUpdateParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueUpdateResult> {
+        self.request_devo("session/queue/update", params).await
+    }
+
+    pub(crate) async fn session_queue_remove(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueRemoveParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueRemoveResult> {
+        self.request_devo("session/queue/remove", params).await
+    }
+
+    pub(crate) async fn session_queue_steer(
+        &mut self,
+        params: canonical::rpc_turn::SessionQueueSteerParams,
+    ) -> Result<canonical::rpc_turn::SessionQueueSteerResult> {
+        self.request_devo("session/queue/steer", params).await
+    }
+
+    pub(crate) async fn subscription_create(
+        &mut self,
+        params: canonical::event::SubscriptionCreateParams,
+    ) -> Result<canonical::event::SubscriptionCreateResult> {
+        self.request_devo("subscription/create", params).await
     }
 
     pub(crate) async fn reference_search_start(
@@ -777,7 +840,6 @@ impl ServerClientReaderState {
                 "server reader stopped with pending responses"
             );
         }
-        self.acp_terminals.release_all().await;
     }
 
     fn handle_notification(&self, notification: NotificationEnvelope<serde_json::Value>) {
@@ -831,26 +893,6 @@ impl ServerClientReaderState {
             ACP_FS_READ_TEXT_FILE_METHOD | ACP_FS_WRITE_TEXT_FILE_METHOD
         ) {
             match handle_acp_fs_request(id.clone(), method, params).await {
-                Ok(response) => response,
-                Err(message) => acp_client_error_response(id, -32603, message),
-            }
-        } else if matches!(
-            method,
-            ACP_TERMINAL_CREATE_METHOD
-                | ACP_TERMINAL_OUTPUT_METHOD
-                | ACP_TERMINAL_WAIT_FOR_EXIT_METHOD
-                | ACP_TERMINAL_KILL_METHOD
-                | ACP_TERMINAL_RELEASE_METHOD
-        ) {
-            match handle_acp_terminal_request(
-                id.clone(),
-                method,
-                params,
-                self.acp_terminals,
-                self.notifications_tx,
-            )
-            .await
-            {
                 Ok(response) => response,
                 Err(message) => acp_client_error_response(id, -32603, message),
             }
@@ -949,6 +991,8 @@ fn format_protocol_error_code(code: &ProtocolErrorCode) -> &'static str {
         ProtocolErrorCode::ForkTurnNotFound => "fork_turn_not_found",
         ProtocolErrorCode::ForkTurnNotStable => "fork_turn_not_stable",
         ProtocolErrorCode::PermissionDenied => "permission_denied",
+        ProtocolErrorCode::CursorExpired => "cursor_expired",
+        ProtocolErrorCode::QueueItemNotFound => "queue_item_not_found",
         ProtocolErrorCode::WorkspaceUnavailable => "workspace_unavailable",
         ProtocolErrorCode::InheritedSegmentWriteFailed => "inherited_segment_write_failed",
         ProtocolErrorCode::ForkRetentionRequired => "fork_retention_required",
@@ -963,6 +1007,9 @@ fn format_protocol_error_code(code: &ProtocolErrorCode) -> &'static str {
         ProtocolErrorCode::InvalidContentParts => "invalid_content_parts",
         ProtocolErrorCode::InvalidMentions => "invalid_mentions",
         ProtocolErrorCode::WorkspaceRestoreFailedToStart => "workspace_restore_failed_to_start",
+        ProtocolErrorCode::RestorePlanNotFound => "restore_plan_not_found",
+        ProtocolErrorCode::RestorePlanExpired => "restore_plan_expired",
+        ProtocolErrorCode::WorkspaceVersionConflict => "workspace_version_conflict",
         ProtocolErrorCode::InternalError => "internal_error",
     }
 }
@@ -1033,7 +1080,11 @@ fn acp_session_metadata_from_start_params(
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
+        effective_context_window: None,
+        permission_preset: None,
     }
 }
 
@@ -1070,7 +1121,11 @@ fn acp_session_metadata_from_session_info(session_info: &AcpSessionInfo) -> Sess
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
+        effective_context_window: None,
+        permission_preset: None,
     }
 }
 

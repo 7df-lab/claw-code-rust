@@ -64,6 +64,47 @@ impl ToolContent {
         }
     }
 
+    /// Model-facing serialization for tools whose `text` is the stream and whose
+    /// `json` is non-model metadata (e.g. shell exit/cwd). Prefer
+    /// [`Self::into_string`] when JSON carries model-visible payload (images,
+    /// search hits, etc.).
+    pub fn text_for_model(self) -> String {
+        match self {
+            ToolContent::Text(text) => text,
+            ToolContent::Json(json) => json.to_string(),
+            ToolContent::Mixed { text, json } => match text {
+                Some(text) => text,
+                None => json.map(|value| value.to_string()).unwrap_or_default(),
+            },
+        }
+    }
+
+    /// Byte length of [`Self::text_for_model`] without consuming `self`.
+    pub fn text_for_model_byte_len(&self) -> usize {
+        match self {
+            ToolContent::Text(text) => text.len(),
+            ToolContent::Json(json) => json.to_string().len(),
+            ToolContent::Mixed { text, json } => match text {
+                Some(text) => text.len(),
+                None => json.as_ref().map_or(0, |value| value.to_string().len()),
+            },
+        }
+    }
+
+    /// Byte length of [`Self::into_string`] without consuming `self`.
+    pub fn into_string_byte_len(&self) -> usize {
+        match self {
+            ToolContent::Text(text) => text.len(),
+            ToolContent::Json(json) => json.to_string().len(),
+            ToolContent::Mixed { text, json } => {
+                let text_len = text.as_ref().map_or(0, String::len);
+                let json_len = json.as_ref().map_or(0, |value| value.to_string().len());
+                let separator = usize::from(text.is_some() && json.is_some());
+                text_len + separator + json_len
+            }
+        }
+    }
+
     pub fn into_string(self) -> String {
         match self {
             ToolContent::Text(t) => t,
@@ -185,9 +226,30 @@ mod tests {
             json: Some(serde_json::json!({"key": 1})),
         };
         assert_eq!(c.text_part(), Some("text"));
-        let s = c.into_string();
+        assert_eq!(c.text_for_model_byte_len(), 4);
+        let s = c.clone().into_string();
         assert!(s.contains("text"));
         assert!(s.contains("key"));
+        assert_eq!(c.clone().text_for_model(), "text");
+        assert_eq!(c.into_string_byte_len(), s.len());
+    }
+
+    #[test]
+    fn tool_content_mixed_text_for_model_omits_json() {
+        let output = "hello\nworld".to_string();
+        let content = ToolContent::Mixed {
+            text: Some(output.clone()),
+            json: Some(serde_json::json!({
+                "command": "echo hello",
+                "exit": 0,
+                "cwd": "/tmp",
+            })),
+        };
+        let model = content.text_for_model();
+        assert_eq!(model, output);
+        assert_eq!(model.matches("hello").count(), 1);
+        assert!(!model.contains("\"exit\""));
+        assert!(!model.contains("\"command\""));
     }
 
     #[test]

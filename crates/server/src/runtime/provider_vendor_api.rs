@@ -129,6 +129,8 @@ impl ServerRuntime {
                 );
             }
         };
+        drop(store);
+        self.deps.invalidate_workspace_contexts();
 
         serde_json::to_value(SuccessResponse {
             id: request_id,

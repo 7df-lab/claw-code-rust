@@ -20,6 +20,11 @@ pub struct EventContext {
     pub turn_id: Option<TurnId>,
     pub item_id: Option<ItemId>,
     pub seq: u64,
+    /// The item's own sequence number within the session, when the emitter
+    /// allocated one. Additive (P2): absent for older emitters and for
+    /// events without an allocated item sequence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +95,17 @@ pub struct ItemEventPayload {
     pub item: ItemEnvelope,
 }
 
+/// Opt-in typed item event payload (P2, 06-item-model migration step 2):
+/// the same context as [`ItemEventPayload`], but the item is the canonical
+/// typed envelope — a typed `Item` instead of the legacy `ItemKind` +
+/// `serde_json::Value` payload bag. Only emitted to connections that set
+/// `_meta.devo.typedItems` on initialize.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypedItemEventPayload {
+    pub context: EventContext,
+    pub item: crate::canonical::item::ItemEnvelope,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemDeltaPayload {
     pub context: EventContext,
@@ -116,6 +132,10 @@ pub struct TurnFailedPayload {
 pub struct TurnErrorPayload {
     pub code: String,
     pub message: String,
+    /// Optional user-facing next step for recovering from this failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recovery_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,13 +189,17 @@ pub struct TurnUsageUpdatedPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextUsageUpdatedPayload {
+    pub session_id: SessionId,
+    pub occupancy: crate::canonical::item::ContextOccupancy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCallStatusUpdatedPayload {
     pub session_id: SessionId,
     pub turn_id: TurnId,
     pub tool_call_id: String,
     pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub terminal_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,6 +219,13 @@ pub struct SessionStatusChangedPayload {
     pub status: SessionRuntimeStatus,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEffectiveContextWindowUpdatedPayload {
+    pub session_id: SessionId,
+    pub effective_context_window: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionCompactionFailedPayload {
     pub session_id: SessionId,
@@ -206,19 +237,6 @@ pub struct ServerRequestResolvedPayload {
     pub session_id: SessionId,
     pub request_id: SmolStr,
     pub turn_id: Option<TurnId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InputQueueUpdatedPayload {
-    pub session_id: SessionId,
-    pub pending_count: usize,
-    pub pending_texts: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SteerAcceptedPayload {
-    pub session_id: SessionId,
-    pub turn_id: TurnId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,6 +369,9 @@ pub struct ApprovalDecisionPayload {
     pub approval_id: SmolStr,
     pub decision: String,
     pub scope: String,
+    /// Authority that produced the decision. Missing on legacy events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_source: Option<crate::canonical::item::ApprovalDecisionSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -368,6 +389,7 @@ pub enum ServerEvent {
     SessionCompactionCompleted(SessionEventPayload),
     SessionCompactionFailed(SessionCompactionFailedPayload),
     SessionStatusChanged(SessionStatusChangedPayload),
+    SessionEffectiveContextWindowUpdated(SessionEffectiveContextWindowUpdatedPayload),
     SessionArchived(SessionEventPayload),
     SessionUnarchived(SessionEventPayload),
     SessionClosed(SessionEventPayload),
@@ -379,12 +401,11 @@ pub enum ServerEvent {
     TurnPlanUpdated(TurnPlanUpdatedPayload),
     TurnDiffUpdated(TurnEventPayload),
     TurnUsageUpdated(TurnUsageUpdatedPayload),
+    ContextUsageUpdated(ContextUsageUpdatedPayload),
     TurnProviderRetryStatus(TurnProviderRetryStatusPayload),
     WorkspaceChangesUpdated(WorkspaceChangesUpdatedPayload),
     ToolCallStatusUpdated(ToolCallStatusUpdatedPayload),
     RequestUserInput(RequestUserInputPayload),
-    InputQueueUpdated(InputQueueUpdatedPayload),
-    SteerAccepted(SteerAcceptedPayload),
     MessageEditRecorded(MessageEditRecordedPayload),
     TurnSuperseded(TurnSupersededPayload),
     WorkspaceRestoreStarted(WorkspaceRestoreStartedPayload),
@@ -416,6 +437,7 @@ impl ServerEvent {
             Self::SessionDeleted(payload) => Some(payload.session_id),
             Self::SessionCompactionFailed(payload) => Some(payload.session_id),
             Self::SessionStatusChanged(payload) => Some(payload.session_id),
+            Self::SessionEffectiveContextWindowUpdated(payload) => Some(payload.session_id),
             Self::TurnStarted(payload)
             | Self::TurnCompleted(payload)
             | Self::TurnInterrupted(payload)
@@ -423,12 +445,11 @@ impl ServerEvent {
             Self::TurnFailed(payload) => Some(payload.session_id),
             Self::TurnPlanUpdated(payload) => Some(payload.session_id),
             Self::TurnUsageUpdated(payload) => Some(payload.session_id),
+            Self::ContextUsageUpdated(payload) => Some(payload.session_id),
             Self::TurnProviderRetryStatus(payload) => Some(payload.session_id),
             Self::WorkspaceChangesUpdated(payload) => Some(payload.session_id),
             Self::ToolCallStatusUpdated(payload) => Some(payload.session_id),
             Self::RequestUserInput(payload) => Some(payload.request.session_id),
-            Self::InputQueueUpdated(payload) => Some(payload.session_id),
-            Self::SteerAccepted(payload) => Some(payload.session_id),
             Self::MessageEditRecorded(payload) => Some(payload.session_id),
             Self::TurnSuperseded(payload) => Some(payload.session_id),
             Self::WorkspaceRestoreStarted(payload) => Some(payload.session_id),
@@ -454,6 +475,9 @@ impl ServerEvent {
             Self::SessionCompactionCompleted(_) => "session/compaction/completed",
             Self::SessionCompactionFailed(_) => "session/compaction/failed",
             Self::SessionStatusChanged(_) => "session/status/changed",
+            Self::SessionEffectiveContextWindowUpdated(_) => {
+                "session/effective_context_window/updated"
+            }
             Self::SessionArchived(_) => "session/archived",
             Self::SessionUnarchived(_) => "session/unarchived",
             Self::SessionClosed(_) => "session/closed",
@@ -465,12 +489,11 @@ impl ServerEvent {
             Self::TurnPlanUpdated(_) => "turn/plan/updated",
             Self::TurnDiffUpdated(_) => "turn/diff/updated",
             Self::TurnUsageUpdated(_) => "turn/usage/updated",
+            Self::ContextUsageUpdated(_) => "context/usageUpdated",
             Self::TurnProviderRetryStatus(_) => "turn/provider_retry_status",
             Self::WorkspaceChangesUpdated(_) => "workspace/changes/updated",
             Self::ToolCallStatusUpdated(_) => "tool_call/status_updated",
             Self::RequestUserInput(_) => "item/tool/requestUserInput",
-            Self::InputQueueUpdated(_) => "inputQueue/updated",
-            Self::SteerAccepted(_) => "steer/accepted",
             Self::MessageEditRecorded(_) => "message/edit/recorded",
             Self::TurnSuperseded(_) => "turn/superseded",
             Self::WorkspaceRestoreStarted(_) => "workspace_restore_started",
@@ -501,12 +524,11 @@ impl ServerEvent {
             }
             Self::ItemDelta { payload, .. } => payload.context.seq = seq,
             Self::TurnUsageUpdated(_)
+            | Self::ContextUsageUpdated(_)
             | Self::TurnProviderRetryStatus(_)
             | Self::WorkspaceChangesUpdated(_)
             | Self::ToolCallStatusUpdated(_)
             | Self::RequestUserInput(_)
-            | Self::InputQueueUpdated(_)
-            | Self::SteerAccepted(_)
             | Self::MessageEditRecorded(_)
             | Self::TurnSuperseded(_)
             | Self::WorkspaceRestoreStarted(_)
@@ -531,19 +553,6 @@ mod tests {
         WorkspaceChangeCoverage, WorkspaceChangeScope, WorkspaceChangeSetStatus,
         WorkspaceChangeStats, WorkspaceChangeViewStatus,
     };
-
-    #[test]
-    fn input_queue_updated_event_roundtrips() {
-        let payload = InputQueueUpdatedPayload {
-            session_id: SessionId::new(),
-            pending_count: 3,
-            pending_texts: vec!["first".into(), "second".into()],
-        };
-        let json = serde_json::to_string(&payload).expect("serialize");
-        let restored: InputQueueUpdatedPayload = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(restored.pending_count, 3);
-        assert_eq!(restored.pending_texts, vec!["first", "second"]);
-    }
 
     #[test]
     fn turn_failed_payload_serializes_error_and_accepts_legacy_shape() {
@@ -572,6 +581,7 @@ mod tests {
             error: Some(TurnErrorPayload {
                 code: "PROVIDER_SERVER_ERROR".to_string(),
                 message: "Internal server error".to_string(),
+                recovery_hint: None,
             }),
         };
 
@@ -632,18 +642,6 @@ mod tests {
             json.get("input"),
             Some(&serde_json::json!({"filePath": "foo.txt"}))
         );
-    }
-
-    #[test]
-    fn steer_accepted_event_roundtrips() {
-        let turn_id = TurnId::new();
-        let payload = SteerAcceptedPayload {
-            session_id: SessionId::new(),
-            turn_id,
-        };
-        let json = serde_json::to_string(&payload).expect("serialize");
-        let restored: SteerAcceptedPayload = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(restored.turn_id, turn_id);
     }
 
     #[test]
@@ -725,27 +723,6 @@ mod tests {
             "workspace_restore_completed"
         );
         assert_eq!(restore_completed_event.session_id(), Some(session_id));
-    }
-
-    #[test]
-    fn server_event_input_queue_updated_method_name() {
-        let event = ServerEvent::InputQueueUpdated(InputQueueUpdatedPayload {
-            session_id: SessionId::new(),
-            pending_count: 0,
-            pending_texts: vec![],
-        });
-        assert_eq!(event.method_name(), "inputQueue/updated");
-        assert!(event.session_id().is_some());
-    }
-
-    #[test]
-    fn server_event_steer_accepted_method_name() {
-        let event = ServerEvent::SteerAccepted(SteerAcceptedPayload {
-            session_id: SessionId::new(),
-            turn_id: TurnId::new(),
-        });
-        assert_eq!(event.method_name(), "steer/accepted");
-        assert!(event.session_id().is_some());
     }
 
     #[test]

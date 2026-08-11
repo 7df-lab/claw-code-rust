@@ -26,9 +26,11 @@ pub(crate) fn exploration_actions_from_tool_input(
                 .and_then(serde_json::Value::as_str)
                 .map(ToOwned::to_owned),
         }],
-        "code_search" => code_search_action_from_input(command, input)
-            .into_iter()
-            .collect(),
+        "code_search" | "mcp__code_search__code_search" => {
+            code_search_action_from_input(command, input)
+                .into_iter()
+                .collect()
+        }
         _ => Vec::new(),
     }
 }

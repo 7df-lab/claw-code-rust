@@ -195,7 +195,7 @@ pub(crate) fn tool_input_lines(tool_name: &str, input: &Value) -> Vec<Line<'stat
         ),
         "grep" => fields(input, &[("pattern", &["pattern"]), ("path", &["path"])]),
         "find" | "glob" => fields(input, &[("pattern", &["pattern"]), ("path", &["path"])]),
-        "code_search" => fields(
+        "code_search" | "mcp__code_search__code_search" => fields(
             input,
             &[
                 ("operation", &["operation"]),

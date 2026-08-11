@@ -9,7 +9,14 @@ description: 在已配置的 model bindings 之间切换。
 /model
 ```
 
-Picker 会在底部 pane 打开。使用 `Up` 和 `Down` 移动，`Enter` 选择，`Esc` 关闭且不修改模型。
+Picker 会在底部 pane 打开，并替换 composer 输入区域：
+
+- `Up` / `Down`（或 `j` / `k`）在模型列表中移动
+- `Left` / `Right` 在当前聚焦模型支持的推理强度选项间切换
+- `Enter` 一次应用聚焦的模型与所选推理强度
+- `Esc` 关闭且不修改模型
+
+当保存的 binding 较多时，模型列表最多显示 8 行，并滚动以保持聚焦行可见。
 
 ## Picker 显示什么
 
@@ -29,11 +36,11 @@ Picker 来自保存的 model bindings。每个条目显示 display name，并在
 
 ## Reasoning Effort
 
-某些模型暴露 configurable reasoning effort。当你选择这些模型时，Devo 可能先打开第二个 picker 选择 reasoning effort，再完成模型切换。
+某些模型暴露 configurable reasoning effort。对这些模型，picker 在模型列表下方显示横向推理强度选项。切换聚焦模型时会更新可用选项；若先前选中的强度仍被支持则保留，否则回退到该模型的默认值。
 
-Reasoning effort picker 使用模型配置的 capability 和 reasoning-effort options。如果模型没有暴露选项，Devo 会直接应用模型。
+若聚焦模型没有暴露选项，强度行会隐藏，`Enter` 只应用模型。
 
-选择后，Devo 更新 header，并把 model 和 reasoning effort selection 作为 turn context 发送给 runtime。
+确认后，Devo 更新 header，并把 model 和 reasoning effort selection 作为 turn context 发送给 runtime。
 
 ## Session Scope
 

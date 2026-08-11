@@ -26,12 +26,14 @@
 //! 6. If the summarizer LLM call fails with a context‑length error, move the
 //!    newest to‑compact item back into the preserve set and retry.
 
+use devo_protocol::approx_tokens_from_byte_count;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::sleep;
+use tokio_util::sync::CancellationToken;
 
 use crate::context::ContextualUserFragment;
 use crate::context::TokenBudget;
@@ -70,6 +72,9 @@ pub enum CompactionError {
     /// The summarizer returned an empty response.
     #[error("summarizer returned empty response")]
     EmptyResponse,
+    /// Compaction was canceled by the caller.
+    #[error("compaction canceled")]
+    Canceled,
     /// Compaction is not possible after exhausting retries.
     #[error("compaction not possible after {retries} retries")]
     NotPossible {
@@ -90,7 +95,16 @@ pub enum CompactionError {
 pub trait HistorySummarizer: Send + Sync {
     /// Send `messages` (to-compact history followed by a developer compaction
     /// prompt) to the model and return the generated summary text.
-    async fn summarize(&self, messages: Vec<RequestMessage>) -> Result<String, CompactionError>;
+    ///
+    /// When `cancel_token` is set, implementations should return
+    /// [`CompactionError::Canceled`] promptly if it fires while the provider
+    /// call is in flight (typically by racing the request against
+    /// `cancel_token.cancelled()`).
+    async fn summarize(
+        &self,
+        messages: Vec<RequestMessage>,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<String, CompactionError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +189,7 @@ pub async fn compact_history(
     token_info: &TokenInfo,
     summarizer: &dyn HistorySummarizer,
     config: &CompactionConfig,
+    cancel_token: Option<&CancellationToken>,
 ) -> Result<CompactAction, CompactionError> {
     // For auto compaction, skip if already within budget.
     // Proactive compaction always proceeds regardless of budget.
@@ -223,10 +238,15 @@ pub async fn compact_history(
     const MAX_TRANSIENT_RETRIES: u32 = 5;
 
     loop {
+        if cancel_token.is_some_and(CancellationToken::is_cancelled) {
+            return Err(CompactionError::Canceled);
+        }
+
         let messages = summarizer_request_messages(&to_compact);
 
-        let summary = match summarizer.summarize(messages).await {
+        let summary = match summarizer.summarize(messages, cancel_token).await {
             Ok(s) => s,
+            Err(CompactionError::Canceled) => return Err(CompactionError::Canceled),
             Err(CompactionError::ContextTooLong) => {
                 if to_compact.is_empty() {
                     // All items were moved to preserve — nothing to compact.
@@ -245,7 +265,7 @@ pub async fn compact_history(
                 }
                 // Exponential backoff: 2^(retries) * 100ms
                 let delay = Duration::from_millis(100 * (1 << transient_retries));
-                sleep(delay).await;
+                sleep_cancellable(delay, cancel_token).await?;
                 continue;
             }
         };
@@ -261,6 +281,21 @@ pub async fn compact_history(
         compacted.extend(preserved);
 
         return Ok(CompactAction::Replaced(compacted));
+    }
+}
+
+async fn sleep_cancellable(
+    delay: Duration,
+    cancel_token: Option<&CancellationToken>,
+) -> Result<(), CompactionError> {
+    let Some(cancel_token) = cancel_token else {
+        sleep(delay).await;
+        return Ok(());
+    };
+    tokio::select! {
+        biased;
+        () = cancel_token.cancelled() => Err(CompactionError::Canceled),
+        () = sleep(delay) => Ok(()),
     }
 }
 
@@ -423,8 +458,9 @@ fn estimate_item_tokens(item: &ResponseItem) -> usize {
         }
         ResponseItem::ToolCallOutput { content, .. } => content.len(),
     };
-    // Rough estimate: ~4 bytes per token.
-    bytes.div_ceil(4)
+    approx_tokens_from_byte_count(bytes)
+        .try_into()
+        .unwrap_or(usize::MAX)
 }
 
 #[cfg(test)]
@@ -574,6 +610,7 @@ mod tests {
             async fn summarize(
                 &self,
                 _messages: Vec<RequestMessage>,
+                _cancel_token: Option<&CancellationToken>,
             ) -> Result<String, CompactionError> {
                 Ok("summary".to_string())
             }
@@ -600,18 +637,29 @@ mod tests {
             kind: CompactionKind::Auto,
         };
 
-        let action = compact_history(&items, &token_info, &StubSummarizer, &config)
-            .await
-            .expect("auto compaction should succeed");
+        let action = compact_history(
+            &items,
+            &token_info,
+            &StubSummarizer,
+            &config,
+            /*cancel_token*/ None,
+        )
+        .await
+        .expect("auto compaction should succeed");
 
         let proactive_config = CompactionConfig {
             budget: config.budget.clone(),
             kind: CompactionKind::Proactive,
         };
-        let proactive_action =
-            compact_history(&items, &token_info, &StubSummarizer, &proactive_config)
-                .await
-                .expect("proactive compaction should succeed");
+        let proactive_action = compact_history(
+            &items,
+            &token_info,
+            &StubSummarizer,
+            &proactive_config,
+            /*cancel_token*/ None,
+        )
+        .await
+        .expect("proactive compaction should succeed");
 
         match (action, proactive_action) {
             (
@@ -645,6 +693,84 @@ mod tests {
         }
     }
 
+    /// Trace: L2-DES-AGENT-002
+    /// Verifies: cancel token aborts an in-flight history summarizer.
+    #[tokio::test]
+    async fn compact_history_returns_canceled_when_token_fires() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+
+        struct HangingSummarizer {
+            entered: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl HistorySummarizer for HangingSummarizer {
+            async fn summarize(
+                &self,
+                _messages: Vec<RequestMessage>,
+                cancel_token: Option<&CancellationToken>,
+            ) -> Result<String, CompactionError> {
+                self.entered.store(true, Ordering::SeqCst);
+                let Some(cancel_token) = cancel_token else {
+                    std::future::pending::<()>().await;
+                    unreachable!("summarizer should be canceled")
+                };
+                cancel_token.cancelled().await;
+                Err(CompactionError::Canceled)
+            }
+        }
+
+        let items = vec![
+            ResponseItem::Message(Message::user("first")),
+            ResponseItem::Message(Message::assistant_text("reply")),
+            ResponseItem::Message(Message::user("latest")),
+        ];
+        let token_info = TokenInfo {
+            input_tokens: 10,
+            cached_input_tokens: 0,
+            output_tokens: 5,
+        };
+        let config = CompactionConfig {
+            budget: TokenBudget::new(200_000, 8192),
+            kind: CompactionKind::Proactive,
+        };
+        let entered = Arc::new(AtomicBool::new(false));
+        let summarizer = HangingSummarizer {
+            entered: Arc::clone(&entered),
+        };
+        let cancel_token = CancellationToken::new();
+        let cancel_for_task = cancel_token.clone();
+        let compact = tokio::spawn(async move {
+            compact_history(
+                &items,
+                &token_info,
+                &summarizer,
+                &config,
+                Some(&cancel_for_task),
+            )
+            .await
+        });
+
+        for _ in 0..50 {
+            if entered.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            entered.load(Ordering::SeqCst),
+            "summarizer should start before cancel"
+        );
+        cancel_token.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(2), compact)
+            .await
+            .expect("compaction should finish after cancel")
+            .expect("compaction task should not panic");
+        assert!(matches!(result, Err(CompactionError::Canceled)));
+    }
+
     #[tokio::test]
     async fn proactive_compaction_summarizes_all_history_and_preserves_latest_user_suffix() {
         struct StubSummarizer;
@@ -654,6 +780,7 @@ mod tests {
             async fn summarize(
                 &self,
                 messages: Vec<RequestMessage>,
+                _cancel_token: Option<&CancellationToken>,
             ) -> Result<String, CompactionError> {
                 assert_eq!(messages.len(), 4);
                 let last = messages
@@ -682,9 +809,15 @@ mod tests {
             kind: CompactionKind::Proactive,
         };
 
-        let action = compact_history(&items, &token_info, &StubSummarizer, &config)
-            .await
-            .expect("proactive compaction should succeed");
+        let action = compact_history(
+            &items,
+            &token_info,
+            &StubSummarizer,
+            &config,
+            /*cancel_token*/ None,
+        )
+        .await
+        .expect("proactive compaction should succeed");
 
         match action {
             CompactAction::Replaced(compacted) => {
@@ -745,7 +878,10 @@ mod tests {
         };
 
         let expected_bytes = "shell_command".len() + 2 + input.to_string().len();
-        assert_eq!(estimate_item_tokens(&item), expected_bytes.div_ceil(4));
+        assert_eq!(
+            estimate_item_tokens(&item),
+            approx_tokens_from_byte_count(expected_bytes) as usize
+        );
     }
 
     #[test]

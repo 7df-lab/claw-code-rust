@@ -26,11 +26,11 @@
 ## スクリーンショット
 
 <p align="center">
-  <img width="100%" alt="Devo desktop coding agent app がリポジトリの会話、プロジェクトサイドバー、モデル制御を表示している画面" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo terminal TUI coding agent がローカルリポジトリでモデル、コンテキスト、token 状態を表示している画面" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
 </p>
 
 <p align="center">
-  <img width="100%" alt="Devo terminal TUI coding agent がローカルリポジトリでモデル、コンテキスト、token 状態を表示している画面" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo desktop coding agent app がリポジトリの会話、プロジェクトサイドバー、モデル制御を表示している画面" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
 </p>
 
 ## Devo を選ぶ理由
@@ -49,19 +49,18 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
   日常の coding を行い、端末ネイティブな自動化、remote shell、scriptable workflow が
   必要なときは CLI/TUI を使えます。
 - **Agent Runtime として拡張可能** - MCP server、再利用可能な skills、
-  ローカルのセマンティックコード検索、監査可能なセッション、権限管理、
-  マルチエージェント flow は、一回限りの prompt ではなくランタイム機能です。
+  監査可能なセッション、権限管理、マルチエージェント flow は、一回限りの
+  prompt ではなくランタイム機能です。
 
 ## 機能
 
-- **組み込みのセマンティックコード検索** - ローカル CPU のコード埋め込みモデルを実行し、
-  dense retrieval と BM25 キーワードマッチングを組み合わせることで、grep/find のみに頼るエージェントより
-  コード検索のコンテキストを削減します。
 - **Model-neutral provider runtime** - provider/model binding により、OpenAI 互換、
   Anthropic 互換、DeepSeek、Qwen、Kimi、GLM、MiniMax、Xiaomi MiMo、
   OpenRouter、またはローカルエンドポイントを利用できます。
 - **MCP サポート** - [Model Context Protocol](https://modelcontextprotocol.io/)
-  サーバーを通じて外部ツールとコンテキストを接続できます。
+  サーバーを通じて外部ツールとコンテキストを接続できます。CLI で
+  `devo mcp add|list|enable|disable|remove` により追加・管理できます（
+  [設定](./docs/configuration.ja.md#mcp-サーバー) を参照）。
 - **Skill サポート** - 再利用可能なワークフロー、手順、スクリプト、参照資料を
   [Agent Skills](https://agentskills.io/) としてパッケージ化できます。
 - **長時間タスクのサポート** - 複数ターンにまたがる作業でも Devo が自動的にコンテキストを管理し、
@@ -75,6 +74,11 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
 - **コストとコンテキストの可視化** - プロバイダーが提供する場合、入力/出力 token、cached token、
   コンテキストウィンドウ使用量を表示します。
 - **軽量な Rust ランタイム** - Rust で構築され、メモリ使用量が小さく、コンパクトなローカルランタイムを備えます。
+- **組み込みセマンティックコード検索（MCP）** - 同梱のオプション MCP サーバー
+  （`code_search` / `devo-code-search-mcp`）。**既定では無効**です。ローカル CPU の
+  コード埋め込みモデルを実行し、dense retrieval と BM25 を組み合わせて、grep/find
+  のみのエージェントよりコード検索コンテキストを削減します。
+  `devo mcp enable code_search` または TUI `/mcps` で有効化します。
 
 ## 検証済みモデル
 
@@ -204,9 +208,22 @@ devo resume <session-id>
 
 ## 設定
 
-`devo onboard` が推奨されるセットアップ方法です。手動の `config.toml`
-パス、provider/model binding フィールド、カスタムモデルカタログの例は
-[設定](./docs/configuration.ja.md) を参照してください。
+`devo onboard` が推奨されるセットアップ方法です。provider/model binding を
+`config.toml` に書き、API key をユーザースコープの `auth.json` に保存します。
+
+自分の API key とカスタムモデルを手動で設定する場合:
+
+1. `config.toml` で `[model.<slug>]` パラメータ、`[providers.<id>]`、
+   `[model_bindings.<id>]` を定義します。
+2. シークレットを `DEVO_HOME/auth.json` に置き、`[providers.<id>].credential`
+   からその credential id を参照します — API key 自体を `config.toml` に
+   書かないでください。
+3. エンドポイントのプロトコルに合わせて `invocation_method` を
+   `openai_chat_completions`、`openai_responses`、`anthropic_messages` の
+   いずれかに設定します。
+
+完全な作業例（カスタムモデルパラメータ + API key）とプロトコルの説明は
+[設定](./docs/configuration.ja.md#自分の-api-key-を使う) を参照してください。
 
 ## Docs
 
@@ -226,6 +243,12 @@ Devo は pre-1.0 で、活発に開発されています。ローカル評価、
 OpenAI 互換 Chat Completions、OpenAI 互換 Responses、または Anthropic Messages API をサポートするモデルエンドポイントであれば、
 provider/model binding を通じて接続できます。
 
+### 自分の API key を使うには?
+
+`devo onboard` を使うか、ユーザースコープの `auth.json` を編集し、
+`config.toml` の `[providers.<id>].credential` からその credential id を参照します。
+詳細は [設定](./docs/configuration.ja.md#自分の-api-key-を使う) を参照してください。
+
 ### Desktop app と TUI/CLI のどちらを使うべきですか?
 
 視覚的なオンボーディング、セッション閲覧、グラフィカルな coding workspace が
@@ -243,16 +266,6 @@ TUI/CLI を使ってください。どちらの surface も同じローカル De
 - 検証コマンドと回帰テストを伴う、焦点を絞った修正。
 
 変更について議論するには issue または pull request を開いてください。
-
-## Star 履歴
-
-<a href="https://www.star-history.com/?repos=7df-lab%2Fdevo&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left" />
- </picture>
-</a>
 
 ## ライセンス
 

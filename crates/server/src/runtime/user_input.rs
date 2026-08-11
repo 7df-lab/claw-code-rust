@@ -51,6 +51,17 @@ impl ServerRuntime {
             }
         };
 
+        if let Some(persisted) = &pending.persisted {
+            self.persist_answered_user_input_item(
+                params.session_id,
+                params.turn_id,
+                request_key,
+                &pending.questions,
+                &params.response,
+                persisted,
+            )
+            .await;
+        }
         let _ = pending.tx.send(params.response);
         self.broadcast_event(ServerEvent::ServerRequestResolved(
             ServerRequestResolvedPayload {
@@ -84,11 +95,24 @@ impl ServerRuntime {
             ));
         }
 
+        let persisted = self
+            .persist_waiting_user_input_item(
+                session_id,
+                turn_id,
+                request_id.clone(),
+                &args.questions,
+            )
+            .await;
         self.session_interactive
             .register_pending_user_input(
                 session_id,
                 request_id.clone(),
-                PendingUserInput { turn_id, tx },
+                PendingUserInput {
+                    turn_id,
+                    questions: args.questions.clone(),
+                    persisted,
+                    tx,
+                },
             )
             .await;
 

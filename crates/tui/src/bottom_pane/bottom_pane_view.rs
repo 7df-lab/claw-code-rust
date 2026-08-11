@@ -2,6 +2,7 @@ use crate::render::renderable::Renderable;
 use crossterm::event::KeyEvent;
 
 use super::CancellationEvent;
+use super::ModelPickerSelection;
 
 /// Trait implemented by every view that can be shown in the bottom pane.
 pub(crate) trait BottomPaneView: Renderable {
@@ -27,12 +28,44 @@ pub(crate) trait BottomPaneView: Renderable {
         None
     }
 
-    fn take_model_selection(&mut self) -> Option<String> {
+    fn take_model_selection(&mut self) -> Option<ModelPickerSelection> {
         None
     }
 
     fn take_theme_selection(&mut self) -> Option<String> {
         None
+    }
+
+    /// Refresh Settings Hub rows when nested editors change current values.
+    fn update_settings_hub_snapshot(
+        &mut self,
+        _snapshot: super::settings_hub_view::SettingsHubSnapshot,
+    ) -> bool {
+        false
+    }
+
+    /// Refresh an open `/status` panel when occupancy or session totals change.
+    fn update_status_panel(
+        &mut self,
+        _occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+        _session: super::SessionTokenTotals,
+    ) -> bool {
+        false
+    }
+
+    /// Propagate the active UI accent into open views (for example Settings Hub tabs).
+    fn set_accent_color(&mut self, _color: ratatui::style::Color) {}
+
+    /// When true, the view replaces the composer input area instead of stacking
+    /// below a visible draft.
+    ///
+    /// Views that replace the composer (`true`) should still go through
+    /// [`super::selection_popup_common::render_menu_surface`] for consistent
+    /// inset padding. Stacked overlays (`false`) may also use it when they need
+    /// the same chrome (for example `/status`); otherwise they stay visually
+    /// light so the draft input remains the primary surface.
+    fn replaces_composer(&self) -> bool {
+        false
     }
 
     /// Handle Ctrl-C while this view is active.

@@ -14,6 +14,7 @@ use chrono::Datelike;
 use chrono::SecondsFormat;
 use chrono::Utc;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use devo_core::CommandExecutionItem;
 use devo_core::CompactionSnapshotLine;
@@ -24,8 +25,10 @@ use devo_core::ItemRecord;
 use devo_core::Message;
 use devo_core::MessageEditRecordedLine;
 use devo_core::MessageEditRecordedRecord;
+use devo_core::ParsedRolloutLine;
 use devo_core::Role;
 use devo_core::RolloutLine;
+use devo_core::RolloutLineReadError;
 use devo_core::SessionContext;
 use devo_core::SessionContextUpdatedLine;
 use devo_core::SessionId;
@@ -54,8 +57,16 @@ use devo_core::TurnWorkspaceRestoreCompletedLine;
 use devo_core::TurnWorkspaceRestoreCompletedRecord;
 use devo_core::TurnWorkspaceRestoreStartedLine;
 use devo_core::TurnWorkspaceRestoreStartedRecord;
+use devo_core::V2InverseProjector;
 use devo_core::Worklog;
+use devo_core::legacy_projector::LegacyProjector;
+use devo_core::parse_rollout_line;
+use devo_core::rollout_v2::RolloutLineV2;
+use devo_core::{EVENT_SCHEMA_VERSION, events_from_v2_line, source_fact_id};
+use devo_protocol::canonical::event::{EventEnvelope, EventMeta};
+use devo_protocol::canonical::ids::EventId;
 
+use crate::db::{Database, NewEventLogRow};
 use crate::execution::PersistedTurnItem;
 use crate::execution::RuntimeSession;
 use crate::execution::ServerRuntimeDependencies;
@@ -71,6 +82,22 @@ pub(crate) struct RolloutStore {
     /// Per-file locks that serialise concurrent writes to the same rollout file,
     /// preventing interleaved JSON lines.
     file_locks: Arc<StdMutex<HashMap<PathBuf, Arc<StdMutex<()>>>>>,
+    /// Per-file write-path state (v2 single-write, 05 §2.2). One instance per
+    /// rollout path, hydrated from the on-disk history on first append so
+    /// item seqs and approval folds never collide with it.
+    write_states: Arc<StdMutex<HashMap<PathBuf, WritePathState>>>,
+    /// Delivery-log sink (08 §5/§7): after each fsynced append, derived
+    /// events are projected into the SQLite `event_log` (best effort; the
+    /// startup reconciler backfills anything missed). `None` in tests that
+    /// do not exercise the event log.
+    event_log: Option<Arc<Database>>,
+}
+
+/// Per-file write-path state: the forward projector plus the index of the
+/// next JSONL row to be written (used as the `source_fact_id` line index).
+pub(crate) struct WritePathState {
+    projector: LegacyProjector,
+    next_line_index: u64,
 }
 
 impl std::fmt::Debug for RolloutStore {
@@ -86,16 +113,20 @@ impl Clone for RolloutStore {
         Self {
             data_root: self.data_root.clone(),
             file_locks: Arc::clone(&self.file_locks),
+            write_states: Arc::clone(&self.write_states),
+            event_log: self.event_log.as_ref().map(Arc::clone),
         }
     }
 }
 
 impl RolloutStore {
     /// Creates a rollout store rooted at the supplied server home directory.
-    pub(crate) fn new(data_root: PathBuf) -> Self {
+    pub(crate) fn new(data_root: PathBuf, event_log: Option<Arc<Database>>) -> Self {
         Self {
             data_root,
             file_locks: Arc::new(StdMutex::new(HashMap::new())),
+            write_states: Arc::new(StdMutex::new(HashMap::new())),
+            event_log,
         }
     }
 
@@ -140,6 +171,7 @@ impl RolloutStore {
             title_state,
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
+            effective_context_window: None,
             tokens_used: 0,
             first_user_message: None,
             archived_at: None,
@@ -149,6 +181,8 @@ impl RolloutStore {
             parent_session_id,
             session_context: None,
             latest_turn_context: None,
+            collaboration_mode: None,
+            permission_preset: None,
             schema_version: 2,
         }
     }
@@ -524,6 +558,9 @@ impl RolloutStore {
             .with_context(|| format!("open rollout file {}", rollout_path.display()))?;
         let reader = BufReader::new(file);
         let mut replay = ReplayState::default();
+        // Dual read (05 §2.2): legacy lines replay directly, v2 lines are
+        // projected back into legacy lines by the per-load inverse.
+        let inverse = V2InverseProjector::new();
         let mut lines = reader.lines().enumerate().peekable();
 
         while let Some((line_index, line)) = lines.next() {
@@ -532,26 +569,101 @@ impl RolloutStore {
             if line.trim().is_empty() {
                 continue;
             }
-            match serde_json::from_str::<RolloutLine>(&line) {
-                Ok(parsed) => replay.apply_line(parsed)?,
+            let parsed = match parse_rollout_line(&line) {
+                Ok(parsed) => parsed,
+                // A truncated final line is a crash tail: the write never
+                // completed, nothing was acknowledged.
+                Err(RolloutLineReadError::TruncatedTail) if lines.peek().is_none() => break,
+                // Fail closed: a damaged or unsupported mid-file line means
+                // the session's history is unreadable past this point; the
+                // session refuses to resume rather than silently dropping
+                // history and appending onto a fork.
                 Err(error) => {
-                    if lines.peek().is_none() {
-                        break;
+                    return Err(error).with_context(|| {
+                        format!(
+                            "rollout {} is damaged at line {}; refusing to resume",
+                            rollout_path.display(),
+                            line_index + 1
+                        )
+                    });
+                }
+            };
+            match parsed {
+                ParsedRolloutLine::Legacy(legacy) => replay.apply_line(*legacy)?,
+                ParsedRolloutLine::V2(v2) => {
+                    for legacy_line in inverse.project_line(&v2).with_context(|| {
+                        format!("project v2 line from {}", rollout_path.display())
+                    })? {
+                        replay.apply_line(legacy_line)?;
                     }
-                    tracing::warn!(
-                        rollout_path = %rollout_path.display(),
-                        line_number = line_index + 1,
-                        error = %error,
-                        "skipping corrupt rollout line"
-                    );
                 }
             }
         }
 
-        replay
+        let mut recovered = replay
             .into_runtime_session(deps)
             .await
-            .with_context(|| format!("replay rollout {}", rollout_path.display()))
+            .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
+        // Inverse-projected (v2) session records carry an empty rollout_path
+        // by design; the real location is always the file being read.
+        if let Some(record) = recovered.record.as_mut()
+            && record.rollout_path.as_os_str().is_empty()
+        {
+            record.rollout_path = rollout_path.to_path_buf();
+        }
+        Ok(recovered)
+    }
+
+    /// Reads durable workspace checkpoints without reconstructing runtime state.
+    ///
+    /// P4d rollback plans need the pre-turn ghost commit plus its untracked
+    /// manifest. This follows the same dual-read and fail-closed rules as
+    /// `load_session_from_rollout`.
+    pub(crate) fn workspace_checkpoints(
+        &self,
+        record: &SessionRecord,
+    ) -> Result<Vec<TurnWorkspaceCheckpointRecordedRecord>> {
+        let file = File::open(&record.rollout_path)
+            .with_context(|| format!("open rollout file {}", record.rollout_path.display()))?;
+        let reader = BufReader::new(file);
+        let inverse = V2InverseProjector::new();
+        let mut checkpoints = Vec::new();
+        let mut lines = reader.lines().enumerate().peekable();
+        while let Some((line_index, line)) = lines.next() {
+            let line =
+                line.with_context(|| format!("read line from {}", record.rollout_path.display()))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let parsed = match parse_rollout_line(&line) {
+                Ok(parsed) => parsed,
+                Err(RolloutLineReadError::TruncatedTail) if lines.peek().is_none() => break,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "rollout {} is damaged at line {}; refusing checkpoint read",
+                            record.rollout_path.display(),
+                            line_index + 1
+                        )
+                    });
+                }
+            };
+            let legacy_lines = match parsed {
+                ParsedRolloutLine::Legacy(legacy) => vec![*legacy],
+                ParsedRolloutLine::V2(v2) => inverse.project_line(&v2).with_context(|| {
+                    format!(
+                        "project v2 checkpoint line from {}",
+                        record.rollout_path.display()
+                    )
+                })?,
+            };
+            for legacy in legacy_lines {
+                if let RolloutLine::TurnWorkspaceCheckpointRecorded(line) = legacy {
+                    checkpoints.push(line.record);
+                }
+            }
+        }
+        Ok(checkpoints)
     }
 
     pub(crate) fn rollout_paths(&self) -> Result<Vec<PathBuf>> {
@@ -578,6 +690,68 @@ impl RolloutStore {
         partition.join(format!("rollout-{timestamp}-{session_id}.jsonl"))
     }
 
+    /// Appends one legacy-shaped line to the rollout file. The write path is
+    /// single-write v2 (05 §2.2): the line is projected through the per-file
+    /// [`LegacyProjector`] and every resulting v2 line becomes its own JSONL
+    /// row. Legacy callers (the typed wrappers above) are unchanged.
+    pub(crate) fn append_canonical_item(
+        &self,
+        record: &SessionRecord,
+        item: devo_protocol::canonical::item::ItemEnvelope,
+    ) -> Result<()> {
+        let line = RolloutLineV2::Item {
+            v: 2,
+            timestamp: Utc::now(),
+            item,
+        };
+        self.append_v2_lines(&record.rollout_path, vec![line])
+    }
+
+    pub(crate) fn append_goal_state(
+        &self,
+        rollout_path: &Path,
+        session_id: SessionId,
+        goal: Option<serde_json::Value>,
+    ) -> Result<()> {
+        self.append_v2_lines(
+            rollout_path,
+            vec![RolloutLineV2::Internal {
+                v: 2,
+                timestamp: Utc::now(),
+                session_id: devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::from(
+                    session_id,
+                )),
+                turn_id: None,
+                seq: 0,
+                entry: devo_core::InternalRecordV2::GoalState {
+                    schema_version: 1,
+                    goal,
+                },
+            }],
+        )
+    }
+
+    pub(crate) fn append_usage_record(
+        &self,
+        rollout_path: &Path,
+        session_id: SessionId,
+        record: devo_protocol::canonical::usage::UsageRecord,
+    ) -> Result<()> {
+        self.append_v2_lines(
+            rollout_path,
+            vec![RolloutLineV2::Internal {
+                v: 2,
+                timestamp: record.recorded_at,
+                session_id: devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::from(
+                    session_id,
+                )),
+                turn_id: record.turn_id.clone(),
+                seq: 0,
+                entry: devo_core::InternalRecordV2::UsageRecord { record },
+            }],
+        )
+    }
+
     fn append_line(&self, rollout_path: &Path, line: &RolloutLine) -> Result<()> {
         if let Some(parent) = rollout_path.parent() {
             std::fs::create_dir_all(parent)
@@ -596,19 +770,258 @@ impl RolloutStore {
                 .clone()
         };
         let _guard = file_lock.lock().expect("rollout per-file lock poisoned");
+
+        let mut write_states = self
+            .write_states
+            .lock()
+            .expect("rollout write-state table poisoned");
+        let state = match write_states.get_mut(rollout_path) {
+            Some(state) => state,
+            None => {
+                let state = hydrate_write_state(rollout_path)?;
+                write_states
+                    .entry(rollout_path.to_path_buf())
+                    .or_insert(state)
+            }
+        };
+        let v2_lines = state
+            .projector
+            .project_line(line)
+            .with_context(|| format!("project rollout line for {}", rollout_path.display()))?;
+        self.write_v2_lines(rollout_path, state, &v2_lines)
+    }
+
+    fn append_v2_lines(&self, rollout_path: &Path, v2_lines: Vec<RolloutLineV2>) -> Result<()> {
+        if let Some(parent) = rollout_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create rollout directory {}", parent.display()))?;
+        }
+        let file_lock = {
+            let mut locks = self
+                .file_locks
+                .lock()
+                .expect("rollout file-locks table poisoned");
+            locks
+                .entry(rollout_path.to_path_buf())
+                .or_insert_with(|| Arc::new(StdMutex::new(())))
+                .clone()
+        };
+        let _guard = file_lock.lock().expect("rollout per-file lock poisoned");
+        let mut write_states = self
+            .write_states
+            .lock()
+            .expect("rollout write-state table poisoned");
+        let state = match write_states.get_mut(rollout_path) {
+            Some(state) => state,
+            None => {
+                let state = hydrate_write_state(rollout_path)?;
+                write_states
+                    .entry(rollout_path.to_path_buf())
+                    .or_insert(state)
+            }
+        };
+        for line in &v2_lines {
+            state.projector.observe_v2_line(line);
+        }
+        self.write_v2_lines(rollout_path, state, &v2_lines)
+    }
+
+    fn write_v2_lines(
+        &self,
+        rollout_path: &Path,
+        state: &mut WritePathState,
+        v2_lines: &[RolloutLineV2],
+    ) -> Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(rollout_path)
             .with_context(|| format!("open rollout file {}", rollout_path.display()))?;
-        serde_json::to_writer(&mut file, line)
-            .with_context(|| format!("serialize rollout line {}", rollout_path.display()))?;
-        file.write_all(b"\n")
-            .with_context(|| format!("write rollout newline {}", rollout_path.display()))?;
+        let first_line_index = state.next_line_index;
+        for v2_line in v2_lines {
+            serde_json::to_writer(&mut file, v2_line)
+                .with_context(|| format!("serialize rollout line {}", rollout_path.display()))?;
+            file.write_all(b"\n")
+                .with_context(|| format!("write rollout newline {}", rollout_path.display()))?;
+        }
         file.flush()
             .with_context(|| format!("flush rollout file {}", rollout_path.display()))?;
+        // The rollout is the event log: an acknowledged write must survive a
+        // crash, so every append ends in fsync (file data only, not the
+        // directory entry — matches the pre-v2 durability floor plus the
+        // event-log requirement).
+        file.sync_data()
+            .with_context(|| format!("fsync rollout file {}", rollout_path.display()))?;
+        state.next_line_index += v2_lines.len() as u64;
+
+        // Outbox projection (08 §5/§7): derive delivery-log events from the
+        // fsynced facts. Best effort — a failure here is backfilled by the
+        // startup reconciler, so a crash may delay an event but never lose
+        // or duplicate it.
+        if let Some(db) = &self.event_log
+            && let Err(error) =
+                project_events_into_log(db, rollout_path, first_line_index, v2_lines)
+        {
+            tracing::warn!(
+                rollout = %rollout_path.display(),
+                %error,
+                "failed to project events into event_log; reconciliation will backfill"
+            );
+        }
         Ok(())
     }
+}
+
+/// Derives delivery-log rows from freshly written v2 lines and inserts them
+/// idempotently, then advances the projection watermark.
+fn project_events_into_log(
+    db: &Database,
+    rollout_path: &Path,
+    first_line_index: u64,
+    v2_lines: &[RolloutLineV2],
+) -> Result<()> {
+    let mut rows = Vec::new();
+    let mut last_line_index = first_line_index;
+    for (offset, v2_line) in v2_lines.iter().enumerate() {
+        let line_index = first_line_index + offset as u64;
+        last_line_index = line_index;
+        rows.extend(event_log_rows_for_v2_line(
+            rollout_path,
+            line_index,
+            0,
+            v2_line,
+        )?);
+    }
+    db.insert_event_log_rows(&rows)?;
+    if !v2_lines.is_empty() {
+        db.set_projection_watermark(rollout_path, last_line_index)?;
+    }
+    Ok(())
+}
+
+/// Builds the delivery-log rows derived from one v2 rollout fact (also used
+/// by the startup reconciler, which passes a nonzero `sub_index` for v2
+/// lines expanded from a packed legacy row).
+pub(crate) fn event_log_rows_for_v2_line(
+    rollout_path: &Path,
+    line_index: u64,
+    sub_index: u64,
+    v2_line: &RolloutLineV2,
+) -> Result<Vec<NewEventLogRow>> {
+    let timestamp = v2_line_timestamp(v2_line);
+    let mut rows = Vec::new();
+    for derived in events_from_v2_line(v2_line) {
+        let envelope = EventEnvelope {
+            meta: EventMeta {
+                event_id: EventId::new(),
+                stream_id: derived.stream_id.clone(),
+                // Allocated by the event_log insert (per-stream monotonic);
+                // replay hydrates meta.seq from the stored row.
+                seq: None,
+                emitted_at: timestamp,
+                persisted: true,
+                schema_version: EVENT_SCHEMA_VERSION,
+                actor_client_id: None,
+            },
+            notification: derived.notification,
+        };
+        rows.push(NewEventLogRow {
+            source_fact_id: source_fact_id(rollout_path, line_index, sub_index),
+            event_kind: derived.event_kind.to_owned(),
+            stream_id: derived.stream_id,
+            event_id: envelope.meta.event_id.to_string(),
+            payload: serde_json::to_string(&envelope).context("serialize event envelope")?,
+            created_at: timestamp.to_rfc3339(),
+        });
+    }
+    Ok(rows)
+}
+
+/// The wall-clock timestamp carried by any v2 line variant.
+fn v2_line_timestamp(line: &RolloutLineV2) -> chrono::DateTime<Utc> {
+    match line {
+        RolloutLineV2::SessionMeta { timestamp, .. }
+        | RolloutLineV2::Turn { timestamp, .. }
+        | RolloutLineV2::Item { timestamp, .. }
+        | RolloutLineV2::Internal { timestamp, .. }
+        | RolloutLineV2::SessionTitleUpdated { timestamp, .. }
+        | RolloutLineV2::CompactionSnapshot { timestamp, .. }
+        | RolloutLineV2::SessionRollback { timestamp, .. }
+        | RolloutLineV2::WorkspaceCheckpoint { timestamp, .. }
+        | RolloutLineV2::WorkspaceChange { timestamp, .. }
+        | RolloutLineV2::WorkspaceRestoreStarted { timestamp, .. }
+        | RolloutLineV2::WorkspaceRestoreCompleted { timestamp, .. } => *timestamp,
+    }
+}
+
+/// Builds the write-path projector for an existing rollout file by replaying
+/// its current contents: legacy lines go through the forward projector (so
+/// the seq counter and approval folds advance exactly as if the file had
+/// been written through the v2 path), v2 lines re-sync that state via
+/// [`LegacyProjector::observe_v2_line`]. Bounded per path: runs once, on the
+/// first append, and the result is cached in the store.
+///
+/// Fails closed on any damaged or unsupported line: appending onto history
+/// the projector could not fully read would fork the session's history.
+/// Builds the write-path state for an existing rollout file by replaying its
+/// current contents: legacy lines go through the forward projector (so the
+/// seq counter and approval folds advance exactly as if the file had been
+/// written through the v2 path), v2 lines re-sync that state via
+/// [`LegacyProjector::observe_v2_line`]. Bounded per path: runs once, on the
+/// first append, and the result is cached in the store. Also returns the next
+/// JSONL row index, which becomes the `source_fact_id` line index of every
+/// subsequent append.
+///
+/// Fails closed on any damaged or unsupported line: appending onto history
+/// the projector could not fully read would fork the session's history.
+fn hydrate_write_state(rollout_path: &Path) -> Result<WritePathState> {
+    let mut projector = LegacyProjector::new();
+    let mut next_line_index = 0u64;
+    let file = match File::open(rollout_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(WritePathState {
+                projector,
+                next_line_index,
+            });
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("open rollout file {}", rollout_path.display()));
+        }
+    };
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines().enumerate().peekable();
+    while let Some((line_index, line)) = lines.next() {
+        let line = line.with_context(|| format!("read line from {}", rollout_path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_rollout_line(&line) {
+            Ok(ParsedRolloutLine::Legacy(legacy)) => {
+                projector.project_line(&legacy).with_context(|| {
+                    format!("hydrate projector from {}", rollout_path.display())
+                })?;
+            }
+            Ok(ParsedRolloutLine::V2(v2)) => projector.observe_v2_line(&v2),
+            Err(RolloutLineReadError::TruncatedTail) if lines.peek().is_none() => break,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "rollout {} is damaged at line {}; refusing to append",
+                        rollout_path.display(),
+                        line_index + 1
+                    )
+                });
+            }
+        }
+        // The line index counts physical JSONL rows regardless of format.
+        next_line_index += 1;
+    }
+    Ok(WritePathState {
+        projector,
+        next_line_index,
+    })
 }
 
 #[derive(Default)]
@@ -617,6 +1030,7 @@ struct ReplayState {
     latest_turn: Option<TurnRecord>,
     latest_turn_metadata: Option<TurnMetadata>,
     latest_query_usage: Option<devo_protocol::TurnUsage>,
+    latest_context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
     turn_records_by_id: HashMap<TurnId, TurnRecord>,
     loaded_item_count: u64,
     next_item_seq: u64,
@@ -643,6 +1057,27 @@ struct ReplayState {
     superseded_turn_ids: HashSet<TurnId>,
     summarized_turn_ids: HashSet<TurnId>,
     last_activity_at: Option<chrono::DateTime<Utc>>,
+}
+
+/// Auto-compact / status pressure restored on resume.
+///
+/// Prefers post-compaction (or tip) occupancy so a prior large query total cannot
+/// re-trigger compaction after the context was already reduced. Falls back to
+/// latest-query display total, then the reconstituted prompt estimate.
+fn resume_context_pressure_tokens(
+    occupancy: Option<&devo_protocol::canonical::item::ContextOccupancy>,
+    latest_query_usage: Option<&devo_protocol::TurnUsage>,
+    prompt_token_estimate: usize,
+) -> (usize, usize) {
+    let last_turn_tokens = occupancy
+        .map(|occupancy| occupancy.total_tokens as usize)
+        .or_else(|| latest_query_usage.map(devo_protocol::TurnUsage::display_total_tokens))
+        .unwrap_or(prompt_token_estimate);
+    let last_input_tokens = latest_query_usage
+        .map(|usage| usage.input_tokens as usize)
+        .or_else(|| occupancy.map(|occupancy| occupancy.total_tokens as usize))
+        .unwrap_or(prompt_token_estimate);
+    (last_turn_tokens, last_input_tokens)
 }
 
 impl ReplayState {
@@ -695,6 +1130,9 @@ impl ReplayState {
                     self.last_turn_tokens = 0;
                     self.latest_query_usage = None;
                 }
+                if let Some(occupancy) = turn.context_occupancy.clone() {
+                    self.latest_context_occupancy = Some(occupancy);
+                }
                 self.latest_turn_metadata = Some(turn_metadata_from_record(&turn));
                 self.turn_kinds_by_id.insert(turn.id, turn.kind.clone());
                 if let Some(session_context) = turn.session_context.clone() {
@@ -743,6 +1181,9 @@ impl ReplayState {
                 self.session_context_recorded = true;
             }
             RolloutLine::CompactionSnapshot(line) => {
+                if let Some(occupancy) = line.context_occupancy.clone() {
+                    self.latest_context_occupancy = Some(occupancy);
+                }
                 self.latest_compaction_snapshot = Some(*line);
             }
             RolloutLine::MessageEditRecorded(line) => {
@@ -897,6 +1338,32 @@ impl ReplayState {
         core_session.latest_turn_context = self
             .latest_turn_context
             .or_else(|| record.latest_turn_context.clone());
+        if let Some(latest_turn_context) = core_session.latest_turn_context.as_ref() {
+            core_session.collaboration_mode = latest_turn_context.collaboration_mode;
+        }
+        if let Some(mode) = record.collaboration_mode {
+            core_session.collaboration_mode = mode;
+        }
+        if let Some(preset) = record.permission_preset {
+            let safety_preset = match preset {
+                devo_protocol::PermissionPreset::Default => devo_safety::PermissionPreset::Default,
+                devo_protocol::PermissionPreset::AutoReview => {
+                    devo_safety::PermissionPreset::AutoReview
+                }
+                devo_protocol::PermissionPreset::FullAccess => {
+                    devo_safety::PermissionPreset::FullAccess
+                }
+            };
+            let profile = devo_safety::RuntimePermissionProfile::from_preset(
+                safety_preset,
+                record.cwd.clone(),
+            )
+            .with_additional_roots(record.additional_directories.clone());
+            let sandbox = Some(profile.implied_sandbox_profile().to_string());
+            core_session.config.permission_mode = profile.permission_mode();
+            core_session.config.permission_profile = profile;
+            core_session.config.sandbox_profile = sandbox;
+        }
         core_session.turn_count = self.turns_seen as usize;
         core_session.total_input_tokens = self.total_input_tokens;
         core_session.total_output_tokens = self.total_output_tokens;
@@ -912,18 +1379,15 @@ impl ReplayState {
             devo_protocol::approx_tokens_from_byte_count(prompt_bytes)
                 .try_into()
                 .unwrap_or(usize::MAX);
-        core_session.last_input_tokens = self
-            .latest_query_usage
-            .as_ref()
-            .map(|usage| usage.input_tokens as usize)
-            .unwrap_or(core_session.prompt_token_estimate);
-        core_session.last_turn_tokens = self
-            .latest_query_usage
-            .as_ref()
-            .map(devo_protocol::TurnUsage::display_total_tokens)
-            .unwrap_or(core_session.prompt_token_estimate);
+        let (last_turn_tokens, last_input_tokens) = resume_context_pressure_tokens(
+            self.latest_context_occupancy.as_ref(),
+            self.latest_query_usage.as_ref(),
+            core_session.prompt_token_estimate,
+        );
+        core_session.last_input_tokens = last_input_tokens;
+        core_session.last_turn_tokens = last_turn_tokens;
         let pending_turn_queue = std::sync::Arc::clone(&core_session.pending_turn_queue);
-        let btw_input_queue = std::sync::Arc::clone(&core_session.btw_input_queue);
+        let steer_input_queue = std::sync::Arc::clone(&core_session.steer_input_queue);
         let summary_model_selection = self
             .latest_turn_metadata
             .as_ref()
@@ -974,6 +1438,24 @@ impl ReplayState {
         record.model_binding_id = turn_config.model_binding_id.clone();
         record.reasoning_effort_selection = summary_reasoning_effort_selection.clone();
 
+        let global_compaction_limit = runtime_context
+            .config_store
+            .lock()
+            .expect("app config store mutex should not be poisoned")
+            .effective_config()
+            .compaction_token_limit;
+        let applied_compaction_limit = crate::runtime::context_occupancy::resolved_compaction_limit(
+            global_compaction_limit,
+            &turn_config.model,
+        );
+        // Apply before wrapping in Mutex so resume never needs to lock a
+        // single-owner Arc that `from_runtime_session` later unwraps.
+        // Prefer the global config preference; ignore legacy session overrides.
+        crate::runtime::context_occupancy::apply_resolved_compaction_limit(
+            &mut core_session.config,
+            applied_compaction_limit as usize,
+        );
+
         let summary = SessionMetadata {
             session_id: record.id,
             cwd: record.cwd.clone(),
@@ -1000,11 +1482,20 @@ impl ReplayState {
             prompt_token_estimate: core_session.prompt_token_estimate,
             last_query_usage: self.latest_query_usage.clone(),
             last_query_total_tokens: self
-                .latest_query_usage
+                .latest_context_occupancy
                 .as_ref()
-                .map(devo_protocol::TurnUsage::display_total_tokens)
+                .map(|occupancy| occupancy.total_tokens as usize)
+                .or_else(|| {
+                    self.latest_query_usage
+                        .as_ref()
+                        .map(devo_protocol::TurnUsage::display_total_tokens)
+                })
                 .unwrap_or(0),
+            last_context_occupancy: self.latest_context_occupancy.clone(),
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: core_session.collaboration_mode,
+            effective_context_window: Some(applied_compaction_limit),
+            permission_preset: record.permission_preset,
         };
 
         let config = core_session.config.clone();
@@ -1020,8 +1511,9 @@ impl ReplayState {
             history_items: replayed_history_items,
             persisted_turn_items: replayed_persisted_turn_items,
             latest_compaction_snapshot: self.latest_compaction_snapshot,
+            turn_records_by_id: self.turn_records_by_id,
             pending_turn_queue,
-            btw_input_queue,
+            steer_input_queue,
             agent_tool_policy: Default::default(),
             max_turns: None,
             deferred_assistant: None,
@@ -1218,6 +1710,7 @@ impl ReplayState {
         self.last_input_tokens = 0;
         self.last_turn_tokens = 0;
         self.latest_query_usage = None;
+        self.latest_context_occupancy = None;
 
         for turn_id in &self.turn_order {
             let Some(turn) = self.turn_records_by_id.get(turn_id) else {
@@ -1241,6 +1734,16 @@ impl ReplayState {
                 self.last_turn_tokens = 0;
                 self.latest_query_usage = None;
             }
+            if let Some(occupancy) = turn.context_occupancy.clone() {
+                self.latest_context_occupancy = Some(occupancy);
+            }
+        }
+        if let Some(occupancy) = self
+            .latest_compaction_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.context_occupancy.clone())
+        {
+            self.latest_context_occupancy = Some(occupancy);
         }
     }
 
@@ -1338,6 +1841,11 @@ impl ReplayState {
             intra_record_order += 1;
         }
 
+        let collaboration_mode = turn
+            .turn_context
+            .as_ref()
+            .map(|context| context.collaboration_mode)
+            .unwrap_or_default();
         self.pending_items.push(ReplayHistoryItem {
             turn_id: turn.id,
             turn_kind: turn.kind.clone(),
@@ -1354,7 +1862,7 @@ impl ReplayState {
                 title: turn.model.clone(),
                 body: outcome.to_string(),
                 tool_io: None,
-                metadata: None,
+                metadata: Some(crate::SessionHistoryMetadata::TurnSummary { collaboration_mode }),
                 duration_ms: duration_secs,
             }),
         });
@@ -1700,34 +2208,43 @@ fn read_rollout_index_fields(path: &Path) -> Result<(SessionRecord, chrono::Date
     let reader = BufReader::new(file);
     let mut session: Option<SessionRecord> = None;
     let mut last_activity_at: Option<chrono::DateTime<Utc>> = None;
+    // Dual read for the index path (05 §2.2/§2.3). The index is a rebuildable
+    // cache, so — unlike resume — unreadable lines are skipped, not fatal.
+    let inverse = V2InverseProjector::new();
 
     for line in reader.lines() {
         let line = line.with_context(|| format!("read line from {}", path.display()))?;
         if line.trim().is_empty() {
             continue;
         }
-        let parsed = match serde_json::from_str::<RolloutLine>(&line) {
-            Ok(parsed) => parsed,
+        let legacy_lines: Vec<RolloutLine> = match parse_rollout_line(&line) {
+            Ok(ParsedRolloutLine::Legacy(legacy)) => vec![*legacy],
+            Ok(ParsedRolloutLine::V2(v2)) => match inverse.project_line(&v2) {
+                Ok(lines) => lines,
+                Err(_) => continue,
+            },
             Err(_) => continue,
         };
-        match parsed {
-            RolloutLine::SessionMeta(meta_line) => {
-                let mut record = meta_line.session;
-                if record.last_activity_at.is_none() {
-                    record.last_activity_at = Some(record.created_at);
+        for parsed in legacy_lines {
+            match parsed {
+                RolloutLine::SessionMeta(meta_line) => {
+                    let mut record = meta_line.session;
+                    if record.last_activity_at.is_none() {
+                        record.last_activity_at = Some(record.created_at);
+                    }
+                    last_activity_at = record.last_activity_at;
+                    session = Some(record);
                 }
-                last_activity_at = record.last_activity_at;
-                session = Some(record);
-            }
-            RolloutLine::SessionTitleUpdated(line) => {
-                if let Some(record) = session.as_mut() {
-                    record.title = Some(line.title);
-                    record.title_state = line.title_state;
-                    record.updated_at = line.timestamp;
-                    last_activity_at = Some(line.timestamp);
+                RolloutLine::SessionTitleUpdated(line) => {
+                    if let Some(record) = session.as_mut() {
+                        record.title = Some(line.title);
+                        record.title_state = line.title_state;
+                        record.updated_at = line.timestamp;
+                        last_activity_at = Some(line.timestamp);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -1739,7 +2256,7 @@ fn read_rollout_index_fields(path: &Path) -> Result<(SessionRecord, chrono::Date
     Ok((session, last_activity_at))
 }
 
-fn session_metadata_from_record(
+pub(crate) fn session_metadata_from_record(
     record: &SessionRecord,
     last_activity_at: chrono::DateTime<Utc>,
 ) -> SessionMetadata {
@@ -1769,7 +2286,21 @@ fn session_metadata_from_record(
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: SessionRuntimeStatus::Idle,
+        collaboration_mode: record
+            .collaboration_mode
+            .or_else(|| {
+                record
+                    .latest_turn_context
+                    .as_ref()
+                    .map(|context| context.collaboration_mode)
+            })
+            .unwrap_or_default(),
+        // Do not revive legacy session-record overrides. Applied window comes
+        // from AppConfig when the session is hydrated into a RuntimeSession.
+        effective_context_window: None,
+        permission_preset: record.permission_preset,
     }
 }
 
@@ -1797,6 +2328,7 @@ pub(crate) fn build_turn_record(
     session_context: Option<devo_core::SessionContext>,
     turn_context: Option<devo_core::TurnContext>,
     latest_query_usage: Option<devo_core::TurnUsage>,
+    context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
 ) -> TurnRecord {
     TurnRecord {
         id: turn.turn_id,
@@ -1814,6 +2346,7 @@ pub(crate) fn build_turn_record(
         input_token_estimate: None,
         usage: turn.usage.clone(),
         latest_query_usage,
+        context_occupancy,
         stop_reason: turn.stop_reason.clone(),
         failure_reason: turn.failure_reason,
         error: None,
@@ -1883,15 +2416,19 @@ pub(crate) fn build_item_record(
 mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use chrono::TimeZone;
     use chrono::Utc;
     use pretty_assertions::assert_eq;
 
+    use super::ParsedRolloutLine;
     use super::ReplayHistoryItemPayload;
     use super::ReplayState;
     use super::build_prompt_messages_from_snapshot;
+    use super::parse_rollout_line;
     use crate::execution::PersistedTurnItem;
+    use crate::execution::ServerRuntimeDependencies;
     use crate::persistence::apply_turn_item;
     use devo_core::CompactionSnapshotLine;
     use devo_core::ContentPart;
@@ -2009,6 +2546,121 @@ mod tests {
     }
 
     #[test]
+    fn replay_prefers_compaction_occupancy_over_prior_turn() {
+        use devo_protocol::TurnUsage;
+        use pretty_assertions::assert_eq;
+
+        let now = Utc.with_ymd_and_hms(2026, 7, 8, 10, 0, 0).unwrap();
+        let session_id = SessionId::new();
+        let turn_id = TurnId::new();
+        let mut replay = ReplayState::default();
+        let turn_occupancy = devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
+        );
+        let compact_occupancy =
+            devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+                /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
+                /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 8_000,
+            );
+
+        replay
+            .apply_line(RolloutLine::Turn(Box::new(TurnLine {
+                timestamp: now,
+                turn: TurnRecord {
+                    id: turn_id,
+                    session_id,
+                    sequence: 1,
+                    started_at: now,
+                    completed_at: Some(now),
+                    status: TurnStatus::Completed,
+                    kind: TurnKind::Regular,
+                    model: "test-model".into(),
+                    model_binding_id: None,
+                    reasoning_effort_selection: None,
+                    request_model: "test-model".into(),
+                    request_thinking: None,
+                    input_token_estimate: None,
+                    usage: None,
+                    latest_query_usage: Some(TurnUsage {
+                        input_tokens: 50,
+                        output_tokens: 5,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        total_tokens: Some(55),
+                    }),
+                    context_occupancy: Some(turn_occupancy.clone()),
+                    stop_reason: None,
+                    failure_reason: None,
+                    error: None,
+                    session_context: None,
+                    turn_context: None,
+                    schema_version: 4,
+                },
+            })))
+            .expect("turn");
+        assert_eq!(replay.latest_context_occupancy, Some(turn_occupancy));
+        replay
+            .apply_line(RolloutLine::CompactionSnapshot(Box::new(
+                CompactionSnapshotLine {
+                    timestamp: now,
+                    session_id,
+                    turn_id,
+                    summary_item_id: ItemId::new(),
+                    preserved_item_ids: Vec::new(),
+                    context_occupancy: Some(compact_occupancy.clone()),
+                },
+            )))
+            .expect("compaction");
+        assert_eq!(replay.latest_context_occupancy, Some(compact_occupancy));
+    }
+
+    #[test]
+    fn resume_context_pressure_prefers_compaction_occupancy_over_large_query() {
+        use pretty_assertions::assert_eq;
+
+        use devo_protocol::TurnUsage;
+        use devo_protocol::canonical::item::ContextOccupancy;
+
+        let occupancy = ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 250_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
+        );
+        let usage = TurnUsage {
+            input_tokens: 300_000,
+            output_tokens: 20_000,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            reasoning_output_tokens: None,
+            total_tokens: Some(320_000),
+        };
+
+        let (last_turn, last_input) = super::resume_context_pressure_tokens(
+            Some(&occupancy),
+            Some(&usage),
+            /*prompt_token_estimate*/ 12_000,
+        );
+        assert_eq!(last_turn, 50_000);
+        assert_eq!(last_input, 300_000);
+
+        let (last_turn, last_input) = super::resume_context_pressure_tokens(
+            /*occupancy*/ None,
+            Some(&usage),
+            /*prompt_token_estimate*/ 12_000,
+        );
+        assert_eq!(last_turn, 320_000);
+        assert_eq!(last_input, 300_000);
+
+        let (last_turn, last_input) = super::resume_context_pressure_tokens(
+            /*occupancy*/ None, /*latest_query_usage*/ None,
+            /*prompt_token_estimate*/ 12_000,
+        );
+        assert_eq!(last_turn, 12_000);
+        assert_eq!(last_input, 12_000);
+    }
+
+    #[test]
     fn replay_preserves_latest_query_usage_when_latest_turn_has_no_usage() {
         use devo_protocol::TurnUsage;
 
@@ -2043,6 +2695,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: Some(usage.clone()),
                     latest_query_usage: Some(usage.clone()),
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2071,6 +2724,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: Some(devo_protocol::TurnFailureReason::MaxTurnRequests),
                     error: None,
@@ -2121,6 +2775,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: Some(aggregate_usage),
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2166,6 +2821,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2254,6 +2910,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2322,7 +2979,7 @@ mod tests {
         let data_root = dir.path().to_path_buf();
         let session_id = SessionId::new();
         let now = Utc::now();
-        let rollout_store = super::RolloutStore::new(data_root.clone());
+        let rollout_store = super::RolloutStore::new(data_root.clone(), None);
         let record = rollout_store.create_session_record(
             session_id,
             now,
@@ -2376,7 +3033,7 @@ mod tests {
         let data_root = dir.path().to_path_buf();
         let session_id = SessionId::new();
         let now = Utc::now();
-        let rollout_store = super::RolloutStore::new(data_root.clone());
+        let rollout_store = super::RolloutStore::new(data_root.clone(), None);
         let record = rollout_store.create_session_record(
             session_id,
             now,
@@ -2431,7 +3088,11 @@ mod tests {
                 prompt_token_estimate: 0,
                 last_query_usage: None,
                 last_query_total_tokens: 0,
+                last_context_occupancy: None,
                 status: SessionRuntimeStatus::Idle,
+                collaboration_mode: Default::default(),
+                effective_context_window: None,
+                permission_preset: None,
             },
             None,
         )
@@ -2463,7 +3124,7 @@ mod tests {
         let data_root = dir.path().to_path_buf();
         let session_id = SessionId::new();
         let now = Utc::now();
-        let rollout_store = super::RolloutStore::new(data_root.clone());
+        let rollout_store = super::RolloutStore::new(data_root.clone(), None);
         let record = rollout_store.create_session_record(
             session_id,
             now,
@@ -2591,6 +3252,54 @@ mod tests {
     }
 
     #[test]
+    fn replay_nameless_edit_tool_result_still_emits_edited_metadata() {
+        // edit is LiveOnly: start is not persisted, so resume only sees ToolResult
+        // with tool_name lost by the v2 canonical schema. Structured output must
+        // still produce Edited metadata for transcript restore.
+        let mut messages = Vec::new();
+        let mut history_items = Vec::new();
+        let mut tool_names_by_id = HashMap::new();
+
+        apply_turn_item(
+            &mut messages,
+            &mut history_items,
+            &mut tool_names_by_id,
+            &TurnKind::Regular,
+            TurnItem::ToolResult(ToolResultItem {
+                tool_call_id: "call-edit".to_string(),
+                tool_name: None,
+                output: serde_json::json!({
+                    "diff": "diff --git a/foo.txt b/foo.txt\n--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n",
+                    "files": [{
+                        "path": "foo.txt",
+                        "kind": "update",
+                        "diff": "--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n",
+                        "oldContent": "old\n",
+                        "postContent": "new\n",
+                        "additions": 1,
+                        "deletions": 1
+                    }],
+                    "output": "edited foo.txt"
+                }),
+                display_content: Some("edited foo.txt".to_string()),
+                is_error: false,
+            }),
+        );
+
+        assert_eq!(history_items.len(), 1);
+        assert_eq!(history_items[0].body, "edited foo.txt");
+        let Some(devo_protocol::SessionHistoryMetadata::Edited { changes }) =
+            &history_items[0].metadata
+        else {
+            panic!(
+                "expected Edited metadata, got {:?}",
+                history_items[0].metadata
+            );
+        };
+        assert!(changes.contains_key(&PathBuf::from("foo.txt")));
+    }
+
+    #[test]
     fn replay_uses_display_content_for_history_but_canonical_output_for_prompt() {
         let mut messages = Vec::new();
         let mut history_items = Vec::new();
@@ -2684,6 +3393,7 @@ mod tests {
                 turn_id: TurnId::new(),
                 summary_item_id,
                 preserved_item_ids: vec![preserved_item_id],
+                context_occupancy: None,
             },
         )
         .expect("prompt messages");
@@ -2767,6 +3477,7 @@ mod tests {
                     title_state: SessionTitleState::Unset,
                     sandbox_policy: "workspace-write".into(),
                     approval_mode: "on-request".into(),
+                    effective_context_window: None,
                     tokens_used: 0,
                     first_user_message: None,
                     archived_at: None,
@@ -2776,6 +3487,8 @@ mod tests {
                     parent_session_id: None,
                     session_context: None,
                     latest_turn_context: None,
+                    collaboration_mode: None,
+                    permission_preset: None,
                     schema_version: 2,
                 },
             })))
@@ -2799,6 +3512,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2887,6 +3601,7 @@ mod tests {
                     title_state: SessionTitleState::Unset,
                     sandbox_policy: "workspace-write".into(),
                     approval_mode: "on-request".into(),
+                    effective_context_window: None,
                     tokens_used: 0,
                     first_user_message: None,
                     archived_at: None,
@@ -2896,6 +3611,8 @@ mod tests {
                     parent_session_id: None,
                     session_context: None,
                     latest_turn_context: None,
+                    collaboration_mode: None,
+                    permission_preset: None,
                     schema_version: 2,
                 },
             })))
@@ -2929,6 +3646,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -2993,6 +3711,7 @@ mod tests {
                     title_state: SessionTitleState::Unset,
                     sandbox_policy: "workspace-write".into(),
                     approval_mode: "on-request".into(),
+                    effective_context_window: None,
                     tokens_used: 0,
                     first_user_message: None,
                     archived_at: None,
@@ -3002,6 +3721,8 @@ mod tests {
                     parent_session_id: None,
                     session_context: None,
                     latest_turn_context: None,
+                    collaboration_mode: None,
+                    permission_preset: None,
                     schema_version: 2,
                 },
             })))
@@ -3035,6 +3756,7 @@ mod tests {
                     input_token_estimate: None,
                     usage: None,
                     latest_query_usage: None,
+                    context_occupancy: None,
                     stop_reason: None,
                     failure_reason: None,
                     error: None,
@@ -3071,7 +3793,7 @@ mod tests {
         let data_root = dir.path().to_path_buf();
         let session_id = SessionId::new();
         let now = Utc::now();
-        let rollout_store = super::RolloutStore::new(data_root.clone());
+        let rollout_store = super::RolloutStore::new(data_root.clone(), None);
         let record = rollout_store.create_session_record(
             session_id,
             now,
@@ -3115,7 +3837,7 @@ mod tests {
                 .append_turn_deduped(
                     &record,
                     &mut session_context_recorded,
-                    super::build_turn_record(&metadata, None, None, None),
+                    super::build_turn_record(&metadata, None, None, None, None),
                     Some(session_context.clone()),
                 )
                 .expect("append deduped turn");
@@ -3124,6 +3846,730 @@ mod tests {
         assert!(session_context_recorded);
         let rollout = std::fs::read_to_string(&record.rollout_path).expect("read rollout");
         assert_eq!(rollout.matches("unique-base-instruction-marker").count(), 1);
-        assert!(rollout.contains("SessionContextUpdated"));
+        // v2 write path: the locked context travels as an internal line.
+        assert!(rollout.contains("\"sessionContext\""));
+    }
+
+    // ── v2 write switch / dual read (P3b) ─────────────────────────────
+
+    struct NoopProvider;
+
+    #[async_trait::async_trait]
+    impl devo_provider::ModelProviderSDK for NoopProvider {
+        async fn completion(
+            &self,
+            _request: devo_protocol::ModelRequest,
+        ) -> anyhow::Result<devo_protocol::ModelResponse> {
+            anyhow::bail!("noop provider does not support completion")
+        }
+
+        async fn completion_stream(
+            &self,
+            _request: devo_protocol::ModelRequest,
+        ) -> anyhow::Result<
+            std::pin::Pin<
+                Box<dyn futures::Stream<Item = anyhow::Result<devo_protocol::StreamEvent>> + Send>,
+            >,
+        > {
+            anyhow::bail!("noop provider does not support streaming")
+        }
+
+        fn name(&self) -> &str {
+            "noop-provider"
+        }
+    }
+
+    fn test_deps(data_root: &std::path::Path) -> ServerRuntimeDependencies {
+        let provider: Arc<dyn devo_provider::ModelProviderSDK> = Arc::new(NoopProvider);
+        ServerRuntimeDependencies::new(
+            Arc::clone(&provider),
+            Arc::new(devo_provider::SingleProviderRouter::new(provider)),
+            Arc::new(devo_core::tools::ToolRegistry::new()),
+            crate::empty_mcp_manager(),
+            "test-model".to_string(),
+            Arc::new(devo_core::PresetModelCatalog::default()),
+            Arc::new(devo_core::ProviderVendorCatalog::default()),
+            Box::new(devo_core::FileSystemSkillCatalog::new(
+                devo_core::SkillsConfig {
+                    bundled: Some(devo_core::BundledSkillsConfig { enabled: false }),
+                    ..devo_core::SkillsConfig::default()
+                },
+            )),
+            devo_core::AgentsMdConfig::default(),
+            Arc::new(
+                crate::db::Database::open(data_root.join("test.db")).expect("open test database"),
+            ),
+            Arc::new(std::sync::Mutex::new(
+                devo_core::AppConfigStore::load(data_root.to_path_buf(), None)
+                    .expect("load app config store"),
+            )),
+        )
+    }
+
+    fn write_raw_lines(path: &std::path::Path, raw_lines: &[String]) {
+        use std::io::Write;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create rollout directory");
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open rollout for raw append");
+        for raw in raw_lines {
+            file.write_all(raw.as_bytes()).expect("write raw line");
+            file.write_all(b"\n").expect("write newline");
+        }
+    }
+
+    fn raw_rollout_lines(path: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .expect("read rollout")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn test_turn_metadata(session_id: SessionId, turn_id: TurnId) -> crate::turn::TurnMetadata {
+        crate::turn::TurnMetadata {
+            turn_id,
+            session_id,
+            sequence: 1,
+            status: TurnStatus::Completed,
+            kind: TurnKind::Regular,
+            model: "test-model".into(),
+            model_binding_id: None,
+            reasoning_effort_selection: None,
+            reasoning_effort: None,
+            request_model: "test-model".into(),
+            request_thinking: None,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            usage: None,
+            stop_reason: None,
+            failure_reason: None,
+        }
+    }
+
+    #[test]
+    fn write_path_appends_only_v2_lines() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
+        rollout_store
+            .append_turn(&record, turn)
+            .expect("append turn");
+        let item = super::build_item_record(
+            record.id,
+            metadata.turn_id,
+            ItemId::new(),
+            1,
+            TurnItem::AgentMessage(TextItem { text: "hi".into() }),
+            Some(TurnStatus::Running),
+            None,
+        );
+        rollout_store
+            .append_item(&record, item)
+            .expect("append item");
+
+        let raw_lines = raw_rollout_lines(&record.rollout_path);
+        assert_eq!(raw_lines.len(), 3);
+        for raw in &raw_lines {
+            assert!(raw.contains("\"v\":2"), "line is v2: {raw}");
+            match parse_rollout_line(raw).expect("line parses") {
+                ParsedRolloutLine::V2(_) => {}
+                ParsedRolloutLine::Legacy(_) => panic!("freshly written line parsed as legacy"),
+            }
+        }
+    }
+
+    #[test]
+    fn hydration_folds_approval_decision_onto_request_across_restart() {
+        use devo_core::ApprovalDecisionItem;
+        use devo_core::ApprovalRequestItem;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
+        rollout_store
+            .append_turn(&record, turn)
+            .expect("append turn");
+        let request_record_id = ItemId::new();
+        rollout_store
+            .append_item(
+                &record,
+                super::build_item_record(
+                    record.id,
+                    metadata.turn_id,
+                    request_record_id,
+                    1,
+                    TurnItem::ApprovalRequest(ApprovalRequestItem {
+                        approval_id: "appr-1".into(),
+                        action_summary: "Run ls".into(),
+                        justification: "listing".into(),
+                        resource: Some("ShellExec".into()),
+                        available_scopes: vec!["once".into()],
+                        path: None,
+                        host: None,
+                        target: Some("ls".into()),
+                    }),
+                    Some(TurnStatus::Running),
+                    None,
+                ),
+            )
+            .expect("append approval request");
+
+        // "Restart": a brand-new store must hydrate its projector from the
+        // on-disk v2 history before appending.
+        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        restarted_store
+            .append_item(
+                &record,
+                super::build_item_record(
+                    record.id,
+                    metadata.turn_id,
+                    ItemId::new(),
+                    2,
+                    TurnItem::ApprovalDecision(ApprovalDecisionItem {
+                        approval_id: "appr-1".into(),
+                        decision: "approve".into(),
+                        scope: "once".into(),
+                        decision_source: None,
+                    }),
+                    Some(TurnStatus::Running),
+                    None,
+                ),
+            )
+            .expect("append approval decision");
+
+        let approvals: Vec<devo_core::RolloutLineV2> = raw_rollout_lines(&record.rollout_path)
+            .iter()
+            .map(|raw| match parse_rollout_line(raw).expect("line parses") {
+                ParsedRolloutLine::V2(line) => *line,
+                ParsedRolloutLine::Legacy(_) => panic!("line parsed as legacy"),
+            })
+            .filter(|line| {
+                matches!(
+                    line,
+                    devo_core::RolloutLineV2::Item { item, .. }
+                        if matches!(item.item, devo_protocol::canonical::item::Item::Approval { .. })
+                )
+            })
+            .collect();
+        assert_eq!(approvals.len(), 2);
+        let devo_core::RolloutLineV2::Item { item: request, .. } = &approvals[0] else {
+            panic!("request line");
+        };
+        let devo_core::RolloutLineV2::Item { item: decision, .. } = &approvals[1] else {
+            panic!("decision line");
+        };
+        // The decision folded onto the request's item id and seq — not an
+        // orphan Warning with a fresh id.
+        assert_eq!(request.id.as_str(), request_record_id.to_string());
+        assert_eq!(decision.id, request.id);
+        assert_eq!(decision.seq, request.seq);
+        assert_eq!((request.revision, decision.revision), (1, 2));
+        assert_eq!(
+            decision.state,
+            devo_protocol::canonical::item::ItemState::Completed
+        );
+        assert!(
+            matches!(&decision.item, devo_protocol::canonical::item::Item::Approval { decision: Some(d), .. }
+                if d.decision == devo_protocol::canonical::item::ApprovalDecisionKind::Approved
+                    && d.scope == devo_protocol::canonical::item::ApprovalScope::Once)
+        );
+    }
+
+    #[test]
+    fn canonical_only_interaction_and_file_change_items_round_trip() {
+        use devo_protocol::canonical::ids::{
+            ItemId as CanonicalItemId, SessionId as CanonicalSessionId, TurnId as CanonicalTurnId,
+        };
+        use devo_protocol::canonical::item::{
+            FileChangeEntry, FileChangeKind, Item, ItemEnvelope, ItemState,
+        };
+        use tempfile::TempDir;
+        use uuid::Uuid;
+
+        let dir = TempDir::new().expect("temp dir");
+        let store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let record = store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let turn_id = TurnId::new();
+        let metadata = test_turn_metadata(record.id, turn_id);
+        store
+            .append_turn(
+                &record,
+                super::build_turn_record(&metadata, None, None, None, None),
+            )
+            .expect("append turn");
+        let now = Utc::now();
+        let session_id = CanonicalSessionId::from_legacy_uuid(Uuid::from(record.id));
+        let turn_id = CanonicalTurnId::from_legacy_uuid(Uuid::from(turn_id));
+        let question_item_id = CanonicalItemId::from_legacy_uuid(Uuid::now_v7());
+        let waiting = ItemEnvelope {
+            id: question_item_id.clone(),
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            seq: 1,
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            state: ItemState::Waiting,
+            item: Item::UserInputRequest {
+                request_id: "question-1".into(),
+                target_item_id: None,
+                questions: Vec::new(),
+                answers: None,
+            },
+        };
+        let file_change = ItemEnvelope {
+            id: CanonicalItemId::from_legacy_uuid(Uuid::now_v7()),
+            session_id,
+            turn_id,
+            seq: 2,
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            state: ItemState::Completed,
+            item: Item::FileChange {
+                call_id: "edit-1".into(),
+                changes: vec![FileChangeEntry {
+                    path: PathBuf::from("src/lib.rs"),
+                    change: FileChangeKind::Update {
+                        unified_diff: "@@ -1 +1 @@".into(),
+                        move_path: None,
+                    },
+                }],
+                sandbox: None,
+            },
+        };
+        store
+            .append_canonical_item(&record, waiting.clone())
+            .expect("append waiting item");
+        store
+            .append_canonical_item(&record, file_change.clone())
+            .expect("append file change");
+
+        let history =
+            devo_core::read_canonical_history(&record.rollout_path).expect("read history");
+        assert_eq!(history.items, vec![waiting, file_change]);
+    }
+
+    #[test]
+    fn hydration_fails_closed_on_damaged_history() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        write_raw_lines(
+            &record.rollout_path,
+            &[r#"{"v":2,"kind":"nope"}"#.to_string()],
+        );
+
+        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
+        let error = restarted_store
+            .append_turn(&record, turn)
+            .expect_err("append onto damaged history must fail");
+        assert!(
+            format!("{error:#}").contains("refusing to append"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn hydration_tolerates_truncated_final_line() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        write_raw_lines(
+            &record.rollout_path,
+            &[r#"{"v":2,"kind":"item","timestamp":"2026"#.to_string()],
+        );
+
+        let restarted_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
+        restarted_store
+            .append_turn(&record, turn)
+            .expect("crash tail is tolerated");
+    }
+
+    #[tokio::test]
+    async fn dual_read_fails_closed_on_mid_file_damage_but_tolerates_crash_tail() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let deps = test_deps(dir.path());
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        // Damaged middle line, then a valid line after it.
+        write_raw_lines(
+            &record.rollout_path,
+            &[r#"{"v":2,"kind":"nope"}"#.to_string()],
+        );
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
+        rollout_store
+            .append_turn(&record, turn)
+            .expect("append turn");
+
+        let error = rollout_store
+            .load_session_from_rollout(&record.rollout_path, &deps)
+            .await
+            .err()
+            .expect("damaged mid-file line must fail the load");
+        assert!(
+            format!("{error:#}").contains("refusing to resume"),
+            "unexpected error: {error:#}"
+        );
+
+        // A truncated final line (crash tail) is tolerated instead.
+        let tail_record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&tail_record)
+            .expect("append session meta");
+        write_raw_lines(
+            &tail_record.rollout_path,
+            &[r#"{"v":2,"kind":"item","timestamp":"2026"#.to_string()],
+        );
+        let recovered = rollout_store
+            .load_session_from_rollout(&tail_record.rollout_path, &deps)
+            .await
+            .expect("crash tail is tolerated");
+        assert_eq!(recovered.summary.session_id, tail_record.id);
+    }
+
+    #[tokio::test]
+    async fn mixed_v1_v2_file_resumes_with_reconciled_next_seq() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let deps = test_deps(dir.path());
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            Some("Mixed session".into()),
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+
+        // v1 portion: hand-written legacy lines, as produced before the v2
+        // write switch (never rewritten afterwards).
+        let legacy_lines = [
+            RolloutLine::SessionMeta(Box::new(SessionMetaLine {
+                timestamp: Utc::now(),
+                session: record.clone(),
+            })),
+            RolloutLine::Turn(Box::new(TurnLine {
+                timestamp: Utc::now(),
+                turn: super::build_turn_record(&metadata, None, None, None, None),
+            })),
+            RolloutLine::Item(ItemLine {
+                timestamp: Utc::now(),
+                item: super::build_item_record(
+                    record.id,
+                    metadata.turn_id,
+                    ItemId::new(),
+                    1,
+                    TurnItem::UserMessage(TextItem {
+                        text: "legacy hello".into(),
+                    }),
+                    Some(TurnStatus::Running),
+                    None,
+                ),
+            }),
+        ];
+        write_raw_lines(
+            &record.rollout_path,
+            &legacy_lines
+                .iter()
+                .map(|line| serde_json::to_string(line).expect("serialize legacy line"))
+                .collect::<Vec<_>>(),
+        );
+
+        // The v2 write path appends onto the legacy file (hydrating first).
+        rollout_store
+            .append_item(
+                &record,
+                super::build_item_record(
+                    record.id,
+                    metadata.turn_id,
+                    ItemId::new(),
+                    2,
+                    TurnItem::AgentMessage(TextItem {
+                        text: "v2 reply".into(),
+                    }),
+                    Some(TurnStatus::Running),
+                    None,
+                ),
+            )
+            .expect("append v2 item");
+
+        // The file mixes both formats; every line dispatches cleanly.
+        let raw_lines = raw_rollout_lines(&record.rollout_path);
+        assert_eq!(raw_lines.len(), 4);
+        for (index, raw) in raw_lines.iter().enumerate() {
+            let parsed = parse_rollout_line(raw).expect("line dispatches");
+            if index < 3 {
+                assert!(
+                    matches!(parsed, ParsedRolloutLine::Legacy(_)),
+                    "line {index} must be legacy"
+                );
+            } else {
+                assert!(
+                    matches!(parsed, ParsedRolloutLine::V2(_)),
+                    "line {index} must be v2"
+                );
+            }
+        }
+
+        // Dual read: the resumed session holds the union of both histories,
+        // and the next runtime seq matches the write-path projector's (the
+        // v1 item took seq 1, the v2 item seq 2 — no collision).
+        let recovered = rollout_store
+            .load_session_from_rollout(&record.rollout_path, &deps)
+            .await
+            .expect("mixed file resumes");
+        assert_eq!(recovered.summary.session_id, record.id);
+        assert_eq!(recovered.summary.title.as_deref(), Some("Mixed session"));
+        assert_eq!(recovered.loaded_item_count, 2);
+        assert_eq!(recovered.next_item_seq, 3);
+        let texts: Vec<&str> = recovered
+            .history_items
+            .iter()
+            .map(|item| item.body.as_str())
+            .collect();
+        assert!(texts.contains(&"legacy hello"), "history: {texts:?}");
+        assert!(texts.contains(&"v2 reply"), "history: {texts:?}");
+    }
+
+    fn append_basic_session_lines(
+        rollout_store: &super::RolloutStore,
+        data_root: &std::path::Path,
+    ) -> devo_core::SessionRecord {
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            data_root.to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let metadata = test_turn_metadata(record.id, TurnId::new());
+        let turn = super::build_turn_record(&metadata, None, None, None, None);
+        rollout_store
+            .append_turn(&record, turn)
+            .expect("append turn");
+        let item = super::build_item_record(
+            record.id,
+            metadata.turn_id,
+            ItemId::new(),
+            1,
+            TurnItem::AgentMessage(TextItem { text: "hi".into() }),
+            Some(TurnStatus::Running),
+            None,
+        );
+        rollout_store
+            .append_item(&record, item)
+            .expect("append item");
+        record
+    }
+
+    #[test]
+    fn append_projects_events_into_event_log() {
+        use pretty_assertions::assert_eq;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let db = std::sync::Arc::new(
+            crate::db::Database::open(dir.path().join("devo.db")).expect("open db"),
+        );
+        let rollout_store =
+            super::RolloutStore::new(dir.path().to_path_buf(), Some(std::sync::Arc::clone(&db)));
+        let record = append_basic_session_lines(&rollout_store, dir.path());
+
+        // session/created lands on both the session stream and the per-cwd
+        // sessions stream; turn and item facts land on the session stream.
+        assert_eq!(db.event_log_len().expect("count"), 4);
+        let session_stream = devo_core::session_stream_id(
+            &devo_protocol::canonical::ids::SessionId::from_string(record.id.to_string()),
+        );
+        let rows = db
+            .event_log_rows(&session_stream, 0)
+            .expect("session stream");
+        let kinds: Vec<&str> = rows.iter().map(|row| row.event_kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["session/created", "turn/completed", "item/completed"]
+        );
+        let seqs: Vec<u64> = rows.iter().map(|row| row.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3]);
+        // Three physical rows written; watermark is the last line index.
+        assert_eq!(
+            db.projection_watermark(&record.rollout_path)
+                .expect("watermark"),
+            Some(2)
+        );
+
+        // The stored envelope payload parses as a typed EventEnvelope whose
+        // meta.seq is hydrated from the row at replay time.
+        let envelope: devo_protocol::canonical::event::EventEnvelope =
+            serde_json::from_str(&rows[2].payload).expect("envelope payload parses");
+        assert_eq!(envelope.meta.seq, None);
+        assert!(envelope.meta.persisted);
+    }
+
+    #[test]
+    fn event_log_insert_is_idempotent_by_source_fact() {
+        use pretty_assertions::assert_eq;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let db = std::sync::Arc::new(
+            crate::db::Database::open(dir.path().join("devo.db")).expect("open db"),
+        );
+        let rollout_store =
+            super::RolloutStore::new(dir.path().to_path_buf(), Some(std::sync::Arc::clone(&db)));
+        let record = append_basic_session_lines(&rollout_store, dir.path());
+        assert_eq!(db.event_log_len().expect("count"), 4);
+
+        // Re-deriving the same facts (simulated crash recovery) inserts nothing.
+        let raw_lines = raw_rollout_lines(&record.rollout_path);
+        let mut rows = Vec::new();
+        for (index, raw) in raw_lines.iter().enumerate() {
+            let ParsedRolloutLine::V2(v2) = parse_rollout_line(raw).expect("parse") else {
+                panic!("v2 line expected");
+            };
+            rows.extend(
+                super::event_log_rows_for_v2_line(&record.rollout_path, index as u64, 0, &v2)
+                    .expect("derive rows"),
+            );
+        }
+        assert_eq!(rows.len(), 4);
+        let inserted = db.insert_event_log_rows(&rows).expect("re-insert");
+        assert_eq!(inserted, 0);
+        assert_eq!(db.event_log_len().expect("count"), 4);
     }
 }

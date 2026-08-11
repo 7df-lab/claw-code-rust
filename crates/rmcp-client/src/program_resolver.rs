@@ -7,7 +7,7 @@
 //! scripts natively through shebangs.
 //!
 //! The `resolve` function abstracts these platform differences:
-//! - On Unix: Returns the program unchanged (OS handles script execution)
+//! - On Unix: Expands a leading `~/`, then returns the program (OS handles PATH/scripts)
 //! - On Windows: Uses the `which` crate to resolve full paths including extensions
 
 use std::collections::HashMap;
@@ -16,16 +16,39 @@ use std::path::Path;
 
 /// Resolves a program to its executable path on Unix systems.
 ///
-/// Unix systems handle PATH resolution and script execution natively through
-/// the kernel's shebang (`#!`) mechanism, so this function simply returns
-/// the program name unchanged.
+/// Expands a leading `~/` (or bare `~`) to the user home directory. Beyond
+/// that, Unix systems handle PATH resolution and script execution natively
+/// through the kernel's shebang (`#!`) mechanism, so the resolved program
+/// string is returned as-is.
 #[cfg(unix)]
 pub fn resolve(
     program: OsString,
-    _env: &HashMap<OsString, OsString>,
+    env: &HashMap<OsString, OsString>,
     _cwd: &Path,
 ) -> std::io::Result<OsString> {
-    Ok(program)
+    Ok(expand_user_path(program, env))
+}
+
+/// Expands a leading `~` segment to the current user's home directory.
+#[cfg(unix)]
+fn expand_user_path(program: OsString, env: &HashMap<OsString, OsString>) -> OsString {
+    let Some(program_str) = program.to_str() else {
+        return program;
+    };
+    let home = env
+        .get(std::ffi::OsStr::new("HOME"))
+        .cloned()
+        .or_else(|| std::env::var_os("HOME"));
+    if program_str == "~" {
+        return home.unwrap_or(program);
+    }
+    let Some(rest) = program_str.strip_prefix("~/") else {
+        return program;
+    };
+    match home {
+        Some(home) => Path::new(&home).join(rest).into_os_string(),
+        None => program,
+    }
 }
 
 /// Resolves a program to its executable path on Windows systems.
@@ -99,6 +122,27 @@ mod tests {
             "Unix should execute PATH-resolved scripts directly: {output:?}"
         );
         Ok(())
+    }
+
+    /// Unix: Verifies leading `~/` in MCP commands expands to `$HOME`.
+    #[cfg(unix)]
+    #[test]
+    fn unix_resolve_expands_tilde_home_prefix() {
+        let mut env = HashMap::new();
+        env.insert(OsString::from("HOME"), OsString::from("/tmp/fake-home"));
+        let resolved = resolve(
+            OsString::from("~/bin/devo-code-search-mcp"),
+            &env,
+            Path::new("/"),
+        )
+        .expect("resolve");
+        assert_eq!(
+            resolved,
+            OsString::from("/tmp/fake-home/bin/devo-code-search-mcp")
+        );
+        let unchanged = resolve(OsString::from("devo-code-search-mcp"), &env, Path::new("/"))
+            .expect("resolve bare");
+        assert_eq!(unchanged, OsString::from("devo-code-search-mcp"));
     }
 
     /// Windows: Verifies scripts fail to execute without the proper extension.

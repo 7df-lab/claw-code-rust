@@ -154,6 +154,13 @@ impl ChatWidget {
                         );
                         true
                     }
+                    SessionHistoryMetadata::ProposedPlan => {
+                        self.add_history_entry_without_redraw(Box::new(
+                            history_cell::new_proposed_plan(item.body.clone(), &self.session.cwd),
+                        ));
+                        true
+                    }
+                    SessionHistoryMetadata::TurnSummary { .. } => false,
                     SessionHistoryMetadata::Edited { changes } => {
                         self.add_restored_file_change_item(item, changes.clone());
                         true
@@ -257,25 +264,36 @@ impl ChatWidget {
                     }
                 }
                 devo_protocol::SessionHistoryItemKind::TurnSummary => {
+                    let input_mode = turn_summary_input_mode(item);
                     let summary = match item.body.as_str() {
                         "failed" => history_cell::TurnSummaryCell::new_failed(
-                            InputMode::Build,
+                            input_mode,
                             item.title.clone(),
                             self.active_accent_color(),
                         ),
                         "interrupted" => history_cell::TurnSummaryCell::new_interrupted(
-                            InputMode::Build,
+                            input_mode,
                             item.title.clone(),
                             self.active_accent_color(),
                         ),
                         _ => history_cell::TurnSummaryCell::new(
-                            InputMode::Build,
+                            input_mode,
                             item.title.clone(),
                             item.duration_ms,
                             self.active_accent_color(),
                         ),
                     };
                     self.add_history_entry_without_redraw(Box::new(summary));
+                }
+                devo_protocol::SessionHistoryItemKind::ContextCompaction => {
+                    let title = if item.title.is_empty() {
+                        "Context compacted".to_string()
+                    } else {
+                        item.title.clone()
+                    };
+                    self.add_history_entry_without_redraw(Box::new(
+                        history_cell::new_live_aligned_info_event(title, None),
+                    ));
                 }
             }
         }
@@ -285,9 +303,6 @@ impl ChatWidget {
     }
 
     pub(super) fn add_restored_user_prompt(&mut self, body: String) {
-        self.add_history_entry_without_redraw(Box::new(history_cell::PlainHistoryCell::new(vec![
-            Line::from(""),
-        ])));
         self.add_history_entry_without_redraw(Box::new(history_cell::new_user_prompt(
             body,
             Vec::new(),
@@ -296,9 +311,6 @@ impl ChatWidget {
             self.active_accent_color(),
             InputMode::Build,
         )));
-        self.add_history_entry_without_redraw(Box::new(history_cell::PlainHistoryCell::new(vec![
-            Line::from(""),
-        ])));
     }
 
     fn add_restored_file_change_item(
@@ -474,14 +486,25 @@ impl ChatWidget {
         if item.kind != devo_protocol::SessionHistoryItemKind::ToolResult {
             return None;
         }
+        if let Some(SessionHistoryMetadata::Edited { changes }) = &item.metadata {
+            return (!changes.is_empty()).then(|| changes.clone());
+        }
         let lower_title = item.title.to_ascii_lowercase();
+        let body_for_parse = item
+            .tool_io
+            .as_ref()
+            .and_then(|tool_io| tool_io.output.as_ref())
+            .map(ToString::to_string)
+            .filter(|text| text.contains("\"files\"") || text.contains("\"diff\""))
+            .unwrap_or_else(|| item.body.clone());
         if !lower_title.contains("apply_patch")
             && !lower_title.contains("write")
-            && !item.body.contains("\"files\"")
+            && !lower_title.contains("edit")
+            && !body_for_parse.contains("\"files\"")
         {
             return None;
         }
-        let value: serde_json::Value = serde_json::from_str(&item.body).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&body_for_parse).ok()?;
         let files = value.get("files")?.as_array()?;
         let diff = value
             .get("diff")
@@ -516,7 +539,12 @@ impl ChatWidget {
                         .unwrap_or_else(|| "\n".repeat(deletions as usize)),
                 },
                 "update" | "move" => devo_protocol::protocol::FileChange::Update {
-                    unified_diff: diff.clone(),
+                    unified_diff: file
+                        .get("diff")
+                        .or_else(|| file.get("patch"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| diff.clone()),
                     old_text: file
                         .get("oldContent")
                         .or_else(|| file.get("preContent"))
@@ -580,5 +608,14 @@ impl ChatWidget {
             false,
         );
         self.add_history_entry_without_redraw(Box::new(exec));
+    }
+}
+
+fn turn_summary_input_mode(item: &SessionHistoryItem) -> InputMode {
+    match item.metadata {
+        Some(SessionHistoryMetadata::TurnSummary { collaboration_mode }) => {
+            InputMode::from_collaboration_mode(collaboration_mode)
+        }
+        _ => InputMode::Build,
     }
 }

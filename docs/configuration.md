@@ -14,7 +14,7 @@ merges settings in this order:
 Credentials live separately in `DEVO_HOME/auth.json`; `config.toml` should refer
 to credential ids instead of storing API keys directly.
 
-Minimal shape:
+Minimal shape (built-in model + provider binding):
 
 ```toml
 [defaults]
@@ -42,10 +42,8 @@ The important separation is:
 - `model_slug` selects Devo's local model metadata by slug.
 - The binding's `provider` selects a `[providers.<id>]` connection record.
 - `request_model` is the provider-facing model id sent on the wire.
-- `invocation_method` selects the operational provider protocol, such as
-  [`openai_chat_completions`](https://developers.openai.com/api/reference/chat-completions/overview),
-  [`openai_responses`](https://developers.openai.com/api/reference/responses/overview),
-  or [`anthropic_messages`](https://platform.claude.com/docs/en/api/messages).
+- `invocation_method` selects the operational provider protocol. See
+  [Invocation methods](#invocation-methods).
 
 Model metadata also has a `provider` field. It describes the wire API the model
 expects, while the binding's `invocation_method` chooses the connection used at
@@ -55,13 +53,105 @@ connected through the provider's `credential` reference.
 Existing configuration using `model_name` remains readable. Devo writes the
 field as `request_model` the next time that binding is saved.
 
+## Bring Your Own API Key
+
+Devo does not store API keys in `config.toml`. When you bring your own key:
+
+1. Store the secret in user-scoped `DEVO_HOME/auth.json`.
+2. Point `[providers.<id>].credential` at that credential id from
+   `config.toml`.
+
+`devo onboard` and the Desktop/TUI provider flows write both files for you.
+
+### End-to-end example: custom model + your API key
+
+The following pairs a custom DeepSeek model (Anthropic Messages), a provider
+endpoint, and a credential stored only in `auth.json`.
+
+`~/.devo/config.toml` (or `C:\Users\yourname\.devo\config.toml` on Windows):
+
+```toml
+[defaults]
+model_binding = "deepseek-example"
+
+[model.my-deepseek]
+display_name = "DeepSeek V4 Flash"
+description = "Custom Anthropic Messages coding model for DeepSeek."
+channel = "Custom"
+# Wire API this model expects. Must match the binding's invocation_method.
+provider = "anthropic_messages"
+context_window = 200000
+effective_context_window_percent = 95
+max_tokens = 8192
+temperature = 0.2
+reasoning_capability = { togglewithlevels = ["high", "max"] }
+reasoning_implementation = "request_parameter"
+base_instructions = "(optional) You are Devo, a coding agent."
+input_modalities = ["text"]
+# For multimodalities
+# input_modalities = ["text", "image"] ...
+
+[providers.deepseek]
+enabled = true
+name = "DeepSeek Anthropic Compatible"
+base_url = "https://api.deepseek.com/anthropic"
+# Credential id only — the secret lives in auth.json.
+credential = "deepseek_compatible_api_key"
+wire_apis = ["anthropic_messages"]
+
+[model_bindings.deepseek-example]
+enabled = true
+model_slug = "my-deepseek"
+provider = "deepseek"
+request_model = "deepseek-v4-flash"
+display_name = "DeepSeek V4 Flash"
+invocation_method = "anthropic_messages"
+```
+
+Matching `~/.devo/auth.json` (or `C:\Users\yourname\.devo\auth.json`):
+
+```json
+{
+  "version": 1,
+  "credentials": {
+    "deepseek_compatible_api_key": {
+      "kind": "api_key",
+      "value": "sk-deepseek-your-api-key"
+    }
+  }
+}
+```
+
+Rules:
+
+- Only `api_key` credentials are supported today.
+- The credential id must match `[providers.<id>].credential` exactly.
+- Keep `auth.json` under `DEVO_HOME`. Do not commit it to a project repo.
+- Workspace `<workspace>/.devo/config.toml` may reference credential ids, but
+  secret values stay in user-scoped `auth.json`.
+- Updating only the key means editing `auth.json`; leave `config.toml`
+  unchanged when the credential id stays the same.
+
+## Invocation methods
+
+`invocation_method` (on a model binding) and `wire_apis` (on a provider) select
+which HTTP API Devo uses for that connection. Model metadata `provider` should
+use the same value so catalog capabilities match the runtime connection.
+
+| Value | Protocol | Typical endpoints |
+| --- | --- | --- |
+| `openai_chat_completions` | [OpenAI Chat Completions](https://developers.openai.com/api/reference/chat-completions/overview) | Most OpenAI-compatible gateways (DeepSeek, Qwen, Kimi, OpenRouter, many local proxies) |
+| `openai_responses` | [OpenAI Responses](https://developers.openai.com/api/reference/responses/overview) | Providers that expose the Responses API |
+| `anthropic_messages` | [Anthropic Messages](https://platform.claude.com/docs/en/api/messages) | Anthropic-compatible Messages endpoints |
+
 ## Model Metadata and Custom Models
 
 Configure model metadata in user or workspace `config.toml` under
 `[model.<slug>]`. A section for a built-in slug is a partial override: omitted
 fields retain their built-in values. A new slug creates a custom model with safe
 defaults, which should then be connected through both `[providers.<id>]` and
-`[model_bindings.<id>]`.
+`[model_bindings.<id>]` as in the
+[end-to-end example](#end-to-end-example-custom-model--your-api-key).
 
 For example, this changes only the built-in context window:
 
@@ -73,47 +163,7 @@ effective_context_window_percent = 90
 
 The exact effective context formula is
 `context_window * effective_context_window_percent / 100`; the result is the
-context available to the model and the automatic-compaction boundary. For a
-custom model and connection:
-
-```toml
-[defaults]
-model_binding = "my-coding-model-example"
-
-[model.my-coding-model]
-display_name = "My Coding Model"
-description = "Custom OpenAI-compatible coding model."
-channel = "Custom"
-provider = "openai_chat_completions"
-context_window = 200000
-effective_context_window_percent = 95
-max_tokens = 4096
-temperature = 0.2
-top_p = 0.9
-top_k = 40.0
-reasoning_capability = { levels = ["low", "medium", "high"] }
-reasoning_implementation = "request_parameter"
-default_reasoning_effort = "medium"
-base_instructions = "You are Devo, a coding agent. Help the user edit and understand code."
-input_modalities = ["text", "image"]
-truncation_policy = { mode = "tokens", limit = 12000 }
-supports_image_detail_original = true
-
-[providers.my-provider]
-enabled = true
-name = "My Provider"
-base_url = "https://api.example.com/v1"
-credential = "my_provider_api_key"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.my-coding-model-example]
-enabled = true
-model_slug = "my-coding-model"
-provider = "my-provider"
-request_model = "provider-specific-model-name"
-display_name = "My Coding Model"
-invocation_method = "openai_chat_completions"
-```
+context available to the model and the automatic-compaction boundary.
 
 Configurable metadata includes `display_name`, the picker-facing model name;
 `description`, explanatory text shown to users; and `channel`, the grouping
@@ -149,14 +199,19 @@ Top-level keys in `DEVO_HOME/config.toml` also store a few UI preferences:
 ```toml
 theme = "aurora"
 collapse_reasoning = true
+compaction_token_limit = 250000
 ```
 
-- `theme` selects the TUI color theme (also set via `/theme`).
+- `theme` selects the TUI color theme (also set via Settings › Appearance).
 - `collapse_reasoning` controls reasoning display (also set via `/show-reasoning`):
   - `true` (default): while streaming, show only the latest 3 lines; when finished, keep short
     reasoning in full and collapse longer reasoning to a one-line `Thought · …`
     summary (full text remains available in Ctrl+T).
   - `false`: show full reasoning while streaming and after it finishes.
+- `compaction_token_limit` is the global absolute auto-compaction threshold in tokens
+  (also set via Settings › Compaction threshold). When set, every session clamps this
+  value to the active model's `context_window`. When unset, sessions use the model
+  effective context window.
 
 ### Migrating from `models.json`
 
@@ -165,3 +220,146 @@ Manually copy the fields you still want into `[model.<slug>]` sections in the
 user or workspace `config.toml`, then add or retain the matching provider and
 model binding. Keep API keys in `auth.json`; refer to them from
 `[providers.<id>].credential`.
+
+## MCP Servers
+
+Devo connects to [Model Context Protocol](https://modelcontextprotocol.io/)
+servers configured in user or workspace `config.toml` under `[mcp]`. Each server
+is one entry in the `servers` array, and its `transport` table selects how Devo
+connects. Supported transports are `stdio`, `streamable_http`, and the deprecated
+`sse`.
+
+You can configure MCP either by editing `config.toml` or with the CLI
+(`devo mcp …`). Prefer the CLI for day-to-day add / enable / disable / remove;
+edit TOML when you need transport details, env vars, or headers.
+
+### Bundled `code_search` (disabled by default)
+
+Devo ships an optional semantic search MCP binary next to `devo`. The config
+entry is injected when missing and stays **disabled** until you enable it:
+
+```toml
+[[mcp.servers]]
+id = "code_search"
+display_name = "Code Search"
+enabled = false
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["devo-code-search-mcp"]
+```
+
+```bash
+devo mcp enable code_search
+# or, in an interactive session: /mcps → Code Search → Enable
+```
+
+When enabled, the model-facing tool name is `mcp__code_search__code_search`.
+The `devo-code-search-mcp` binary is installed next to `devo`.
+
+### CLI management
+
+Manage user-level MCP servers (`~/.devo/config.toml`) with `devo mcp`:
+
+```bash
+# List configured servers (effective / user config)
+devo mcp list
+
+# Add a stdio server (command + args after --)
+devo mcp add time -- docker run -i --rm mcp/time
+devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
+
+# Add Streamable HTTP (`--transport http` writes kind = "streamable_http")
+devo mcp add --transport http hello-mcp http://localhost:8080/mcp
+devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
+
+# Add legacy SSE
+devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
+
+# Enable / disable / remove by server id
+devo mcp enable time
+devo mcp disable time
+devo mcp remove time
+```
+
+CLI `devo mcp enable|disable` writes user `config.toml` for offline use. An
+already-running interactive session applies enable/disable live through the TUI
+`/mcps` path (`mcp/set_enabled` RPC).
+
+Verify configuration in the TUI with `/mcps` (interactive server list → detail →
+tools). Clients can also call `mcp/list`, `mcp/tools`, and `mcp/set_enabled`.
+
+### TOML examples
+
+Stdio example:
+
+```toml
+[mcp]
+auto_start = true
+
+[[mcp.servers]]
+id = "filesystem"
+display_name = "Filesystem"
+enabled = true
+startup_policy = "lazy" # eager | lazy | manual
+trust_policy = "user" # user | workspace | untrusted
+allowed_capabilities = ["tools", "resources", "prompts"]
+roots_policy = "workspace" # none | workspace | custom
+
+[mcp.servers.transport]
+kind = "stdio"
+command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
+# cwd = "/path/to/workdir"
+# env = { MY_VAR = "value" }
+# env_vars = ["HOME", "PATH"]
+```
+
+Streamable HTTP with a bearer token:
+
+```toml
+[[mcp.servers]]
+id = "github"
+display_name = "GitHub"
+startup_policy = "lazy"
+
+[mcp.servers.transport]
+kind = "streamable_http"
+url = "https://api.githubcopilot.com/mcp/"
+auth = { kind = "bearer_token", token = "replace-me" }
+http_headers = { "X-Custom" = "static-value" }
+env_http_headers = { "Authorization" = "GITHUB_TOKEN" }
+```
+
+Legacy SSE transport:
+
+```toml
+[mcp.servers.transport]
+kind = "sse"
+url = "https://example.com/mcp/sse"
+```
+
+Field notes:
+
+- `auto_start` defaults to `true`. Enable/disable of MCP servers in a running session is applied live via `mcp/set_enabled` (TUI `/mcps`).
+- `startup_policy` controls when an enabled server starts: `eager` during
+  bootstrap, `lazy` on first use, or `manual` only by explicit request.
+- For stdio, `env` provides literal values and `env_vars` lists names inherited
+  from the local environment; `{ name = "X", source = "remote" }` is not
+  supported for stdio.
+- For HTTP transports, `http_headers` provides literal headers and
+  `env_http_headers` maps a header name to the environment variable that
+  supplies its value.
+- Empty `allowed_capabilities` means no restriction. The runtime currently
+  focuses on `tools`; resource reads are not wired yet.
+- `output_limits` sets `max_tool_output_bytes` (default 1 MiB) and
+  `max_resource_bytes` (default 10 MiB).
+- Top-level `mcp_oauth_credentials_store` is `auto` (default), `file`, or
+  `keyring` and selects where OAuth credentials are stored.
+- Prefer environment-injected headers or values over hard-coding tokens into
+  `config.toml`. `auth_ref` exists on each server record but is not wired to the
+  runtime yet.
+
+Merge behavior: `[mcp]` is merged field-wise like other tables, but `servers` is
+an array. A project-level `[[mcp.servers]]` list therefore replaces the
+user-level list instead of merging by `id`.

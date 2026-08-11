@@ -432,6 +432,11 @@ fn sse_data(value: Value) -> String {
 
 pub(crate) async fn build_test_mcp_server_binary() -> Result<PathBuf> {
     let workspace = workspace_root()?;
+    let binary = target_debug_binary(&workspace, "test_stdio_server");
+    if binary.is_file() {
+        return Ok(binary);
+    }
+
     let manifest = workspace.join("Cargo.toml");
     let cargo_path = std::env::var_os("CARGO")
         .map(PathBuf::from)
@@ -450,7 +455,6 @@ pub(crate) async fn build_test_mcp_server_binary() -> Result<PathBuf> {
         .await
         .context("build MCP test stdio server")?;
     anyhow::ensure!(status.success(), "MCP test stdio server build failed");
-    let binary = target_debug_binary(&workspace, "test_stdio_server");
     anyhow::ensure!(
         binary.is_file(),
         "MCP test stdio server binary was not built at {}",

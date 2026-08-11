@@ -16,8 +16,9 @@ use smol_str::SmolStr;
 /// Controls how tool permission requests are handled by the runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionMode {
-    /// Approve every request without asking.
-    AutoApprove,
+    /// Bypass approvals entirely (never ask). Full-Access / yolo posture.
+    #[serde(alias = "AutoApprove")]
+    Yolo,
     /// Ask the user for confirmation on each request.
     Interactive,
     /// Deny all requests that require permission.
@@ -90,7 +91,8 @@ pub struct RuntimePermissionProfile {
     pub writable_roots: BTreeSet<PathBuf>,
     pub allow_shell_commands: bool,
     pub allow_network: bool,
-    pub auto_approve: bool,
+    /// When true, sensitive tools are allowed without prompts (Full-Access / yolo).
+    pub yolo: bool,
 }
 
 impl RuntimePermissionProfile {
@@ -118,7 +120,7 @@ impl RuntimePermissionProfile {
                     writable_roots,
                     allow_shell_commands: true,
                     allow_network: false,
-                    auto_approve: false,
+                    yolo: false,
                 }
             }
             PermissionPreset::FullAccess => RuntimePermissionProfile {
@@ -129,7 +131,7 @@ impl RuntimePermissionProfile {
                 writable_roots,
                 allow_shell_commands: true,
                 allow_network: true,
-                auto_approve: true,
+                yolo: true,
             },
         }
     }
@@ -180,8 +182,8 @@ impl RuntimePermissionProfile {
     }
 
     pub fn permission_mode(&self) -> PermissionMode {
-        if self.auto_approve {
-            PermissionMode::AutoApprove
+        if self.yolo {
+            PermissionMode::Yolo
         } else {
             PermissionMode::Interactive
         }

@@ -64,6 +64,7 @@ pub enum ClientMethod {
     SessionFork,
     SessionRollback,
     SessionCompact,
+    SessionCompactionUpdate,
     SkillsList,
     SkillsChanged,
     SkillsSetEnabled,
@@ -79,9 +80,6 @@ pub enum ClientMethod {
     TurnStart,
     TurnShellCommand,
     TurnInterrupt,
-    TurnSteer,
-    TurnQueueRemove,
-    TurnQueueSteer,
     WorkspaceChangesRead,
     RequestUserInputRespond,
     SearchStart,
@@ -105,6 +103,25 @@ pub enum ClientMethod {
     ProviderVendorList,
     ProviderValidate,
     ProviderVendorUpsert,
+    McpList,
+    McpTools,
+    McpSetEnabled,
+    ContextUsageRead,
+    // New Native API methods (canonical types; not part of the legacy
+    // `_devo/*` alias surface).
+    SessionTurnsList,
+    SessionItemsList,
+    SessionRollbackPreview,
+    SessionRollbackCommit,
+    SubscriptionCreate,
+    SubscriptionUpdate,
+    SubscriptionAck,
+    SubscriptionUnsubscribe,
+    SessionQueuePush,
+    SessionQueueList,
+    SessionQueueUpdate,
+    SessionQueueRemove,
+    SessionQueueSteer,
 }
 
 impl ClientMethod {
@@ -118,6 +135,7 @@ impl ClientMethod {
             Self::SessionFork => "session/fork",
             Self::SessionRollback => "session/rollback",
             Self::SessionCompact => "session/compact",
+            Self::SessionCompactionUpdate => "session/compaction/update",
             Self::SkillsList => "skills/list",
             Self::SkillsChanged => "skills/changed",
             Self::SkillsSetEnabled => "skills/set_enabled",
@@ -133,9 +151,6 @@ impl ClientMethod {
             Self::TurnStart => "turn/start",
             Self::TurnShellCommand => "turn/shell_command",
             Self::TurnInterrupt => "turn/interrupt",
-            Self::TurnSteer => "turn/steer",
-            Self::TurnQueueRemove => "turn/queue/remove",
-            Self::TurnQueueSteer => "turn/queue/steer",
             Self::WorkspaceChangesRead => "workspace/changes/read",
             Self::RequestUserInputRespond => "request_user_input/respond",
             Self::SearchStart => "search/start",
@@ -159,6 +174,23 @@ impl ClientMethod {
             Self::ProviderVendorList => "provider/list",
             Self::ProviderValidate => "provider/validate",
             Self::ProviderVendorUpsert => "provider/upsert",
+            Self::McpList => "mcp/list",
+            Self::McpTools => "mcp/tools",
+            Self::McpSetEnabled => "mcp/set_enabled",
+            Self::ContextUsageRead => "context/usage/read",
+            Self::SessionTurnsList => "session/turns/list",
+            Self::SessionItemsList => "session/items/list",
+            Self::SessionRollbackPreview => "session/rollback/preview",
+            Self::SessionRollbackCommit => "session/rollback/commit",
+            Self::SubscriptionCreate => "subscription/create",
+            Self::SubscriptionUpdate => "subscription/update",
+            Self::SubscriptionAck => "subscription/ack",
+            Self::SubscriptionUnsubscribe => "subscription/unsubscribe",
+            Self::SessionQueuePush => "session/queue/push",
+            Self::SessionQueueList => "session/queue/list",
+            Self::SessionQueueUpdate => "session/queue/update",
+            Self::SessionQueueRemove => "session/queue/remove",
+            Self::SessionQueueSteer => "session/queue/steer",
         }
     }
 
@@ -172,6 +204,7 @@ impl ClientMethod {
             "session/fork" => Self::SessionFork,
             "session/rollback" => Self::SessionRollback,
             "session/compact" => Self::SessionCompact,
+            "session/compaction/update" => Self::SessionCompactionUpdate,
             "skills/list" => Self::SkillsList,
             "skills/changed" => Self::SkillsChanged,
             "skills/set_enabled" => Self::SkillsSetEnabled,
@@ -187,9 +220,6 @@ impl ClientMethod {
             "turn/start" => Self::TurnStart,
             "turn/shell_command" => Self::TurnShellCommand,
             "turn/interrupt" => Self::TurnInterrupt,
-            "turn/steer" => Self::TurnSteer,
-            "turn/queue/remove" => Self::TurnQueueRemove,
-            "turn/queue/steer" => Self::TurnQueueSteer,
             "workspace/changes/read" => Self::WorkspaceChangesRead,
             "request_user_input/respond" => Self::RequestUserInputRespond,
             "search/start" => Self::SearchStart,
@@ -213,6 +243,23 @@ impl ClientMethod {
             "provider/list" => Self::ProviderVendorList,
             "provider/validate" => Self::ProviderValidate,
             "provider/upsert" => Self::ProviderVendorUpsert,
+            "mcp/list" => Self::McpList,
+            "mcp/tools" => Self::McpTools,
+            "mcp/set_enabled" => Self::McpSetEnabled,
+            "context/usage/read" => Self::ContextUsageRead,
+            "session/turns/list" => Self::SessionTurnsList,
+            "session/items/list" => Self::SessionItemsList,
+            "session/rollback/preview" => Self::SessionRollbackPreview,
+            "session/rollback/commit" => Self::SessionRollbackCommit,
+            "subscription/create" => Self::SubscriptionCreate,
+            "subscription/update" => Self::SubscriptionUpdate,
+            "subscription/ack" => Self::SubscriptionAck,
+            "subscription/unsubscribe" => Self::SubscriptionUnsubscribe,
+            "session/queue/push" => Self::SessionQueuePush,
+            "session/queue/list" => Self::SessionQueueList,
+            "session/queue/update" => Self::SessionQueueUpdate,
+            "session/queue/remove" => Self::SessionQueueRemove,
+            "session/queue/steer" => Self::SessionQueueSteer,
             _ => return None,
         })
     }
@@ -254,6 +301,14 @@ pub enum ProtocolErrorCode {
     ForkTurnNotStable,
     #[error("PermissionDenied")]
     PermissionDenied,
+    /// The ack/replay cursor is outside the stored log (regression, future
+    /// value, or unknown stream); the client must re-snapshot (08 §4).
+    #[error("CursorExpired")]
+    CursorExpired,
+    /// The addressed queue entry is no longer queued (drained, removed, or
+    /// never existed) — `session/queue/*` (01 §4.3).
+    #[error("QueueItemNotFound")]
+    QueueItemNotFound,
     #[error("WorkspaceUnavailable")]
     WorkspaceUnavailable,
     #[error("InheritedSegmentWriteFailed")]
@@ -278,6 +333,15 @@ pub enum ProtocolErrorCode {
     InvalidMentions,
     #[error("WorkspaceRestoreFailedToStart")]
     WorkspaceRestoreFailedToStart,
+    #[serde(rename = "RESTORE_PLAN_NOT_FOUND")]
+    #[error("RESTORE_PLAN_NOT_FOUND")]
+    RestorePlanNotFound,
+    #[serde(rename = "RESTORE_PLAN_EXPIRED")]
+    #[error("RESTORE_PLAN_EXPIRED")]
+    RestorePlanExpired,
+    #[serde(rename = "WORKSPACE_VERSION_CONFLICT")]
+    #[error("WORKSPACE_VERSION_CONFLICT")]
+    WorkspaceVersionConflict,
     #[error("InternalError")]
     InternalError,
 }
@@ -507,6 +571,8 @@ impl fmt::Display for McpAuthStatus {
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
@@ -565,6 +631,18 @@ mod tests {
                 ProtocolErrorCode::WorkspaceRestoreFailedToStart,
                 "WorkspaceRestoreFailedToStart",
             ),
+            (
+                ProtocolErrorCode::RestorePlanNotFound,
+                "RESTORE_PLAN_NOT_FOUND",
+            ),
+            (
+                ProtocolErrorCode::RestorePlanExpired,
+                "RESTORE_PLAN_EXPIRED",
+            ),
+            (
+                ProtocolErrorCode::WorkspaceVersionConflict,
+                "WORKSPACE_VERSION_CONFLICT",
+            ),
         ];
 
         for (code, expected_str) in &codes {
@@ -613,6 +691,30 @@ mod tests {
     }
 
     #[test]
+    fn client_method_recognizes_mcp_list() {
+        assert_eq!(ClientMethod::parse("mcp/list"), Some(ClientMethod::McpList));
+        assert_eq!(ClientMethod::McpList.as_str(), "mcp/list");
+    }
+
+    #[test]
+    fn client_method_recognizes_mcp_tools() {
+        assert_eq!(
+            ClientMethod::parse("mcp/tools"),
+            Some(ClientMethod::McpTools)
+        );
+        assert_eq!(ClientMethod::McpTools.as_str(), "mcp/tools");
+    }
+
+    #[test]
+    fn client_method_recognizes_mcp_set_enabled() {
+        assert_eq!(
+            ClientMethod::parse("mcp/set_enabled"),
+            Some(ClientMethod::McpSetEnabled)
+        );
+        assert_eq!(ClientMethod::McpSetEnabled.as_str(), "mcp/set_enabled");
+    }
+
+    #[test]
     fn client_method_recognizes_workspace_changes_read() {
         assert_eq!(
             ClientMethod::parse("workspace/changes/read"),
@@ -621,6 +723,27 @@ mod tests {
         assert_eq!(
             ClientMethod::WorkspaceChangesRead.as_str(),
             "workspace/changes/read"
+        );
+    }
+
+    #[test]
+    fn client_method_recognizes_two_phase_session_rollback() {
+        assert_eq!(
+            [
+                ClientMethod::parse("session/rollback/preview"),
+                ClientMethod::parse("session/rollback/commit"),
+            ],
+            [
+                Some(ClientMethod::SessionRollbackPreview),
+                Some(ClientMethod::SessionRollbackCommit),
+            ]
+        );
+        assert_eq!(
+            [
+                ClientMethod::SessionRollbackPreview.as_str(),
+                ClientMethod::SessionRollbackCommit.as_str(),
+            ],
+            ["session/rollback/preview", "session/rollback/commit"]
         );
     }
 
@@ -647,6 +770,14 @@ mod tests {
         assert_eq!(
             ClientMethod::SessionSandboxProfileUpdate.as_str(),
             "session/sandbox_profile/update"
+        );
+        assert_eq!(
+            ClientMethod::SessionCompactionUpdate.as_str(),
+            "session/compaction/update"
+        );
+        assert_eq!(
+            ClientMethod::parse("session/compaction/update"),
+            Some(ClientMethod::SessionCompactionUpdate)
         );
     }
 }

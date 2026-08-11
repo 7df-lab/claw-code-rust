@@ -164,19 +164,24 @@ pub(crate) fn history_item_from_turn_item(item: &TurnItem) -> Option<SessionHist
             text.clone(),
         )),
         TurnItem::Plan(TextItem { text }) => {
-            let metadata = parse_plan_history_metadata(text);
-            let mut item = SessionHistoryItem::new(
-                None,
-                SessionHistoryItemKind::Assistant,
-                String::new(),
-                text.clone(),
-            );
-            if let Some(metadata) = metadata {
-                item = item.with_metadata(metadata);
-            }
-            Some(item)
+            let metadata =
+                parse_plan_history_metadata(text).unwrap_or(SessionHistoryMetadata::ProposedPlan);
+            Some(
+                SessionHistoryItem::new(
+                    None,
+                    SessionHistoryItemKind::Assistant,
+                    String::new(),
+                    text.clone(),
+                )
+                .with_metadata(metadata),
+            )
         }
-        TurnItem::ContextCompaction(TextItem { .. }) => None,
+        TurnItem::ContextCompaction(TextItem { .. }) => Some(SessionHistoryItem::new(
+            None,
+            SessionHistoryItemKind::ContextCompaction,
+            "Context compacted".to_string(),
+            String::new(),
+        )),
         TurnItem::Reasoning(TextItem { text }) => Some(SessionHistoryItem::new(
             None,
             SessionHistoryItemKind::Reasoning,
@@ -216,6 +221,14 @@ pub(crate) fn history_item_from_turn_item(item: &TurnItem) -> Option<SessionHist
             is_error,
             ..
         }) => {
+            // Canonical v2 ToolResult does not carry tool_name; resume may
+            // still recover Edited metadata from structured file-change output.
+            let edited_metadata = (!*is_error)
+                .then(|| parse_edited_history_metadata(output))
+                .flatten();
+            let resolved_tool_name = tool_name
+                .clone()
+                .or_else(|| edited_metadata.is_some().then(|| "edit".to_string()));
             let mut item = SessionHistoryItem::new(
                 Some(tool_call_id.clone()),
                 if *is_error {
@@ -223,15 +236,15 @@ pub(crate) fn history_item_from_turn_item(item: &TurnItem) -> Option<SessionHist
                 } else {
                     SessionHistoryItemKind::ToolResult
                 },
-                summarize_tool_result(tool_name.as_deref(), *is_error),
+                summarize_tool_result(resolved_tool_name.as_deref(), *is_error),
                 display_content.clone().unwrap_or_else(|| match output {
                     serde_json::Value::String(text) => text.clone(),
                     other => other.to_string(),
                 }),
             );
-            if let Some(tool_name) = tool_name {
+            if let Some(tool_name) = resolved_tool_name {
                 item = item.with_tool_io(SessionHistoryToolIo {
-                    tool_name: tool_name.clone(),
+                    tool_name,
                     input: serde_json::Value::Null,
                     output: Some(output.clone()),
                     display_content: display_content.clone(),
@@ -246,10 +259,7 @@ pub(crate) fn history_item_from_turn_item(item: &TurnItem) -> Option<SessionHist
             {
                 item = item.with_metadata(metadata);
             }
-            if !*is_error
-                && matches!(tool_name.as_deref(), Some("apply_patch" | "write" | "edit"))
-                && let Some(metadata) = parse_edited_history_metadata(output)
-            {
+            if let Some(metadata) = edited_metadata {
                 item = item.with_metadata(metadata);
             }
             Some(item)
@@ -456,7 +466,19 @@ impl SessionProjector for DefaultProjection {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status,
+            collaboration_mode: session
+                .collaboration_mode
+                .or_else(|| {
+                    session
+                        .latest_turn_context
+                        .as_ref()
+                        .map(|context| context.collaboration_mode)
+                })
+                .unwrap_or_default(),
+            effective_context_window: session.effective_context_window,
+            permission_preset: session.permission_preset,
         }
     }
 }
@@ -665,6 +687,20 @@ mod tests {
     }
 
     #[test]
+    fn proposed_plan_markdown_emits_proposed_plan_metadata() {
+        let item = TurnItem::Plan(TextItem {
+            text: "## Approach\n\n1. Inspect\n2. Patch\n".to_string(),
+        });
+
+        let history_item = history_item_from_turn_item(&item).expect("history item");
+        assert_eq!(
+            history_item.metadata,
+            Some(SessionHistoryMetadata::ProposedPlan)
+        );
+        assert_eq!(history_item.body, "## Approach\n\n1. Inspect\n2. Patch\n");
+    }
+
+    #[test]
     fn command_execution_turn_item_emits_explored_metadata() {
         let item = TurnItem::CommandExecution(CommandExecutionItem {
             tool_call_id: "call-1".to_string(),
@@ -849,6 +885,58 @@ mod tests {
             panic!("expected edited metadata");
         };
         assert!(changes.contains_key(&std::path::PathBuf::from("foo.txt")));
+    }
+
+    #[test]
+    fn edit_tool_result_without_tool_name_still_emits_edited_metadata() {
+        // After v2 rollout roundtrip, ToolResult loses tool_name (canonical schema
+        // does not carry it). Resume must still recover Edited metadata from the
+        // structured output so the TUI can render the diff instead of
+        // "Ran Tool output" / "edited /path".
+        let item = TurnItem::ToolResult(ToolResultItem {
+            tool_call_id: "call-1".to_string(),
+            tool_name: None,
+            output: serde_json::json!({
+                "diff": "diff --git a/README.zh-Hans.md b/README.zh-Hans.md\n--- a/README.zh-Hans.md\n+++ b/README.zh-Hans.md\n@@ -259,10 +259,0 @@\n-## Star 历史\n",
+                "files": [
+                    {
+                        "path": "README.zh-Hans.md",
+                        "kind": "update",
+                        "diff": "diff --git a/README.zh-Hans.md b/README.zh-Hans.md\n--- a/README.zh-Hans.md\n+++ b/README.zh-Hans.md\n@@ -259,10 +259,0 @@\n-## Star 历史\n",
+                        "oldContent": "## Star 历史\n",
+                        "postContent": "",
+                        "additions": 0,
+                        "deletions": 1
+                    }
+                ],
+                "output": "edited /Users/tsiao/Desktop/devo/README.zh-Hans.md"
+            }),
+            display_content: Some("edited /Users/tsiao/Desktop/devo/README.zh-Hans.md".to_string()),
+            is_error: false,
+        });
+
+        let history_item = history_item_from_turn_item(&item).expect("history item");
+        assert_eq!(
+            history_item.body,
+            "edited /Users/tsiao/Desktop/devo/README.zh-Hans.md"
+        );
+        let SessionHistoryMetadata::Edited { changes } = history_item
+            .metadata
+            .expect("edited metadata after nameless resume")
+        else {
+            panic!("expected edited metadata");
+        };
+        assert!(changes.contains_key(&std::path::PathBuf::from("README.zh-Hans.md")));
+        let tool_io = history_item.tool_io.expect("structured tool_io preserved");
+        assert!(
+            tool_io
+                .output
+                .as_ref()
+                .and_then(|output| output.get("files"))
+                .and_then(|files| files.as_array())
+                .is_some_and(|files| !files.is_empty()),
+            "expected files array preserved in tool_io.output"
+        );
     }
 
     #[test]

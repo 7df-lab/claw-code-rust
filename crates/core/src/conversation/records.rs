@@ -9,7 +9,7 @@ use crate::{
     TurnWorkspaceChangeRecordedRecord, TurnWorkspaceCheckpointRecordedRecord,
     TurnWorkspaceRestoreCompletedRecord, TurnWorkspaceRestoreStartedRecord,
 };
-use devo_protocol::{StopReason, TurnFailureReason};
+use devo_protocol::{CollaborationMode, PermissionPreset, StopReason, TurnFailureReason};
 
 /// Stores persistent metadata for one session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,6 +58,9 @@ pub struct SessionRecord {
     pub sandbox_policy: String,
     /// The active approval mode description for the session.
     pub approval_mode: String,
+    /// Session override for the absolute effective context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_context_window: Option<u64>,
     /// The last observed aggregate token count for the session.
     pub tokens_used: i64,
     /// The first user message stored for preview or title derivation.
@@ -78,6 +81,12 @@ pub struct SessionRecord {
     /// The latest turn context snapshot known for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_turn_context: Option<TurnContext>,
+    /// Session-level collaboration mode override, persisted without requiring a turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_mode: Option<CollaborationMode>,
+    /// Session-level permission preset override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_preset: Option<PermissionPreset>,
     /// The schema version for persisted session metadata.
     pub schema_version: u32,
 }
@@ -122,6 +131,12 @@ pub struct TurnRecord {
     /// have been performed for tools, retries, or delegated work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_query_usage: Option<TurnUsage>,
+    /// Context-window occupancy snapshot after this turn's latest model query.
+    ///
+    /// Used by resume/fork/rollback to restore category occupancy at a cut
+    /// turn rather than copying the session tip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
     /// The terminal provider/model stop reason, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<StopReason>,
@@ -263,6 +278,9 @@ pub struct ApprovalDecisionItem {
     pub decision: String,
     /// The scope attached to the decision.
     pub scope: String,
+    /// Authority that produced the decision. Absent on legacy records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_source: Option<devo_protocol::canonical::item::ApprovalDecisionSource>,
 }
 
 /// Enumerates the canonical persisted item kinds used by the conversation model.
@@ -319,6 +337,9 @@ pub struct TurnError {
     pub code: String,
     /// The human-readable error message.
     pub message: String,
+    /// Optional user-facing next step for recovering from this failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_hint: Option<String>,
 }
 
 /// Stores one persisted item record in the canonical journal.
@@ -420,6 +441,9 @@ pub struct CompactionSnapshotLine {
     pub summary_item_id: ItemId,
     /// The pre-existing item ids that remain after compaction, in prompt order.
     pub preserved_item_ids: Vec<ItemId>,
+    /// Post-compaction context occupancy, when computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
 }
 
 /// Stores an append-only rollback marker for a session rollout.
@@ -558,6 +582,7 @@ mod tests {
             title_state: SessionTitleState::Unset,
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
+            effective_context_window: None,
             tokens_used: 0,
             first_user_message: None,
             archived_at: None,
@@ -567,6 +592,8 @@ mod tests {
             parent_session_id: None,
             session_context: None,
             latest_turn_context: None,
+            collaboration_mode: None,
+            permission_preset: None,
             schema_version: 2,
         };
 
@@ -626,6 +653,7 @@ mod tests {
             error: Some(TurnError {
                 code: "PROVIDER_SERVER_ERROR".into(),
                 message: "provider request failed".into(),
+                recovery_hint: None,
             }),
             schema_version: 4,
             ..make_test_turn(TurnStatus::Running)
@@ -663,6 +691,35 @@ mod tests {
         let serialized = serde_json::to_value(&restored).expect("serialize restored");
         assert_eq!(serialized["reasoning_effort_selection"], "high");
         assert_eq!(serialized.get("thinking"), None);
+    }
+
+    #[test]
+    fn turn_record_roundtrips_context_occupancy() {
+        use pretty_assertions::assert_eq;
+
+        let occupancy = devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 5_000,
+            /*tools_builtin*/ 20_000, /*tools_mcp*/ 15_000, /*conversation*/ 50_000,
+        );
+        let mut turn = make_test_turn(TurnStatus::Completed);
+        turn.context_occupancy = Some(occupancy.clone());
+        let json = serde_json::to_string(&turn).expect("serialize");
+        let restored: TurnRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.context_occupancy, Some(occupancy));
+    }
+
+    #[test]
+    fn turn_record_reads_legacy_record_without_context_occupancy() {
+        let expected = make_test_turn(TurnStatus::Completed);
+        let mut value = serde_json::to_value(&expected).expect("serialize value");
+        value
+            .as_object_mut()
+            .expect("turn json object")
+            .remove("context_occupancy");
+
+        let restored: TurnRecord = serde_json::from_value(value).expect("deserialize legacy");
+        assert_eq!(restored.context_occupancy, None);
+        assert_eq!(restored, expected);
     }
 
     #[test]
@@ -729,6 +786,7 @@ mod tests {
             error: Some(TurnError {
                 code: "TOOL_EXECUTION_FAILED".into(),
                 message: "command exited with code 1".into(),
+                recovery_hint: None,
             }),
             ..make_test_item()
         };
@@ -810,6 +868,7 @@ mod tests {
                 approval_id: "a1".into(),
                 decision: "Allow".into(),
                 scope: "Once".into(),
+                decision_source: None,
             }),
             TurnItem::Plan(TextItem { text: "[]".into() }),
             TurnItem::ContextCompaction(TextItem {
@@ -891,6 +950,7 @@ mod tests {
                 turn_id: turn.id,
                 summary_item_id: item.id,
                 preserved_item_ids: vec![item.id],
+                context_occupancy: None,
             })),
             RolloutLine::SessionRollback(Box::new(SessionRollbackLine {
                 timestamp: Utc::now(),
@@ -1012,6 +1072,7 @@ mod tests {
                 approval_id: "apr-1".into(),
                 decision: decision.into(),
                 scope: scope.into(),
+                decision_source: None,
             };
             assert_eq!(dec.decision, decision);
             assert_eq!(dec.scope, scope);
@@ -1036,26 +1097,32 @@ mod tests {
             TurnError {
                 code: "CONTEXT_LIMIT_EXCEEDED".into(),
                 message: "Too many tokens".into(),
+                recovery_hint: None,
             },
             TurnError {
                 code: "MODEL_RESOLUTION_FAILED".into(),
                 message: "No valid binding".into(),
+                recovery_hint: None,
             },
             TurnError {
                 code: "PROVIDER_RATE_LIMITED".into(),
                 message: "Retry after 30s".into(),
+                recovery_hint: None,
             },
             TurnError {
                 code: "PERSISTENCE_FAILURE".into(),
                 message: "Disk full".into(),
+                recovery_hint: None,
             },
             TurnError {
                 code: "TOOL_EXECUTION_FAILED".into(),
                 message: "exit code 1".into(),
+                recovery_hint: None,
             },
             TurnError {
                 code: "APPROVAL_TIMEOUT".into(),
                 message: "User did not respond".into(),
+                recovery_hint: None,
             },
         ];
         for err in &errors {
@@ -1075,10 +1142,38 @@ mod tests {
             turn_id: TurnId::new(),
             summary_item_id: ItemId::new(),
             preserved_item_ids: vec![ItemId::new(), ItemId::new(), ItemId::new()],
+            context_occupancy: Some(
+                devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+                    /*context_window_tokens*/ 80_000, /*base*/ 8_000,
+                    /*skills*/ 2_000, /*tools_builtin*/ 10_000, /*tools_mcp*/ 0,
+                    /*conversation*/ 20_000,
+                ),
+            ),
         };
         let json = serde_json::to_string(&snapshot).expect("serialize");
         let restored: CompactionSnapshotLine = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored.preserved_item_ids.len(), 3);
+        assert_eq!(restored.context_occupancy, snapshot.context_occupancy);
+    }
+
+    #[test]
+    fn compaction_snapshot_reads_legacy_without_context_occupancy() {
+        let snapshot = CompactionSnapshotLine {
+            timestamp: Utc::now(),
+            session_id: SessionId::new(),
+            turn_id: TurnId::new(),
+            summary_item_id: ItemId::new(),
+            preserved_item_ids: vec![ItemId::new()],
+            context_occupancy: None,
+        };
+        let mut value = serde_json::to_value(&snapshot).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("snapshot object")
+            .remove("context_occupancy");
+        let restored: CompactionSnapshotLine =
+            serde_json::from_value(value).expect("deserialize legacy");
+        assert_eq!(restored.context_occupancy, None);
     }
 
     // ── Helpers ───────────────────────────────────────────────
@@ -1105,6 +1200,7 @@ mod tests {
             title_state: SessionTitleState::Provisional,
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
+            effective_context_window: None,
             tokens_used: 100,
             first_user_message: Some("hello".into()),
             archived_at: None,
@@ -1114,6 +1210,8 @@ mod tests {
             parent_session_id: None,
             session_context: None,
             latest_turn_context: None,
+            collaboration_mode: None,
+            permission_preset: None,
             schema_version: 2,
         }
     }
@@ -1135,6 +1233,7 @@ mod tests {
             input_token_estimate: Some(100),
             usage: None,
             latest_query_usage: None,
+            context_occupancy: None,
             stop_reason: None,
             failure_reason: None,
             error: None,

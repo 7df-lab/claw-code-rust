@@ -141,10 +141,6 @@ pub enum TurnInputDisposition {
     Steered,
 }
 
-fn default_steered_disposition() -> TurnInputDisposition {
-    TurnInputDisposition::Steered
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "disposition", rename_all = "snake_case")]
 pub enum TurnStartResult {
@@ -221,45 +217,6 @@ pub struct TurnInterruptParams {
 pub struct TurnInterruptResult {
     pub turn_id: TurnId,
     pub status: TurnStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct TurnSteerParams {
-    pub session_id: SessionId,
-    pub expected_turn_id: TurnId,
-    pub input: Vec<InputItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct TurnSteerResult {
-    pub turn_id: TurnId,
-    #[serde(default = "default_steered_disposition")]
-    pub disposition: TurnInputDisposition,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct TurnQueueRemoveParams {
-    pub session_id: SessionId,
-    pub queued_input_id: PendingInputId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct TurnQueueRemoveResult {
-    pub removed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct TurnQueueSteerParams {
-    pub session_id: SessionId,
-    pub expected_turn_id: TurnId,
-    pub queued_input_id: PendingInputId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct TurnQueueSteerResult {
-    pub turn_id: TurnId,
-    #[serde(default = "default_steered_disposition")]
-    pub disposition: TurnInputDisposition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default, JsonSchema, TS)]
@@ -552,17 +509,6 @@ mod tests {
         let restored: TurnStartParams = serde_json::from_value(json).expect("deserialize");
 
         assert_eq!(restored.collaboration_mode, CollaborationMode::Plan);
-    }
-
-    #[test]
-    fn turn_steer_result_defaults_to_steered_disposition() {
-        let json = serde_json::json!({
-            "turn_id": TurnId::new()
-        });
-
-        let restored: TurnSteerResult = serde_json::from_value(json).expect("deserialize");
-
-        assert_eq!(restored.disposition, TurnInputDisposition::Steered);
     }
 
     #[test]

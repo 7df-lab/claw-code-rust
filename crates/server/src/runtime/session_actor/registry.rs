@@ -73,7 +73,15 @@ impl ServerRuntime {
     }
 
     /// Reads turn reservation state, preferring runtime caches while the session
-    /// actor is blocked in `ExecuteTurn` (mailbox would deadlock callers).
+    /// actor is blocked in `ExecuteTurn`.
+    ///
+    /// `execute_turn_in_actor` runs inline, so its actor does not poll mailbox
+    /// commands until the turn finishes. This is the only synchronous fast path
+    /// for work that must remain responsive during an active turn. Callers may
+    /// mutate `pending_turn_queue` and `steer_input_queue` through the returned
+    /// shared mutexes; those mutexes are the per-session serialization point.
+    /// Do not replace this with a mailbox round-trip for queue, steer, or other
+    /// active-turn control paths.
     pub(crate) async fn session_turn_reservation_snapshot(
         &self,
         session_id: SessionId,
@@ -93,7 +101,7 @@ impl ServerRuntime {
                 summary: spawn.parent_summary,
                 runtime_context: spawn.runtime_context,
                 pending_turn_queue: spawn.pending_turn_queue,
-                btw_input_queue: spawn.btw_input_queue,
+                steer_input_queue: spawn.steer_input_queue,
             });
         }
         let handle = self.session(session_id).await?;

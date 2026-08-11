@@ -57,6 +57,8 @@ fn widget_with_model(
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -111,6 +113,8 @@ fn saved_model_metadata_overlays_catalog_display_for_picker() {
             reasoning_effort_selection: None,
             permission_preset: PermissionPreset::Default,
             sandbox_profile: Some("workspace".to_string()),
+            compaction_token_limit: None,
+            default_collaboration_mode: devo_protocol::CollaborationMode::Build,
             cwd: PathBuf::from("."),
         },
         server_log_level: None,
@@ -228,6 +232,8 @@ fn model_picker_distinguishes_same_model_slug_by_provider_binding() {
         initial_reasoning_effort_selection: None,
         initial_permission_preset: PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -263,6 +269,7 @@ fn model_picker_distinguishes_same_model_slug_by_provider_binding() {
             reasoning_effort_selection: Some(None),
             sandbox: None,
             approval_policy: None,
+            persist_scope: crate::app_command::PersistScope::Session,
         })
     );
 }

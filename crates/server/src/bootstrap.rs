@@ -194,12 +194,15 @@ pub async fn run_server_process(
         "loaded server config"
     );
 
-    let mcp_manager = Arc::new(RmcpMcpManager::new(
-        config.mcp.clone(),
+    let mcp_manager: Arc<dyn devo_core::McpManager> = Arc::new(RmcpMcpManager::new(
+        config.mcp.clone().with_code_search_workspace_cwd(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        ),
         config.mcp_oauth_credentials_store.unwrap_or_default(),
     ));
     let tool_plan = ToolPlanConfig::from_app_config(&config);
-    let registry = handlers::build_registry_from_plan_with_mcp(&tool_plan, mcp_manager).await;
+    let registry =
+        handlers::build_registry_from_plan_with_mcp(&tool_plan, Arc::clone(&mcp_manager)).await;
     let model_catalog: Arc<dyn ModelCatalog> = Arc::new(PresetModelCatalog::load_from_config(
         &config.provider.model_overrides,
     )?);
@@ -233,6 +236,7 @@ pub async fn run_server_process(
             provider.provider,
             provider_router,
             Arc::clone(&registry),
+            mcp_manager,
             provider.default_model,
             model_catalog,
             Arc::new(ProviderVendorCatalog::default()),
@@ -253,6 +257,29 @@ pub async fn run_server_process(
         .await;
     if runtime.backfill_session_index_if_required()? {
         tracing::info!("rollout metadata index backfill completed");
+    }
+    // Delivery-log reconciliation (08 §7): backfill event_log rows a crash
+    // prevented the append path from writing. Runs in the background;
+    // session/list correctness never depends on it.
+    {
+        let rollout_store = runtime.rollout_store();
+        let db = runtime.deps_db();
+        tokio::task::spawn_blocking(move || {
+            match crate::event_reconcile::reconcile_event_log(&rollout_store, &db) {
+                Ok(stats) => {
+                    if stats.rows_inserted > 0 || stats.files_damaged > 0 {
+                        tracing::info!(
+                            rows_inserted = stats.rows_inserted,
+                            files_damaged = stats.files_damaged,
+                            "event_log reconciliation completed"
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "event_log reconciliation failed");
+                }
+            }
+        });
     }
 
     let shutdown_signal = tokio_util::sync::CancellationToken::new();

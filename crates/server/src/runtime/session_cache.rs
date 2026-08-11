@@ -177,34 +177,12 @@ impl ServerRuntime {
             .await;
         self.touch_parent_session_lru(session_id).await;
         self.evict_parent_sessions_if_needed(Some(session_id)).await;
-        self.enqueue_code_index_warmup(session_id).await;
         Ok(handle)
     }
 
     pub(crate) async fn after_root_session_insert(self: &Arc<Self>, session_id: SessionId) {
         self.touch_parent_session_lru(session_id).await;
         self.evict_parent_sessions_if_needed(Some(session_id)).await;
-        self.enqueue_code_index_warmup(session_id).await;
-    }
-
-    async fn enqueue_code_index_warmup(&self, session_id: SessionId) {
-        let Some(handle) = self.session(session_id).await else {
-            return;
-        };
-        let Some(snapshot) = handle.hook_context_snapshot().await else {
-            return;
-        };
-        if snapshot.summary.parent_session_id.is_some() {
-            return;
-        }
-        let root = snapshot.summary.cwd;
-        let Some(shell_context) = handle.shell_exec_context(root.clone()).await else {
-            return;
-        };
-        let Some(service) = shell_context.tool_registry.code_search_service() else {
-            return;
-        };
-        self.code_index_warmup.enqueue(root, service);
     }
 
     pub(crate) async fn touch_parent_session_lru(&self, session_id: SessionId) {

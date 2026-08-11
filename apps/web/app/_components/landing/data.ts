@@ -66,7 +66,7 @@ export const landingCopy = {
           products: [
             {
               status: "yes",
-              evidence: "Local embeddings + BM25.",
+              evidence: "Optional bundled MCP; off by default.",
             },
             {
               status: "no",
@@ -116,7 +116,7 @@ export const landingCopy = {
             },
             {
               status: "yes",
-              evidence: "/mcp and mcp.json.",
+              evidence: "/mcps and mcp.json.",
             },
             {
               status: "yes",
@@ -448,7 +448,7 @@ export const landingCopy = {
           products: [
             {
               status: "yes",
-              evidence: "本地 embedding + BM25。",
+              evidence: "内置 MCP，默认关闭。",
             },
             {
               status: "no",
@@ -498,7 +498,7 @@ export const landingCopy = {
             },
             {
               status: "yes",
-              evidence: "/mcp 与 mcp.json。",
+              evidence: "/mcps 与 mcp.json。",
             },
             {
               status: "yes",

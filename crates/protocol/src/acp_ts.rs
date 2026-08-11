@@ -9,6 +9,19 @@ use serde::Serialize;
 use ts_rs::Config;
 use ts_rs::TS;
 
+use crate::canonical::item::ContextCategoryId;
+use crate::canonical::item::ContextCategoryUsage;
+use crate::canonical::item::ContextOccupancy;
+use crate::canonical::rpc_admin::ContextUsageReadParams;
+use crate::canonical::rpc_admin::ContextUsageReadResult;
+use crate::canonical::rpc_admin::McpListParams;
+use crate::canonical::rpc_admin::McpListResult;
+use crate::canonical::rpc_admin::McpServerInfo;
+use crate::canonical::rpc_admin::McpSetEnabledParams;
+use crate::canonical::rpc_admin::McpSetEnabledResult;
+use crate::canonical::rpc_admin::McpToolEntry;
+use crate::canonical::rpc_admin::McpToolsParams;
+use crate::canonical::rpc_admin::McpToolsResult;
 use crate::parse_command::ParsedCommand;
 use crate::*;
 
@@ -132,12 +145,6 @@ pub fn generate_acp_typescript() -> String {
     push_decl::<AcpFsReadTextFileParams>(&cfg, &mut output);
     push_decl::<AcpFsReadTextFileResult>(&cfg, &mut output);
     push_decl::<AcpFsWriteTextFileParams>(&cfg, &mut output);
-    push_decl::<AcpTerminalCreateParams>(&cfg, &mut output);
-    push_decl::<AcpTerminalCreateResult>(&cfg, &mut output);
-    push_decl::<AcpTerminalParams>(&cfg, &mut output);
-    push_decl::<AcpTerminalOutputResult>(&cfg, &mut output);
-    push_decl::<AcpTerminalWaitForExitResult>(&cfg, &mut output);
-    push_decl::<AcpTerminalExitStatus>(&cfg, &mut output);
 
     output.push_str("export type AcpResumeSessionResult = AcpLoadSessionResult;\n");
     output.push_str("export type AcpCloseSessionParams = AcpSessionActionParams;\n");
@@ -196,7 +203,6 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<SessionMetadataUpdateParams>(&cfg, &mut output);
     push_decl::<SessionMetadataUpdateResult>(&cfg, &mut output);
     push_decl::<SessionCompactParams>(&cfg, &mut output);
-    push_decl::<SessionCompactResult>(&cfg, &mut output);
     push_decl::<SessionForkParams>(&cfg, &mut output);
     push_decl::<SessionForkResult>(&cfg, &mut output);
     push_decl::<SessionRollbackMode>(&cfg, &mut output);
@@ -221,12 +227,6 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<ShellCommandResult>(&cfg, &mut output);
     push_decl::<TurnInterruptParams>(&cfg, &mut output);
     push_decl::<TurnInterruptResult>(&cfg, &mut output);
-    push_decl::<TurnSteerParams>(&cfg, &mut output);
-    push_decl::<TurnSteerResult>(&cfg, &mut output);
-    push_decl::<TurnQueueRemoveParams>(&cfg, &mut output);
-    push_decl::<TurnQueueRemoveResult>(&cfg, &mut output);
-    push_decl::<TurnQueueSteerParams>(&cfg, &mut output);
-    push_decl::<TurnQueueSteerResult>(&cfg, &mut output);
     push_decl::<TurnKind>(&cfg, &mut output);
     push_decl::<WorkspaceChangeScope>(&cfg, &mut output);
     push_decl::<WorkspaceDiffDetail>(&cfg, &mut output);
@@ -253,6 +253,9 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<ApprovalsReviewer>(&cfg, &mut output);
     push_decl::<SessionPermissionsUpdateParams>(&cfg, &mut output);
     push_decl::<SessionPermissionsUpdateResult>(&cfg, &mut output);
+    push_decl::<SessionCompactionUpdateParams>(&cfg, &mut output);
+    push_decl::<SessionCompactionUpdateResult>(&cfg, &mut output);
+    push_decl::<SessionEffectiveContextWindowUpdatedPayload>(&cfg, &mut output);
     push_decl::<SessionSandboxProfileUpdateParams>(&cfg, &mut output);
     push_decl::<SessionSandboxProfileUpdateResult>(&cfg, &mut output);
 
@@ -282,6 +285,20 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<SkillChangedResult>(&cfg, &mut output);
     push_decl::<SkillSetEnabledParams>(&cfg, &mut output);
     push_decl::<SkillSetEnabledResult>(&cfg, &mut output);
+
+    push_decl::<McpListParams>(&cfg, &mut output);
+    push_decl::<McpServerInfo>(&cfg, &mut output);
+    push_decl::<McpListResult>(&cfg, &mut output);
+    push_decl::<McpToolsParams>(&cfg, &mut output);
+    push_decl::<McpToolEntry>(&cfg, &mut output);
+    push_decl::<McpToolsResult>(&cfg, &mut output);
+    push_decl::<McpSetEnabledParams>(&cfg, &mut output);
+    push_decl::<McpSetEnabledResult>(&cfg, &mut output);
+    push_decl::<ContextUsageReadParams>(&cfg, &mut output);
+    push_decl::<ContextUsageReadResult>(&cfg, &mut output);
+    push_decl::<ContextCategoryId>(&cfg, &mut output);
+    push_decl::<ContextCategoryUsage>(&cfg, &mut output);
+    push_decl::<ContextOccupancy>(&cfg, &mut output);
 
     push_decl::<ProviderWireApi>(&cfg, &mut output);
     push_decl::<InputModality>(&cfg, &mut output);
@@ -470,11 +487,6 @@ fn register_acp_schemas(
     schema::<AcpFsReadTextFileParams>(schemas);
     schema::<AcpFsReadTextFileResult>(schemas);
     schema::<AcpFsWriteTextFileParams>(schemas);
-    schema::<AcpTerminalCreateParams>(schemas);
-    schema::<AcpTerminalCreateResult>(schemas);
-    schema::<AcpTerminalParams>(schemas);
-    schema::<AcpTerminalOutputResult>(schemas);
-    schema::<AcpTerminalWaitForExitResult>(schemas);
 
     method(
         methods,
@@ -619,51 +631,6 @@ fn register_acp_schemas(
             ..MethodSchemaBinding::default()
         },
     );
-    method(
-        methods,
-        ACP_TERMINAL_CREATE_METHOD,
-        MethodSchemaBinding {
-            incoming_request: Some("AcpTerminalCreateParams"),
-            outgoing_response: Some("AcpTerminalCreateResult"),
-            ..MethodSchemaBinding::default()
-        },
-    );
-    method(
-        methods,
-        ACP_TERMINAL_OUTPUT_METHOD,
-        MethodSchemaBinding {
-            incoming_request: Some("AcpTerminalParams"),
-            outgoing_response: Some("AcpTerminalOutputResult"),
-            ..MethodSchemaBinding::default()
-        },
-    );
-    method(
-        methods,
-        ACP_TERMINAL_WAIT_FOR_EXIT_METHOD,
-        MethodSchemaBinding {
-            incoming_request: Some("AcpTerminalParams"),
-            outgoing_response: Some("AcpTerminalWaitForExitResult"),
-            ..MethodSchemaBinding::default()
-        },
-    );
-    method(
-        methods,
-        ACP_TERMINAL_KILL_METHOD,
-        MethodSchemaBinding {
-            incoming_request: Some("AcpTerminalParams"),
-            outgoing_response: Some("AcpEmptyResult"),
-            ..MethodSchemaBinding::default()
-        },
-    );
-    method(
-        methods,
-        ACP_TERMINAL_RELEASE_METHOD,
-        MethodSchemaBinding {
-            incoming_request: Some("AcpTerminalParams"),
-            outgoing_response: Some("AcpEmptyResult"),
-            ..MethodSchemaBinding::default()
-        },
-    );
 }
 
 fn register_devo_protocol_schemas(
@@ -676,6 +643,9 @@ fn register_devo_protocol_schemas(
     schema::<SessionMetadataUpdateResult>(schemas);
     schema::<SessionPermissionsUpdateParams>(schemas);
     schema::<SessionPermissionsUpdateResult>(schemas);
+    schema::<SessionCompactionUpdateParams>(schemas);
+    schema::<SessionCompactionUpdateResult>(schemas);
+    schema::<SessionEffectiveContextWindowUpdatedPayload>(schemas);
     schema::<SessionSandboxProfileUpdateParams>(schemas);
     schema::<SessionSandboxProfileUpdateResult>(schemas);
     schema::<SessionTitleUpdateParams>(schemas);
@@ -687,13 +657,22 @@ fn register_devo_protocol_schemas(
     schema::<SessionRollbackParams>(schemas);
     schema::<SessionRollbackResult>(schemas);
     schema::<SessionCompactParams>(schemas);
-    schema::<SessionCompactResult>(schemas);
     schema::<SkillListParams>(schemas);
     schema::<SkillListResult>(schemas);
     schema::<SkillChangedParams>(schemas);
     schema::<SkillChangedResult>(schemas);
     schema::<SkillSetEnabledParams>(schemas);
     schema::<SkillSetEnabledResult>(schemas);
+    schema::<McpListParams>(schemas);
+    schema::<McpServerInfo>(schemas);
+    schema::<McpListResult>(schemas);
+    schema::<McpToolsParams>(schemas);
+    schema::<McpToolEntry>(schemas);
+    schema::<McpToolsResult>(schemas);
+    schema::<McpSetEnabledParams>(schemas);
+    schema::<McpSetEnabledResult>(schemas);
+    schema::<ContextUsageReadParams>(schemas);
+    schema::<ContextUsageReadResult>(schemas);
     schema::<ModelCatalogParams>(schemas);
     schema::<ModelCatalogResult>(schemas);
     schema::<ModelConfigParams>(schemas);
@@ -717,12 +696,6 @@ fn register_devo_protocol_schemas(
     schema::<ShellCommandResult>(schemas);
     schema::<TurnInterruptParams>(schemas);
     schema::<TurnInterruptResult>(schemas);
-    schema::<TurnSteerParams>(schemas);
-    schema::<TurnSteerResult>(schemas);
-    schema::<TurnQueueRemoveParams>(schemas);
-    schema::<TurnQueueRemoveResult>(schemas);
-    schema::<TurnQueueSteerParams>(schemas);
-    schema::<TurnQueueSteerResult>(schemas);
     schema::<WorkspaceChangesReadParams>(schemas);
     schema::<WorkspaceChangesReadResult>(schemas);
     schema::<WorkspaceChangesUpdatedPayload>(schemas);
@@ -794,6 +767,14 @@ fn register_devo_protocol_schemas(
         methods,
         ClientMethod::SessionPermissionsUpdate,
     );
+    devo_method::<SessionCompactionUpdateParams, SessionCompactionUpdateResult>(
+        methods,
+        ClientMethod::SessionCompactionUpdate,
+    );
+    devo_notification::<SessionEffectiveContextWindowUpdatedPayload>(
+        methods,
+        "session/effective_context_window/updated",
+    );
     devo_method::<SessionSandboxProfileUpdateParams, SessionSandboxProfileUpdateResult>(
         methods,
         ClientMethod::SessionSandboxProfileUpdate,
@@ -808,15 +789,19 @@ fn register_devo_protocol_schemas(
         methods,
         ClientMethod::SessionRollback,
     );
-    devo_method::<SessionCompactParams, SessionCompactResult>(
-        methods,
-        ClientMethod::SessionCompact,
-    );
+    devo_method::<SessionCompactParams, TurnStartResult>(methods, ClientMethod::SessionCompact);
     devo_method::<SkillListParams, SkillListResult>(methods, ClientMethod::SkillsList);
     devo_method::<SkillChangedParams, SkillChangedResult>(methods, ClientMethod::SkillsChanged);
     devo_method::<SkillSetEnabledParams, SkillSetEnabledResult>(
         methods,
         ClientMethod::SkillsSetEnabled,
+    );
+    devo_method::<McpListParams, McpListResult>(methods, ClientMethod::McpList);
+    devo_method::<McpToolsParams, McpToolsResult>(methods, ClientMethod::McpTools);
+    devo_method::<McpSetEnabledParams, McpSetEnabledResult>(methods, ClientMethod::McpSetEnabled);
+    devo_method::<ContextUsageReadParams, ContextUsageReadResult>(
+        methods,
+        ClientMethod::ContextUsageRead,
     );
     devo_method::<ModelCatalogParams, ModelCatalogResult>(methods, ClientMethod::ModelCatalog);
     devo_method::<ModelConfigParams, ModelConfigResult>(methods, ClientMethod::ModelConfig);
@@ -842,15 +827,6 @@ fn register_devo_protocol_schemas(
     devo_method::<TurnStartParams, TurnStartResult>(methods, ClientMethod::TurnStart);
     devo_method::<ShellCommandParams, ShellCommandResult>(methods, ClientMethod::TurnShellCommand);
     devo_method::<TurnInterruptParams, TurnInterruptResult>(methods, ClientMethod::TurnInterrupt);
-    devo_method::<TurnSteerParams, TurnSteerResult>(methods, ClientMethod::TurnSteer);
-    devo_method::<TurnQueueRemoveParams, TurnQueueRemoveResult>(
-        methods,
-        ClientMethod::TurnQueueRemove,
-    );
-    devo_method::<TurnQueueSteerParams, TurnQueueSteerResult>(
-        methods,
-        ClientMethod::TurnQueueSteer,
-    );
     devo_method::<WorkspaceChangesReadParams, WorkspaceChangesReadResult>(
         methods,
         ClientMethod::WorkspaceChangesRead,

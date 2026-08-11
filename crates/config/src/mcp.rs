@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 
+/// Stable id for the bundled code_search MCP server.
+pub const BUNDLED_CODE_SEARCH_MCP_SERVER_ID: &str = "code_search";
+
 /// Environment variable forwarding rule for configured MCP servers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -57,26 +60,121 @@ pub struct McpConfig {
     /// Whether enabled servers should be auto-started during bootstrap.
     #[serde(default = "default_mcp_auto_start")]
     pub auto_start: bool,
-    /// Whether config reload should refresh running server catalogs.
-    #[serde(default = "default_mcp_refresh_on_config_reload")]
-    pub refresh_on_config_reload: bool,
 }
 
 impl Default for McpConfig {
     fn default() -> Self {
-        Self {
+        let mut config = Self {
             servers: Vec::new(),
             auto_start: true,
-            refresh_on_config_reload: true,
-        }
+        };
+        ensure_bundled_mcp_servers(&mut config);
+        config
     }
 }
 
-fn default_mcp_auto_start() -> bool {
-    true
+impl McpConfig {
+    /// Inserts missing bundled MCP servers without overwriting user records.
+    pub fn ensure_bundled_servers(&mut self) {
+        ensure_bundled_mcp_servers(self);
+    }
+
+    /// Sets `cwd` on the bundled `code_search` stdio server when it is unset.
+    ///
+    /// Used so session workspace roots are passed through the existing MCP
+    /// transport `cwd` field without special-casing the MCP manager.
+    pub fn with_code_search_workspace_cwd(mut self, cwd: PathBuf) -> Self {
+        self.apply_code_search_workspace_cwd(cwd);
+        self
+    }
+
+    /// Sets `cwd` on the bundled `code_search` stdio server when it is unset.
+    pub fn apply_code_search_workspace_cwd(&mut self, cwd: PathBuf) {
+        for record in &mut self.servers {
+            if record.id.0 != BUNDLED_CODE_SEARCH_MCP_SERVER_ID {
+                continue;
+            }
+            if let McpTransportConfig::Stdio {
+                cwd: server_cwd, ..
+            } = &mut record.transport
+                && server_cwd.is_none()
+            {
+                *server_cwd = Some(cwd);
+            }
+            break;
+        }
+    }
+
+    /// Returns whether two MCP configs can share a live manager/registry.
+    ///
+    /// Used by `SessionRuntimeContext::load_for_workspace` to avoid rebuilding
+    /// MCP state (and re-spawning lazy servers) for every workspace lookup.
+    ///
+    /// Workspace injection of `code_search` cwd is ignored while that server is
+    /// disabled, so process-level and workspace-level managers stay reusable.
+    /// When `code_search` is enabled, cwd must match or managers are not shared.
+    pub fn is_operationally_equivalent_to(&self, other: &Self) -> bool {
+        self.normalized_for_runtime_equivalence() == other.normalized_for_runtime_equivalence()
+    }
+
+    fn normalized_for_runtime_equivalence(&self) -> Self {
+        let mut normalized = self.clone();
+        for record in &mut normalized.servers {
+            if record.id.0 != BUNDLED_CODE_SEARCH_MCP_SERVER_ID || record.enabled {
+                continue;
+            }
+            if let McpTransportConfig::Stdio { cwd, .. } = &mut record.transport {
+                *cwd = None;
+            }
+        }
+        normalized
+    }
 }
 
-fn default_mcp_refresh_on_config_reload() -> bool {
+/// Returns the bundled, disabled-by-default code_search MCP server record.
+pub fn bundled_code_search_mcp_server() -> McpServerRecord {
+    McpServerRecord {
+        id: McpServerId(BUNDLED_CODE_SEARCH_MCP_SERVER_ID.to_string()),
+        display_name: "Code Search".to_string(),
+        transport: McpTransportConfig::Stdio {
+            command: vec!["devo-code-search-mcp".to_string()],
+            cwd: None,
+            env: BTreeMap::new(),
+            env_vars: vec![
+                McpServerEnvVar::from("DEVO_HOME"),
+                McpServerEnvVar::from("HTTP_PROXY"),
+                McpServerEnvVar::from("HTTPS_PROXY"),
+                McpServerEnvVar::from("ALL_PROXY"),
+                McpServerEnvVar::from("NO_PROXY"),
+                McpServerEnvVar::from("http_proxy"),
+                McpServerEnvVar::from("https_proxy"),
+                McpServerEnvVar::from("all_proxy"),
+                McpServerEnvVar::from("no_proxy"),
+            ],
+        },
+        startup_policy: McpStartupPolicy::Lazy,
+        enabled: false,
+        trust_policy: McpTrustPolicy::default(),
+        allowed_capabilities: Vec::new(),
+        roots_policy: McpRootsPolicy::default(),
+        output_limits: McpOutputLimits::default(),
+        auth_ref: None,
+    }
+}
+
+fn ensure_bundled_mcp_servers(config: &mut McpConfig) {
+    let bundled = bundled_code_search_mcp_server();
+    if config
+        .servers
+        .iter()
+        .any(|record| record.id.0 == bundled.id.0)
+    {
+        return;
+    }
+    config.servers.push(bundled);
+}
+
+fn default_mcp_auto_start() -> bool {
     true
 }
 
@@ -127,7 +225,7 @@ impl std::fmt::Display for McpServerId {
     }
 }
 
-/// Describes how the runtime connects to an MCP server.
+/// Describes how the runtime connects to the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum McpTransportConfig {
@@ -238,5 +336,157 @@ impl Default for McpOutputLimits {
             max_tool_output_bytes: Some(1_048_576),
             max_resource_bytes: Some(10_485_760),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    fn bundled_stdio_env_vars() -> Vec<McpServerEnvVar> {
+        match bundled_code_search_mcp_server().transport {
+            McpTransportConfig::Stdio { env_vars, .. } => env_vars,
+            _ => Vec::new(),
+        }
+    }
+
+    /// Trace: L2-DES-MCP-002
+    /// Verifies: default MCP config includes the disabled bundled code_search server.
+    #[test]
+    fn default_mcp_config_includes_disabled_code_search_server() {
+        let config = McpConfig::default();
+        let server = config
+            .servers
+            .iter()
+            .find(|record| record.id.0 == BUNDLED_CODE_SEARCH_MCP_SERVER_ID)
+            .expect("bundled code_search server");
+        assert!(!server.enabled);
+        assert_eq!(server.startup_policy, McpStartupPolicy::Lazy);
+        assert_eq!(
+            server.transport,
+            McpTransportConfig::Stdio {
+                command: vec!["devo-code-search-mcp".to_string()],
+                cwd: None,
+                env: BTreeMap::new(),
+                env_vars: bundled_stdio_env_vars(),
+            }
+        );
+    }
+
+    /// Trace: L2-DES-MCP-002
+    /// Verifies: ensure_bundled_servers inserts missing records but preserves user ones.
+    #[test]
+    fn ensure_bundled_servers_preserves_existing_code_search_record() {
+        let mut config = McpConfig {
+            servers: vec![McpServerRecord {
+                id: McpServerId(BUNDLED_CODE_SEARCH_MCP_SERVER_ID.to_string()),
+                display_name: "Custom".to_string(),
+                transport: McpTransportConfig::Stdio {
+                    command: vec!["custom".to_string()],
+                    cwd: None,
+                    env: BTreeMap::new(),
+                    env_vars: Vec::new(),
+                },
+                startup_policy: McpStartupPolicy::Eager,
+                enabled: true,
+                trust_policy: McpTrustPolicy::default(),
+                allowed_capabilities: Vec::new(),
+                roots_policy: McpRootsPolicy::default(),
+                output_limits: McpOutputLimits::default(),
+                auth_ref: None,
+            }],
+            auto_start: true,
+        };
+        config.ensure_bundled_servers();
+        assert_eq!(config.servers.len(), 1);
+        assert!(config.servers[0].enabled);
+        assert_eq!(config.servers[0].display_name, "Custom");
+    }
+
+    /// Trace: L2-DES-MCP-002
+    /// Verifies: ensure_bundled_servers inserts the bundled server when absent.
+    #[test]
+    fn ensure_bundled_servers_inserts_when_missing() {
+        let mut config = McpConfig {
+            servers: Vec::new(),
+            auto_start: true,
+        };
+        config.ensure_bundled_servers();
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers[0].id.0, BUNDLED_CODE_SEARCH_MCP_SERVER_ID);
+        assert!(!config.servers[0].enabled);
+    }
+
+    /// Trace: L2-DES-MCP-002
+    /// Verifies: apply_code_search_workspace_cwd fills cwd only when unset.
+    #[test]
+    fn apply_code_search_workspace_cwd_sets_missing_cwd_only() {
+        let mut config = McpConfig::default();
+        config.apply_code_search_workspace_cwd(PathBuf::from("/workspace"));
+        let server = config
+            .servers
+            .iter()
+            .find(|record| record.id.0 == BUNDLED_CODE_SEARCH_MCP_SERVER_ID)
+            .expect("bundled server");
+        match &server.transport {
+            McpTransportConfig::Stdio { cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some(Path::new("/workspace")));
+            }
+            _ => panic!("expected stdio transport"),
+        }
+
+        let mut custom = McpConfig {
+            servers: vec![McpServerRecord {
+                id: McpServerId(BUNDLED_CODE_SEARCH_MCP_SERVER_ID.to_string()),
+                display_name: "Custom".to_string(),
+                transport: McpTransportConfig::Stdio {
+                    command: vec!["custom".to_string()],
+                    cwd: Some(PathBuf::from("/explicit")),
+                    env: BTreeMap::new(),
+                    env_vars: Vec::new(),
+                },
+                startup_policy: McpStartupPolicy::Eager,
+                enabled: true,
+                trust_policy: McpTrustPolicy::default(),
+                allowed_capabilities: Vec::new(),
+                roots_policy: McpRootsPolicy::default(),
+                output_limits: McpOutputLimits::default(),
+                auth_ref: None,
+            }],
+            auto_start: true,
+        };
+        custom.apply_code_search_workspace_cwd(PathBuf::from("/workspace"));
+        match &custom.servers[0].transport {
+            McpTransportConfig::Stdio { cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some(Path::new("/explicit")));
+            }
+            _ => panic!("expected stdio transport"),
+        }
+    }
+
+    #[test]
+    fn operational_equivalence_ignores_disabled_code_search_cwd() {
+        let mut left = McpConfig::default();
+        let mut right = McpConfig::default();
+        left.apply_code_search_workspace_cwd(PathBuf::from("/process-cwd"));
+        right.apply_code_search_workspace_cwd(PathBuf::from("/workspace-cwd"));
+
+        assert!(left.is_operationally_equivalent_to(&right));
+    }
+
+    #[test]
+    fn operational_equivalence_requires_enabled_code_search_cwd_match() {
+        let mut left = McpConfig::default();
+        let mut right = McpConfig::default();
+        left.servers[0].enabled = true;
+        right.servers[0].enabled = true;
+        left.apply_code_search_workspace_cwd(PathBuf::from("/process-cwd"));
+        right.apply_code_search_workspace_cwd(PathBuf::from("/workspace-cwd"));
+
+        assert!(!left.is_operationally_equivalent_to(&right));
     }
 }

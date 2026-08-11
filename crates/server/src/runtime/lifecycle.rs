@@ -62,9 +62,21 @@ impl ServerRuntime {
                     core.total_tokens = stats.total_tokens;
                     core.total_cache_creation_tokens = stats.total_cache_creation_tokens;
                     core.total_cache_read_tokens = stats.total_cache_read_tokens;
-                    core.last_input_tokens = stats.last_input_tokens;
-                    core.last_turn_tokens = core.last_turn_tokens.max(stats.last_input_tokens);
                     core.prompt_token_estimate = stats.prompt_token_estimate;
+                    // Align auto-compact pressure with UI / occupancy tip. Never
+                    // inflate `last_turn_tokens` with turn-cumulative DB values —
+                    // `last_input_tokens` is latest-query input only.
+                    if let Some(occupancy) = stats.last_context_occupancy.as_ref() {
+                        core.last_turn_tokens = occupancy.total_tokens as usize;
+                    }
+                    if stats.last_input_tokens > 0 {
+                        core.last_input_tokens = stats.last_input_tokens;
+                    }
+                }
+                if let Some(occupancy) = stats.last_context_occupancy {
+                    runtime_session.summary.last_query_total_tokens =
+                        occupancy.total_tokens as usize;
+                    runtime_session.summary.last_context_occupancy = Some(occupancy);
                 }
                 tracing::debug!(
                     session_id = %session_id,
@@ -83,6 +95,7 @@ impl ServerRuntime {
                     last_input_tokens: 0,
                     turn_count: 0,
                     prompt_token_estimate: runtime_session.summary.prompt_token_estimate,
+                    last_context_occupancy: runtime_session.summary.last_context_occupancy.clone(),
                 };
                 if let Err(err) = self.deps.db.update_stats(&session_id, &stats) {
                     tracing::warn!(
@@ -101,10 +114,13 @@ impl ServerRuntime {
             }
         }
 
+        // Restore the turn queue non-destructively: SQLite stays the durable
+        // mirror until items are consumed or removed, so a restart before the
+        // queue drains does not lose pending input.
         match self
             .deps
             .db
-            .drain_pending(&session_id, crate::db::QueueType::Turn)
+            .list_pending(&session_id, crate::db::QueueType::Turn)
         {
             Ok(items) => {
                 if !items.is_empty() {
@@ -130,16 +146,48 @@ impl ServerRuntime {
             }
         }
 
-        if let Err(err) = self
+        // Stale steer inputs are no longer discarded (01 §4.3): they
+        // degrade into the session turn queue like any other queued input.
+        match self
             .deps
             .db
-            .clear_pending(&session_id, crate::db::QueueType::Btw)
+            .drain_pending(&session_id, crate::db::QueueType::Steer)
         {
-            tracing::warn!(
-                session_id = %session_id,
-                error = %err,
-                "failed to clear stale btw inputs from database"
-            );
+            Ok(items) => {
+                if !items.is_empty() {
+                    let core_session = runtime_session.core_session.lock().await;
+                    let mut queue = core_session
+                        .pending_turn_queue
+                        .lock()
+                        .expect("pending turn queue mutex should not be poisoned");
+                    for item in &items {
+                        queue.push_back(item.clone());
+                        if let Err(error) =
+                            self.deps
+                                .db
+                                .push_pending(&session_id, crate::db::QueueType::Turn, item)
+                        {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = %error,
+                                "failed to restore steer input into the turn queue"
+                            );
+                        }
+                    }
+                    tracing::debug!(
+                        session_id = %session_id,
+                        restored_steer_count = items.len(),
+                        "degraded stale steer inputs into the pending turn queue"
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %err,
+                    "failed to restore stale steer inputs from database"
+                );
+            }
         }
 
         match self.goal_durable_store.replay_goal_store(session_id).await {
@@ -231,7 +279,6 @@ impl ServerRuntime {
     /// Completes deferred (in-progress) items for all active turns and
     /// persists interrupted turn records. Called on graceful shutdown.
     pub async fn shutdown(self: &Arc<Self>) {
-        self.code_index_warmup.shutdown();
         self.command_exec_manager.terminate_all().await;
         let session_handles = self.list_session_handles().await;
 

@@ -128,7 +128,18 @@ impl ServerRuntime {
         None
     }
 
-    /// Handles ACP `session/cancel` by interrupting the active turn on the session.
+    /// Handles ACP `session/cancel`.
+    ///
+    /// Design intent: `session/cancel` is the session-scoped "stop current
+    /// work" primitive. Prefer it over adding per-feature cancel RPCs.
+    ///
+    /// Manual `/compact` is admitted as an active `ManualCompaction` turn, so
+    /// cancel routes through `turn/interrupt` like any other active turn (and
+    /// dual-emits `session/compaction/failed` with `"compaction canceled"`).
+    /// Idle sessions are an idempotent no-op.
+    ///
+    /// Turn-scoped automatic compaction still rides the turn cancel token
+    /// under `turn/interrupt`.
     pub(crate) async fn handle_acp_session_cancel(self: &Arc<Self>, params: serde_json::Value) {
         let params: AcpCancelParams = match serde_json::from_value(params) {
             Ok(params) => params,
@@ -137,25 +148,29 @@ impl ServerRuntime {
                 return;
             }
         };
-        let Some(turn_id) = self.runtime_active_turn_id(params.session_id).await else {
-            tracing::debug!(session_id = %params.session_id, "session/cancel had no active turn");
+        if let Some(turn_id) = self.runtime_active_turn_id(params.session_id).await {
+            self.signal_active_turn_interrupt(params.session_id).await;
+            let runtime = Arc::clone(self);
+            tokio::spawn(async move {
+                let _ = runtime
+                    .handle_turn_interrupt(
+                        serde_json::Value::Null,
+                        serde_json::to_value(TurnInterruptParams {
+                            session_id: params.session_id,
+                            turn_id,
+                            reason: Some("cancelled by ACP client".to_string()),
+                        })
+                        .expect("serialize turn interrupt params"),
+                    )
+                    .await;
+            });
             return;
-        };
-        self.signal_active_turn_interrupt(params.session_id).await;
-        let runtime = Arc::clone(self);
-        tokio::spawn(async move {
-            let _ = runtime
-                .handle_turn_interrupt(
-                    serde_json::Value::Null,
-                    serde_json::to_value(TurnInterruptParams {
-                        session_id: params.session_id,
-                        turn_id,
-                        reason: Some("cancelled by ACP client".to_string()),
-                    })
-                    .expect("serialize turn interrupt params"),
-                )
-                .await;
-        });
+        }
+
+        tracing::debug!(
+            session_id = %params.session_id,
+            "session/cancel had no active turn"
+        );
     }
 
     async fn session_has_active_turn(&self, session_id: SessionId) -> bool {

@@ -236,6 +236,18 @@ pub trait McpManager: Send + Sync {
 
     async fn refresh(&self, server_id: &McpServerId) -> Result<McpServerStatus, McpError>;
 
+    /// Enable or disable one MCP server without affecting sibling clients.
+    ///
+    /// When `enabled` is true, the manager starts (or refreshes) that server.
+    /// When false, it drops the client and marks the server disabled. Startup
+    /// failures should update status to [`McpStartupState::Failed`] rather than
+    /// poisoning other servers.
+    async fn set_enabled(
+        &self,
+        server_id: &McpServerId,
+        enabled: bool,
+    ) -> Result<McpServerStatus, McpError>;
+
     async fn invoke_tool(
         &self,
         server_id: &McpServerId,

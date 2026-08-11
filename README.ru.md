@@ -26,11 +26,11 @@
 ## Скриншоты
 
 <p align="center">
-  <img width="100%" alt="Devo desktop coding agent app показывает беседу по репозиторию, боковую панель проекта и управление моделью" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo terminal TUI coding agent работает в локальном репозитории и показывает модель, контекст и token status" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
 </p>
 
 <p align="center">
-  <img width="100%" alt="Devo terminal TUI coding agent работает в локальном репозитории и показывает модель, контекст и token status" src="./.github/assets/devo-terminal-tui-coding-agent-screenshot.png" />
+  <img width="100%" alt="Devo desktop coding agent app показывает беседу по репозиторию, боковую панель проекта и управление моделью" src="./.github/assets/devo-desktop-coding-agent-screenshot.png" />
 </p>
 
 ## Почему Devo
@@ -48,21 +48,19 @@ Devo предназначен для команд, которым нужен cod
 - **Один agent для Desktop и terminal** - Используйте Desktop app для
   визуального onboarding и повседневного coding, либо CLI/TUI для
   terminal-native automation, remote shell и scriptable workflows.
-- **Расширяемый agent runtime** - MCP servers, reusable skills, локальный
-  semantic code search, аудируемые сессии, permissions и multi-agent flows
-  являются возможностями runtime, а не одноразовыми prompt.
+- **Расширяемый agent runtime** - MCP servers, reusable skills, аудируемые
+  сессии, permissions и multi-agent flows являются возможностями runtime, а не
+  одноразовыми prompt.
 
 ## Возможности
 
-- **Встроенный семантический поиск по коду** - Запускает локальную CPU-модель
-  эмбеддингов кода и сочетает плотный поиск с BM25-поиском по ключевым словам,
-  сокращая объем контекста для поиска по коду по сравнению с агентами, которые
-  используют только grep/find.
 - **Модельно-нейтральный provider runtime** - Используйте provider/model bindings
   для OpenAI-совместимых, Anthropic-совместимых, DeepSeek, Qwen, Kimi, GLM,
   MiniMax, Xiaomi MiMo, OpenRouter или локальных endpoint.
 - **Поддержка MCP** - Подключайте внешние инструменты и контекст через серверы
-  [Model Context Protocol](https://modelcontextprotocol.io/).
+  [Model Context Protocol](https://modelcontextprotocol.io/). Управляйте через
+  CLI: `devo mcp add|list|enable|disable|remove` (см.
+  [Конфигурацию](./docs/configuration.ru.md#mcp-серверы)).
 - **Поддержка Skill** - Упаковывайте повторяемые workflow, инструкции, скрипты
   и справочные материалы как переиспользуемые
   [Agent Skills](https://agentskills.io/).
@@ -82,6 +80,11 @@ Devo предназначен для команд, которым нужен cod
   cached token и использование context window там, где провайдеры это раскрывают.
 - **Легковесный Rust runtime** - Построен на Rust, с малым расходом памяти и
   компактным локальным runtime.
+- **Встроенный семантический поиск по коду (MCP)** - Опциональный bundled MCP
+  сервер (`code_search` / `devo-code-search-mcp`), **по умолчанию выключен**.
+  Запускает локальную CPU-модель эмбеддингов и сочетает dense retrieval с BM25,
+  сокращая контекст поиска по сравнению с агентами только на grep/find. Включите
+  через `devo mcp enable code_search` или TUI `/mcps`.
 
 ## Проверенные модели
 
@@ -217,9 +220,20 @@ devo resume <session-id>
 
 ## Конфигурация
 
-`devo onboard` - рекомендуемый путь настройки. Пути ручного `config.toml`,
-поля provider/model binding и примеры custom model catalog описаны в
-[Конфигурации](./docs/configuration.ru.md).
+`devo onboard` - рекомендуемый путь настройки. Он записывает provider и model
+bindings в `config.toml` и сохраняет API key в пользовательском `auth.json`.
+
+Чтобы вручную подключить свой ключ и кастомную модель:
+
+1. Определите параметры `[model.<slug>]`, `[providers.<id>]` и
+   `[model_bindings.<id>]` в `config.toml`.
+2. Положите секрет в `DEVO_HOME/auth.json` и ссылайтесь на этот credential id из
+   `[providers.<id>].credential` — не пишите сам API key в `config.toml`.
+3. Установите `invocation_method` в соответствии с протоколом endpoint:
+   `openai_chat_completions`, `openai_responses` или `anthropic_messages`.
+
+Полный пример (параметры кастомной модели + API key) и описание протоколов:
+[Конфигурация](./docs/configuration.ru.md#свой-api-key).
 
 ## Docs
 
@@ -241,6 +255,12 @@ GLM и DeepSeek. Любой endpoint модели, который поддерж
 Chat Completions, OpenAI-compatible Responses или Anthropic Messages API, можно
 подключить через provider/model bindings.
 
+### Как подключить свой API key?
+
+Используйте `devo onboard` или отредактируйте пользовательский `auth.json` и
+укажите этот credential id в `[providers.<id>].credential` в `config.toml`. См.
+[Конфигурацию](./docs/configuration.ru.md#свой-api-key).
+
 ### Что выбрать: Desktop app или TUI/CLI?
 
 Используйте Desktop app, если вам нужны visual onboarding, просмотр сессий и
@@ -260,16 +280,6 @@ Devo runtime.
 - Точечные исправления с командами проверки и регрессионными тестами.
 
 Откройте issue или pull request, чтобы обсудить изменения.
-
-## История звезд
-
-<a href="https://www.star-history.com/?repos=7df-lab%2Fdevo&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=7df-lab/devo&type=date&legend=top-left" />
- </picture>
-</a>
 
 ## Лицензия
 

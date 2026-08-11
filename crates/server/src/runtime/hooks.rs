@@ -169,7 +169,7 @@ impl ServerRuntime {
 
 pub(crate) fn permission_mode_label(mode: devo_safety::PermissionMode) -> String {
     match mode {
-        devo_safety::PermissionMode::AutoApprove => "auto-approve",
+        devo_safety::PermissionMode::Yolo => "yolo",
         devo_safety::PermissionMode::Interactive => "interactive",
         devo_safety::PermissionMode::Deny => "deny",
     }

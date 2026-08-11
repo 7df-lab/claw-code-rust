@@ -47,7 +47,7 @@ use devo_protocol::SessionPlanStepStatus;
 use devo_protocol::SpawnAgentParams;
 use devo_protocol::ThreadGoalStatus;
 use devo_protocol::TurnFailedPayload;
-use devo_server::ACP_TERMINAL_OUTPUT_NOTIFICATION_METHOD;
+use devo_server::AcpDeleteSessionParams;
 use devo_server::ApprovalDecisionPayload;
 use devo_server::ApprovalRequestPayload;
 use devo_server::ApprovalResponseParams;
@@ -79,7 +79,6 @@ use devo_server::TurnExecutionMode;
 use devo_server::TurnInterruptParams;
 use devo_server::TurnStartParams;
 use devo_server::TurnStartResult;
-use devo_server::TurnSteerParams;
 
 use crate::app_command::GoalObjectiveMode;
 use crate::app_command::InputHistoryDirection;
@@ -89,7 +88,6 @@ use crate::events::PlanStep;
 use crate::events::PlanStepStatus;
 use crate::events::SessionListEntry;
 use crate::events::SubagentMonitorAgent;
-use crate::events::SubagentMonitorEvent;
 use crate::events::TextItemKind;
 use crate::events::TranscriptItem;
 use crate::events::TranscriptItemKind;
@@ -98,20 +96,15 @@ use crate::events::WorkerEvent;
 mod acp_events;
 mod subagent_events;
 
-#[cfg(test)]
-use acp_events::acp_terminal_output_event;
-use acp_events::acp_terminal_output_event_with_session;
 use acp_events::parse_acp_session_notification;
 use acp_events::session_metadata_from_acp_update;
 use acp_events::spawn_agent_result_from_acp_update;
 use acp_events::spawn_task_message_from_acp_update;
-use acp_events::subagent_monitor_events_from_acp_session_notification_with_terminal_state;
+use acp_events::subagent_monitor_events_from_acp_session_notification;
 use acp_events::subagent_monitor_events_from_unwrapped_server_notification;
 #[cfg(test)]
 use acp_events::worker_events_from_acp_notification;
-#[cfg(test)]
-use acp_events::worker_events_from_acp_notification_with_terminal_state;
-use acp_events::worker_events_from_acp_session_notification_with_terminal_state;
+use acp_events::worker_events_from_acp_session_notification;
 
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
 const WORKER_ABORT_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
@@ -144,20 +137,6 @@ struct EnsureSessionOutcome {
     reasoning_effort_selection: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     created: bool,
-}
-
-fn acp_terminal_snapshot_delta(
-    previous_output: &mut String,
-    output: String,
-    truncated: bool,
-) -> Option<String> {
-    let delta = if truncated || !output.starts_with(previous_output.as_str()) {
-        output.clone()
-    } else {
-        output[previous_output.len()..].to_string()
-    };
-    *previous_output = output;
-    (!delta.is_empty()).then_some(delta)
 }
 
 fn should_apply_terminal_turn_usage_fallback(
@@ -235,6 +214,8 @@ pub(crate) struct QueryWorkerConfig {
     pub(crate) reasoning_effort_selection: Option<String>,
     /// Permission preset to apply to the server session when it exists.
     pub(crate) permission_preset: PermissionPreset,
+    /// Default collaboration mode for newly prepared sessions.
+    pub(crate) default_collaboration_mode: CollaborationMode,
     /// Initial OS sandbox profile from project config (or permission-implied).
     pub(crate) initial_sandbox_profile: Option<String>,
     /// Agent client capabilities to advertise to the server session.
@@ -263,6 +244,11 @@ enum OperationCommand {
     SetModel {
         model: String,
         model_binding_id: Option<String>,
+        persist_scope: crate::app_command::PersistScope,
+    },
+    SetCollaborationMode {
+        collaboration_mode: CollaborationMode,
+        persist_scope: crate::app_command::PersistScope,
     },
     /// TODO: Same with model, should bind at session metadata.
     /// Update the reasoning effort selection used for future turns.
@@ -297,6 +283,12 @@ enum OperationCommand {
     ListSessions,
     /// Request a skills list from the server.
     ListSkills,
+    /// Request MCP server runtime statuses from the server.
+    ListMcpServers,
+    /// Request tools for one MCP server from the server.
+    ListMcpTools {
+        name: String,
+    },
     /// Request or update a server-backed composer reference search.
     ReferenceSearchRequested {
         query: String,
@@ -306,6 +298,11 @@ enum OperationCommand {
     /// Persistently enable or disable one skill by canonical `SKILL.md` path.
     SetSkillEnabled {
         path: PathBuf,
+        enabled: bool,
+    },
+    /// Persistently enable or disable one MCP server and apply it live.
+    SetMcpServerEnabled {
+        name: String,
         enabled: bool,
     },
     /// Request proactive compaction for the active session.
@@ -331,6 +328,12 @@ enum OperationCommand {
     SwitchSession(SessionId),
     /// Rename the current active session.
     RenameSession(String),
+    /// Delete a session. `None` deletes the current active session and starts a
+    /// fresh local session; `Some(id)` deletes that session id (and only resets
+    /// local state when it is the active one).
+    DeleteSession {
+        session_id: Option<SessionId>,
+    },
     /// Roll back the active session using the server-selected user-turn cut mode.
     RollbackUserTurn {
         user_turn_index: u32,
@@ -340,10 +343,23 @@ enum OperationCommand {
     ForkAtUserTurn(u32),
     /// Interrupt the active turn when one is running.
     InterruptTurn,
-    /// Steer text into the currently active turn.
-    SteerTurn {
+    /// Push input onto the canonical session queue (busy path).
+    QueuePush {
         input: Vec<InputItem>,
+    },
+    /// Promote a queued entry into the active turn as a steer.
+    QueueSteer {
+        queue_item_id: String,
         expected_turn_id: TurnId,
+    },
+    /// Remove a queued entry (edit-from-queue).
+    QueueRemove {
+        queue_item_id: String,
+    },
+    /// Replace a queued entry's content in place, preserving its position.
+    QueueUpdate {
+        queue_item_id: String,
+        input: Vec<InputItem>,
     },
     /// Ask a side question in a one-turn forked agent.
     RunBtwQuestion {
@@ -364,6 +380,10 @@ enum OperationCommand {
     },
     UpdatePermissions {
         preset: devo_protocol::PermissionPreset,
+        persist_scope: crate::app_command::PersistScope,
+    },
+    UpdateEffectiveContextWindow {
+        effective_context_window: u64,
     },
     UpdateSandboxProfile {
         profile: String,
@@ -496,10 +516,24 @@ impl QueryWorkerHandle {
         model: String,
         model_binding_id: Option<String>,
     ) -> Result<()> {
+        self.set_model_selection_with_scope(
+            model,
+            model_binding_id,
+            crate::app_command::PersistScope::Session,
+        )
+    }
+
+    pub(crate) fn set_model_selection_with_scope(
+        &self,
+        model: String,
+        model_binding_id: Option<String>,
+        persist_scope: crate::app_command::PersistScope,
+    ) -> Result<()> {
         self.command_tx
             .send(OperationCommand::SetModel {
                 model,
                 model_binding_id,
+                persist_scope,
             })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
@@ -589,6 +623,20 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
+    /// Requests MCP server runtime statuses from the background worker.
+    pub(crate) fn list_mcp_servers(&self) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::ListMcpServers)
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Requests tools for one MCP server from the background worker.
+    pub(crate) fn list_mcp_tools(&self, name: String) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::ListMcpTools { name })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
     pub(crate) fn reference_search_requested(&self, query: String) -> Result<()> {
         self.command_tx
             .send(OperationCommand::ReferenceSearchRequested { query })
@@ -601,10 +649,15 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_skill_enabled(&self, path: PathBuf, enabled: bool) -> Result<()> {
         self.command_tx
             .send(OperationCommand::SetSkillEnabled { path, enabled })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    pub(crate) fn set_mcp_server_enabled(&self, name: String, enabled: bool) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::SetMcpServerEnabled { name, enabled })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -670,6 +723,13 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
+    /// Deletes a session. When `session_id` is `None`, deletes the active session.
+    pub(crate) fn delete_session(&self, session_id: Option<SessionId>) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::DeleteSession { session_id })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
     pub(crate) fn rollback_to_user_turn(&self, user_turn_index: u32) -> Result<()> {
         self.command_tx
             .send(OperationCommand::RollbackUserTurn {
@@ -701,16 +761,40 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    /// Steer input into the currently active turn.
-    pub(crate) fn submit_steer(
+    /// Push input onto the session queue while a turn is active.
+    pub(crate) fn queue_push(&self, input: Vec<InputItem>) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::QueuePush { input })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Promote a queued item into the active turn as a steer.
+    pub(crate) fn queue_steer(
         &self,
-        input: Vec<InputItem>,
+        queue_item_id: String,
         expected_turn_id: TurnId,
     ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::SteerTurn {
-                input,
+            .send(OperationCommand::QueueSteer {
+                queue_item_id,
                 expected_turn_id,
+            })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Remove a queued item so it can be edited in the composer.
+    pub(crate) fn queue_remove(&self, queue_item_id: String) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::QueueRemove { queue_item_id })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Replace a queued item's content in place, preserving its position.
+    pub(crate) fn queue_update(&self, queue_item_id: String, input: Vec<InputItem>) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::QueueUpdate {
+                queue_item_id,
+                input,
             })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
@@ -758,9 +842,40 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    pub(crate) fn update_permissions(&self, preset: devo_protocol::PermissionPreset) -> Result<()> {
+    pub(crate) fn update_permissions(
+        &self,
+        preset: devo_protocol::PermissionPreset,
+        persist_scope: crate::app_command::PersistScope,
+    ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::UpdatePermissions { preset })
+            .send(OperationCommand::UpdatePermissions {
+                preset,
+                persist_scope,
+            })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    pub(crate) fn set_collaboration_mode(
+        &self,
+        collaboration_mode: CollaborationMode,
+        persist_scope: crate::app_command::PersistScope,
+    ) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::SetCollaborationMode {
+                collaboration_mode,
+                persist_scope,
+            })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    pub(crate) fn update_effective_context_window(
+        &self,
+        effective_context_window: u64,
+    ) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::UpdateEffectiveContextWindow {
+                effective_context_window,
+            })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -826,6 +941,7 @@ async fn run_worker(
     if let Err(error) = run_worker_inner(config, &mut command_rx, &event_tx).await {
         let _ = event_tx.send(WorkerEvent::TurnFailed {
             message: error.to_string(),
+            hint: None,
             turn_count: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
@@ -846,12 +962,17 @@ async fn run_worker_inner(
     // calls, then turns server notifications back into lightweight UI events.
     let mut client = spawn_client(&config.cwd, config.server_log_level.clone()).await?;
     let _ = client.initialize(&config.client_capabilities).await?;
+    let mut default_model = config.model.clone();
+    let mut default_model_binding_id = config.model_binding_id.clone();
+    let default_reasoning_effort_selection = config.reasoning_effort_selection.clone();
+    let mut default_permission_preset = config.permission_preset;
+    let mut default_collaboration_mode = config.default_collaboration_mode;
     let mut session_id: Option<SessionId> = None;
     let mut session_cwd = config.cwd.clone();
-    let mut model = config.model;
-    let mut model_binding_id = config.model_binding_id;
-    let mut reasoning_effort_selection = config.reasoning_effort_selection;
-    let mut permission_preset = config.permission_preset;
+    let mut model = default_model.clone();
+    let mut model_binding_id = default_model_binding_id.clone();
+    let mut reasoning_effort_selection = default_reasoning_effort_selection.clone();
+    let mut session_permission_preset: Option<PermissionPreset> = None;
     let initial_sandbox_profile = config.initial_sandbox_profile.clone();
     let mut active_turn_id: Option<TurnId> = None;
     let mut turn_count = 0usize;
@@ -869,12 +990,11 @@ async fn run_worker_inner(
     let mut input_history_cursor: Option<usize> = None;
     let mut active_reference_search_id: Option<ReferenceSearchId> = None;
     let mut active_shell_process_ids: HashSet<String> = HashSet::new();
-    let mut visible_acp_terminal_ids: HashSet<String> = HashSet::new();
-    let mut visible_acp_terminal_session_ids: HashMap<String, SessionId> = HashMap::new();
-    let mut private_acp_terminal_ids: HashSet<String> = HashSet::new();
-    let mut pending_acp_terminal_output: HashMap<String, String> = HashMap::new();
-    let mut polled_acp_terminal_output: HashMap<String, String> = HashMap::new();
     let mut next_shell_process_index = 1_u64;
+    // Session the worker currently holds a canonical event subscription for;
+    // `subscription/create` accumulates server-side, so subscribe at most once
+    // per activated session.
+    let mut subscribed_session_id: Option<SessionId> = None;
 
     if let Some(initial_session_id) = config.initial_session_id {
         match client
@@ -890,13 +1010,21 @@ async fn run_worker_inner(
                 let active_agent_label = active_agent_label_from_session(&resumed.session);
                 let (last_query_total, last_query_input) =
                     last_query_tokens_from_resume(&resumed.session);
+                model = resumed
+                    .session
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| default_model.clone());
+                model_binding_id = resumed.session.model_binding_id.clone();
+                reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
+                session_permission_preset = resumed.session.permission_preset;
                 let _ = event_tx.send(WorkerEvent::SessionSwitched {
                     session_id: initial_session_id.to_string(),
-                    cwd: resumed.session.cwd,
-                    title: resumed.session.title,
+                    cwd: resumed.session.cwd.clone(),
+                    title: resumed.session.title.clone(),
                     model: resumed.session.model.clone(),
-                    model_binding_id: resumed.session.model_binding_id.clone(),
-                    reasoning_effort_selection: resumed.session.reasoning_effort_selection.clone(),
+                    model_binding_id: model_binding_id.clone(),
+                    reasoning_effort_selection: reasoning_effort_selection.clone(),
                     reasoning_effort: resumed.session.reasoning_effort,
                     active_agent_label,
                     total_input_tokens: resumed.session.total_input_tokens,
@@ -910,10 +1038,20 @@ async fn run_worker_inner(
                     rich_history_items: resumed.history_items.clone(),
                     loaded_item_count: resumed.loaded_item_count,
                     pending_texts: resumed.pending_texts,
+                    collaboration_mode: resumed.session.collaboration_mode,
+                    permission_preset: resumed.session.permission_preset,
+                    effective_context_window: resumed.session.effective_context_window,
                 });
-                model = resumed.session.model.clone().unwrap_or(model);
-                model_binding_id = resumed.session.model_binding_id.clone();
-                reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
+                if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
+                    let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                }
+                ensure_session_subscription(
+                    &mut client,
+                    initial_session_id,
+                    &mut subscribed_session_id,
+                    event_tx,
+                )
+                .await;
                 total_input_tokens = resumed.session.total_input_tokens;
                 total_output_tokens = resumed.session.total_output_tokens;
                 total_tokens = resumed.session.total_tokens;
@@ -925,6 +1063,7 @@ async fn run_worker_inner(
             Err(error) => {
                 let _ = event_tx.send(WorkerEvent::TurnFailed {
                     message: format!("failed to resume session: {error}"),
+                    hint: None,
                     turn_count,
                     total_input_tokens,
                     total_output_tokens,
@@ -937,998 +1076,54 @@ async fn run_worker_inner(
         }
     }
     let _ = emit_skills_list(&mut client, &session_cwd, event_tx, false).await;
-    let mut acp_terminal_poll = tokio::time::interval(Duration::from_millis(250));
-    acp_terminal_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
-            maybe_command = command_rx.recv() => {
-                match maybe_command {
-                    Some(OperationCommand::SubmitInput {
-                        input,
-                        approval_policy,
-                        collaboration_mode,
-                    }) => {
-                        let active_session_id = prepare_session_for_command(
-                            &mut client,
-                            &config.cwd,
-                            &mut model,
-                            &mut model_binding_id,
-                            &mut reasoning_effort_selection,
-                            &mut session_id,
-                            permission_preset,
-                            initial_sandbox_profile.as_deref(),
-                            event_tx,
-                        )
-                        .await?;
+                    maybe_command = command_rx.recv() => {
+                        match maybe_command {
+                            Some(OperationCommand::SubmitInput {
+                                input,
+                                approval_policy,
+                                collaboration_mode,
+                            }) => {
+                                let active_session_id = prepare_session_for_command(
+                                    &mut client,
+                                    &config.cwd,
+                                    &mut model,
+                                    &mut model_binding_id,
+                                    &mut reasoning_effort_selection,
+                                    &mut session_id,
+                                    &mut subscribed_session_id,
+                                    session_permission_preset
+                                        .unwrap_or(default_permission_preset),
+                                    initial_sandbox_profile.as_deref(),
+                                    event_tx,
+                                )
+                                .await?;
 
-                        // Start the turn via `_devo/turn/start`. The bundled server implements
-                        // this extension; streaming and completion arrive as server
-                        // notifications (`turn/started`, item deltas, `turn/completed`, etc.).
-                        let start_result = client.turn_start(TurnStartParams {
-                            session_id: active_session_id,
-                            input,
-                            model: Some(model.clone()),
-                            model_binding_id: model_binding_id.clone(),
-                            reasoning_effort_selection: reasoning_effort_selection.clone(),
-                            sandbox: None,
-                            approval_policy,
-                            cwd: None,
-                            collaboration_mode,
-                            execution_mode: TurnExecutionMode::Regular,
-                        }).await;
-                        match start_result {
-                            Ok(result) => {
-                                handle_turn_start_result(result, &mut active_turn_id);
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: error.to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                        }
-                    }
-                    Some(
-                        OperationCommand::ExecuteShellCommand { command }
-                        | OperationCommand::SubmitShellInput { command },
-                    ) => {
-                        if active_turn_id.is_some() {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                message: "cannot run shell command while a turn is in progress".to_string(),
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
-                            });
-                            continue;
-                        }
-                        let shell_start = next_shell_command_exec_start(
-                            session_id,
-                            session_cwd.clone(),
-                            command,
-                            &mut next_shell_process_index,
-                        );
-                        active_shell_process_ids.insert(shell_start.process_id.clone());
-                        let _ = event_tx.send(shell_start.started_event);
-                        match client.command_exec(shell_start.params).await {
-                            Ok(_) => {}
-                            Err(error) => {
-                                active_shell_process_ids.remove(&shell_start.process_id);
-                                let _ = event_tx.send(WorkerEvent::ToolResult {
-                                    tool_use_id: shell_start.process_id,
-                                    title: "Shell".to_string(),
-                                    preview: error.to_string(),
-                                    is_error: true,
-                                    truncated: false,
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::SetModel {
-                        model: next_model,
-                        model_binding_id: next_model_binding_id,
-                    }) => {
-                        model = next_model;
-                        model_binding_id = next_model_binding_id;
-                        input_history_cursor = None;
-                        if let Some(active_session_id) = session_id {
-                            let _ = client
-                                .session_metadata_update(devo_server::SessionMetadataUpdateParams {
+                                // Start the turn via `_devo/turn/start`. The bundled server implements
+                                // this extension; streaming and completion arrive as server
+                                // notifications (`turn/started`, item deltas, `turn/completed`, etc.).
+                                let start_result = client.turn_start(TurnStartParams {
                                     session_id: active_session_id,
+                                    input,
                                     model: Some(model.clone()),
                                     model_binding_id: model_binding_id.clone(),
                                     reasoning_effort_selection: reasoning_effort_selection.clone(),
-                                })
-                                .await;
-                        }
-                    }
-                    Some(OperationCommand::SetReasoningEffort(next_reasoning_effort_selection)) => {
-                        reasoning_effort_selection = next_reasoning_effort_selection;
-                        if let Some(active_session_id) = session_id {
-                            let _ = client
-                                .session_metadata_update(devo_server::SessionMetadataUpdateParams {
-                                    session_id: active_session_id,
-                                    model: Some(model.clone()),
-                                    model_binding_id: model_binding_id.clone(),
-                                    reasoning_effort_selection: reasoning_effort_selection.clone(),
-                                })
-                                .await;
-                        }
-                    }
-                    Some(OperationCommand::ValidateProvider {
-                        provider_vendor,
-                        model_binding,
-                        api_key,
-                    }) => {
-                        match tokio::time::timeout(
-                            Duration::from_secs(25),
-                            client.provider_validate(ProviderValidateParams {
-                                provider_vendor,
-                                model_binding,
-                                api_key,
-                            }),
-                        )
-                        .await
-                        {
-                            Ok(Ok(result)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderValidationSucceeded {
-                                    reply_preview: result.reply_preview,
-                                });
-                            }
-                            Ok(Err(error)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderValidationFailed {
-                                    message: error.to_string(),
-                                });
-                            }
-                            Err(_) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderValidationFailed {
-                                    message: "provider validation request timed out".to_string(),
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::ListProviderVendors) => {
-                        match tokio::time::timeout(
-                            Duration::from_secs(5),
-                            client.provider_vendor_list(ProviderVendorListParams::default()),
-                        )
-                        .await
-                        {
-                            Ok(Ok(result)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorsListed {
-                                    provider_vendors: result.provider_vendors,
-                                });
-                            }
-                            Ok(Err(error)) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: error.to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                            Err(_) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: "provider list request timed out".to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::UpsertProviderVendor {
-                        provider_vendor,
-                        model_binding,
-                        default_model_binding,
-                        api_key,
-                    }) => {
-                        match tokio::time::timeout(
-                            Duration::from_secs(5),
-                            client.provider_vendor_upsert(ProviderVendorUpsertParams {
-                                provider_vendor,
-                                model_binding,
-                                default_model_binding,
-                                api_key,
-                            }),
-                        )
-                        .await
-                        {
-                            Ok(Ok(result)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorUpserted {
-                                    provider_vendor: result.provider_vendor,
-                                    model_binding: result.model_binding,
-                                });
-                            }
-                            Ok(Err(error)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorUpsertFailed {
-                                    message: error.to_string(),
-                                });
-                            }
-                            Err(_) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorUpsertFailed {
-                                    message: "provider upsert request timed out".to_string(),
-                                });
-                            }
-                        }
-                    }
-                Some(OperationCommand::ReconfigureProvider {
-                    wire_api: _,
-                    model: next_model,
-                    base_url: _,
-                    api_key: _,
-                }) => {
-                        // Recreate the client so new provider credentials take effect
-                        // without requiring the whole app to restart.
-                        model = next_model;
-                        model_binding_id = None;
-                        client.shutdown().await?;
-                        client = spawn_client(
-                            &config.cwd,
-                            config.server_log_level.clone(),
-                        )
-                        .await?;
-                        client.initialize(&config.client_capabilities).await?;
-                        session_id = None;
-                        child_agent_sessions.clear();
-                        btw_agent_sessions.clear();
-                        visible_acp_terminal_ids.clear();
-                        visible_acp_terminal_session_ids.clear();
-                        private_acp_terminal_ids.clear();
-                        pending_acp_terminal_output.clear();
-                        polled_acp_terminal_output.clear();
-                        active_turn_id = None;
-                        active_reference_search_id = None;
-                        last_query_total_tokens = 0;
-                    }
-                    Some(OperationCommand::ListSessions) => {
-                        match tokio::time::timeout(
-                            Duration::from_secs(5),
-                            client.session_list(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(result)) => {
-                                let sessions = result
-                                    .iter()
-                                    .map(|session| SessionListEntry {
-                                        session_id: session.session_id,
-                                        title: session
-                                            .title
-                                            .clone()
-                                            .unwrap_or_else(|| "(untitled)".to_string()),
-                                        updated_at: session
-                                            .updated_at
-                                            .format("%Y-%m-%d %H:%M:%S UTC")
-                                            .to_string(),
-                                        is_active: Some(session.session_id) == session_id,
-                                    })
-                                    .collect();
-                                let _ = event_tx.send(WorkerEvent::SessionsListed { sessions });
-                            }
-                            Ok(Err(error)) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: error.to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                            Err(_) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: "session list request timed out".to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::ListSkills) => {
-                        if let Err(error) =
-                            emit_skills_list(&mut client, &session_cwd, event_tx, true).await
-                        {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                message: error.to_string(),
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
-                            });
-                        }
-                    }
-                    Some(OperationCommand::ReferenceSearchRequested { query }) => {
-                        match emit_reference_search_update(
-                            &mut client,
-                            &session_cwd,
-                            &mut active_reference_search_id,
-                            query,
-                            event_tx,
-                        )
-                        .await
-                        {
-                            Ok(()) => {}
-                            Err(error) => {
-                                tracing::warn!(?error, "reference search request failed");
-                            }
-                        }
-                    }
-                    Some(OperationCommand::ReferenceSearchCancelled) => {
-                        if let Some(search_id) = active_reference_search_id.take() {
-                            let _ = client
-                                .reference_search_cancel(ReferenceSearchCancelParams { search_id })
-                                .await;
-                        }
-                    }
-                    Some(OperationCommand::CompactSession) => {
-                        let Some(active_session_id) = session_id else {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
-                            });
-                            continue;
-                        };
-                        if active_turn_id.is_some() {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                message: "cannot compact while a turn is in progress".to_string(),
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
-                            });
-                            continue;
-                        }
-                        match client
-                            .session_compact(SessionCompactParams {
-                                session_id: active_session_id,
-                            })
-                            .await
-                        {
-                            Ok(result) => {
-                                model = result
-                                    .session
-                                    .model
-                                    .clone()
-                                    .unwrap_or(model);
-                                model_binding_id = result.session.model_binding_id.clone();
-                                reasoning_effort_selection = result.session.reasoning_effort_selection.clone();
-                                let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: error.to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::ShowGoal) => {
-                        let goal = if let Some(active_session_id) = session_id {
-                            match client
-                                .goal_status(GoalStatusParams {
-                                    session_id: active_session_id,
-                                })
-                                .await
-                            {
-                                Ok(result) => result.goal,
-                                Err(error) => {
-                                    let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                        message: error.to_string(),
-                                    });
-                                    continue;
-                                }
-                            }
-                        } else {
-                            None
-                        };
-                        let _ = event_tx.send(WorkerEvent::GoalStatusLoaded { goal });
-                    }
-                    Some(OperationCommand::EditGoal) => {
-                        let Some(active_session_id) = session_id else {
-                            let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                message: "No goal is currently set.".to_string(),
-                            });
-                            continue;
-                        };
-                        match client
-                            .goal_status(GoalStatusParams {
-                                session_id: active_session_id,
-                            })
-                            .await
-                        {
-                            Ok(result) => match result.goal {
-                                Some(goal) => {
-                                    let _ = event_tx.send(WorkerEvent::GoalEditLoaded { goal });
-                                }
-                                None => {
-                                    let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                        message: "No goal is currently set.".to_string(),
-                                    });
-                                }
-                            },
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                    message: error.to_string(),
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::SetGoalObjective { objective, mode }) => {
-                        let active_session_id = prepare_session_for_command(
-                            &mut client,
-                            &config.cwd,
-                            &mut model,
-                            &mut model_binding_id,
-                            &mut reasoning_effort_selection,
-                            &mut session_id,
-                            permission_preset,
-                            initial_sandbox_profile.as_deref(),
-                            event_tx,
-                        )
-                        .await?;
-
-                        if matches!(mode, GoalObjectiveMode::ConfirmIfExists) {
-                            match client
-                                .goal_status(GoalStatusParams {
-                                    session_id: active_session_id,
-                                })
-                                .await
-                            {
-                                Ok(result) => {
-                                    if let Some(current_goal) = result.goal {
-                                        let _ = event_tx.send(
-                                            WorkerEvent::GoalReplaceConfirmationRequested {
-                                                current_goal,
-                                                objective,
-                                            },
-                                        );
-                                        continue;
-                                    }
-                                }
-                                Err(error) => {
-                                    let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                        message: error.to_string(),
-                                    });
-                                    continue;
-                                }
-                            }
-                        }
-
-                        if matches!(mode, GoalObjectiveMode::ReplaceExisting) {
-                            match client
-                                .goal_clear(GoalClearParams {
-                                    session_id: active_session_id,
-                                })
-                                .await
-                            {
-                                Ok(_) => {}
-                                Err(error) => {
-                                    let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                        message: error.to_string(),
-                                    });
-                                    continue;
-                                }
-                            }
-                        }
-
-                        let (status, token_budget) = match mode {
-                            GoalObjectiveMode::ConfirmIfExists | GoalObjectiveMode::ReplaceExisting => {
-                                (Some(ThreadGoalStatus::Active), None)
-                            }
-                            GoalObjectiveMode::UpdateExisting {
-                                status,
-                                token_budget,
-                            } => (Some(status), token_budget),
-                        };
-                        match client
-                            .goal_set(GoalSetParams {
-                                session_id: active_session_id,
-                                objective: Some(objective),
-                                status,
-                                token_budget,
-                            })
-                            .await
-                        {
-                            Ok(result) => {
-                                let _ = event_tx.send(WorkerEvent::GoalUpdated {
-                                    goal: result.goal,
-                                });
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                    message: error.to_string(),
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::SetGoalStatus { status }) => {
-                        let Some(active_session_id) = session_id else {
-                            let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                message: "no active session exists yet; set a goal first".to_string(),
-                            });
-                            continue;
-                        };
-                        if status == ThreadGoalStatus::BudgetLimited {
-                            let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                message: "budget-limited status is controlled by the system".to_string(),
-                            });
-                            continue;
-                        }
-                        match client
-                            .goal_set(GoalSetParams {
-                                session_id: active_session_id,
-                                objective: None,
-                                status: Some(status),
-                                token_budget: None,
-                            })
-                            .await
-                        {
-                            Ok(result) => {
-                                let _ = event_tx.send(WorkerEvent::GoalUpdated {
-                                    goal: result.goal,
-                                });
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                    message: error.to_string(),
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::ClearGoal) => {
-                        let Some(active_session_id) = session_id else {
-                            let _ = event_tx.send(WorkerEvent::GoalCleared { cleared: false });
-                            continue;
-                        };
-                        match client
-                            .goal_clear(GoalClearParams {
-                                session_id: active_session_id,
-                            })
-                            .await
-                        {
-                            Ok(result) => {
-                                let _ = event_tx.send(WorkerEvent::GoalCleared {
-                                    cleared: result.cleared,
-                                });
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
-                                    message: error.to_string(),
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::SetSkillEnabled { path, enabled }) => {
-                        match client
-                            .skills_set_enabled(SkillSetEnabledParams { path, enabled })
-                            .await
-                        {
-                            Ok(result) => {
-                                emit_skills_list_result(result.skills, event_tx, false);
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: error.to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::StartNewSession) => {
-                        if let Some(active_session_id) = session_id {
-                            match pause_active_goal_before_session_leave(
-                                &mut client,
-                                active_session_id,
-                                active_turn_id,
-                            )
-                            .await
-                            {
-                                Ok(()) => {}
-                                Err(error) => {
-                                    emit_goal_leave_failure(event_tx, error);
-                                    continue;
-                                }
-                            }
-                        }
-                        active_turn_id = None;
-                        session_id = None;
-                        active_reference_search_id = None;
-                        session_cwd = config.cwd.clone();
-                        input_history_cursor = None;
-                        turn_count = 0;
-                        total_input_tokens = 0;
-                        total_output_tokens = 0;
-                        total_tokens = 0;
-                        total_cache_read_tokens = 0;
-                        last_query_total_tokens = 0;
-                        last_query_input_tokens = 0;
-                        has_authoritative_usage_totals = true;
-                        let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
-                            cwd: session_cwd.clone(),
-                            model: model.clone(),
-                            model_binding_id: model_binding_id.clone(),
-                            reasoning_effort_selection: reasoning_effort_selection.clone(),
-                            reasoning_effort: None,
-                            active_agent_label: None,
-                            last_query_total_tokens,
-                            last_query_input_tokens,
-                            total_cache_read_tokens,
-                        });
-                        let _ = emit_skills_list(&mut client, &session_cwd, event_tx, false).await;
-                    }
-                    Some(OperationCommand::SwitchSession(next_session_id)) => {
-                        if let Some(active_session_id) =
-                            session_id.filter(|session_id| *session_id != next_session_id)
-                        {
-                            match pause_active_goal_before_session_leave(
-                                &mut client,
-                                active_session_id,
-                                active_turn_id,
-                            )
-                            .await
-                            {
-                                Ok(()) => {}
-                                Err(error) => {
-                                    emit_goal_leave_failure(event_tx, error);
-                                    continue;
-                                }
-                            }
-                        }
-                        active_reference_search_id = None;
-                        match client
-                            .session_resume(SessionResumeParams {
-                                session_id: next_session_id,
-                            })
-                            .await
-                        {
-                            Ok(result) => {
-                                active_turn_id = None;
-                                session_id = Some(next_session_id);
-                                child_agent_sessions.clear();
-                                btw_agent_sessions.clear();
-                                visible_acp_terminal_ids.clear();
-                                visible_acp_terminal_session_ids.clear();
-                                private_acp_terminal_ids.clear();
-                                pending_acp_terminal_output.clear();
-                                polled_acp_terminal_output.clear();
-                                session_cwd = result.session.cwd.clone();
-                                input_history_cursor = None;
-                                let active_agent_label =
-                                    active_agent_label_from_session(&result.session);
-                                let (last_query_total, last_query_input) =
-                                    last_query_tokens_from_resume(&result.session);
-
-                                let _ = event_tx.send(WorkerEvent::SessionSwitched {
-                                    session_id: next_session_id.to_string(),
-                                    cwd: result.session.cwd,
-                                    title: result.session.title,
-                                    model: result.session.model.clone(),
-                                    model_binding_id: result.session.model_binding_id.clone(),
-                                    reasoning_effort_selection: result.session.reasoning_effort_selection.clone(),
-                                    reasoning_effort: result.session.reasoning_effort,
-                                    active_agent_label,
-                                    total_input_tokens: result.session.total_input_tokens,
-                                    total_output_tokens: result.session.total_output_tokens,
-                                    total_tokens: result.session.total_tokens,
-                                    total_cache_read_tokens: result.session.total_cache_read_tokens,
-                                    last_query_total_tokens: last_query_total,
-                                    last_query_input_tokens: last_query_input,
-                                    prompt_token_estimate: result.session.prompt_token_estimate,
-                                    history_items: project_history_items(&result.history_items),
-                                    rich_history_items: result.history_items.clone(),
-                                    loaded_item_count: result.loaded_item_count,
-                                    pending_texts: result.pending_texts,
-                                });
-                                model = result
-                                    .session
-                                    .model
-                                    .clone()
-                                    .unwrap_or(model);
-                                model_binding_id = result.session.model_binding_id.clone();
-                                reasoning_effort_selection = result.session.reasoning_effort_selection.clone();
-                                total_input_tokens = result.session.total_input_tokens;
-                                total_output_tokens = result.session.total_output_tokens;
-                                total_tokens = result.session.total_tokens;
-                                total_cache_read_tokens = result.session.total_cache_read_tokens;
-                                let _ =
-                                    emit_skills_list(&mut client, &session_cwd, event_tx, false)
-                                        .await;
-                                last_query_total_tokens = last_query_total;
-                                last_query_input_tokens = last_query_input;
-                                has_authoritative_usage_totals = true;
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: error.to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::RenameSession(title)) => {
-                        let Some(active_session_id) = session_id else {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
-                            });
-                            continue;
-                        };
-                        match client
-                            .session_title_update(SessionTitleUpdateParams {
-                                session_id: active_session_id,
-                                title: title.clone(),
-                            })
-                            .await
-                        {
-                            Ok(result) => {
-                                let _ = event_tx.send(WorkerEvent::SessionRenamed {
-                                    session_id: active_session_id.to_string(),
-                                    title: result
-                                        .session
-                                        .title
-                                        .unwrap_or(title),
-                                });
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: error.to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::RollbackUserTurn {
-                        user_turn_index,
-                        mode,
-                    }) => {
-                        let Some(active_session_id) = session_id else {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
-                            });
-                            continue;
-                        };
-                        if let Err(error) = pause_active_goal_before_session_leave(
-                            &mut client,
-                            active_session_id,
-                            active_turn_id,
-                        )
-                        .await
-                        {
-                            emit_goal_leave_failure(event_tx, error);
-                            continue;
-                        }
-                        match client
-                            .session_rollback(SessionRollbackParams {
-                                session_id: active_session_id,
-                                user_turn_index,
-                                mode,
-                            })
-                            .await
-                        {
-                            Ok(result) => {
-                                active_turn_id = None;
-                                session_cwd = result.session.cwd.clone();
-                                input_history_cursor = None;
-                                let active_agent_label =
-                                    active_agent_label_from_session(&result.session);
-                                let (last_query_total, last_query_input) =
-                                    last_query_tokens_from_resume(&result.session);
-                                let _ = event_tx.send(WorkerEvent::SessionSwitched {
-                                    session_id: active_session_id.to_string(),
-                                    cwd: result.session.cwd,
-                                    title: result.session.title,
-                                    model: result.session.model.clone(),
-                                    model_binding_id: result.session.model_binding_id.clone(),
-                                    reasoning_effort_selection: result.session.reasoning_effort_selection.clone(),
-                                    reasoning_effort: result.session.reasoning_effort,
-                                    active_agent_label,
-                                    total_input_tokens: result.session.total_input_tokens,
-                                    total_output_tokens: result.session.total_output_tokens,
-                                    total_tokens: result.session.total_tokens,
-                                    total_cache_read_tokens: result.session.total_cache_read_tokens,
-                                    last_query_total_tokens: last_query_total,
-                                    last_query_input_tokens: last_query_input,
-                                    prompt_token_estimate: result.session.prompt_token_estimate,
-                                    history_items: project_history_items(&result.history_items),
-                                    rich_history_items: result.history_items.clone(),
-                                    loaded_item_count: result.loaded_item_count,
-                                    pending_texts: result.pending_texts,
-                                });
-                                model = result.session.model.clone().unwrap_or(model);
-                                model_binding_id = result.session.model_binding_id.clone();
-                                reasoning_effort_selection = result.session.reasoning_effort_selection.clone();
-                                total_input_tokens = result.session.total_input_tokens;
-                                total_output_tokens = result.session.total_output_tokens;
-                                total_tokens = result.session.total_tokens;
-                                total_cache_read_tokens = result.session.total_cache_read_tokens;
-                                last_query_total_tokens = last_query_total;
-                                last_query_input_tokens = last_query_input;
-                                has_authoritative_usage_totals = true;
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: error.to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::ForkAtUserTurn(user_turn_index)) => {
-                        let Some(active_session_id) = session_id else {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
-                            });
-                            continue;
-                        };
-                        match pause_active_goal_before_session_leave(
-                            &mut client,
-                            active_session_id,
-                            active_turn_id,
-                        )
-                        .await
-                        {
-                            Ok(()) => {}
-                            Err(error) => {
-                                emit_goal_leave_failure(event_tx, error);
-                                continue;
-                            }
-                        }
-                        match client
-                            .session_fork(devo_server::SessionForkParams {
-                                session_id: active_session_id,
-                                title: None,
-                                cwd: None,
-                                user_turn_index: Some(user_turn_index),
-                            })
-                            .await
-                        {
-                            Ok(result) => {
-                                let next_session_id = result.session.session_id;
-                                match client
-                                    .session_resume(SessionResumeParams {
-                                        session_id: next_session_id,
-                                    })
-                                    .await
-                                {
-                                    Ok(resumed) => {
-                                        active_turn_id = None;
-                                        session_id = Some(next_session_id);
-                                        child_agent_sessions.clear();
-                                        btw_agent_sessions.clear();
-                                        visible_acp_terminal_ids.clear();
-                                        visible_acp_terminal_session_ids.clear();
-                                        private_acp_terminal_ids.clear();
-                                        pending_acp_terminal_output.clear();
-                                        polled_acp_terminal_output.clear();
-                                        session_cwd = resumed.session.cwd.clone();
-                                        input_history_cursor = None;
-                                        let active_agent_label =
-                                            active_agent_label_from_session(&resumed.session);
-                                        let (last_query_total, last_query_input) =
-                                            last_query_tokens_from_resume(&resumed.session);
-                                        let _ = event_tx.send(WorkerEvent::SessionSwitched {
-                                            session_id: next_session_id.to_string(),
-                                            cwd: resumed.session.cwd,
-                                            title: resumed.session.title,
-                                            model: resumed.session.model.clone(),
-                                            model_binding_id: resumed.session.model_binding_id.clone(),
-                                            reasoning_effort_selection: resumed.session.reasoning_effort_selection.clone(),
-                                            reasoning_effort: resumed.session.reasoning_effort,
-                                            active_agent_label,
-                                            total_input_tokens: resumed.session.total_input_tokens,
-                                            total_output_tokens: resumed.session.total_output_tokens,
-                                            total_tokens: resumed.session.total_tokens,
-                                            total_cache_read_tokens: resumed.session.total_cache_read_tokens,
-                                            last_query_total_tokens: last_query_total,
-                                            last_query_input_tokens: last_query_input,
-                                            prompt_token_estimate: resumed.session.prompt_token_estimate,
-                                            history_items: project_history_items(&resumed.history_items),
-                                            rich_history_items: resumed.history_items.clone(),
-                                            loaded_item_count: resumed.loaded_item_count,
-                                            pending_texts: resumed.pending_texts,
-                                        });
-                                        model = resumed.session.model.clone().unwrap_or(model);
-                                        model_binding_id = resumed.session.model_binding_id.clone();
-                                        reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
-                                        total_input_tokens = resumed.session.total_input_tokens;
-                                        total_output_tokens = resumed.session.total_output_tokens;
-                                        total_tokens = resumed.session.total_tokens;
-                                        total_cache_read_tokens = resumed.session.total_cache_read_tokens;
-                                        last_query_total_tokens = last_query_total;
-                                        last_query_input_tokens = last_query_input;
-                                        has_authoritative_usage_totals = true;
+                                    sandbox: None,
+                                    approval_policy,
+                                    cwd: None,
+                                    collaboration_mode,
+                                    execution_mode: TurnExecutionMode::Regular,
+                                }).await;
+                                match start_result {
+                                    Ok(result) => {
+                                        handle_turn_start_result(result, &mut active_turn_id);
                                     }
                                     Err(error) => {
                                         let _ = event_tx.send(WorkerEvent::TurnFailed {
                                             message: error.to_string(),
+                                            hint: None,
                                             turn_count,
                                             total_input_tokens,
                                             total_output_tokens,
@@ -1940,247 +1135,14 @@ async fn run_worker_inner(
                                     }
                                 }
                             }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: error.to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::InterruptTurn) => {
-                        if let (Some(turn_id), Some(active_session_id)) = (active_turn_id, session_id)
-                            && let Err(error) = client
-                                .turn_interrupt(TurnInterruptParams {
-                                    session_id: active_session_id,
-                                    turn_id,
-                                    reason: Some("user requested interrupt".to_string()),
-                                })
-                                .await
-                            {
-                            let _ = event_tx.send(WorkerEvent::InterruptFailed {
-                                message: error.to_string(),
-                            });
-                            }
-                    }
-                    Some(OperationCommand::RunBtwQuestion { question }) => {
-                        let Some(active_session_id) = session_id else {
-                            let _ = event_tx.send(WorkerEvent::BtwFailed {
-                                message: "No active session exists yet; send a message first, then try /btw.".to_string(),
-                            });
-                            continue;
-                        };
-                        let prompt = btw_agent_prompt(&question);
-                        match client
-                            .agent_spawn(SpawnAgentParams {
-                                session_id: active_session_id,
-                                message: prompt,
-                                fork_turns: Some("all".to_string()),
-                                max_turns: Some(1),
-                                tool_policy: AgentToolPolicy::DenyAll,
-                                ephemeral: true,
-                            })
-                            .await
-                        {
-                            Ok(result) => {
-                                btw_agent_sessions.insert(
-                                    result.child_session_id,
-                                    BtwQuestionState {
-                                        parent_session_id: active_session_id,
-                                        question: question.clone(),
-                                        latest_answer: None,
-                                    },
-                                );
-                                let _ = event_tx.send(WorkerEvent::BtwStarted { question });
-                            }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::BtwFailed {
-                                    message: error.to_string(),
-                                });
-                            }
-                        }
-                    }
-                    Some(OperationCommand::SteerTurn {
-                        input,
-                        expected_turn_id,
-                    }) => {
-                        if let Some(active_session_id) = session_id {
-                            match client
-                                .turn_steer(TurnSteerParams {
-                                    session_id: active_session_id,
-                                    expected_turn_id,
-                                    input,
-                                })
-                                .await
-                            {
-                                Ok(result) => {
-                                    let _ = event_tx.send(WorkerEvent::SteerAccepted {
-                                        turn_id: result.turn_id,
-                                    });
-                                }
-                            Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                    message: error.to_string(),
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
-                                });
-                            }
-                        }
-                        }
-                    }
-                    Some(OperationCommand::ApprovalRespond {
-                        session_id,
-                        turn_id,
-                        approval_id,
-                        decision,
-                        scope,
-                    }) => {
-                        if let Err(error) = client
-                            .approval_respond(ApprovalResponseParams {
-                                session_id,
-                                turn_id,
-                                approval_id: approval_id.into(),
-                                decision,
-                                scope,
-                            })
-                            .await
-                        {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                message: error.to_string(),
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
-                            });
-                        }
-                    }
-                    Some(OperationCommand::RequestUserInputRespond {
-                        session_id,
-                        turn_id,
-                        request_id,
-                        response,
-                    }) => {
-                        if let Err(error) = client
-                            .request_user_input_respond(RequestUserInputRespondParams {
-                                session_id,
-                                turn_id,
-                                request_id: request_id.into(),
-                                response,
-                            })
-                            .await
-                        {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                message: error.to_string(),
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
-                            });
-                        }
-                    }
-                    Some(OperationCommand::UpdatePermissions { preset }) => {
-                        permission_preset = preset;
-                        let Some(active_session_id) = session_id else {
-                            continue;
-                        };
-                        if let Err(error) =
-                            apply_session_permissions(&mut client, active_session_id, preset).await
-                        {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                message: error.to_string(),
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
-                            });
-                        }
-                    }
-                    Some(OperationCommand::UpdateSandboxProfile { profile }) => {
-                        let Some(active_session_id) = session_id else {
-                            continue;
-                        };
-                        if let Err(error) = client
-                            .session_sandbox_profile_update(
-                                devo_server::SessionSandboxProfileUpdateParams {
-                                    session_id: active_session_id,
-                                    profile,
-                                },
-                            )
-                            .await
-                        {
-                            let _ = event_tx.send(WorkerEvent::InterruptFailed {
-                                message: format!("Failed to update sandbox profile: {error}"),
-                            });
-                        }
-                    }
-                    Some(OperationCommand::BrowseInputHistory(direction)) => {
-                        let text = if let Some(active_session_id) = session_id {
-                            match client
-                                .session_resume(SessionResumeParams {
-                                    session_id: active_session_id,
-                                })
-                                .await
-                            {
-                                Ok(result) => {
-                                    let entries = result
-                                        .history_items
-                                        .iter()
-                                        .filter(|item| item.kind == SessionHistoryItemKind::User)
-                                        .map(|item| item.body.clone())
-                                        .filter(|body| !body.trim().is_empty())
-                                        .collect::<Vec<_>>();
-                                    let total = entries.len();
-                                    match direction {
-                                        InputHistoryDirection::Previous => {
-                                            if total == 0 {
-                                                None
-                                            } else {
-                                                let next_index = match input_history_cursor {
-                                                    None => total.saturating_sub(1),
-                                                    Some(0) => 0,
-                                                    Some(index) => index.saturating_sub(1),
-                                                };
-                                                input_history_cursor = Some(next_index);
-                                                entries.get(next_index).cloned()
-                                            }
-                                        }
-                                        InputHistoryDirection::Next => match input_history_cursor {
-                                            None => None,
-                                            Some(index) if index + 1 >= total => {
-                                                input_history_cursor = None;
-                                                None
-                                            }
-                                            Some(index) => {
-                                                let next_index = index + 1;
-                                                input_history_cursor = Some(next_index);
-                                                entries.get(next_index).cloned()
-                                            }
-                                        },
-                                    }
-                                }
-                                Err(error) => {
+                            Some(
+                                OperationCommand::ExecuteShellCommand { command }
+                                | OperationCommand::SubmitShellInput { command },
+                            ) => {
+                                if active_turn_id.is_some() {
                                     let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                        message: error.to_string(),
+                                        message: "cannot run shell command while a turn is in progress".to_string(),
+                                        hint: None,
                                         turn_count,
                                         total_input_tokens,
                                         total_output_tokens,
@@ -2189,431 +1151,1697 @@ async fn run_worker_inner(
                                         prompt_token_estimate: total_input_tokens,
                                         last_query_input_tokens,
                                     });
-                                    None
+                                    continue;
                                 }
-                            }
-                        } else {
-                            None
-                        };
-                        let _ = event_tx.send(WorkerEvent::InputHistoryLoaded { direction, text });
-                    }
-                    Some(OperationCommand::Shutdown) | None => {
-                        tracing::info!("query worker received shutdown command");
-                        break;
-                    }
-                }
-            }
-            _ = acp_terminal_poll.tick(), if !visible_acp_terminal_ids.is_empty() => {
-                let terminal_ids = visible_acp_terminal_ids
-                    .iter()
-                    .filter(|terminal_id| !private_acp_terminal_ids.contains(*terminal_id))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for terminal_id in terminal_ids {
-                    match client.acp_terminal_output_snapshot(&terminal_id).await {
-                        Ok(snapshot) => {
-                            if let Some(delta) = acp_terminal_snapshot_delta(
-                                polled_acp_terminal_output
-                                    .entry(terminal_id.clone())
-                                    .or_default(),
-                                snapshot.output,
-                                snapshot.truncated,
-                            ) {
-                                if let Some(owner_session_id) =
-                                    visible_acp_terminal_session_ids.get(&terminal_id).copied()
-                                    && Some(owner_session_id) != session_id
-                                {
-                                    let _ = event_tx.send(WorkerEvent::SubagentMonitor {
-                                        event: SubagentMonitorEvent::ToolOutputDelta {
-                                            session_id: owner_session_id,
-                                            tool_use_id: terminal_id.clone(),
-                                            delta,
-                                        },
-                                    });
-                                } else {
-                                    let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
-                                        tool_use_id: terminal_id.clone(),
-                                        delta,
-                                    });
-                                }
-                            }
-                            if snapshot.exit_status.is_some() {
-                                visible_acp_terminal_ids.remove(&terminal_id);
-                                visible_acp_terminal_session_ids.remove(&terminal_id);
-                                polled_acp_terminal_output.remove(&terminal_id);
-                            }
-                        }
-                        Err(error) => {
-                            tracing::debug!(%error, terminal_id, "failed to poll ACP terminal output");
-                            visible_acp_terminal_ids.remove(&terminal_id);
-                            visible_acp_terminal_session_ids.remove(&terminal_id);
-                            polled_acp_terminal_output.remove(&terminal_id);
-                        }
-                    }
-                }
-            }
-            notification = client.recv_notification() => {
-                match notification {
-                    Some(notification) => {
-                        let method = notification.method;
-                        let params = notification.params;
-                        let normalized_event = client_event_from_notification(
-                            &devo_client::ServerNotificationMessage {
-                                method: method.clone(),
-                                params: params.clone(),
-                            },
-                        )
-                        .ok()
-                        .flatten();
-                        if let Some(ClientEvent::TurnUsageUpdated(payload)) = normalized_event {
-                            saw_usage_update_for_turn = true;
-                            total_input_tokens = payload.total_input_tokens;
-                            total_output_tokens = payload.total_output_tokens;
-                            total_tokens = payload.total_tokens;
-                            total_cache_read_tokens = payload.total_cache_read_tokens;
-                            last_query_total_tokens = payload.usage.display_total_tokens();
-                            last_query_input_tokens = payload.last_query_input_tokens;
-                            has_authoritative_usage_totals = true;
-                            let _ = event_tx.send(WorkerEvent::UsageUpdated {
-                                total_input_tokens: payload.total_input_tokens,
-                                total_output_tokens: payload.total_output_tokens,
-                                total_tokens: payload.total_tokens,
-                                total_cache_read_tokens: payload.total_cache_read_tokens,
-                                last_query_total_tokens: payload.usage.display_total_tokens(),
-                                last_query_input_tokens: payload.last_query_input_tokens,
-                            });
-                            continue;
-                        }
-                        if method == ACP_TERMINAL_OUTPUT_NOTIFICATION_METHOD {
-                            if let Some(terminal_id) =
-                                params.get("terminalId").and_then(serde_json::Value::as_str)
-                            {
-                                private_acp_terminal_ids.insert(terminal_id.to_string());
-                                polled_acp_terminal_output.remove(terminal_id);
-                            }
-                            if let Some(event) = acp_terminal_output_event_with_session(
-                                &params,
-                                &visible_acp_terminal_ids,
-                                &mut pending_acp_terminal_output,
-                                session_id,
-                                &visible_acp_terminal_session_ids,
-                            ) {
-                                let _ = event_tx.send(event);
-                            }
-                            continue;
-                        }
-                        if method == ACP_SESSION_UPDATE_METHOD {
-                            let Some(notification) = parse_acp_session_notification(&params) else {
-                                continue;
-                            };
-                            if let Some(metadata) =
-                                session_metadata_from_acp_update(&notification.update)
-                                && let Some(agent) = subagent_events::agent_from_session(&metadata)
-                                && Some(agent.parent_session_id) == session_id
-                                && child_agent_sessions.insert(agent.session_id)
-                            {
-                                let _ = event_tx.send(WorkerEvent::SubagentDiscovered { agent });
-                            }
-
-                            let notification_session_id = notification.session_id;
-                            if Some(notification_session_id) == session_id {
-                                if let Some(parent_session_id) = session_id {
-                                    maybe_discover_spawned_subagent_from_acp_update(
-                                        &notification.update,
-                                        &mut client,
-                                        parent_session_id,
-                                        &mut child_agent_sessions,
-                                        event_tx,
-                                    )
-                                    .await;
-                                }
-                                for event in worker_events_from_acp_session_notification_with_terminal_state(
-                                    notification,
-                                    &mut visible_acp_terminal_ids,
-                                    &mut pending_acp_terminal_output,
-                                    Some(&mut visible_acp_terminal_session_ids),
-                                ) {
-                                    let _ = event_tx.send(event);
-                                }
-                                continue;
-                            }
-
-                            if child_agent_sessions.contains(&notification_session_id) {
-                                for event in subagent_monitor_events_from_acp_session_notification_with_terminal_state(
-                                    notification,
-                                    &mut visible_acp_terminal_ids,
-                                    &mut pending_acp_terminal_output,
-                                    &mut visible_acp_terminal_session_ids,
-                                ) {
-                                    let _ = event_tx.send(event);
-                                }
-                            }
-                            continue;
-                        }
-                        let event: ServerEvent = serde_json::from_value(params)
-                            .with_context(|| format!("failed to decode server event for method {method}"))?;
-                        if handle_btw_agent_event(
-                            &method,
-                            &event,
-                            &mut client,
-                            event_tx,
-                            &mut btw_agent_sessions,
-                        )
-                        .await
-                        {
-                            continue;
-                        }
-                        if let Some(event_session_id) = event.session_id()
-                            && Some(event_session_id) != session_id
-                        {
-                            if child_agent_sessions.contains(&event_session_id) {
-                                for subagent_event in
-                                    subagent_monitor_events_from_unwrapped_server_notification(
-                                        method.as_str(),
-                                        event.clone(),
-                                    )
-                                {
-                                    let _ = event_tx.send(subagent_event);
-                                }
-                            }
-                            continue;
-                        }
-                        match method.as_str() {
-                            "turn/started" => {
-                                if let ServerEvent::TurnStarted(payload) = event {
-                                    active_turn_id = Some(payload.turn.turn_id);
-                                    saw_usage_update_for_turn = false;
-                                    model = payload.turn.model.clone();
-                                    model_binding_id = payload.turn.model_binding_id.clone();
-                                    reasoning_effort_selection = payload.turn.reasoning_effort_selection.clone();
-                                    let _ = event_tx.send(WorkerEvent::TurnStarted {
-                                        model: payload.turn.model,
-                                        model_binding_id: payload.turn.model_binding_id,
-                                        reasoning_effort_selection: payload.turn.reasoning_effort_selection,
-                                        reasoning_effort: payload.turn.reasoning_effort,
-                                        turn_id: payload.turn.turn_id,
-                                    });
-                                }
-                                latest_completed_agent_message = None;
-                            }
-                            "item/started" => {
-                                if let ServerEvent::ItemStarted(payload) = event {
-                                    handle_started_item(payload, event_tx);
-                                }
-                            }
-                            "item/agentMessage/delta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event {
-                                    if let Some(item_id) = payload.context.item_id {
-                                        if let Some(assistant_token_text) =
-                                            assistant_token_log_preview(&payload.delta)
-                                        {
-                                            tracing::debug!(
-                                                stream_elapsed_ms = stream_trace_elapsed_ms(),
-                                                item_id = %item_id,
-                                                event_seq = payload.context.seq,
-                                                delta_len = payload.delta.len(),
-                                                stream_index = ?payload.stream_index,
-                                                channel = ?payload.channel,
-                                                assistant_token_text = %assistant_token_text,
-                                                "server assistant delta"
-                                            );
-                                        } else {
-                                            tracing::debug!(
-                                                stream_elapsed_ms = stream_trace_elapsed_ms(),
-                                                item_id = %item_id,
-                                                event_seq = payload.context.seq,
-                                                delta_len = payload.delta.len(),
-                                                stream_index = ?payload.stream_index,
-                                                channel = ?payload.channel,
-                                                "server assistant delta"
-                                            );
-                                        }
-                                        let _ = event_tx.send(WorkerEvent::TextItemDelta {
-                                            item_id,
-                                            kind: TextItemKind::Assistant,
-                                            delta: payload.delta,
-                                        });
-                                    } else {
-                                        let _ = event_tx.send(WorkerEvent::TextDelta(payload.delta));
-                                    }
-                                }
-                            }
-                            "item/plan/delta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event
-                                    && let Some(item_id) = payload.context.item_id
-                                {
-                                    let _ = event_tx.send(WorkerEvent::ProposedPlanDelta {
-                                        item_id,
-                                        delta: payload.delta,
-                                    });
-                                }
-                            }
-                            "item/commandExecution/outputDelta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event {
-                                    let delta_str = &payload.delta;
-                                    if let Ok(val) =
-                                        serde_json::from_str::<serde_json::Value>(delta_str)
-                                    {
-                                        let tool_use_id = val
-                                            .get("tool_use_id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
-                                        let text =
-                                            val.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                                        if !tool_use_id.is_empty() {
-                                            let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
-                                                tool_use_id: tool_use_id.to_string(),
-                                                delta: text.to_string(),
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                            "command/exec/outputDelta" => {
-                                if let ServerEvent::CommandExecOutputDelta(payload) = event {
-                                    let CommandExecOutputDeltaPayload {
-                                        process_id,
-                                        delta_base64,
-                                        ..
-                                    } = payload;
-                                    match BASE64_STANDARD.decode(delta_base64) {
-                                        Ok(bytes) => {
-                                            let delta =
-                                                String::from_utf8_lossy(&bytes).to_string();
-                                            let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
-                                                tool_use_id: process_id,
-                                                delta,
-                                            });
-                                        }
-                                        Err(error) => {
-                                            tracing::warn!(
-                                                %error,
-                                                "failed to decode command/exec output delta"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            "command/exec/exited" => {
-                                if let ServerEvent::CommandExecExited(payload) = event {
-                                    let CommandExecExitedPayload {
-                                        process_id,
-                                        exit_code,
-                                        ..
-                                    } = payload;
-                                    if active_shell_process_ids.remove(&process_id) {
+                                let shell_start = next_shell_command_exec_start(
+                                    session_id,
+                                    session_cwd.clone(),
+                                    command,
+                                    &mut next_shell_process_index,
+                                );
+                                active_shell_process_ids.insert(shell_start.process_id.clone());
+                                let _ = event_tx.send(shell_start.started_event);
+                                match client.command_exec(shell_start.params).await {
+                                    Ok(_) => {}
+                                    Err(error) => {
+                                        active_shell_process_ids.remove(&shell_start.process_id);
                                         let _ = event_tx.send(WorkerEvent::ToolResult {
-                                            tool_use_id: process_id,
+                                            tool_use_id: shell_start.process_id,
                                             title: "Shell".to_string(),
-                                            preview: String::new(),
-                                            is_error: false,
+                                            preview: error.to_string(),
+                                            is_error: true,
                                             truncated: false,
                                         });
-                                        let _ = event_tx.send(WorkerEvent::ShellCommandFinished {
-                                            exit_code,
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::SetModel {
+                                model: next_model,
+                                model_binding_id: next_model_binding_id,
+                                persist_scope,
+                            }) => {
+                                model = next_model;
+                                model_binding_id = next_model_binding_id;
+                                if persist_scope == crate::app_command::PersistScope::Default {
+                                    default_model = model.clone();
+                                    default_model_binding_id = model_binding_id.clone();
+                                }
+                                input_history_cursor = None;
+                                if let Some(active_session_id) = session_id {
+                                    let _ = client
+                                        .session_metadata_update(devo_server::SessionMetadataUpdateParams {
+                                            session_id: active_session_id,
+                                            model: Some(model.clone()),
+                                            model_binding_id: model_binding_id.clone(),
+                                            reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                            collaboration_mode: None,
+                                        })
+                                        .await;
+                                }
+                            }
+                            Some(OperationCommand::SetCollaborationMode {
+                                collaboration_mode,
+                                persist_scope,
+                            }) => {
+                                if persist_scope == crate::app_command::PersistScope::Default {
+                                    default_collaboration_mode = collaboration_mode;
+                                }
+                                if let Some(active_session_id) = session_id {
+                                    let _ = client
+                                        .session_metadata_update(devo_server::SessionMetadataUpdateParams {
+                                            session_id: active_session_id,
+                                            model: Some(model.clone()),
+                                            model_binding_id: model_binding_id.clone(),
+                                            reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                            collaboration_mode: Some(collaboration_mode),
+                                        })
+                                        .await;
+                                }
+                            }
+                            Some(OperationCommand::SetReasoningEffort(next_reasoning_effort_selection)) => {
+                                reasoning_effort_selection = next_reasoning_effort_selection;
+                                if let Some(active_session_id) = session_id {
+                                    let _ = client
+                                        .session_metadata_update(devo_server::SessionMetadataUpdateParams {
+                                            session_id: active_session_id,
+                                            model: Some(model.clone()),
+                                            model_binding_id: model_binding_id.clone(),
+                                            reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                            collaboration_mode: None,
+                                        })
+                                        .await;
+                                }
+                            }
+                            Some(OperationCommand::ValidateProvider {
+                                provider_vendor,
+                                model_binding,
+                                api_key,
+                            }) => {
+                                match tokio::time::timeout(
+                                    Duration::from_secs(25),
+                                    client.provider_validate(ProviderValidateParams {
+                                        provider_vendor,
+                                        model_binding,
+                                        api_key,
+                                    }),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(result)) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderValidationSucceeded {
+                                            reply_preview: result.reply_preview,
+                                        });
+                                    }
+                                    Ok(Err(error)) => {
+                                        let message = error.to_string();
+                                        let hint =
+                                            devo_provider::recovery_hint_for_message(&message);
+                                        let _ = event_tx.send(WorkerEvent::ProviderValidationFailed {
+                                            message,
+                                            hint,
+                                        });
+                                    }
+                                    Err(_) => {
+                                        let message =
+                                            "provider validation request timed out".to_string();
+                                        let hint =
+                                            devo_provider::recovery_hint_for_message(&message);
+                                        let _ = event_tx.send(WorkerEvent::ProviderValidationFailed {
+                                            message,
+                                            hint,
                                         });
                                     }
                                 }
                             }
-                            "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event {
-                                    if let Some(item_id) = payload.context.item_id {
-                                        tracing::debug!(
-                                            item_id = %item_id,
-                                            delta_len = payload.delta.len(),
-                                            stream_index = ?payload.stream_index,
-                                            channel = ?payload.channel,
-                                            "server reasoning delta"
-                                        );
-                                        let _ = event_tx.send(WorkerEvent::TextItemDelta {
-                                            item_id,
-                                            kind: TextItemKind::Reasoning,
-                                            delta: payload.delta,
+                            Some(OperationCommand::ListProviderVendors) => {
+                                match tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    client.provider_vendor_list(ProviderVendorListParams::default()),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(result)) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderVendorsListed {
+                                            provider_vendors: result.provider_vendors,
                                         });
-                                    } else {
-                                        let _ = event_tx.send(WorkerEvent::ReasoningDelta(payload.delta));
+                                    }
+                                    Ok(Err(error)) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                    Err(_) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: "provider list request timed out".to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
                                     }
                                 }
                             }
-                            "item/completed" => {
-                                if let ServerEvent::ItemCompleted(payload) = event {
-                                    tracing::debug!(
-                                        item_id = %payload.item.item_id,
-                                        item_kind = ?payload.item.item_kind,
-                                        "server item completed"
-                                    );
-                                    if let Some(text) = completed_agent_message_text(&payload) {
-                                        latest_completed_agent_message = Some(text);
+                            Some(OperationCommand::UpsertProviderVendor {
+                                provider_vendor,
+                                model_binding,
+                                default_model_binding,
+                                api_key,
+                            }) => {
+                                match tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    client.provider_vendor_upsert(ProviderVendorUpsertParams {
+                                        provider_vendor,
+                                        model_binding,
+                                        default_model_binding,
+                                        api_key,
+                                    }),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(result)) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderVendorUpserted {
+                                            provider_vendor: result.provider_vendor,
+                                            model_binding: result.model_binding,
+                                        });
                                     }
-                                    // Completed tool items are mapped into compact UI events
-                                    // with pre-rendered summaries and previews.
-                                    handle_completed_item(payload, event_tx);
+                                    Ok(Err(error)) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderVendorUpsertFailed {
+                                            message: error.to_string(),
+                                        });
+                                    }
+                                    Err(_) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderVendorUpsertFailed {
+                                            message: "provider upsert request timed out".to_string(),
+                                        });
+                                    }
                                 }
                             }
-                            "turn/completed" => {
-                                if let ServerEvent::TurnCompleted(payload) = event {
-                                    tracing::debug!(
-                                        turn_id = %payload.turn.turn_id,
-                                        status = ?payload.turn.status,
-                                        "server turn completed"
-                                    );
-                                    active_turn_id = None;
-                                    let completed = payload.turn.status == TurnStatus::Completed
-                                        || payload.turn.status == TurnStatus::Interrupted;
-                                    if completed {
-                                        turn_count += 1;
-                                        if let Some(usage) = &payload.turn.usage {
-                                            if !saw_usage_update_for_turn {
-                                                last_query_input_tokens = usage.input_tokens as usize;
-                                                last_query_total_tokens = usage.display_total_tokens();
-                                            }
-                                            if should_apply_terminal_turn_usage_fallback(
-                                                saw_usage_update_for_turn,
-                                                has_authoritative_usage_totals,
-                                            ) {
-                                                total_input_tokens += usage.input_tokens as usize;
-                                                total_output_tokens += usage.output_tokens as usize;
-                                                total_tokens += usage.display_total_tokens();
-                                                total_cache_read_tokens += usage
-                                                    .cache_read_input_tokens
-                                                    .unwrap_or(0) as usize;
-                                            }
-                                        }
+                        Some(OperationCommand::ReconfigureProvider {
+                            wire_api: _,
+                            model: next_model,
+                            base_url: _,
+                            api_key: _,
+                        }) => {
+                                // Recreate the client so new provider credentials take effect
+                                // without requiring the whole app to restart.
+                                model = next_model;
+                                model_binding_id = None;
+                                client.shutdown().await?;
+                                client = spawn_client(
+                                    &config.cwd,
+                                    config.server_log_level.clone(),
+                                )
+                                .await?;
+                                client.initialize(&config.client_capabilities).await?;
+                                session_id = None;
+                                subscribed_session_id = None;
+                                child_agent_sessions.clear();
+                                btw_agent_sessions.clear();
+                                active_turn_id = None;
+                                active_reference_search_id = None;
+                                last_query_total_tokens = 0;
+                            }
+                            Some(OperationCommand::ListSessions) => {
+                                match tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    client.session_list(),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(result)) => {
+                                        let sessions = result
+                                            .iter()
+                                            .map(|session| SessionListEntry {
+                                                session_id: session.session_id,
+                                                title: session
+                                                    .title
+                                                    .clone()
+                                                    .unwrap_or_else(|| "(untitled)".to_string()),
+                                                updated_at: session
+                                                    .updated_at
+                                                    .format("%Y-%m-%d %H:%M:%S UTC")
+                                                    .to_string(),
+                                                is_active: Some(session.session_id) == session_id,
+                                            })
+                                            .collect();
+                                        let _ = event_tx.send(WorkerEvent::SessionsListed { sessions });
                                     }
-                                    let _ = event_tx.send(WorkerEvent::TurnFinished {
-                                        stop_reason: format!("{:?}", payload.turn.status),
+                                    Ok(Err(error)) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                    Err(_) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: "session list request timed out".to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::ListSkills) => {
+                                if let Err(error) =
+                                    emit_skills_list(&mut client, &session_cwd, event_tx, true).await
+                                {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: error.to_string(),
+                                        hint: None,
                                         turn_count,
                                         total_input_tokens,
                                         total_output_tokens,
                                         total_tokens,
                                         total_cache_read_tokens,
-                                        last_query_total_tokens,
+                                        prompt_token_estimate: total_input_tokens,
                                         last_query_input_tokens,
-                                        prompt_token_estimate: payload
-                                            .turn
-                                            .usage
-                                            .as_ref()
-                                            .map(|usage| usage.input_tokens as usize)
-                                            .unwrap_or(total_input_tokens),
-                                    });
-                                    latest_completed_agent_message = None;
-                                }
-                            }
-                            "turn/provider_retry_status" => {
-                                if let ServerEvent::TurnProviderRetryStatus(payload) = event {
-                                    let _ = event_tx.send(WorkerEvent::ProviderRetryStatus {
-                                        turn_id: payload.turn_id,
-                                        attempt: payload.attempt,
-                                        backoff_ms: payload.backoff_ms,
-                                        provider: payload.provider,
-                                        model: payload.model,
-                                        phase: payload.phase,
-                                        message: payload.message,
                                     });
                                 }
                             }
-                            "turn/usage/updated" => {
-                                if let ServerEvent::TurnUsageUpdated(payload) = event {
+                            Some(OperationCommand::ListMcpServers) => {
+                                if let Err(error) =
+                                    emit_mcp_servers_list(&mut client, event_tx).await
+                                {
+                                    // Still open the picker from config so a single
+                                    // broken/runtime-stuck MCP server cannot blank /mcps.
+                                    tracing::warn!(
+                                        error = %error,
+                                        "mcp/list failed; opening /mcps from config only"
+                                    );
+                                    let _ = event_tx.send(WorkerEvent::McpServersListed {
+                                        servers: Vec::new(),
+                                    });
+                                }
+                            }
+                            Some(OperationCommand::ListMcpTools { name }) => {
+                                if let Err(error) =
+                                    emit_mcp_tools_list(&mut client, name, event_tx).await
+                                {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: error.to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                }
+                            }
+                            Some(OperationCommand::ReferenceSearchRequested { query }) => {
+                                match emit_reference_search_update(
+                                    &mut client,
+                                    &session_cwd,
+                                    &mut active_reference_search_id,
+                                    query,
+                                    event_tx,
+                                )
+                                .await
+                                {
+                                    Ok(()) => {}
+                                    Err(error) => {
+                                        tracing::warn!(?error, "reference search request failed");
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::ReferenceSearchCancelled) => {
+                                if let Some(search_id) = active_reference_search_id.take() {
+                                    let _ = client
+                                        .reference_search_cancel(ReferenceSearchCancelParams { search_id })
+                                        .await;
+                                }
+                            }
+                            Some(OperationCommand::CompactSession) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                    continue;
+                                };
+                                if active_turn_id.is_some() {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: "cannot compact while a turn is in progress".to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                    continue;
+                                }
+                                match client
+                                    .session_compact(SessionCompactParams {
+                                        session_id: active_session_id,
+                                    })
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        handle_turn_start_result(result, &mut active_turn_id);
+                                        let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::ShowGoal) => {
+                                let goal = if let Some(active_session_id) = session_id {
+                                    match client
+                                        .goal_status(GoalStatusParams {
+                                            session_id: active_session_id,
+                                        })
+                                        .await
+                                    {
+                                        Ok(result) => result.goal,
+                                        Err(error) => {
+                                            let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                                message: error.to_string(),
+                                            });
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    None
+                                };
+                                let _ = event_tx.send(WorkerEvent::GoalStatusLoaded { goal });
+                            }
+                            Some(OperationCommand::EditGoal) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                        message: "No goal is currently set.".to_string(),
+                                    });
+                                    continue;
+                                };
+                                match client
+                                    .goal_status(GoalStatusParams {
+                                        session_id: active_session_id,
+                                    })
+                                    .await
+                                {
+                                    Ok(result) => match result.goal {
+                                        Some(goal) => {
+                                            let _ = event_tx.send(WorkerEvent::GoalEditLoaded { goal });
+                                        }
+                                        None => {
+                                            let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                                message: "No goal is currently set.".to_string(),
+                                            });
+                                        }
+                                    },
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                            message: error.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::SetGoalObjective { objective, mode }) => {
+                                let active_session_id = prepare_session_for_command(
+                                    &mut client,
+                                    &config.cwd,
+                                    &mut model,
+                                    &mut model_binding_id,
+                                    &mut reasoning_effort_selection,
+                                    &mut session_id,
+                                    &mut subscribed_session_id,
+                                    session_permission_preset
+                                        .unwrap_or(default_permission_preset),
+                                    initial_sandbox_profile.as_deref(),
+                                    event_tx,
+                                )
+                                .await?;
+
+                                if matches!(mode, GoalObjectiveMode::ConfirmIfExists) {
+                                    match client
+                                        .goal_status(GoalStatusParams {
+                                            session_id: active_session_id,
+                                        })
+                                        .await
+                                    {
+                                        Ok(result) => {
+                                            if let Some(current_goal) = result.goal {
+                                                let _ = event_tx.send(
+                                                    WorkerEvent::GoalReplaceConfirmationRequested {
+                                                        current_goal,
+                                                        objective,
+                                                    },
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                        Err(error) => {
+                                            let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                                message: error.to_string(),
+                                            });
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                if matches!(mode, GoalObjectiveMode::ReplaceExisting) {
+                                    match client
+                                        .goal_clear(GoalClearParams {
+                                            session_id: active_session_id,
+                                        })
+                                        .await
+                                    {
+                                        Ok(_) => {}
+                                        Err(error) => {
+                                            let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                                message: error.to_string(),
+                                            });
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                let (status, token_budget) = match mode {
+                                    GoalObjectiveMode::ConfirmIfExists | GoalObjectiveMode::ReplaceExisting => {
+                                        (Some(ThreadGoalStatus::Active), None)
+                                    }
+                                    GoalObjectiveMode::UpdateExisting {
+                                        status,
+                                        token_budget,
+                                    } => (Some(status), token_budget),
+                                };
+                                match client
+                                    .goal_set(GoalSetParams {
+                                        session_id: active_session_id,
+                                        objective: Some(objective),
+                                        status,
+                                        token_budget,
+                                    })
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        let _ = event_tx.send(WorkerEvent::GoalUpdated {
+                                            goal: result.goal,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                            message: error.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::SetGoalStatus { status }) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                        message: "no active session exists yet; set a goal first".to_string(),
+                                    });
+                                    continue;
+                                };
+                                if status == ThreadGoalStatus::BudgetLimited {
+                                    let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                        message: "budget-limited status is controlled by the system".to_string(),
+                                    });
+                                    continue;
+                                }
+                                match client
+                                    .goal_set(GoalSetParams {
+                                        session_id: active_session_id,
+                                        objective: None,
+                                        status: Some(status),
+                                        token_budget: None,
+                                    })
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        let _ = event_tx.send(WorkerEvent::GoalUpdated {
+                                            goal: result.goal,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                            message: error.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::ClearGoal) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::GoalCleared { cleared: false });
+                                    continue;
+                                };
+                                match client
+                                    .goal_clear(GoalClearParams {
+                                        session_id: active_session_id,
+                                    })
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        let _ = event_tx.send(WorkerEvent::GoalCleared {
+                                            cleared: result.cleared,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::GoalOperationFailed {
+                                            message: error.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::SetSkillEnabled { path, enabled }) => {
+                                match client
+                                    .skills_set_enabled(SkillSetEnabledParams { path, enabled })
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        emit_skills_list_result(result.skills, event_tx, false);
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::SetMcpServerEnabled { name, enabled }) => {
+                                match client
+                                    .mcp_set_enabled(
+                                        devo_protocol::canonical::rpc_admin::McpSetEnabledParams {
+                                            name: name.clone(),
+                                            enabled,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        let _ = event_tx.send(WorkerEvent::McpServerEnabled {
+                                            name,
+                                            enabled,
+                                            servers: result.servers,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::McpServerEnableFailed {
+                                            name,
+                                            message: error.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::StartNewSession) => {
+                                if let Some(active_session_id) = session_id {
+                                    match pause_active_goal_before_session_leave(
+                                        &mut client,
+                                        active_session_id,
+                                        active_turn_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {}
+                                        Err(error) => {
+                                            emit_goal_leave_failure(event_tx, error);
+                                            continue;
+                                        }
+                                    }
+                                }
+                                active_turn_id = None;
+                                session_id = None;
+                                subscribed_session_id = None;
+                                active_reference_search_id = None;
+                                session_cwd = config.cwd.clone();
+                                input_history_cursor = None;
+                                turn_count = 0;
+                                total_input_tokens = 0;
+                                total_output_tokens = 0;
+                                total_tokens = 0;
+                                total_cache_read_tokens = 0;
+                                last_query_total_tokens = 0;
+                                last_query_input_tokens = 0;
+                                has_authoritative_usage_totals = true;
+                                model = default_model.clone();
+                                model_binding_id = default_model_binding_id.clone();
+                                reasoning_effort_selection =
+                                    default_reasoning_effort_selection.clone();
+                                session_permission_preset = None;
+                                let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
+                                    cwd: session_cwd.clone(),
+                                    model: model.clone(),
+                                    model_binding_id: model_binding_id.clone(),
+                                    reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                    reasoning_effort: None,
+                                    permission_preset: default_permission_preset,
+                                    collaboration_mode: default_collaboration_mode,
+                                    active_agent_label: None,
+                                    last_query_total_tokens,
+                                    last_query_input_tokens,
+                                    total_cache_read_tokens,
+                                });
+                                let _ = emit_skills_list(&mut client, &session_cwd, event_tx, false).await;
+                            }
+                            Some(OperationCommand::SwitchSession(next_session_id)) => {
+                                if let Some(active_session_id) =
+                                    session_id.filter(|session_id| *session_id != next_session_id)
+                                {
+                                    match pause_active_goal_before_session_leave(
+                                        &mut client,
+                                        active_session_id,
+                                        active_turn_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {}
+                                        Err(error) => {
+                                            emit_goal_leave_failure(event_tx, error);
+                                            continue;
+                                        }
+                                    }
+                                }
+                                active_reference_search_id = None;
+                                match client
+                                    .session_resume(SessionResumeParams {
+                                        session_id: next_session_id,
+                                    })
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        active_turn_id = None;
+                                        session_id = Some(next_session_id);
+                                        subscribed_session_id = None;
+                                        child_agent_sessions.clear();
+                                        btw_agent_sessions.clear();
+                                        session_cwd = result.session.cwd.clone();
+                                        session_permission_preset = result.session.permission_preset;
+                                        input_history_cursor = None;
+                                        let active_agent_label =
+                                            active_agent_label_from_session(&result.session);
+                                        let (last_query_total, last_query_input) =
+                                            last_query_tokens_from_resume(&result.session);
+
+                                        let _ = event_tx.send(WorkerEvent::SessionSwitched {
+                                            session_id: next_session_id.to_string(),
+                                            cwd: result.session.cwd,
+                                            title: result.session.title,
+                                            model: result.session.model.clone(),
+                                            model_binding_id: result.session.model_binding_id.clone(),
+                                            reasoning_effort_selection: result.session.reasoning_effort_selection.clone(),
+                                            reasoning_effort: result.session.reasoning_effort,
+                                            active_agent_label,
+                                            total_input_tokens: result.session.total_input_tokens,
+                                            total_output_tokens: result.session.total_output_tokens,
+                                            total_tokens: result.session.total_tokens,
+                                            total_cache_read_tokens: result.session.total_cache_read_tokens,
+                                            last_query_total_tokens: last_query_total,
+                                            last_query_input_tokens: last_query_input,
+                                            prompt_token_estimate: result.session.prompt_token_estimate,
+                                            history_items: project_history_items(&result.history_items),
+                                            rich_history_items: result.history_items.clone(),
+                                            loaded_item_count: result.loaded_item_count,
+                                            pending_texts: result.pending_texts,
+                    collaboration_mode: result.session.collaboration_mode,
+                    permission_preset: result.session.permission_preset,
+                    effective_context_window: result.session.effective_context_window,
+        });
+                                        if let Some(occupancy) = result.session.last_context_occupancy.clone() {
+                                            let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                                        }
+                                        ensure_session_subscription(
+                                            &mut client,
+                                            next_session_id,
+                                            &mut subscribed_session_id,
+                                            event_tx,
+                                        )
+                                        .await;
+                                        model = result
+                                            .session
+                                            .model
+                                            .clone()
+                                            .unwrap_or(model);
+                                        model_binding_id = result.session.model_binding_id.clone();
+                                        reasoning_effort_selection = result.session.reasoning_effort_selection.clone();
+                                        total_input_tokens = result.session.total_input_tokens;
+                                        total_output_tokens = result.session.total_output_tokens;
+                                        total_tokens = result.session.total_tokens;
+                                        total_cache_read_tokens = result.session.total_cache_read_tokens;
+                                        let _ =
+                                            emit_skills_list(&mut client, &session_cwd, event_tx, false)
+                                                .await;
+                                        last_query_total_tokens = last_query_total;
+                                        last_query_input_tokens = last_query_input;
+                                        has_authoritative_usage_totals = true;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::RenameSession(title)) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                    continue;
+                                };
+                                match client
+                                    .session_title_update(SessionTitleUpdateParams {
+                                        session_id: active_session_id,
+                                        title: title.clone(),
+                                    })
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        let _ = event_tx.send(WorkerEvent::SessionRenamed {
+                                            session_id: active_session_id.to_string(),
+                                            title: result
+                                                .session
+                                                .title
+                                                .unwrap_or(title),
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::DeleteSession {
+                                session_id: requested_session_id,
+                            }) => {
+                                let target_session_id = requested_session_id.or(session_id);
+                                let Some(target_session_id) = target_session_id else {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                    continue;
+                                };
+                                let deleting_active = session_id == Some(target_session_id);
+                                if deleting_active {
+                                    match pause_active_goal_before_session_leave(
+                                        &mut client,
+                                        target_session_id,
+                                        active_turn_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {}
+                                        Err(error) => {
+                                            emit_goal_leave_failure(event_tx, error);
+                                            continue;
+                                        }
+                                    }
+                                }
+                                match client
+                                    .session_delete(AcpDeleteSessionParams {
+                                        session_id: target_session_id,
+                                        meta: None,
+                                    })
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let _ = event_tx.send(WorkerEvent::SessionDeleted {
+                                            session_id: target_session_id.to_string(),
+                                        });
+                                        if deleting_active {
+                                            active_turn_id = None;
+                                            session_id = None;
+                                            subscribed_session_id = None;
+                                            active_reference_search_id = None;
+                                            session_cwd = config.cwd.clone();
+                                            input_history_cursor = None;
+                                            turn_count = 0;
+                                            total_input_tokens = 0;
+                                            total_output_tokens = 0;
+                                            total_tokens = 0;
+                                            total_cache_read_tokens = 0;
+                                            last_query_total_tokens = 0;
+                                            last_query_input_tokens = 0;
+                                            has_authoritative_usage_totals = true;
+                                            model = default_model.clone();
+                                            model_binding_id = default_model_binding_id.clone();
+                                            reasoning_effort_selection =
+                                                default_reasoning_effort_selection.clone();
+                                            session_permission_preset = None;
+                                            let _ = event_tx.send(WorkerEvent::NewSessionPrepared {
+                                                cwd: session_cwd.clone(),
+                                                model: model.clone(),
+                                                model_binding_id: model_binding_id.clone(),
+                                                reasoning_effort_selection: reasoning_effort_selection.clone(),
+                                                reasoning_effort: None,
+                                                permission_preset: default_permission_preset,
+                                                collaboration_mode: default_collaboration_mode,
+                                                active_agent_label: None,
+                                                last_query_total_tokens,
+                                                last_query_input_tokens,
+                                                total_cache_read_tokens,
+                                            });
+                                            let _ =
+                                                emit_skills_list(&mut client, &session_cwd, event_tx, false)
+                                                    .await;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::RollbackUserTurn {
+                                user_turn_index,
+                                mode,
+                            }) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                    continue;
+                                };
+                                if let Err(error) = pause_active_goal_before_session_leave(
+                                    &mut client,
+                                    active_session_id,
+                                    active_turn_id,
+                                )
+                                .await
+                                {
+                                    emit_goal_leave_failure(event_tx, error);
+                                    continue;
+                                }
+                                match client
+                                    .session_rollback(SessionRollbackParams {
+                                        session_id: active_session_id,
+                                        user_turn_index,
+                                        mode,
+                                    })
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        active_turn_id = None;
+                                        session_cwd = result.session.cwd.clone();
+                                        input_history_cursor = None;
+                                        let active_agent_label =
+                                            active_agent_label_from_session(&result.session);
+                                        let (last_query_total, last_query_input) =
+                                            last_query_tokens_from_resume(&result.session);
+                                        let _ = event_tx.send(WorkerEvent::SessionSwitched {
+                                            session_id: active_session_id.to_string(),
+                                            cwd: result.session.cwd,
+                                            title: result.session.title,
+                                            model: result.session.model.clone(),
+                                            model_binding_id: result.session.model_binding_id.clone(),
+                                            reasoning_effort_selection: result.session.reasoning_effort_selection.clone(),
+                                            reasoning_effort: result.session.reasoning_effort,
+                                            active_agent_label,
+                                            total_input_tokens: result.session.total_input_tokens,
+                                            total_output_tokens: result.session.total_output_tokens,
+                                            total_tokens: result.session.total_tokens,
+                                            total_cache_read_tokens: result.session.total_cache_read_tokens,
+                                            last_query_total_tokens: last_query_total,
+                                            last_query_input_tokens: last_query_input,
+                                            prompt_token_estimate: result.session.prompt_token_estimate,
+                                            history_items: project_history_items(&result.history_items),
+                                            rich_history_items: result.history_items.clone(),
+                                            loaded_item_count: result.loaded_item_count,
+                                            pending_texts: result.pending_texts,
+                    collaboration_mode: result.session.collaboration_mode,
+                    permission_preset: result.session.permission_preset,
+                    effective_context_window: result.session.effective_context_window,
+        });
+                                        if let Some(occupancy) = result.session.last_context_occupancy.clone() {
+                                            let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                                        }
+                                        ensure_session_subscription(
+                                            &mut client,
+                                            active_session_id,
+                                            &mut subscribed_session_id,
+                                            event_tx,
+                                        )
+                                        .await;
+                                        model = result.session.model.clone().unwrap_or(model);
+                                        model_binding_id = result.session.model_binding_id.clone();
+                                        reasoning_effort_selection = result.session.reasoning_effort_selection.clone();
+                                        total_input_tokens = result.session.total_input_tokens;
+                                        total_output_tokens = result.session.total_output_tokens;
+                                        total_tokens = result.session.total_tokens;
+                                        total_cache_read_tokens = result.session.total_cache_read_tokens;
+                                        last_query_total_tokens = last_query_total;
+                                        last_query_input_tokens = last_query_input;
+                                        has_authoritative_usage_totals = true;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::ForkAtUserTurn(user_turn_index)) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                    continue;
+                                };
+                                match pause_active_goal_before_session_leave(
+                                    &mut client,
+                                    active_session_id,
+                                    active_turn_id,
+                                )
+                                .await
+                                {
+                                    Ok(()) => {}
+                                    Err(error) => {
+                                        emit_goal_leave_failure(event_tx, error);
+                                        continue;
+                                    }
+                                }
+                                match client
+                                    .session_fork(devo_server::SessionForkParams {
+                                        session_id: active_session_id,
+                                        title: None,
+                                        cwd: None,
+                                        user_turn_index: Some(user_turn_index),
+                                    })
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        let next_session_id = result.session.session_id;
+                                        match client
+                                            .session_resume(SessionResumeParams {
+                                                session_id: next_session_id,
+                                            })
+                                            .await
+                                        {
+                                            Ok(resumed) => {
+                                                active_turn_id = None;
+                                                session_id = Some(next_session_id);
+                                                subscribed_session_id = None;
+                                                child_agent_sessions.clear();
+                                                btw_agent_sessions.clear();
+                                                session_cwd = resumed.session.cwd.clone();
+                                                input_history_cursor = None;
+                                                let active_agent_label =
+                                                    active_agent_label_from_session(&resumed.session);
+                                                let (last_query_total, last_query_input) =
+                                                    last_query_tokens_from_resume(&resumed.session);
+                                                let _ = event_tx.send(WorkerEvent::SessionSwitched {
+                                                    session_id: next_session_id.to_string(),
+                                                    cwd: resumed.session.cwd,
+                                                    title: resumed.session.title,
+                                                    model: resumed.session.model.clone(),
+                                                    model_binding_id: resumed.session.model_binding_id.clone(),
+                                                    reasoning_effort_selection: resumed.session.reasoning_effort_selection.clone(),
+                                                    reasoning_effort: resumed.session.reasoning_effort,
+                                                    active_agent_label,
+                                                    total_input_tokens: resumed.session.total_input_tokens,
+                                                    total_output_tokens: resumed.session.total_output_tokens,
+                                                    total_tokens: resumed.session.total_tokens,
+                                                    total_cache_read_tokens: resumed.session.total_cache_read_tokens,
+                                                    last_query_total_tokens: last_query_total,
+                                                    last_query_input_tokens: last_query_input,
+                                                    prompt_token_estimate: resumed.session.prompt_token_estimate,
+                                                    history_items: project_history_items(&resumed.history_items),
+                                                    rich_history_items: resumed.history_items.clone(),
+                                                    loaded_item_count: resumed.loaded_item_count,
+                                                    pending_texts: resumed.pending_texts,
+                                                    collaboration_mode: resumed.session.collaboration_mode,
+                                                    permission_preset: resumed.session.permission_preset,
+                                                    effective_context_window: resumed.session.effective_context_window,
+        });
+                                                if let Some(occupancy) = resumed.session.last_context_occupancy.clone() {
+                                                    let _ = event_tx.send(WorkerEvent::ContextUsageUpdated { occupancy });
+                                                }
+                                                ensure_session_subscription(
+                                                    &mut client,
+                                                    next_session_id,
+                                                    &mut subscribed_session_id,
+                                                    event_tx,
+                                                )
+                                                .await;
+                                                model = resumed.session.model.clone().unwrap_or(model);
+                                                model_binding_id = resumed.session.model_binding_id.clone();
+                                                reasoning_effort_selection = resumed.session.reasoning_effort_selection.clone();
+                                                total_input_tokens = resumed.session.total_input_tokens;
+                                                total_output_tokens = resumed.session.total_output_tokens;
+                                                total_tokens = resumed.session.total_tokens;
+                                                total_cache_read_tokens = resumed.session.total_cache_read_tokens;
+                                                last_query_total_tokens = last_query_total;
+                                                last_query_input_tokens = last_query_input;
+                                                has_authoritative_usage_totals = true;
+                                            }
+                                            Err(error) => {
+                                                let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                                    message: error.to_string(),
+                                                    hint: None,
+                                                    turn_count,
+                                                    total_input_tokens,
+                                                    total_output_tokens,
+                                                    total_tokens,
+                                                    total_cache_read_tokens,
+                                                    prompt_token_estimate: total_input_tokens,
+                                                    last_query_input_tokens,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::InterruptTurn) => {
+                                if let (Some(turn_id), Some(active_session_id)) =
+                                    (active_turn_id, session_id)
+                                    && let Err(error) = client
+                                        .turn_interrupt(TurnInterruptParams {
+                                            session_id: active_session_id,
+                                            turn_id,
+                                            reason: Some("user requested interrupt".to_string()),
+                                        })
+                                        .await
+                                {
+                                    let _ = event_tx.send(WorkerEvent::InterruptFailed {
+                                        message: error.to_string(),
+                                    });
+                                }
+                            }
+                            Some(OperationCommand::RunBtwQuestion { question }) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::BtwFailed {
+                                        message: "No active session exists yet; send a message first, then try /btw.".to_string(),
+                                    });
+                                    continue;
+                                };
+                                match client
+                                    .agent_spawn(btw_spawn_params(active_session_id, &question))
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        btw_agent_sessions.insert(
+                                            result.child_session_id,
+                                            BtwQuestionState {
+                                                parent_session_id: active_session_id,
+                                                question: question.clone(),
+                                                latest_answer: None,
+                                            },
+                                        );
+                                        let _ = event_tx.send(WorkerEvent::BtwStarted { question });
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::BtwFailed {
+                                            message: error.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::QueuePush { input }) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: "no active session for queue push".to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                let push_result = client
+                                    .session_queue_push(
+                                        devo_protocol::canonical::rpc_turn::SessionQueuePushParams {
+                                            session_id: canonical_session.clone(),
+                                            input: crate::queue_ops::user_input_from_input_items(
+                                                &input,
+                                            ),
+                                            client_user_message_id: None,
+                                            idempotency_key: format!(
+                                                "tui-queue-{}",
+                                                SessionId::new()
+                                            ),
+                                        },
+                                    )
+                                    .await;
+                                match push_result {
+                                    Ok(
+                                        devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Queued {
+                                            entry,
+                                        },
+                                    ) => {
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Added,
+                                            entry.queue_item_id,
+                                            /*started_turn_id*/ None,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Ok(
+                                        devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Started {
+                                            turn,
+                                        },
+                                    ) => {
+                                        let started_turn_id =
+                                            TurnId::try_from(turn.id.as_str()).ok();
+                                        if let Some(turn_id) = started_turn_id {
+                                            active_turn_id = Some(turn_id);
+                                        }
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Drained,
+                                            devo_protocol::canonical::ids::QueueItemId::from_string(
+                                                String::new(),
+                                            ),
+                                            started_turn_id,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::QueueSteer {
+                                queue_item_id,
+                                expected_turn_id,
+                            }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                match client
+                                    .session_queue_steer(
+                                        devo_protocol::canonical::rpc_turn::SessionQueueSteerParams {
+                                            session_id: canonical_session.clone(),
+                                            queue_item_id:
+                                                devo_protocol::canonical::ids::QueueItemId::from_string(
+                                                    queue_item_id,
+                                                ),
+                                            expected_turn_id:
+                                                devo_protocol::canonical::ids::TurnId::from_string(
+                                                    expected_turn_id.to_string(),
+                                                ),
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let _ = event_tx.send(WorkerEvent::SteerAccepted {
+                                            turn_id: expected_turn_id,
+                                        });
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Promoted,
+                                            devo_protocol::canonical::ids::QueueItemId::from_string(
+                                                String::new(),
+                                            ),
+                                            Some(expected_turn_id),
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::QueueRemove { queue_item_id }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                let removed_id =
+                                    devo_protocol::canonical::ids::QueueItemId::from_string(
+                                        queue_item_id.clone(),
+                                    );
+                                match client
+                                    .session_queue_remove(
+                                        devo_protocol::canonical::rpc_turn::SessionQueueRemoveParams {
+                                            session_id: canonical_session.clone(),
+                                            queue_item_id: removed_id.clone(),
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Removed,
+                                            removed_id,
+                                            /*started_turn_id*/ None,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::QueueUpdate {
+                                queue_item_id,
+                                input,
+                            }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                let canonical_session =
+                                    canonical_session_id(active_session_id);
+                                let updated_id =
+                                    devo_protocol::canonical::ids::QueueItemId::from_string(
+                                        queue_item_id.clone(),
+                                    );
+                                match client
+                                    .session_queue_update(
+                                        devo_protocol::canonical::rpc_turn::SessionQueueUpdateParams {
+                                            session_id: canonical_session.clone(),
+                                            queue_item_id: updated_id.clone(),
+                                            input: Some(
+                                                crate::queue_ops::user_input_from_input_items(
+                                                    &input,
+                                                ),
+                                            ),
+                                            position: None,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &canonical_session,
+                                            devo_protocol::canonical::queue::QueueChange::Updated,
+                                            updated_id,
+                                            /*started_turn_id*/ None,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::ApprovalRespond {
+                                session_id,
+                                turn_id,
+                                approval_id,
+                                decision,
+                                scope,
+                            }) => {
+                                if let Err(error) = client
+                                    .approval_respond(ApprovalResponseParams {
+                                        session_id,
+                                        turn_id,
+                                        approval_id: approval_id.into(),
+                                        decision,
+                                        scope,
+                                    })
+                                    .await
+                                {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: error.to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                }
+                            }
+                            Some(OperationCommand::RequestUserInputRespond {
+                                session_id,
+                                turn_id,
+                                request_id,
+                                response,
+                            }) => {
+                                if let Err(error) = client
+                                    .request_user_input_respond(RequestUserInputRespondParams {
+                                        session_id,
+                                        turn_id,
+                                        request_id: request_id.into(),
+                                        response,
+                                    })
+                                    .await
+                                {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: error.to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                }
+                            }
+                            Some(OperationCommand::UpdatePermissions { preset, persist_scope }) => {
+                                match persist_scope {
+                                    crate::app_command::PersistScope::Default => {
+                                        default_permission_preset = preset;
+                                    }
+                                    crate::app_command::PersistScope::Session => {
+                                        session_permission_preset = Some(preset);
+                                    }
+                                }
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                if let Err(error) =
+                                    apply_session_permissions(&mut client, active_session_id, preset).await
+                                {
+                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                        message: error.to_string(),
+                                        hint: None,
+                                        turn_count,
+                                        total_input_tokens,
+                                        total_output_tokens,
+                                        total_tokens,
+                                        total_cache_read_tokens,
+                                        prompt_token_estimate: total_input_tokens,
+                                        last_query_input_tokens,
+                                    });
+                                }
+                            }
+                            Some(OperationCommand::UpdateEffectiveContextWindow {
+                                effective_context_window,
+                            }) => {
+                                let Some(active_session_id) = session_id else {
+                                    let _ = event_tx.send(
+                                        WorkerEvent::EffectiveContextWindowUpdated {
+                                            effective_context_window,
+                                        },
+                                    );
+                                    continue;
+                                };
+                                match client
+                                    .session_compaction_update(
+                                        devo_server::SessionCompactionUpdateParams {
+                                            session_id: active_session_id,
+                                            effective_context_window,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        let _ = event_tx.send(WorkerEvent::EffectiveContextWindowUpdated {
+                                            effective_context_window: result.effective_context_window,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = event_tx.send(WorkerEvent::InterruptFailed {
+                                            message: format!(
+                                                "Failed to update compaction threshold: {error}"
+                                            ),
+                                        });
+                                    }
+                                }
+                            }
+                            Some(OperationCommand::UpdateSandboxProfile { profile }) => {
+                                let Some(active_session_id) = session_id else {
+                                    continue;
+                                };
+                                if let Err(error) = client
+                                    .session_sandbox_profile_update(
+                                        devo_server::SessionSandboxProfileUpdateParams {
+                                            session_id: active_session_id,
+                                            profile,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    let _ = event_tx.send(WorkerEvent::InterruptFailed {
+                                        message: format!("Failed to update sandbox profile: {error}"),
+                                    });
+                                }
+                            }
+                            Some(OperationCommand::BrowseInputHistory(direction)) => {
+                                let text = if let Some(active_session_id) = session_id {
+                                    match client
+                                        .session_resume(SessionResumeParams {
+                                            session_id: active_session_id,
+                                        })
+                                        .await
+                                    {
+                                        Ok(result) => {
+                                            let entries = result
+                                                .history_items
+                                                .iter()
+                                                .filter(|item| item.kind == SessionHistoryItemKind::User)
+                                                .map(|item| item.body.clone())
+                                                .filter(|body| !body.trim().is_empty())
+                                                .collect::<Vec<_>>();
+                                            let total = entries.len();
+                                            match direction {
+                                                InputHistoryDirection::Previous => {
+                                                    if total == 0 {
+                                                        None
+                                                    } else {
+                                                        let next_index = match input_history_cursor {
+                                                            None => total.saturating_sub(1),
+                                                            Some(0) => 0,
+                                                            Some(index) => index.saturating_sub(1),
+                                                        };
+                                                        input_history_cursor = Some(next_index);
+                                                        entries.get(next_index).cloned()
+                                                    }
+                                                }
+                                                InputHistoryDirection::Next => match input_history_cursor {
+                                                    None => None,
+                                                    Some(index) if index + 1 >= total => {
+                                                        input_history_cursor = None;
+                                                        None
+                                                    }
+                                                    Some(index) => {
+                                                        let next_index = index + 1;
+                                                        input_history_cursor = Some(next_index);
+                                                        entries.get(next_index).cloned()
+                                                    }
+                                                },
+                                            }
+                                        }
+                                        Err(error) => {
+                                            let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                                message: error.to_string(),
+                                                hint: None,
+                                                turn_count,
+                                                total_input_tokens,
+                                                total_output_tokens,
+                                                total_tokens,
+                                                total_cache_read_tokens,
+                                                prompt_token_estimate: total_input_tokens,
+                                                last_query_input_tokens,
+                                            });
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    None
+                                };
+                                let _ = event_tx.send(WorkerEvent::InputHistoryLoaded { direction, text });
+                            }
+                            Some(OperationCommand::Shutdown) | None => {
+                                tracing::info!("query worker received shutdown command");
+                                break;
+                            }
+                        }
+                    }
+                    notification = client.recv_notification() => {
+                        match notification {
+                            Some(notification) => {
+                                let method = notification.method;
+                                let params = notification.params;
+                                let normalized_event = client_event_from_notification(
+                                    &devo_client::ServerNotificationMessage {
+                                        method: method.clone(),
+                                        params: params.clone(),
+                                    },
+                                )
+                                .ok()
+                                .flatten();
+                                if let Some(ClientEvent::TurnUsageUpdated(payload)) = normalized_event {
                                     saw_usage_update_for_turn = true;
                                     total_input_tokens = payload.total_input_tokens;
                                     total_output_tokens = payload.total_output_tokens;
@@ -2630,186 +2858,554 @@ async fn run_worker_inner(
                                         last_query_total_tokens: payload.usage.display_total_tokens(),
                                         last_query_input_tokens: payload.last_query_input_tokens,
                                     });
+                                    continue;
                                 }
-                            }
-                            "turn/failed" => {
-                                if let ServerEvent::TurnFailed(TurnFailedPayload { turn, error, .. }) = event {
-                                    active_turn_id = None;
-                                    let message = error
-                                        .map(|error| error.message)
-                                        .or_else(|| latest_completed_agent_message.take())
-                                        .unwrap_or_else(|| format!("turn failed with status {:?}", turn.status));
-                                    if let Some(usage) = &turn.usage {
-                                        if !saw_usage_update_for_turn {
-                                            last_query_input_tokens = usage.input_tokens as usize;
-                                            last_query_total_tokens = usage.display_total_tokens();
+                                if method == ACP_SESSION_UPDATE_METHOD {
+                                    let Some(notification) = parse_acp_session_notification(&params) else {
+                                        continue;
+                                    };
+                                    if let Some(metadata) =
+                                        session_metadata_from_acp_update(&notification.update)
+                                        && let Some(agent) = subagent_events::agent_from_session(&metadata)
+                                        && Some(agent.parent_session_id) == session_id
+                                        && child_agent_sessions.insert(agent.session_id)
+                                    {
+                                        let _ = event_tx.send(WorkerEvent::SubagentDiscovered { agent });
+                                    }
+
+                                    let notification_session_id = notification.session_id;
+                                    if Some(notification_session_id) == session_id {
+                                        if let Some(parent_session_id) = session_id {
+                                            maybe_discover_spawned_subagent_from_acp_update(
+                                                &notification.update,
+                                                &mut client,
+                                                parent_session_id,
+                                                &mut child_agent_sessions,
+                                                event_tx,
+                                            )
+                                            .await;
                                         }
-                                        if should_apply_terminal_turn_usage_fallback(
-                                            saw_usage_update_for_turn,
-                                            has_authoritative_usage_totals,
-                                        ) {
-                                            total_input_tokens += usage.input_tokens as usize;
-                                            total_output_tokens += usage.output_tokens as usize;
-                                            total_tokens += usage.display_total_tokens();
-                                            total_cache_read_tokens += usage
-                                                .cache_read_input_tokens
-                                                .unwrap_or(0) as usize;
+                                        for event in worker_events_from_acp_session_notification(notification) {
+                                            let _ = event_tx.send(event);
+                                        }
+                                        continue;
+                                    }
+
+                                    if child_agent_sessions.contains(&notification_session_id) {
+                                        for event in subagent_monitor_events_from_acp_session_notification(notification) {
+                                            let _ = event_tx.send(event);
                                         }
                                     }
-                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                        message,
-                                        turn_count,
-                                        total_input_tokens,
-                                        total_output_tokens,
-                                        total_tokens,
-                                        total_cache_read_tokens,
-                                        prompt_token_estimate: turn
-                                            .usage
-                                            .as_ref()
-                                            .map(|usage| usage.input_tokens as usize)
-                                            .unwrap_or(total_input_tokens),
-                                        last_query_input_tokens: turn
-                                            .usage
-                                            .as_ref()
-                                            .map(|usage| usage.input_tokens as usize)
-                                            .unwrap_or(last_query_input_tokens),
-                                    });
+                                    continue;
                                 }
-                            }
-                            "turn/plan/updated" => {
-                                if let ServerEvent::TurnPlanUpdated(payload) = event {
-                                    let steps = payload
-                                        .plan
-                                        .into_iter()
-                                        .filter_map(|step| {
-                                            Some(PlanStep {
-                                                text: step.step,
-                                                status: parse_plan_step_status(&step.status)?,
-                                            })
-                                        })
-                                        .collect::<Vec<_>>();
-                                    let _ = event_tx.send(WorkerEvent::PlanUpdated {
-                                        explanation: payload
-                                            .explanation
-                                            .filter(|text| !text.trim().is_empty()),
-                                        steps,
-                                    });
-                                }
-                            }
-                            "item/tool/requestUserInput" => {
-                                if let ServerEvent::RequestUserInput(payload) = event
-                                    && let Some(turn_id) = payload.request.turn_id
+                                if method == "queue/updated"
+                                    && let Ok(queue_event) =
+                                        parse_canonical_queue_updated(&params)
                                 {
-                                    let _ = event_tx.send(WorkerEvent::RequestUserInput {
-                                        session_id: payload.request.session_id,
-                                        turn_id,
-                                        request_id: payload.request.request_id.to_string(),
-                                        questions: payload.questions,
-                                    });
+                                    let _ = event_tx.send(queue_event);
+                                    continue;
                                 }
-                            }
-                            "inputQueue/updated" => {
-                                if let ServerEvent::InputQueueUpdated(payload) = event {
-                                    let _ = event_tx.send(WorkerEvent::InputQueueUpdated {
-                                        pending_count: payload.pending_count,
-                                        pending_texts: payload.pending_texts,
-                                    });
+                                let event: ServerEvent = serde_json::from_value(params)
+                                    .with_context(|| format!("failed to decode server event for method {method}"))?;
+                                if handle_btw_agent_event(
+                                    &method,
+                                    &event,
+                                    &mut client,
+                                    event_tx,
+                                    &mut btw_agent_sessions,
+                                )
+                                .await
+                                {
+                                    continue;
                                 }
-                            }
-                            "search/updated" => {
-                                if let ServerEvent::ReferenceSearchUpdated(snapshot) = event {
-                                    let _ =
-                                        event_tx.send(WorkerEvent::ReferenceSearchUpdated {
-                                            snapshot,
-                                        });
-                                }
-                            }
-                            "search/completed" => {
-                                if let ServerEvent::ReferenceSearchCompleted(snapshot) = event {
-                                    let _ =
-                                        event_tx.send(WorkerEvent::ReferenceSearchUpdated {
-                                            snapshot,
-                                        });
-                                }
-                            }
-                            "search/failed" => {
-                                if let ServerEvent::ReferenceSearchFailed(payload) = event {
-                                    tracing::warn!(
-                                        search_id = %payload.search_id,
-                                        query = %payload.query,
-                                        message = %payload.message,
-                                        "reference search failed"
-                                    );
-                                    // End the composer loading state instead of waiting forever
-                                    // for a completion notification that will never arrive.
-                                    let snapshot = ReferenceSearchSnapshot {
-                                        search_id: payload.search_id,
-                                        query: payload.query,
-                                        results: Vec::new(),
-                                        total_file_match_count: 0,
-                                        scanned_file_count: 0,
-                                        file_search_complete: true,
-                                    };
-                                    let _ = event_tx.send(WorkerEvent::ReferenceSearchUpdated {
-                                        snapshot,
-                                    });
-                                }
-                            }
-                            "session/title/updated" => {
-                                if let ServerEvent::SessionTitleUpdated(payload) = event
-                                    && let Some(title) = payload.session.title {
-                                        let _ = event_tx.send(WorkerEvent::SessionTitleUpdated {
-                                            session_id: payload.session.session_id.to_string(),
-                                            title,
-                                        });
+                                if let Some(event_session_id) = event.session_id()
+                                    && Some(event_session_id) != session_id
+                                {
+                                    if child_agent_sessions.contains(&event_session_id) {
+                                        for subagent_event in
+                                            subagent_monitor_events_from_unwrapped_server_notification(
+                                                method.as_str(),
+                                                event.clone(),
+                                            )
+                                        {
+                                            let _ = event_tx.send(subagent_event);
+                                        }
                                     }
-                            }
-                            "session/compaction/started" => {
-                                if let ServerEvent::SessionCompactionStarted(_) = event {
-                                    let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
+                                    continue;
+                                }
+                                match method.as_str() {
+                                    "turn/started" => {
+                                        if let ServerEvent::TurnStarted(payload) = event {
+                                            active_turn_id = Some(payload.turn.turn_id);
+                                            saw_usage_update_for_turn = false;
+                                            model = payload.turn.model.clone();
+                                            model_binding_id = payload.turn.model_binding_id.clone();
+                                            reasoning_effort_selection = payload.turn.reasoning_effort_selection.clone();
+                                            let _ = event_tx.send(WorkerEvent::TurnStarted {
+                                                model: payload.turn.model,
+                                                model_binding_id: payload.turn.model_binding_id,
+                                                reasoning_effort_selection: payload.turn.reasoning_effort_selection,
+                                                reasoning_effort: payload.turn.reasoning_effort,
+                                                turn_id: payload.turn.turn_id,
+                                            });
+                                        }
+                                        latest_completed_agent_message = None;
+                                    }
+                                    "item/started" => {
+                                        if let ServerEvent::ItemStarted(payload) = event {
+                                            handle_started_item(payload, event_tx);
+                                        }
+                                    }
+                                    "item/agentMessage/delta" => {
+                                        if let ServerEvent::ItemDelta { payload, .. } = event {
+                                            if let Some(item_id) = payload.context.item_id {
+                                                if let Some(assistant_token_text) =
+                                                    assistant_token_log_preview(&payload.delta)
+                                                {
+                                                    tracing::debug!(
+                                                        stream_elapsed_ms = stream_trace_elapsed_ms(),
+                                                        item_id = %item_id,
+                                                        event_seq = payload.context.seq,
+                                                        delta_len = payload.delta.len(),
+                                                        stream_index = ?payload.stream_index,
+                                                        channel = ?payload.channel,
+                                                        assistant_token_text = %assistant_token_text,
+                                                        "server assistant delta"
+                                                    );
+                                                } else {
+                                                    tracing::debug!(
+                                                        stream_elapsed_ms = stream_trace_elapsed_ms(),
+                                                        item_id = %item_id,
+                                                        event_seq = payload.context.seq,
+                                                        delta_len = payload.delta.len(),
+                                                        stream_index = ?payload.stream_index,
+                                                        channel = ?payload.channel,
+                                                        "server assistant delta"
+                                                    );
+                                                }
+                                                let _ = event_tx.send(WorkerEvent::TextItemDelta {
+                                                    item_id,
+                                                    kind: TextItemKind::Assistant,
+                                                    delta: payload.delta,
+                                                });
+                                            } else {
+                                                let _ = event_tx.send(WorkerEvent::TextDelta(payload.delta));
+                                            }
+                                        }
+                                    }
+                                    "item/plan/delta" => {
+                                        if let ServerEvent::ItemDelta { payload, .. } = event
+                                            && let Some(item_id) = payload.context.item_id
+                                        {
+                                            let _ = event_tx.send(WorkerEvent::ProposedPlanDelta {
+                                                item_id,
+                                                delta: payload.delta,
+                                            });
+                                        }
+                                    }
+                                    "item/commandExecution/outputDelta" => {
+                                        if let ServerEvent::ItemDelta { payload, .. } = event {
+                                            let delta_str = &payload.delta;
+                                            if let Ok(val) =
+                                                serde_json::from_str::<serde_json::Value>(delta_str)
+                                            {
+                                                let tool_use_id = val
+                                                    .get("tool_use_id")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                let text =
+                                                    val.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                                if !tool_use_id.is_empty() {
+                                                    let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
+                                                        tool_use_id: tool_use_id.to_string(),
+                                                        delta: text.to_string(),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "command/exec/outputDelta" => {
+                                        if let ServerEvent::CommandExecOutputDelta(payload) = event {
+                                            let CommandExecOutputDeltaPayload {
+                                                process_id,
+                                                delta_base64,
+                                                ..
+                                            } = payload;
+                                            match BASE64_STANDARD.decode(delta_base64) {
+                                                Ok(bytes) => {
+                                                    let delta =
+                                                        String::from_utf8_lossy(&bytes).to_string();
+                                                    let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
+                                                        tool_use_id: process_id,
+                                                        delta,
+                                                    });
+                                                }
+                                                Err(error) => {
+                                                    tracing::warn!(
+                                                        %error,
+                                                        "failed to decode command/exec output delta"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "command/exec/exited" => {
+                                        if let ServerEvent::CommandExecExited(payload) = event {
+                                            let CommandExecExitedPayload {
+                                                process_id,
+                                                exit_code,
+                                                ..
+                                            } = payload;
+                                            if active_shell_process_ids.remove(&process_id) {
+                                                let _ = event_tx.send(WorkerEvent::ToolResult {
+                                                    tool_use_id: process_id,
+                                                    title: "Shell".to_string(),
+                                                    preview: String::new(),
+                                                    is_error: false,
+                                                    truncated: false,
+                                                });
+                                                let _ = event_tx.send(WorkerEvent::ShellCommandFinished {
+                                                    exit_code,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
+                                        if let ServerEvent::ItemDelta { payload, .. } = event {
+                                            if let Some(item_id) = payload.context.item_id {
+                                                tracing::debug!(
+                                                    item_id = %item_id,
+                                                    delta_len = payload.delta.len(),
+                                                    stream_index = ?payload.stream_index,
+                                                    channel = ?payload.channel,
+                                                    "server reasoning delta"
+                                                );
+                                                let _ = event_tx.send(WorkerEvent::TextItemDelta {
+                                                    item_id,
+                                                    kind: TextItemKind::Reasoning,
+                                                    delta: payload.delta,
+                                                });
+                                            } else {
+                                                let _ = event_tx.send(WorkerEvent::ReasoningDelta(payload.delta));
+                                            }
+                                        }
+                                    }
+                                    "item/completed" => {
+                                        if let ServerEvent::ItemCompleted(payload) = event {
+                                            tracing::debug!(
+                                                item_id = %payload.item.item_id,
+                                                item_kind = ?payload.item.item_kind,
+                                                "server item completed"
+                                            );
+                                            if let Some(text) = completed_agent_message_text(&payload) {
+                                                latest_completed_agent_message = Some(text);
+                                            }
+                                            // Completed tool items are mapped into compact UI events
+                                            // with pre-rendered summaries and previews.
+                                            handle_completed_item(payload, event_tx);
+                                        }
+                                    }
+                                    "turn/completed" => {
+                                        if let ServerEvent::TurnCompleted(payload) = event {
+                                            tracing::debug!(
+                                                turn_id = %payload.turn.turn_id,
+                                                status = ?payload.turn.status,
+                                                "server turn completed"
+                                            );
+                                            active_turn_id = None;
+                                            let completed = payload.turn.status == TurnStatus::Completed
+                                                || payload.turn.status == TurnStatus::Interrupted;
+                                            if completed {
+                                                turn_count += 1;
+                                                if let Some(usage) = &payload.turn.usage {
+                                                    if !saw_usage_update_for_turn {
+                                                        last_query_input_tokens = usage.input_tokens as usize;
+                                                        last_query_total_tokens = usage.display_total_tokens();
+                                                    }
+                                                    if should_apply_terminal_turn_usage_fallback(
+                                                        saw_usage_update_for_turn,
+                                                        has_authoritative_usage_totals,
+                                                    ) {
+                                                        total_input_tokens += usage.input_tokens as usize;
+                                                        total_output_tokens += usage.output_tokens as usize;
+                                                        total_tokens += usage.display_total_tokens();
+                                                        total_cache_read_tokens += usage
+                                                            .cache_read_input_tokens
+                                                            .unwrap_or(0) as usize;
+                                                    }
+                                                }
+                                            }
+                                            let _ = event_tx.send(WorkerEvent::TurnFinished {
+                                                stop_reason: format!("{:?}", payload.turn.status),
+                                                turn_count,
+                                                total_input_tokens,
+                                                total_output_tokens,
+                                                total_tokens,
+                                                total_cache_read_tokens,
+                                                last_query_total_tokens,
+                                                last_query_input_tokens,
+                                                prompt_token_estimate: payload
+                                                    .turn
+                                                    .usage
+                                                    .as_ref()
+                                                    .map(|usage| usage.input_tokens as usize)
+                                                    .unwrap_or(total_input_tokens),
+                                            });
+                                            latest_completed_agent_message = None;
+                                        }
+                                    }
+                                    "turn/provider_retry_status" => {
+                                        if let ServerEvent::TurnProviderRetryStatus(payload) = event {
+                                            let _ = event_tx.send(WorkerEvent::ProviderRetryStatus {
+                                                turn_id: payload.turn_id,
+                                                attempt: payload.attempt,
+                                                backoff_ms: payload.backoff_ms,
+                                                provider: payload.provider,
+                                                model: payload.model,
+                                                phase: payload.phase,
+                                                message: payload.message,
+                                            });
+                                        }
+                                    }
+                                    "turn/usage/updated" => {
+                                        if let ServerEvent::TurnUsageUpdated(payload) = event {
+                                            saw_usage_update_for_turn = true;
+                                            total_input_tokens = payload.total_input_tokens;
+                                            total_output_tokens = payload.total_output_tokens;
+                                            total_tokens = payload.total_tokens;
+                                            total_cache_read_tokens = payload.total_cache_read_tokens;
+                                            last_query_total_tokens = payload.usage.display_total_tokens();
+                                            last_query_input_tokens = payload.last_query_input_tokens;
+                                            has_authoritative_usage_totals = true;
+                                            let _ = event_tx.send(WorkerEvent::UsageUpdated {
+                                                total_input_tokens: payload.total_input_tokens,
+                                                total_output_tokens: payload.total_output_tokens,
+                                                total_tokens: payload.total_tokens,
+                                                total_cache_read_tokens: payload.total_cache_read_tokens,
+                                                last_query_total_tokens: payload.usage.display_total_tokens(),
+                                                last_query_input_tokens: payload.last_query_input_tokens,
+                                            });
+                                        }
+                                    }
+                                    "context/usageUpdated" => {
+                                        if let ServerEvent::ContextUsageUpdated(payload) = event
+                                            && session_id.is_some_and(|id| id == payload.session_id)
+                                        {
+                                            last_query_total_tokens =
+                                                payload.occupancy.total_tokens as usize;
+                                            let _ = event_tx.send(WorkerEvent::ContextUsageUpdated {
+                                                occupancy: payload.occupancy,
+                                            });
+                                        }
+                                    }
+                                    "turn/failed" => {
+                                        if let ServerEvent::TurnFailed(TurnFailedPayload { turn, error, .. }) = event {
+                                            active_turn_id = None;
+                                            let (message, hint) = match error {
+                                                Some(error) => {
+                                                    let hint = error.recovery_hint.or_else(|| {
+                                                        devo_provider::recovery_hint_for_message(
+                                                            &error.message,
+                                                        )
+                                                    });
+                                                    (error.message, hint)
+                                                }
+                                                None => {
+                                                    let message = latest_completed_agent_message
+                                                        .take()
+                                                        .unwrap_or_else(|| {
+                                                            format!(
+                                                                "turn failed with status {:?}",
+                                                                turn.status
+                                                            )
+                                                        });
+                                                    let hint =
+                                                        devo_provider::recovery_hint_for_message(&message);
+                                                    (message, hint)
+                                                }
+                                            };
+                                            if let Some(usage) = &turn.usage {
+                                                if !saw_usage_update_for_turn {
+                                                    last_query_input_tokens = usage.input_tokens as usize;
+                                                    last_query_total_tokens = usage.display_total_tokens();
+                                                }
+                                                if should_apply_terminal_turn_usage_fallback(
+                                                    saw_usage_update_for_turn,
+                                                    has_authoritative_usage_totals,
+                                                ) {
+                                                    total_input_tokens += usage.input_tokens as usize;
+                                                    total_output_tokens += usage.output_tokens as usize;
+                                                    total_tokens += usage.display_total_tokens();
+                                                    total_cache_read_tokens += usage
+                                                        .cache_read_input_tokens
+                                                        .unwrap_or(0) as usize;
+                                                }
+                                            }
+                                            let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                                message,
+                                                hint,
+                                                turn_count,
+                                                total_input_tokens,
+                                                total_output_tokens,
+                                                total_tokens,
+                                                total_cache_read_tokens,
+                                                prompt_token_estimate: turn
+                                                    .usage
+                                                    .as_ref()
+                                                    .map(|usage| usage.input_tokens as usize)
+                                                    .unwrap_or(total_input_tokens),
+                                                last_query_input_tokens: turn
+                                                    .usage
+                                                    .as_ref()
+                                                    .map(|usage| usage.input_tokens as usize)
+                                                    .unwrap_or(last_query_input_tokens),
+                                            });
+                                        }
+                                    }
+                                    "turn/plan/updated" => {
+                                        if let ServerEvent::TurnPlanUpdated(payload) = event {
+                                            let steps = payload
+                                                .plan
+                                                .into_iter()
+                                                .filter_map(|step| {
+                                                    Some(PlanStep {
+                                                        text: step.step,
+                                                        status: parse_plan_step_status(&step.status)?,
+                                                    })
+                                                })
+                                                .collect::<Vec<_>>();
+                                            let _ = event_tx.send(WorkerEvent::PlanUpdated {
+                                                explanation: payload
+                                                    .explanation
+                                                    .filter(|text| !text.trim().is_empty()),
+                                                steps,
+                                            });
+                                        }
+                                    }
+                                    "item/tool/requestUserInput" => {
+                                        if let ServerEvent::RequestUserInput(payload) = event
+                                            && let Some(turn_id) = payload.request.turn_id
+                                        {
+                                            let _ = event_tx.send(WorkerEvent::RequestUserInput {
+                                                session_id: payload.request.session_id,
+                                                turn_id,
+                                                request_id: payload.request.request_id.to_string(),
+                                                questions: payload.questions,
+                                            });
+                                        }
+                                    }
+                                    "search/updated" => {
+                                        if let ServerEvent::ReferenceSearchUpdated(snapshot) = event {
+                                            let _ =
+                                                event_tx.send(WorkerEvent::ReferenceSearchUpdated {
+                                                    snapshot,
+                                                });
+                                        }
+                                    }
+                                    "search/completed" => {
+                                        if let ServerEvent::ReferenceSearchCompleted(snapshot) = event {
+                                            let _ =
+                                                event_tx.send(WorkerEvent::ReferenceSearchUpdated {
+                                                    snapshot,
+                                                });
+                                        }
+                                    }
+                                    "search/failed" => {
+                                        if let ServerEvent::ReferenceSearchFailed(payload) = event {
+                                            tracing::warn!(
+                                                search_id = %payload.search_id,
+                                                query = %payload.query,
+                                                message = %payload.message,
+                                                "reference search failed"
+                                            );
+                                            // End the composer loading state instead of waiting forever
+                                            // for a completion notification that will never arrive.
+                                            let snapshot = ReferenceSearchSnapshot {
+                                                search_id: payload.search_id,
+                                                query: payload.query,
+                                                results: Vec::new(),
+                                                total_file_match_count: 0,
+                                                scanned_file_count: 0,
+                                                file_search_complete: true,
+                                            };
+                                            let _ = event_tx.send(WorkerEvent::ReferenceSearchUpdated {
+                                                snapshot,
+                                            });
+                                        }
+                                    }
+                                    "session/title/updated" => {
+                                        if let ServerEvent::SessionTitleUpdated(payload) = event
+                                            && let Some(title) = payload.session.title {
+                                                let _ = event_tx.send(WorkerEvent::SessionTitleUpdated {
+                                                    session_id: payload.session.session_id.to_string(),
+                                                    title,
+                                                });
+                                            }
+                                    }
+                                    "session/effective_context_window/updated" => {
+                                        if let ServerEvent::SessionEffectiveContextWindowUpdated(
+                                            payload,
+                                        ) = event
+                                            && session_id == Some(payload.session_id)
+                                        {
+                                            let _ = event_tx.send(
+                                                WorkerEvent::EffectiveContextWindowUpdated {
+                                                    effective_context_window: payload
+                                                        .effective_context_window,
+                                                },
+                                            );
+                                        }
+                                    }
+                                    "session/compaction/started" => {
+                                        if let ServerEvent::SessionCompactionStarted(_) = event {
+                                            let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
+                                        }
+                                    }
+                                    "session/compaction/completed" => {
+                                        if let ServerEvent::SessionCompactionCompleted(payload) = event {
+                                            total_input_tokens = payload.session.total_input_tokens;
+                                            total_output_tokens = payload.session.total_output_tokens;
+                                            total_tokens = payload.session.total_tokens;
+                                            let (compacted_last_query_total, compacted_last_query_input) =
+                                                last_query_tokens_from_resume(&payload.session);
+                                            last_query_total_tokens = payload
+                                                .session
+                                                .last_context_occupancy
+                                                .as_ref()
+                                                .map(|occupancy| occupancy.total_tokens as usize)
+                                                .filter(|tokens| *tokens > 0)
+                                                .unwrap_or(compacted_last_query_total);
+                                            last_query_input_tokens = payload
+                                                .session
+                                                .last_context_occupancy
+                                                .as_ref()
+                                                .map(|occupancy| occupancy.total_tokens as usize)
+                                                .filter(|tokens| *tokens > 0)
+                                                .unwrap_or(compacted_last_query_input);
+                                            let _ = event_tx.send(WorkerEvent::SessionCompacted {
+                                                total_input_tokens,
+                                                total_output_tokens,
+                                                total_tokens,
+                                                last_query_total_tokens,
+                                                last_query_input_tokens,
+                                                prompt_token_estimate: payload.session.prompt_token_estimate,
+                                            });
+                                        }
+                                    }
+                                    "session/compaction/failed" => {
+                                        if let ServerEvent::SessionCompactionFailed(payload) = event {
+                                            let _ = event_tx.send(WorkerEvent::SessionCompactionFailed {
+                                                message: payload.message,
+                                            });
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
-                            "session/compaction/completed" => {
-                                if let ServerEvent::SessionCompactionCompleted(payload) = event {
-                                    total_input_tokens = payload.session.total_input_tokens;
-                                    total_output_tokens = payload.session.total_output_tokens;
-                                    total_tokens = payload.session.total_tokens;
-                                    let (compacted_last_query_total, compacted_last_query_input) =
-                                        last_query_tokens_from_resume(&payload.session);
-                                    last_query_total_tokens = if payload.session.prompt_token_estimate > 0 {
-                                        payload.session.prompt_token_estimate
-                                    } else {
-                                        compacted_last_query_total
-                                    };
-                                    last_query_input_tokens = if payload.session.prompt_token_estimate > 0 {
-                                        payload.session.prompt_token_estimate
-                                    } else {
-                                        compacted_last_query_input
-                                    };
-                                    let _ = event_tx.send(WorkerEvent::SessionCompacted {
-                                        total_input_tokens,
-                                        total_output_tokens,
-                                        total_tokens,
-                                        last_query_total_tokens,
-                                        last_query_input_tokens,
-                                        prompt_token_estimate: payload.session.prompt_token_estimate,
-                                    });
-                                }
-                            }
-                            "session/compaction/failed" => {
-                                if let ServerEvent::SessionCompactionFailed(payload) = event {
-                                    let _ = event_tx.send(WorkerEvent::SessionCompactionFailed {
-                                        message: payload.message,
-                                    });
-                                }
-                            }
-                            _ => {}
+                            None => break,
                         }
                     }
-                    None => break,
                 }
-            }
-        }
     }
 
     tracing::info!("query worker shutting down stdio client");
@@ -2914,7 +3510,9 @@ async fn ensure_session_started(
 /// follow-up. When no session is active yet, [`ensure_session_started`] creates one on the
 /// server; the returned metadata is merged into the worker's current model, model binding, and
 /// reasoning-effort selection. For a newly created session, this also notifies the UI via
-/// [`WorkerEvent::SessionActivated`] and applies the configured permission preset.
+/// [`WorkerEvent::SessionActivated`] and applies the configured permission preset. The
+/// canonical session event subscription is ensured on every call; it is a no-op once the
+/// active session is already subscribed.
 #[allow(clippy::too_many_arguments)]
 async fn prepare_session_for_command(
     client: &mut StdioServerClient,
@@ -2923,6 +3521,7 @@ async fn prepare_session_for_command(
     model_binding_id: &mut Option<String>,
     reasoning_effort_selection: &mut Option<String>,
     session_id: &mut Option<SessionId>,
+    subscribed_session_id: &mut Option<SessionId>,
     permission_preset: PermissionPreset,
     initial_sandbox_profile: Option<&str>,
     event_tx: &mpsc::UnboundedSender<WorkerEvent>,
@@ -2955,15 +3554,127 @@ async fn prepare_session_for_command(
                 .await?;
         }
     }
+    ensure_session_subscription(client, active_session_id, subscribed_session_id, event_tx).await;
     Ok(active_session_id)
 }
 
 /// Records the active turn returned by `turn/start`.
 ///
 /// When the server queues input (`TurnStartResult::Queued`), queue state for the UI is
-/// delivered asynchronously via `inputQueue/updated` notifications.
+/// delivered asynchronously via canonical `queue/updated` notifications.
 fn handle_turn_start_result(result: TurnStartResult, active_turn_id: &mut Option<TurnId>) {
     *active_turn_id = Some(result.active_turn_id());
+}
+
+fn canonical_session_id(session_id: SessionId) -> devo_protocol::canonical::ids::SessionId {
+    devo_protocol::canonical::ids::SessionId::from_string(session_id.to_string())
+}
+
+fn parse_canonical_queue_updated(params: &serde_json::Value) -> Result<WorkerEvent> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct QueueUpdatedParams {
+        change: devo_protocol::canonical::queue::QueueChange,
+        queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+        #[serde(default)]
+        started_turn_id: Option<devo_protocol::canonical::ids::TurnId>,
+        queue: Vec<devo_protocol::canonical::queue::QueueEntry>,
+    }
+    let parsed: QueueUpdatedParams =
+        serde_json::from_value(params.clone()).context("decode queue/updated params")?;
+    Ok(WorkerEvent::QueueUpdated {
+        change: parsed.change,
+        queue_item_id: parsed.queue_item_id,
+        started_turn_id: parsed
+            .started_turn_id
+            .as_ref()
+            .and_then(|id| TurnId::try_from(id.as_str()).ok()),
+        entries: parsed.queue,
+    })
+}
+
+async fn emit_queue_snapshot(
+    client: &mut StdioServerClient,
+    session_id: &devo_protocol::canonical::ids::SessionId,
+    change: devo_protocol::canonical::queue::QueueChange,
+    queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+    started_turn_id: Option<TurnId>,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<()> {
+    let listed = client
+        .session_queue_list(devo_protocol::canonical::rpc_turn::SessionQueueListParams {
+            session_id: session_id.clone(),
+        })
+        .await
+        .context("session/queue/list after queue mutation")?;
+    let _ = event_tx.send(WorkerEvent::QueueUpdated {
+        change,
+        queue_item_id,
+        started_turn_id,
+        entries: listed.entries,
+    });
+    Ok(())
+}
+
+/// Subscribes to canonical session events at most once per activated session.
+///
+/// Server-side `subscription/create` accumulates entries, so repeat calls for
+/// the same session would leak subscriptions. Callers reset
+/// `subscribed_session_id` when the active session changes so the next call
+/// re-subscribes. Failures are logged and left non-fatal so prompt submission
+/// is never blocked; the tracked id is only recorded on success, so a later
+/// call retries.
+async fn ensure_session_subscription(
+    client: &mut StdioServerClient,
+    session_id: SessionId,
+    subscribed_session_id: &mut Option<SessionId>,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) {
+    if *subscribed_session_id == Some(session_id) {
+        return;
+    }
+    match subscribe_session_events(client, session_id, event_tx).await {
+        Ok(()) => *subscribed_session_id = Some(session_id),
+        Err(error) => {
+            tracing::warn!(?session_id, %error, "failed to subscribe to session events");
+        }
+    }
+}
+
+async fn subscribe_session_events(
+    client: &mut StdioServerClient,
+    session_id: SessionId,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<()> {
+    let canonical = canonical_session_id(session_id);
+    let created = client
+        .subscription_create(devo_protocol::canonical::event::SubscriptionCreateParams {
+            selectors: vec![devo_protocol::canonical::event::StreamSelector::Session {
+                session_id: canonical.clone(),
+            }],
+            include_snapshot: true,
+            after: Vec::new(),
+        })
+        .await
+        .context("subscription/create for session queue")?;
+    for snapshot in created.snapshots {
+        if let devo_protocol::canonical::event::SnapshotData::Session { queue, .. } = snapshot.data
+        {
+            let queue_item_id = queue
+                .first()
+                .map(|entry| entry.queue_item_id.clone())
+                .unwrap_or_else(|| {
+                    devo_protocol::canonical::ids::QueueItemId::from_string(String::new())
+                });
+            let _ = event_tx.send(WorkerEvent::QueueUpdated {
+                change: devo_protocol::canonical::queue::QueueChange::Added,
+                queue_item_id,
+                started_turn_id: None,
+                entries: queue,
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn pause_active_goal_before_session_leave(
@@ -3063,7 +3774,7 @@ async fn emit_skills_list(
     client: &mut StdioServerClient,
     cwd: &Path,
     event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-    show_in_transcript: bool,
+    open_picker: bool,
 ) -> Result<()> {
     let result = tokio::time::timeout(
         Duration::from_secs(5),
@@ -3074,7 +3785,7 @@ async fn emit_skills_list(
     )
     .await
     .context("skills list request timed out")??;
-    emit_skills_list_result(result.skills, event_tx, show_in_transcript);
+    emit_skills_list_result(result.skills, event_tx, open_picker);
     Ok(())
 }
 
@@ -3107,19 +3818,57 @@ async fn emit_reference_search_update(
 fn emit_skills_list_result(
     skills: Vec<devo_server::SkillRecord>,
     event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-    show_in_transcript: bool,
+    open_picker: bool,
 ) {
-    let body = render_skill_list_body(&skills);
+    let picker_skills = skills
+        .iter()
+        .map(crate::skills_picker::skill_picker_entry_from_record)
+        .collect();
     let skills = skills
         .iter()
         .filter(|skill| skill.enabled)
         .map(skill_metadata_from_record)
         .collect();
     let _ = event_tx.send(WorkerEvent::SkillsListed {
-        body,
         skills,
-        show_in_transcript,
+        picker_skills,
+        open_picker,
     });
+}
+
+async fn emit_mcp_servers_list(
+    client: &mut StdioServerClient,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<()> {
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.mcp_list(devo_protocol::canonical::rpc_admin::McpListParams {}),
+    )
+    .await
+    .context("mcp list request timed out")??;
+    let _ = event_tx.send(WorkerEvent::McpServersListed {
+        servers: result.servers,
+    });
+    Ok(())
+}
+
+async fn emit_mcp_tools_list(
+    client: &mut StdioServerClient,
+    name: String,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<()> {
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        client
+            .mcp_tools(devo_protocol::canonical::rpc_admin::McpToolsParams { name: name.clone() }),
+    )
+    .await
+    .context("mcp tools request timed out")??;
+    let _ = event_tx.send(WorkerEvent::McpToolsListed {
+        name,
+        tools: result.tools,
+    });
+    Ok(())
 }
 
 fn render_skill_list_body(skills: &[devo_server::SkillRecord]) -> String {
@@ -3195,6 +3944,23 @@ fn btw_agent_prompt(question: &str) -> String {
          Produce one concise answer and stop.\n\n\
          Side question:\n{question}"
     )
+}
+
+/// Builds the isolated child-session request for the TUI `/btw` command.
+///
+/// `/btw` is a side question, not a `turn/steer` input: it must not alter the
+/// parent's turn, history, or queues. `ephemeral`, `DenyAll`, and the one-turn
+/// limit make that boundary enforceable by the runtime rather than relying
+/// only on the model prompt.
+fn btw_spawn_params(session_id: SessionId, question: &str) -> SpawnAgentParams {
+    SpawnAgentParams {
+        session_id,
+        message: btw_agent_prompt(question),
+        fork_turns: Some("all".to_string()),
+        max_turns: Some(1),
+        tool_policy: AgentToolPolicy::DenyAll,
+        ephemeral: true,
+    }
 }
 
 async fn handle_btw_agent_event(
@@ -3685,6 +4451,17 @@ fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
                     index += 1;
                     continue;
                 }
+                SessionHistoryMetadata::ProposedPlan => {
+                    transcript.push(TranscriptItem::new(
+                        TranscriptItemKind::Assistant,
+                        "Proposed Plan".to_string(),
+                        item.body.clone(),
+                    ));
+                    index += 1;
+                    continue;
+                }
+                SessionHistoryMetadata::TurnSummary { .. }
+                | SessionHistoryMetadata::Edited { .. } => {}
                 SessionHistoryMetadata::Explored { actions } => {
                     let title = item.title.clone();
                     let body = actions
@@ -3696,7 +4473,6 @@ fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
                     index += 1;
                     continue;
                 }
-                SessionHistoryMetadata::Edited { .. } => {}
             }
         }
         if item.kind == SessionHistoryItemKind::ToolCall
@@ -3740,6 +4516,7 @@ fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
             SessionHistoryItemKind::CommandExecution => TranscriptItemKind::ToolResult,
             SessionHistoryItemKind::Error => TranscriptItemKind::Error,
             SessionHistoryItemKind::TurnSummary => TranscriptItemKind::TurnSummary,
+            SessionHistoryItemKind::ContextCompaction => TranscriptItemKind::System,
         };
         let mut transcript_item = match item.kind {
             SessionHistoryItemKind::ToolCall => TranscriptItem::tool_call(item.title.clone()),
@@ -3759,6 +4536,14 @@ fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
             SessionHistoryItemKind::TurnSummary => {
                 // TurnSummary uses title for model name, duration_ms for duration in seconds
                 TranscriptItem::new(kind, item.title.clone(), item.body.clone())
+            }
+            SessionHistoryItemKind::ContextCompaction => {
+                let title = if item.title.is_empty() {
+                    "Context compacted".to_string()
+                } else {
+                    item.title.clone()
+                };
+                TranscriptItem::new(kind, title, String::new())
             }
             SessionHistoryItemKind::User
             | SessionHistoryItemKind::Assistant
@@ -3868,7 +4653,7 @@ fn pretty_tool_call_summary(tool_name: &str, input: &serde_json::Value) -> Optio
                 None => Some(format!("Search {query}")),
             }
         }
-        "code_search" => {
+        "code_search" | "mcp__code_search__code_search" => {
             let query = input
                 .get("query")
                 .and_then(serde_json::Value::as_str)
@@ -4086,7 +4871,7 @@ fn tool_call_started_actions(
             ),
         ];
     }
-    if payload.tool_name == "code_search" {
+    if payload.tool_name == "code_search" || payload.tool_name == "mcp__code_search__code_search" {
         return code_search_command_action_from_parameters("code_search", &payload.parameters)
             .into_iter()
             .collect();
@@ -4108,9 +4893,11 @@ fn tool_call_updated_actions(
         "find" | "glob" => find_command_action_from_parameters(summary, &payload.parameters)
             .into_iter()
             .collect(),
-        "code_search" => code_search_command_action_from_parameters(summary, &payload.parameters)
-            .into_iter()
-            .collect(),
+        "code_search" | "mcp__code_search__code_search" => {
+            code_search_command_action_from_parameters(summary, &payload.parameters)
+                .into_iter()
+                .collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -4276,7 +5063,9 @@ fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
                 None => Some(pattern.to_string()),
             }
         }
-        "code_search" => Some(code_search_summary_from_input(input)),
+        "code_search" | "mcp__code_search__code_search" => {
+            Some(code_search_summary_from_input(input))
+        }
         "webfetch" | "web_fetch" | "web-fetch" | "fetch_url" | "fetch-url" => web_fetch_url(input),
         "web_search" | "websearch" | "web-search" => web_search_query(input),
         "lsp" => {
@@ -4545,7 +5334,6 @@ mod tests {
     use chrono::Utc;
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
-    use std::collections::HashSet;
     use std::future::pending;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -4561,8 +5349,8 @@ mod tests {
 
     use super::QueryWorkerHandle;
     use super::ShellCommandExecStart;
-    use super::acp_terminal_output_event;
-    use super::acp_terminal_snapshot_delta;
+    use super::btw_agent_prompt;
+    use super::btw_spawn_params;
     use super::handle_completed_item;
     use super::is_stale_turn_interrupt_error;
     use super::last_query_tokens_from_resume;
@@ -4577,7 +5365,6 @@ mod tests {
     use super::tool_call_started_event;
     use super::truncate_tool_output;
     use super::worker_events_from_acp_notification;
-    use super::worker_events_from_acp_notification_with_terminal_state;
     use crate::events::PlanStep;
     use crate::events::PlanStepStatus;
     use crate::events::SessionListEntry;
@@ -4589,10 +5376,12 @@ mod tests {
     use crate::events::WorkerEvent;
     use devo_core::ItemId;
     use devo_core::TurnId;
+    use devo_protocol::AgentToolPolicy;
     use devo_protocol::DEVO_SESSION_META;
     use devo_protocol::DEVO_TURN_USAGE_META;
     use devo_protocol::SessionHistoryMetadata;
     use devo_protocol::SessionPlanStepStatus;
+    use devo_protocol::SpawnAgentParams;
     use devo_protocol::ThreadGoal;
     use devo_protocol::ThreadGoalStatus;
     use devo_server::ItemEnvelope;
@@ -4602,6 +5391,24 @@ mod tests {
     use devo_server::SessionHistoryItemKind;
     use devo_server::ToolCallPayload;
     use devo_server::ToolResultPayload;
+
+    #[test]
+    fn btw_spawns_an_ephemeral_tool_free_one_turn_side_question() {
+        let session_id = SessionId::new();
+        let question = "what changed in the parser?";
+
+        assert_eq!(
+            btw_spawn_params(session_id, question),
+            SpawnAgentParams {
+                session_id,
+                message: btw_agent_prompt(question),
+                fork_turns: Some("all".to_string()),
+                max_turns: Some(1),
+                tool_policy: AgentToolPolicy::DenyAll,
+                ephemeral: true,
+            }
+        );
+    }
 
     #[tokio::test]
     async fn worker_shutdown_aborts_unresponsive_task() {
@@ -4901,6 +5708,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5074,6 +5882,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5126,6 +5935,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5179,6 +5989,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5222,6 +6033,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5681,156 +6493,6 @@ mod tests {
     }
 
     #[test]
-    fn raw_acp_terminal_content_and_output_emit_command_rows() {
-        let session_id = SessionId::new();
-        let events = worker_events_from_acp_notification(
-            &serde_json::json!({
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": "call-1",
-                    "content": [
-                        {
-                            "type": "terminal",
-                            "terminalId": "term_1"
-                        }
-                    ]
-                }
-            }),
-            Some(session_id),
-        );
-        assert_eq!(
-            events,
-            vec![WorkerEvent::ToolCall {
-                tool_use_id: "term_1".to_string(),
-                summary: "Terminal term_1".to_string(),
-                preparing: false,
-                parsed_commands: None,
-            }]
-        );
-
-        let visible_terminal_ids = HashSet::from(["term_1".to_string()]);
-        let mut pending_terminal_output = HashMap::new();
-        assert_eq!(
-            acp_terminal_output_event(
-                &serde_json::json!({
-                    "terminalId": "term_1",
-                    "delta": "hello\n"
-                }),
-                &visible_terminal_ids,
-                &mut pending_terminal_output,
-            ),
-            Some(WorkerEvent::ToolOutputDelta {
-                tool_use_id: "term_1".to_string(),
-                delta: "hello\n".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn raw_acp_terminal_rows_are_deduplicated_and_early_output_is_buffered() {
-        let session_id = SessionId::new();
-        let mut visible_terminal_ids = HashSet::new();
-        let mut pending_terminal_output = HashMap::new();
-
-        assert_eq!(
-            acp_terminal_output_event(
-                &serde_json::json!({
-                    "terminalId": "term_1",
-                    "delta": "early\n"
-                }),
-                &visible_terminal_ids,
-                &mut pending_terminal_output,
-            ),
-            None
-        );
-        assert_eq!(
-            pending_terminal_output.get("term_1"),
-            Some(&"early\n".to_string())
-        );
-
-        let first_events = worker_events_from_acp_notification_with_terminal_state(
-            &serde_json::json!({
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": "call-1",
-                    "content": [
-                        {
-                            "type": "terminal",
-                            "terminalId": "term_1"
-                        }
-                    ]
-                }
-            }),
-            Some(session_id),
-            &mut visible_terminal_ids,
-            &mut pending_terminal_output,
-        );
-        assert_eq!(
-            first_events,
-            vec![
-                WorkerEvent::ToolCall {
-                    tool_use_id: "term_1".to_string(),
-                    summary: "Terminal term_1".to_string(),
-                    preparing: false,
-                    parsed_commands: None,
-                },
-                WorkerEvent::ToolOutputDelta {
-                    tool_use_id: "term_1".to_string(),
-                    delta: "early\n".to_string(),
-                },
-            ]
-        );
-
-        let second_events = worker_events_from_acp_notification_with_terminal_state(
-            &serde_json::json!({
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": "call-1",
-                    "content": [
-                        {
-                            "type": "terminal",
-                            "terminalId": "term_1"
-                        }
-                    ]
-                }
-            }),
-            Some(session_id),
-            &mut visible_terminal_ids,
-            &mut pending_terminal_output,
-        );
-        assert_eq!(second_events, Vec::new());
-    }
-
-    #[test]
-    fn acp_terminal_snapshot_delta_emits_incremental_output() {
-        let mut previous_output = String::new();
-
-        assert_eq!(
-            acp_terminal_snapshot_delta(&mut previous_output, "hello".to_string(), false),
-            Some("hello".to_string())
-        );
-        assert_eq!(
-            acp_terminal_snapshot_delta(&mut previous_output, "hello world".to_string(), false),
-            Some(" world".to_string())
-        );
-        assert_eq!(
-            acp_terminal_snapshot_delta(&mut previous_output, "hello world".to_string(), false),
-            None
-        );
-        assert_eq!(
-            acp_terminal_snapshot_delta(&mut previous_output, "world".to_string(), true),
-            Some("world".to_string())
-        );
-        assert_eq!(
-            acp_terminal_snapshot_delta(&mut previous_output, "fresh".to_string(), false),
-            Some("fresh".to_string())
-        );
-    }
-
-    #[test]
     fn completed_apply_patch_tool_result_emits_patch_applied() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         handle_completed_item(
@@ -5840,6 +6502,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5890,6 +6553,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5940,6 +6604,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -5995,6 +6660,7 @@ mod tests {
                     turn_id: None,
                     item_id: None,
                     seq: 1,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
@@ -6110,7 +6776,11 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         }
     }
 
@@ -6282,17 +6952,7 @@ mod tests {
             }
         }))
         .expect("ACP session notification");
-        let mut visible_terminal_ids = HashSet::new();
-        let mut pending_terminal_output = HashMap::new();
-        let mut terminal_session_ids = HashMap::new();
-
-        let events =
-            super::subagent_monitor_events_from_acp_session_notification_with_terminal_state(
-                notification,
-                &mut visible_terminal_ids,
-                &mut pending_terminal_output,
-                &mut terminal_session_ids,
-            );
+        let events = super::subagent_monitor_events_from_acp_session_notification(notification);
 
         assert_eq!(
             events,
@@ -6357,17 +7017,7 @@ mod tests {
             "_meta": meta
         }))
         .expect("ACP session notification");
-        let mut visible_terminal_ids = HashSet::new();
-        let mut pending_terminal_output = HashMap::new();
-        let mut terminal_session_ids = HashMap::new();
-
-        let events =
-            super::subagent_monitor_events_from_acp_session_notification_with_terminal_state(
-                notification,
-                &mut visible_terminal_ids,
-                &mut pending_terminal_output,
-                &mut terminal_session_ids,
-            );
+        let events = super::subagent_monitor_events_from_acp_session_notification(notification);
 
         assert_eq!(
             events,
@@ -6450,17 +7100,7 @@ mod tests {
             }
         }))
         .expect("ACP session notification");
-        let mut visible_terminal_ids = HashSet::new();
-        let mut pending_terminal_output = HashMap::new();
-        let mut terminal_session_ids = HashMap::new();
-
-        let events =
-            super::subagent_monitor_events_from_acp_session_notification_with_terminal_state(
-                notification,
-                &mut visible_terminal_ids,
-                &mut pending_terminal_output,
-                &mut terminal_session_ids,
-            );
+        let events = super::subagent_monitor_events_from_acp_session_notification(notification);
 
         assert_eq!(
             events,
@@ -6595,7 +7235,11 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         };
         let entry = SessionListEntry {
             session_id: summary.session_id,
@@ -6639,7 +7283,11 @@ mod tests {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         };
         let entry = SessionListEntry {
             session_id: summary.session_id,

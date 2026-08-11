@@ -8,7 +8,7 @@ use crate::tool_spec::{
 use crate::tools::websearch_prompt::web_search_prompt;
 use devo_config::AppConfig;
 
-const BASH_DESCRIPTION: &str = include_str!("bash.txt");
+const SHELL_COMMAND_DESCRIPTION: &str = include_str!("shell_command.txt");
 const READ_DESCRIPTION: &str = include_str!("read.txt");
 const WRITE_DESCRIPTION: &str = include_str!("write.txt");
 const EDIT_DESCRIPTION: &str = include_str!("edit.txt");
@@ -44,11 +44,10 @@ impl Default for ToolRegistryPlan {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolPlanConfig {
     pub use_shell_command: bool,
     pub use_unified_exec: bool,
-    pub code_search: bool,
     pub web_search: bool,
     pub web_fetch: bool,
     pub network_proxy: Option<String>,
@@ -60,7 +59,6 @@ impl ToolPlanConfig {
         Self {
             web_search: app_config_uses_local_web_search(config),
             web_fetch: app_config_uses_local_web_fetch(config),
-            code_search: config.experimental.code_search,
             network_proxy: config.provider_http.proxy_url.clone(),
             network_no_proxy: config.provider_http.no_proxy.clone(),
             ..Self::default()
@@ -69,9 +67,9 @@ impl ToolPlanConfig {
 
     pub fn validate(&self) {
         // No incompatible combinations currently exist.
-        // - use_shell_command and use_unified_exec are independent (shell_command replaces bash,
-        //   unified exec adds new tools)
-        // - code_search is a read-only search tool and does not conflict with either
+        // - use_shell_command and use_unified_exec are independent (shell_command is the
+        //   canonical shell tool name; setting use_shell_command false keeps legacy "bash")
+        // - unified exec adds new tools alongside shell_command
         // - all can be true simultaneously with no conflict
     }
 }
@@ -81,12 +79,28 @@ impl Default for ToolPlanConfig {
         ToolPlanConfig {
             use_shell_command: true,
             use_unified_exec: true,
-            code_search: true,
             web_search: false,
             web_fetch: true,
             network_proxy: None,
             network_no_proxy: None,
         }
+    }
+}
+
+/// Shared ToolSpec for the shell tool (`shell_command`, or legacy name `bash`).
+pub(crate) fn shell_command_tool_spec(name: impl Into<String>) -> ToolSpec {
+    ToolSpec {
+        name: name.into(),
+        description: shell_command_description(),
+        input_schema: shell_command_schema(),
+        output_mode: ToolOutputMode::Mixed,
+        execution_mode: ToolExecutionMode::Mutating,
+        capability_tags: vec![ToolCapabilityTag::ExecuteProcess],
+        supports_parallel: false,
+        preparation_feedback: ToolPreparationFeedback::None,
+        display_name: None,
+        supports_cancellation: None,
+        supports_streaming: None,
     }
 }
 
@@ -159,7 +173,7 @@ fn shell_command_schema() -> JsonSchema {
     )
 }
 
-fn bash_description() -> String {
+fn shell_command_description() -> String {
     let chaining = if cfg!(windows) {
         "If commands depend on each other and must run sequentially, use a single PowerShell command string. In Windows PowerShell 5.1, do not rely on Bash chaining semantics like `cmd1 && cmd2`; prefer `cmd1; if ($?) { cmd2 }` when the later command depends on earlier success."
     } else {
@@ -168,7 +182,7 @@ fn bash_description() -> String {
 
     let shell = if cfg!(windows) { "powershell" } else { "bash" };
 
-    BASH_DESCRIPTION
+    SHELL_COMMAND_DESCRIPTION
         .replace(
             "${directory}",
             &std::env::current_dir().map_or_else(|_| ".".to_string(), |p| p.display().to_string()),
@@ -226,25 +240,47 @@ fn edit_schema() -> JsonSchema {
         BTreeMap::from([
             (
                 "filePath".to_string(),
-                JsonSchema::string(Some("The absolute path to the file to modify")),
+                JsonSchema::string(Some(
+                    "The absolute path to the file to modify. Preferred field name; `path` and `file_path` are also accepted.",
+                )),
+            ),
+            (
+                "path".to_string(),
+                JsonSchema::string(Some("Alias for `filePath`.")),
+            ),
+            (
+                "file_path".to_string(),
+                JsonSchema::string(Some("Alias for `filePath`.")),
             ),
             (
                 "oldString".to_string(),
                 JsonSchema::string(Some(
-                    "The exact text to replace. Must be non-empty and unique unless replaceAll is true.",
+                    "The exact text to replace. Must be non-empty and unique unless replaceAll is true. Preferred field name; `old_string` is also accepted.",
                 )),
+            ),
+            (
+                "old_string".to_string(),
+                JsonSchema::string(Some("Alias for `oldString`.")),
             ),
             (
                 "newString".to_string(),
                 JsonSchema::string(Some(
-                    "The text to replace oldString with. May be empty to delete text.",
+                    "The text to replace oldString with. May be empty to delete text. Preferred field name; `new_string` is also accepted.",
                 )),
+            ),
+            (
+                "new_string".to_string(),
+                JsonSchema::string(Some("Alias for `newString`.")),
             ),
             (
                 "replaceAll".to_string(),
                 JsonSchema::boolean(Some(
-                    "Replace every occurrence of oldString. Defaults to false.",
+                    "Replace every occurrence of oldString. Defaults to false. Preferred field name; `replace_all` is also accepted.",
                 )),
+            ),
+            (
+                "replace_all".to_string(),
+                JsonSchema::boolean(Some("Alias for `replaceAll`.")),
             ),
         ]),
         Some(vec![
@@ -298,99 +334,6 @@ fn grep_schema() -> JsonSchema {
         Some(vec!["pattern".to_string()]),
         Some(false),
     )
-}
-
-#[cfg(feature = "code-search")]
-fn code_search_schema() -> JsonSchema {
-    let enum_string = |description: &str, values: &[&str]| {
-        let mut schema = JsonSchema::string(Some(description));
-        schema.enum_values = Some(
-            values
-                .iter()
-                .map(|value| serde_json::Value::String((*value).to_string()))
-                .collect(),
-        );
-        schema
-    };
-    JsonSchema::object(
-        BTreeMap::from([
-            (
-                "operation".to_string(),
-                enum_string(
-                    "Search operation: search for query text or find chunks related to file_path:line",
-                    &["search", "find_related"],
-                ),
-            ),
-            (
-                "query".to_string(),
-                JsonSchema::string(Some("Natural-language or code query. Required for search.")),
-            ),
-            (
-                "file_path".to_string(),
-                JsonSchema::string(Some(
-                    "Workspace-relative or absolute source file path. Required for find_related.",
-                )),
-            ),
-            (
-                "line".to_string(),
-                JsonSchema::integer(Some(
-                    "1-indexed source line inside file_path. Required for find_related.",
-                )),
-            ),
-            (
-                "path".to_string(),
-                JsonSchema::string(Some(
-                    "Workspace-relative or absolute search root inside the workspace. Defaults to workspace root.",
-                )),
-            ),
-            (
-                "content".to_string(),
-                enum_string(
-                    "Content filter. Defaults to code.",
-                    &["code", "docs", "config", "all"],
-                ),
-            ),
-            (
-                "top_k".to_string(),
-                JsonSchema::integer(Some(
-                    "Maximum results to return. Defaults to 5, maximum 20.",
-                )),
-            ),
-            (
-                "filter_paths".to_string(),
-                JsonSchema::array(
-                    JsonSchema::string(Some("Workspace-relative path prefix to include")),
-                    Some("Optional path prefixes to include"),
-                ),
-            ),
-            (
-                "filter_languages".to_string(),
-                JsonSchema::array(
-                    JsonSchema::string(Some("Language name to include")),
-                    Some("Optional language filters such as rust or python"),
-                ),
-            ),
-        ]),
-        Some(vec!["operation".to_string()]),
-        Some(/*additional_properties*/ false),
-    )
-}
-
-#[cfg(feature = "code-search")]
-pub(crate) fn code_search_tool_spec() -> ToolSpec {
-    ToolSpec {
-        name: "code_search".to_string(),
-        description: "Preferred codebase investigation and code retrieval tool for the current workspace. Use code_search before find or grep when you need to understand how code is implemented, locate relevant modules or symbols, answer architecture questions, find related code, or search by natural-language intent.".to_string(),
-        input_schema: code_search_schema(),
-        output_mode: ToolOutputMode::StructuredJson,
-        execution_mode: ToolExecutionMode::ReadOnly,
-        capability_tags: vec![ToolCapabilityTag::SearchWorkspace],
-        supports_parallel: true,
-        preparation_feedback: ToolPreparationFeedback::None,
-        display_name: None,
-        supports_cancellation: Some(true),
-        supports_streaming: None,
-    }
 }
 
 fn apply_patch_schema() -> JsonSchema {
@@ -681,37 +624,14 @@ pub fn build_tool_registry_plan(config: &ToolPlanConfig) -> ToolRegistryPlan {
 
     if config.use_shell_command {
         plan.push(
-            ToolSpec {
-                name: "shell_command".to_string(),
-                description: bash_description(),
-                input_schema: shell_command_schema(),
-                output_mode: ToolOutputMode::Mixed,
-                execution_mode: ToolExecutionMode::Mutating,
-                capability_tags: vec![ToolCapabilityTag::ExecuteProcess],
-                supports_parallel: false,
-                preparation_feedback: ToolPreparationFeedback::None,
-                display_name: None,
-                supports_cancellation: None,
-                supports_streaming: None,
-            },
-            ToolHandlerKind::Bash,
+            shell_command_tool_spec("shell_command"),
+            ToolHandlerKind::ShellCommand,
         );
     } else {
+        // Legacy tool name; same handler and schema as shell_command.
         plan.push(
-            ToolSpec {
-                name: "bash".to_string(),
-                description: bash_description(),
-                input_schema: shell_command_schema(),
-                output_mode: ToolOutputMode::Mixed,
-                execution_mode: ToolExecutionMode::Mutating,
-                capability_tags: vec![ToolCapabilityTag::ExecuteProcess],
-                supports_parallel: false,
-                preparation_feedback: ToolPreparationFeedback::None,
-                display_name: None,
-                supports_cancellation: None,
-                supports_streaming: None,
-            },
-            ToolHandlerKind::Bash,
+            shell_command_tool_spec("bash"),
+            ToolHandlerKind::ShellCommand,
         );
     }
 
@@ -803,11 +723,6 @@ pub fn build_tool_registry_plan(config: &ToolPlanConfig) -> ToolRegistryPlan {
         },
         ToolHandlerKind::Grep,
     );
-
-    #[cfg(feature = "code-search")]
-    if config.code_search {
-        plan.push(code_search_tool_spec(), ToolHandlerKind::CodeSearch);
-    }
 
     plan.push(
         ToolSpec {
@@ -1008,18 +923,6 @@ mod tests {
         let config = ToolPlanConfig::default();
         assert!(config.use_unified_exec);
         assert!(config.use_shell_command);
-        assert!(config.code_search);
-    }
-
-    #[test]
-    fn config_from_app_config_copies_disabled_code_search() {
-        let app_config = AppConfig {
-            experimental: devo_config::ExperimentalConfig { code_search: false },
-            ..AppConfig::default()
-        };
-        let config = ToolPlanConfig::from_app_config(&app_config);
-
-        assert!(!config.code_search);
     }
 
     #[test]
@@ -1086,7 +989,8 @@ mod tests {
         assert!(
             plan.handlers
                 .iter()
-                .any(|(kind, name)| *kind == ToolHandlerKind::Bash && name == "shell_command")
+                .any(|(kind, name)| *kind == ToolHandlerKind::ShellCommand
+                    && name == "shell_command")
         );
     }
 
@@ -1155,14 +1059,11 @@ mod tests {
         );
     }
 
-    /// Trace: L2-DES-TOOL-001
-    /// Verifies: semantic code retrieval is registered as a read-only parallel workspace search tool.
+    /// Trace: L2-DES-MCP-002
+    /// Verifies: native code_search is no longer registered; retrieval is MCP-only.
     #[test]
-    fn plan_builder_omits_code_search_when_disabled() {
-        let plan = build_tool_registry_plan(&ToolPlanConfig {
-            code_search: false,
-            ..ToolPlanConfig::default()
-        });
+    fn plan_builder_omits_native_code_search() {
+        let plan = build_tool_registry_plan(&ToolPlanConfig::default());
         let spec_names: Vec<&str> = plan.specs.iter().map(|spec| spec.name.as_str()).collect();
         let handler_names: Vec<&str> = plan
             .handlers
@@ -1172,31 +1073,5 @@ mod tests {
 
         assert!(!spec_names.contains(&"code_search"));
         assert!(!handler_names.contains(&"code_search"));
-    }
-
-    /// Trace: L2-DES-TOOL-001
-    /// Verifies: semantic code retrieval is registered as a read-only parallel workspace search tool.
-    #[test]
-    fn plan_builder_registers_code_search_by_default() {
-        let plan = build_tool_registry_plan(&ToolPlanConfig::default());
-        let spec = plan
-            .specs
-            .iter()
-            .find(|spec| spec.name == "code_search")
-            .expect("code_search spec");
-
-        assert_eq!(spec.execution_mode, ToolExecutionMode::ReadOnly);
-        assert_eq!(spec.output_mode, ToolOutputMode::StructuredJson);
-        assert_eq!(spec.supports_parallel, true);
-        assert_eq!(spec.supports_cancellation, Some(true));
-        assert!(
-            spec.capability_tags
-                .contains(&ToolCapabilityTag::SearchWorkspace)
-        );
-        assert!(
-            plan.handlers
-                .iter()
-                .any(|(kind, name)| *kind == ToolHandlerKind::CodeSearch && name == "code_search")
-        );
     }
 }

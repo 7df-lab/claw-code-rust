@@ -32,7 +32,7 @@ use devo_protocol::Model;
 use devo_protocol::ProviderModelBinding;
 use devo_protocol::ProviderVendor;
 use devo_protocol::ProviderWireApi;
-use devo_protocol::ReasoningEffortPreset;
+use devo_protocol::ReasoningEffortOption;
 
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
@@ -45,8 +45,11 @@ use crate::onboarding_viewport::render_lines_with_anchor;
 use crate::onboarding_viewport::render_lines_with_fixed_footer;
 use crate::render::renderable::Renderable;
 use crate::tui::frame_requester::FrameRequester;
+use crate::ui_consts::FOOTER_INDENT_COLS;
 
 const SPINNER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(80);
+/// Left inset for onboarding list rows, matching `/model` / composer gutters.
+const LIST_LEFT_PAD: usize = FOOTER_INDENT_COLS;
 const VALIDATION_FAILED_ACTIONS: [&str; 4] = [
     "Add model anyway",
     "Retry with current settings",
@@ -218,6 +221,7 @@ enum OnboardingState {
         base_url: Option<String>,
         api_key: Option<String>,
         error_message: String,
+        recovery_hint: Option<String>,
         selected_action: usize,
     },
 }
@@ -423,6 +427,7 @@ impl OnboardingWidget {
             ..
         } = &self.state
         {
+            let recovery_hint = devo_provider::recovery_hint_for_message(&error_message);
             self.state = OnboardingState::ValidationFailed {
                 model: model_slug.clone(),
                 request_model: request_model.clone(),
@@ -434,13 +439,18 @@ impl OnboardingWidget {
                 base_url: base_url.clone(),
                 api_key: api_key.clone(),
                 error_message,
+                recovery_hint,
                 selected_action: 0,
             };
         }
     }
 
     /// Called when validation fails.
-    pub(crate) fn on_validation_failed(&mut self, error_message: String) {
+    pub(crate) fn on_validation_failed(
+        &mut self,
+        error_message: String,
+        recovery_hint: Option<String>,
+    ) {
         if let OnboardingState::Validating {
             model_slug,
             request_model,
@@ -465,6 +475,7 @@ impl OnboardingWidget {
                 base_url: base_url.clone(),
                 api_key: api_key.clone(),
                 error_message,
+                recovery_hint,
                 selected_action: 0,
             };
         }
@@ -575,25 +586,24 @@ impl OnboardingWidget {
 
     fn reasoning_effort_items(&self, slug: &str) -> Vec<ReasoningEffortItem> {
         self.model_by_slug(slug)
-            .map(Model::reasoning_effort_options)
+            .map(|model| model.effective_reasoning_capability().options())
             .unwrap_or_default()
             .into_iter()
             .map(Self::reasoning_effort_item)
             .collect()
     }
 
-    fn reasoning_effort_item(preset: ReasoningEffortPreset) -> ReasoningEffortItem {
+    fn reasoning_effort_item(option: ReasoningEffortOption) -> ReasoningEffortItem {
         ReasoningEffortItem {
-            label: preset.effort.label().to_string(),
-            value: preset.effort.label().to_ascii_lowercase(),
-            description: preset.description,
+            label: option.label,
+            value: option.value,
+            description: option.description,
         }
     }
 
     fn default_reasoning_effort_index(&self, slug: &str, items: &[ReasoningEffortItem]) -> usize {
         self.model_by_slug(slug)
-            .and_then(|model| model.default_reasoning_effort)
-            .map(|effort| effort.label().to_ascii_lowercase())
+            .and_then(Model::default_reasoning_effort_selection)
             .and_then(|value| items.iter().position(|item| item.value == value))
             .unwrap_or(0)
     }
@@ -1439,6 +1449,7 @@ impl OnboardingWidget {
             base_url,
             api_key,
             error_message: _,
+            recovery_hint: _,
             selected_action,
         } = &mut self.state
         else {
@@ -1591,13 +1602,14 @@ impl OnboardingWidget {
     fn render_footer(lines: &mut Vec<Line<'static>>, primary: &str, secondary: &str) {
         lines.push(Line::from(""));
         if secondary.is_empty() {
-            lines.push(Line::from(vec![Span::styled(
-                primary.to_string(),
-                Style::default().dim(),
-            )]));
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(LIST_LEFT_PAD)),
+                Span::styled(primary.to_string(), Style::default().dim()),
+            ]));
             return;
         }
         lines.push(Line::from(vec![
+            Span::raw(" ".repeat(LIST_LEFT_PAD)),
             Span::styled(primary.to_string(), Style::default().dim()),
             Span::styled("  ·  ", Style::default().dim()),
             Span::styled(secondary.to_string(), Style::default().dim()),
@@ -1610,19 +1622,20 @@ impl OnboardingWidget {
         description: Option<String>,
         is_selected: bool,
     ) {
-        let marker = if is_selected { ">" } else { " " };
+        let marker = if is_selected { "›" } else { " " };
         let marker_style = if is_selected {
             Style::default().cyan().bold()
         } else {
             Style::default().dim()
         };
         let label_style = if is_selected {
-            Style::default().bold()
+            Style::default().cyan().bold().underlined()
         } else {
             Style::default()
         };
 
         lines.push(Line::from(vec![
+            Span::raw(" ".repeat(LIST_LEFT_PAD)),
             Span::styled(marker.to_string(), marker_style),
             Span::raw(" "),
             Span::styled(label, label_style),
@@ -1630,10 +1643,19 @@ impl OnboardingWidget {
 
         if let Some(description) = description {
             lines.push(Line::from(vec![
-                Span::styled("  ", Style::default().dim()),
+                Span::raw(" ".repeat(LIST_LEFT_PAD + 2)),
                 Span::styled(description, Style::default().dim()),
             ]));
         }
+    }
+
+    fn scroll_overflow_line(more_above: bool) -> Line<'static> {
+        // Align with option labels: LIST_LEFT_PAD + marker + following space.
+        let label = if more_above { "↑ more" } else { "↓ more" };
+        Line::from(vec![
+            Span::raw(" ".repeat(LIST_LEFT_PAD + 2)),
+            Span::styled(label.to_string(), Style::default().dim()),
+        ])
     }
 
     fn render_inline_setup_header(lines: &mut Vec<Line<'static>>, model: &str) {
@@ -1876,14 +1898,14 @@ impl OnboardingWidget {
             Style::default().dim()
         };
         let label_style = if is_selected {
-            Style::default().bold()
+            Style::default().cyan().bold().underlined()
         } else {
             Style::default()
         };
 
         lines.push(Line::from(vec![
             Span::styled("| ", Style::default().cyan().bold()),
-            Span::styled(if is_selected { ">" } else { " " }, marker_style),
+            Span::styled(if is_selected { "›" } else { " " }, marker_style),
             Span::raw(" "),
             Span::styled(label.to_string(), label_style),
         ]));
@@ -2077,8 +2099,13 @@ impl OnboardingWidget {
         let scroll_offset = state
             .scroll_top
             .min(filtered_indices.len().saturating_sub(max_visible));
+        let has_more_above = scroll_offset > 0;
+        let has_more_below = scroll_offset + max_visible < filtered_indices.len();
         let mut anchor = None;
 
+        if has_more_above {
+            lines.push(Self::scroll_overflow_line(/*more_above*/ true));
+        }
         for (vis_idx, &actual_idx) in filtered_indices
             .iter()
             .enumerate()
@@ -2088,12 +2115,13 @@ impl OnboardingWidget {
             if let Some(item) = items.get(actual_idx) {
                 let is_selected = state.selected_idx == Some(vis_idx);
                 let start = lines.len();
-                let description = if item.display_name == item.slug {
-                    None
-                } else {
-                    Some(item.display_name.clone())
-                };
-                Self::render_option_row(&mut lines, item.slug.clone(), description, is_selected);
+                // Slug-only rows: display_name is used for filtering, not shown.
+                Self::render_option_row(
+                    &mut lines,
+                    item.slug.clone(),
+                    /*description*/ None,
+                    is_selected,
+                );
                 if is_selected {
                     anchor = Some(ViewportAnchor {
                         start,
@@ -2101,6 +2129,9 @@ impl OnboardingWidget {
                     });
                 }
             }
+        }
+        if has_more_below {
+            lines.push(Self::scroll_overflow_line(/*more_above*/ false));
         }
 
         let mut footer_lines = Vec::new();
@@ -2127,7 +2158,7 @@ impl OnboardingWidget {
 
         let byte_pos = Self::byte_index_for_char(input, cursor_pos);
         lines.push(Line::from(vec![
-            Span::styled("> ", Style::default().cyan()),
+            Span::styled("› ", Style::default().cyan()),
             Span::styled(
                 format!("{}▌{}", &input[..byte_pos], &input[byte_pos..]),
                 Style::default(),
@@ -2350,6 +2381,7 @@ impl OnboardingWidget {
 
     fn render_validation_failed(
         error_message: &str,
+        recovery_hint: Option<&str>,
         selected_action: usize,
         area: Rect,
         buf: &mut Buffer,
@@ -2373,8 +2405,14 @@ impl OnboardingWidget {
                 error_message.to_string(),
                 Style::default().red(),
             )]),
-            Line::from(""),
         ];
+        if let Some(hint) = recovery_hint.filter(|hint| !hint.trim().is_empty()) {
+            lines.push(Line::from(vec![Span::styled(
+                hint.to_string(),
+                Style::default().dim(),
+            )]));
+        }
+        lines.push(Line::from(""));
 
         for (idx, action) in actions.iter().enumerate() {
             let is_selected = idx == selected_action;
@@ -2427,7 +2465,6 @@ impl Renderable for OnboardingWidget {
     fn desired_height(&self, _width: u16) -> u16 {
         match &self.state {
             OnboardingState::ModelSelection {
-                items,
                 state,
                 filtered_indices,
                 ..
@@ -2436,15 +2473,12 @@ impl Renderable for OnboardingWidget {
                 let scroll_offset = state
                     .scroll_top
                     .min(filtered_indices.len().saturating_sub(max_visible));
-                let option_rows = filtered_indices
-                    .iter()
-                    .skip(scroll_offset)
-                    .take(max_visible)
-                    .filter_map(|idx| items.get(*idx))
-                    .map(|item| if item.display_name == item.slug { 1 } else { 2 })
-                    .sum::<u16>()
-                    .max(1);
-                option_rows + 9
+                let has_more_above = scroll_offset > 0;
+                let has_more_below = scroll_offset + max_visible < filtered_indices.len();
+                let option_rows = u16::try_from(max_visible).unwrap_or(u16::MAX).max(1);
+                let overflow_rows = u16::from(has_more_above) + u16::from(has_more_below);
+                // title + hint + blank + filter + blank + options + overflow + footer spacing
+                option_rows + overflow_rows + 9
             }
             OnboardingState::CustomModelSlug { .. } => 8,
             OnboardingState::ProviderSelection { items, .. } => items.len() as u16 * 2 + 6,
@@ -2473,7 +2507,16 @@ impl Renderable for OnboardingWidget {
             }
             OnboardingState::Validating { .. } => 10,
             OnboardingState::Saving { .. } => 10,
-            OnboardingState::ValidationFailed { .. } => 13,
+            OnboardingState::ValidationFailed { recovery_hint, .. } => {
+                if recovery_hint
+                    .as_ref()
+                    .is_some_and(|hint| !hint.trim().is_empty())
+                {
+                    14
+                } else {
+                    13
+                }
+            }
         }
     }
 
@@ -2642,10 +2685,17 @@ impl Renderable for OnboardingWidget {
             }
             OnboardingState::ValidationFailed {
                 error_message,
+                recovery_hint,
                 selected_action,
                 ..
             } => {
-                Self::render_validation_failed(error_message, *selected_action, area, buf);
+                Self::render_validation_failed(
+                    error_message,
+                    recovery_hint.as_deref(),
+                    *selected_action,
+                    area,
+                    buf,
+                );
             }
         }
     }

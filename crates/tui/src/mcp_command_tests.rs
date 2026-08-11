@@ -1,4 +1,4 @@
-//! Focused regression tests for the `/mcp` slash command wiring.
+//! Focused regression tests for the `/mcps` slash command wiring.
 
 use std::path::PathBuf;
 
@@ -23,6 +23,8 @@ fn widget_with_model(model: Model) -> (ChatWidget, mpsc::UnboundedReceiver<AppEv
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -38,7 +40,7 @@ fn widget_with_model(model: Model) -> (ChatWidget, mpsc::UnboundedReceiver<AppEv
 }
 
 #[test]
-fn run_slash_command_mcp_queues_mcp_list_command() {
+fn run_slash_command_mcps_queues_list_mcp_servers_command() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
@@ -47,13 +49,43 @@ fn run_slash_command_mcp_queues_mcp_list_command() {
     let (mut widget, mut app_event_rx) = widget_with_model(model);
 
     widget.handle_app_event(AppEvent::RunSlashCommand {
-        command: "mcp".to_string(),
+        command: "mcps".to_string(),
     });
 
     assert_eq!(
         app_event_rx.try_recv().expect("queued app event"),
-        AppEvent::Command(AppCommand::RunUserShellCommand {
-            command: "mcp list".to_string(),
-        })
+        AppEvent::Command(AppCommand::ListMcpServers)
+    );
+}
+
+#[test]
+fn mcp_server_selected_opens_bottom_pane_detail() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, mut app_event_rx) = widget_with_model(model);
+
+    widget.handle_worker_event(crate::events::WorkerEvent::McpServersListed {
+        servers: vec![devo_protocol::canonical::rpc_admin::McpServerInfo {
+            name: "time".to_string(),
+            status: "ready".to_string(),
+            tool_count: 2,
+        }],
+    });
+    assert!(widget.has_bottom_pane_view_for_test());
+
+    // Drain any status-only side effects from opening the list.
+    while app_event_rx.try_recv().is_ok() {}
+
+    widget.handle_app_event(AppEvent::McpServerSelected {
+        name: "time".to_string(),
+    });
+    assert!(widget.has_bottom_pane_view_for_test());
+    assert!(
+        widget.status_message_for_test().starts_with("MCP · "),
+        "expected detail status, got {}",
+        widget.status_message_for_test()
     );
 }

@@ -1,0 +1,6 @@
+{
+  "type": "codeInterpreter",
+  "callId": "ci-1",
+  "output": { "stdout": "ok" },
+  "brandNewField": [1, 2, 3]
+}

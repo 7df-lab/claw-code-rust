@@ -1,9 +1,11 @@
 ---
 title: Code Search
-description: 理解 Devo 的本地语义代码搜索。
+description: 理解 Devo 的本地语义代码搜索 MCP。
 ---
 
-`code_search` 是 Devo 内置的只读 retrieval tool，用于按语义、identifier 和相关位置查找代码。
+`code_search` 是 Devo 可选的语义 retrieval tool，用于按语义、identifier 和相关位置查找代码。它以捆绑的 stdio MCP 二进制 `devo-code-search-mcp` 形式提供，**默认禁用**。
+
+用 `devo mcp enable code_search` 或 TUI `/mcps` 启用。启用后模型看到的工具名是 `mcp__code_search__code_search`。
 
 它不同于 shell search。Shell search 是精确文本搜索。Code search 会构建 workspace 本地索引，并用 hybrid semantic 和 sparse matching 对 chunks 排序。
 
@@ -28,50 +30,15 @@ Code-search engine 处理：
 
 | Operation | 用途 |
 | --- | --- |
-| `search` | 查找匹配自然语言或 identifier query 的 chunks。 |
-| `find_related` | 查找与 source file 和 1-indexed line number 相关的 chunks。 |
+| `search` | 按自然语言或 identifier query 查找 chunks。 |
+| `find_related` | 查找与源文件 + 1-indexed 行相关的 chunks。 |
 
-Search requests 可以按这些条件限定：
-
-- path；
-- content kind：`code`、`docs`、`config` 或 `all`；
-- language filters；
-- `top_k` result count。
-
-默认 result count 是 5，最大是 20。
+Search 可按 path、content kind（`code` / `docs` / `config` / `all`）、language filters、`top_k` 限定范围。默认返回 5 条，最多 20 条。
 
 ## 本地模型
 
-Production code search 使用本地 model2vec embedding provider 和 `minishlab/potion-code-16M` 模型。模型会在第一次 embedding call 时 lazy load。
-
-如果模型文件缺失，Devo 会在首次使用时尝试获取它们。离线环境中，应先预置 local model cache，再依赖 `code_search`；否则 tool 会报告可恢复的 model-unavailable configuration error。
-
-## Cache 行为
-
-Devo 会为每个 workspace root、content filter 和 embedding model identity 保留一个 in-memory index。它也保存 disk cache metadata 和 embedding rows，避免重复 query 总是重建整个 index。
-
-Service 优先 correctness：
-
-1. watcher 认为 workspace 未变时，复用 clean warm index；
-2. 否则 walk manifest；
-3. 复用匹配的 memory 或 disk cache；
-4. 只重新读取和 re-embed changed files。
+生产环境使用本地 model2vec embedding：`minishlab/potion-code-16M`，首次 embedding 时懒加载。离线环境需预先安装模型缓存（`install.sh --install-code-search-model`）。
 
 ## 何时使用
 
-使用 code search，当：
-
-- 你知道概念但不知道确切 symbol；
-- identifier search 返回太多结果；
-- 想找特定行附近的 related code；
-- 仓库有多个相似实现；
-- 自然语言意图比精确 grep 文本更容易表达。
-
-使用 shell search，当：
-
-- 你知道确切字符串；
-- 需要 regex；
-- 需要完整 match 列表；
-- 需要 command-line flags 或 file-glob control。
-
-Devo 可能在同一任务中同时使用两者：shell search 用于精确确认，code search 用于更广泛导航。
+语义探索、架构问题、related-code、自然语言意图时用 code search；精确字符串 / 正则用 grep / shell search。

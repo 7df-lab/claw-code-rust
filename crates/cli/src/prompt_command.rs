@@ -88,7 +88,10 @@ pub(crate) async fn run_prompt(
 
     let registry = {
         let mcp_manager = std::sync::Arc::new(RmcpMcpManager::new(
-            app_config.mcp.clone(),
+            app_config
+                .mcp
+                .clone()
+                .with_code_search_workspace_cwd(cwd.clone()),
             app_config.mcp_oauth_credentials_store.unwrap_or_default(),
         ));
         let tool_plan = ToolPlanConfig::from_app_config(&app_config);
@@ -106,7 +109,6 @@ pub(crate) async fn run_prompt(
             collaboration_mode: devo_protocol::CollaborationMode::Build,
             agent_coordinator: None,
             client_filesystem: None,
-            client_terminal: None,
             file_read_ledger: std::sync::Arc::new(devo_core::tools::FileReadLedger::new()),
             local_web_search: None,
             hooks: (!app_config.hooks.is_empty()).then(|| devo_core::HookRuntimeContext {
@@ -115,7 +117,7 @@ pub(crate) async fn run_prompt(
                     session_id: session_state.id.clone(),
                     transcript_path: String::new(),
                     cwd: cwd.clone(),
-                    permission_mode: Some("auto-approve".to_string()),
+                    permission_mode: Some("yolo".to_string()),
                     agent_id: None,
                     agent_type: None,
                 },
@@ -152,6 +154,7 @@ pub(crate) async fn run_prompt(
         registry,
         &runtime,
         jsonl_event_callback(output_format, session_id_for_events),
+        devo_core::QueryOptions::default(),
     )
     .await;
 
@@ -496,7 +499,7 @@ fn write_query_event_jsonl(session_id: &str, event: &QueryEvent) -> Result<()> {
         QueryEvent::ContextCompactionStarted => {
             write_jsonl(&PromptJsonlEvent::ContextCompactionStarted { session_id })
         }
-        QueryEvent::ContextCompactionCompleted => {
+        QueryEvent::ContextCompactionCompleted { .. } => {
             write_jsonl(&PromptJsonlEvent::ContextCompactionCompleted { session_id })
         }
         QueryEvent::ContextCompactionFailed { message } => {
@@ -529,7 +532,6 @@ fn write_query_event_jsonl(session_id: &str, event: &QueryEvent) -> Result<()> {
                     Some(message.as_str())
                 }
                 devo_core::tools::ToolProgress::Completion { summary } => Some(summary.as_str()),
-                devo_core::tools::ToolProgress::Terminal { .. } => None,
             };
             if let Some(delta) = delta {
                 write_jsonl(&PromptJsonlEvent::ToolProgress {

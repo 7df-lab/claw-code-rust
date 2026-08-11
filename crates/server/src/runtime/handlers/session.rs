@@ -1,12 +1,47 @@
 use super::super::*;
 
 pub(crate) struct RuntimeSessionTurnCutOptions {
-    session_id: SessionId,
-    user_turn_index: Option<u32>,
-    rollback_mode: SessionRollbackMode,
-    cwd_override: Option<PathBuf>,
-    title_override: Option<String>,
-    created_at: chrono::DateTime<Utc>,
+    pub(crate) session_id: SessionId,
+    pub(crate) user_turn_index: Option<u32>,
+    pub(crate) rollback_mode: SessionRollbackMode,
+    pub(crate) cwd_override: Option<PathBuf>,
+    pub(crate) title_override: Option<String>,
+    pub(crate) created_at: chrono::DateTime<Utc>,
+}
+
+/// Resolve occupancy and latest-query usage for a history cut.
+///
+/// Prefers a compaction snapshot that still applies to the kept turns; otherwise
+/// uses the last kept turn's stored occupancy / query usage.
+pub(crate) fn resolve_cut_occupancy_and_usage(
+    kept_turn_ids: &std::collections::HashSet<devo_core::TurnId>,
+    last_kept_turn_id: Option<devo_core::TurnId>,
+    turn_records_by_id: &std::collections::HashMap<devo_core::TurnId, devo_core::TurnRecord>,
+    latest_compaction_snapshot: Option<&devo_core::CompactionSnapshotLine>,
+) -> (
+    Option<devo_protocol::canonical::item::ContextOccupancy>,
+    Option<devo_protocol::TurnUsage>,
+    Option<devo_core::CompactionSnapshotLine>,
+) {
+    let cut_turn_record =
+        last_kept_turn_id.and_then(|turn_id| turn_records_by_id.get(&turn_id).cloned());
+    let applicable_compaction = latest_compaction_snapshot
+        .filter(|snapshot| kept_turn_ids.contains(&snapshot.turn_id))
+        .cloned();
+    let occupancy = applicable_compaction
+        .as_ref()
+        .and_then(|snapshot| snapshot.context_occupancy.clone())
+        .or_else(|| {
+            cut_turn_record
+                .as_ref()
+                .and_then(|turn| turn.context_occupancy.clone())
+        });
+    let latest_query_usage = cut_turn_record.as_ref().and_then(|turn| {
+        turn.latest_query_usage
+            .clone()
+            .or_else(|| turn.usage.clone())
+    });
+    (occupancy, latest_query_usage, applicable_compaction)
 }
 
 pub(crate) enum RuntimeSessionToolRegistryUpdate {
@@ -88,8 +123,24 @@ impl ServerRuntime {
             prompt_token_estimate: 0,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
+            effective_context_window: None,
+            permission_preset: None,
         };
+        let global_compaction_limit = runtime_context
+            .config_store
+            .lock()
+            .expect("app config store mutex should not be poisoned")
+            .effective_config()
+            .compaction_token_limit;
+        let applied_compaction_limit = crate::runtime::context_occupancy::resolved_compaction_limit(
+            global_compaction_limit,
+            &initial_turn_config.model,
+        );
+        let mut summary = summary;
+        summary.effective_context_window = Some(applied_compaction_limit);
         if let Some(record) = &record
             && let Err(error) = self.rollout_store.append_session_meta(record)
         {
@@ -99,14 +150,18 @@ impl ServerRuntime {
                 format!("failed to persist session metadata: {error}"),
             );
         }
-        let core_session = runtime_context.new_session_state(
+        let mut core_session = runtime_context.new_session_state(
             session_id,
             params.cwd.clone(),
             params.additional_directories.clone(),
         );
+        crate::runtime::context_occupancy::apply_resolved_compaction_limit(
+            &mut core_session.config,
+            applied_compaction_limit as usize,
+        );
         let config = core_session.config.clone();
         let pending_turn_queue = Arc::clone(&core_session.pending_turn_queue);
-        let btw_input_queue = Arc::clone(&core_session.btw_input_queue);
+        let steer_input_queue = Arc::clone(&core_session.steer_input_queue);
         let rollout_path_for_db = record.as_ref().map(|entry| entry.rollout_path.clone());
         let actor_state = SessionActorState {
             runtime_context,
@@ -123,8 +178,9 @@ impl ServerRuntime {
             history_items: Vec::new(),
             persisted_turn_items: Vec::new(),
             latest_compaction_snapshot: None,
+            turn_records_by_id: std::collections::HashMap::new(),
             pending_turn_queue,
-            btw_input_queue,
+            steer_input_queue,
             agent_tool_policy: Default::default(),
             max_turns: None,
             next_item_seq: 1,
@@ -240,11 +296,13 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
         let Some(mut updated_session) = session_handle
             .update_session_metadata(
                 params.model.clone(),
                 params.model_binding_id.clone(),
                 params.reasoning_effort_selection.clone(),
+                params.collaboration_mode,
             )
             .await
         else {
@@ -307,6 +365,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
         let Some(summary) = session_handle.summary().await else {
             return self.error_response(
                 request_id,
@@ -329,6 +388,15 @@ impl ServerRuntime {
                 "session does not exist",
             );
         }
+        if let Some(record) = session_handle.record().await.flatten()
+            && let Err(error) = self.rollout_store.append_session_meta(&record)
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                format!("failed to persist session permissions update: {error}"),
+            );
+        }
 
         serde_json::to_value(SuccessResponse {
             id: request_id,
@@ -339,6 +407,161 @@ impl ServerRuntime {
             },
         })
         .expect("serialize session/permissions/update response")
+    }
+
+    pub(crate) async fn handle_session_compaction_update(
+        &self,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: SessionCompactionUpdateParams = match serde_json::from_value(params) {
+            Ok(params) => params,
+            Err(error) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    format!("invalid session/compaction/update params: {error}"),
+                );
+            }
+        };
+        if params.effective_context_window == 0 {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InvalidParams,
+                "effectiveContextWindow must be at least 1",
+            );
+        }
+        let Some(session_handle) = self.session(params.session_id).await else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session does not exist",
+            );
+        };
+        let _state_change_guard = session_handle.lock_state_change().await;
+        let Some(summary) = session_handle.summary().await else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session does not exist",
+            );
+        };
+        let model = {
+            let runtime_context = session_handle.runtime_context().await;
+            let catalog = runtime_context
+                .as_ref()
+                .map(|context| Arc::clone(&context.model_catalog));
+            summary
+                .model
+                .as_deref()
+                .and_then(|slug| {
+                    catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.get(slug).cloned())
+                        .or_else(|| self.deps.model_catalog.get(slug).cloned())
+                })
+                .or_else(|| {
+                    summary.model_binding_id.as_deref().and_then(|binding| {
+                        catalog
+                            .as_ref()
+                            .and_then(|catalog| catalog.get(binding).cloned())
+                            .or_else(|| self.deps.model_catalog.get(binding).cloned())
+                    })
+                })
+        };
+        let Some(model) = model else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InvalidParams,
+                "session model is unavailable for compaction update",
+            );
+        };
+        let context_window_tokens = u64::from(model.context_window.max(1));
+        let recommended_token_limit =
+            u64::from(model.effective_context_window()).min(context_window_tokens);
+
+        {
+            let mut store = self
+                .deps
+                .config_store
+                .lock()
+                .expect("app config store mutex should not be poisoned");
+            if let Err(error) = store.set_compaction_token_limit(params.effective_context_window) {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InternalError,
+                    format!("failed to persist compaction_token_limit: {error}"),
+                );
+            }
+        }
+        self.deps.invalidate_workspace_contexts();
+
+        let global = Some(params.effective_context_window);
+        let handles = self.list_session_handles().await;
+        for handle in handles {
+            let Some(session_summary) = handle.summary().await else {
+                continue;
+            };
+            let runtime_context = handle.runtime_context().await;
+            let catalog = runtime_context
+                .as_ref()
+                .map(|context| Arc::clone(&context.model_catalog));
+            let Some(session_model) = session_summary
+                .model
+                .as_deref()
+                .and_then(|slug| {
+                    catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.get(slug).cloned())
+                        .or_else(|| self.deps.model_catalog.get(slug).cloned())
+                })
+                .or_else(|| {
+                    session_summary
+                        .model_binding_id
+                        .as_deref()
+                        .and_then(|binding| {
+                            catalog
+                                .as_ref()
+                                .and_then(|catalog| catalog.get(binding).cloned())
+                                .or_else(|| self.deps.model_catalog.get(binding).cloned())
+                        })
+                })
+            else {
+                continue;
+            };
+            let applied = crate::runtime::context_occupancy::resolved_compaction_limit(
+                global,
+                &session_model,
+            );
+            match handle
+                .apply_effective_context_window(applied as usize)
+                .await
+            {
+                Some(Ok(())) => {
+                    self.broadcast_event(ServerEvent::SessionEffectiveContextWindowUpdated(
+                        SessionEffectiveContextWindowUpdatedPayload {
+                            session_id: session_summary.session_id,
+                            effective_context_window: applied,
+                        },
+                    ))
+                    .await;
+                }
+                Some(Err(_)) | None => continue,
+            }
+        }
+
+        let applied = crate::runtime::context_occupancy::resolved_compaction_limit(global, &model);
+
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: SessionCompactionUpdateResult {
+                session_id: params.session_id,
+                effective_context_window: applied,
+                recommended_token_limit,
+                context_window_tokens,
+            },
+        })
+        .expect("serialize session/compaction/update response")
     }
 
     pub(crate) async fn handle_session_sandbox_profile_update(
@@ -363,6 +586,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
         let applied = match session_handle
             .apply_sandbox_profile(params.profile.clone())
             .await
@@ -427,6 +651,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
 
         let previous_title = session_handle
             .summary()
@@ -545,6 +770,7 @@ impl ServerRuntime {
                 );
             }
         };
+        let _state_change_guard = session_handle.lock_state_change().await;
         match tool_registry_update {
             RuntimeSessionToolRegistryUpdate::KeepCurrent => {}
             RuntimeSessionToolRegistryUpdate::ReplaceIfCwdMatches { cwd, tool_registry } => {
@@ -705,6 +931,26 @@ impl ServerRuntime {
                 "failed to persist forked session metadata to database"
             );
         }
+        if !summary.ephemeral {
+            let stats = crate::db::SessionStats {
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_tokens: 0,
+                total_cache_creation_tokens: 0,
+                total_cache_read_tokens: 0,
+                last_input_tokens: 0,
+                turn_count: 0,
+                prompt_token_estimate: summary.prompt_token_estimate,
+                last_context_occupancy: summary.last_context_occupancy.clone(),
+            };
+            if let Err(err) = self.deps.db.update_stats(&forked_id, &stats) {
+                tracing::warn!(
+                    session_id = %forked_id,
+                    error = %err,
+                    "failed to persist forked session token stats to database"
+                );
+            }
+        }
         tracing::info!(
             connection_id,
             source_session_id = %params.session_id,
@@ -751,6 +997,29 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        if self
+            .runtime_active_turn_id(params.session_id)
+            .await
+            .is_some()
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::TurnAlreadyRunning,
+                "cannot rollback while a turn is active",
+            );
+        }
+        let _state_change_guard = session_handle.lock_state_change().await;
+        if self
+            .runtime_active_turn_id(params.session_id)
+            .await
+            .is_some()
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::TurnAlreadyRunning,
+                "cannot rollback while a turn is active",
+            );
+        }
         let Some(source) = session_handle.export_runtime_session().await else {
             return self.error_response(
                 request_id,
@@ -801,6 +1070,26 @@ impl ServerRuntime {
         let latest_turn = rebuilt.latest_turn.clone();
         let loaded_item_count = rebuilt.loaded_item_count;
         let history_items = rebuilt.history_items.clone();
+        if !summary.ephemeral {
+            let stats = crate::db::SessionStats {
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_tokens: 0,
+                total_cache_creation_tokens: 0,
+                total_cache_read_tokens: 0,
+                last_input_tokens: 0,
+                turn_count: 0,
+                prompt_token_estimate: summary.prompt_token_estimate,
+                last_context_occupancy: summary.last_context_occupancy.clone(),
+            };
+            if let Err(err) = self.deps.db.update_stats(&params.session_id, &stats) {
+                tracing::warn!(
+                    session_id = %params.session_id,
+                    error = %err,
+                    "failed to persist rolled-back session token stats to database"
+                );
+            }
+        }
         session_handle
             .replace_state(SessionActorState::from_runtime_session(rebuilt))
             .await;
@@ -854,14 +1143,18 @@ impl ServerRuntime {
             cwd.clone(),
             additional_directories.clone(),
         );
+        core_session.config = source_core_session.config.clone();
         core_session.session_context = source_core_session.session_context.clone();
+        core_session.collaboration_mode = source_core_session.collaboration_mode;
         core_session.latest_turn_context = None;
-        core_session.total_input_tokens = source_core_session.total_input_tokens;
-        core_session.total_output_tokens = source_core_session.total_output_tokens;
-        core_session.total_cache_creation_tokens = source_core_session.total_cache_creation_tokens;
-        core_session.total_cache_read_tokens = source_core_session.total_cache_read_tokens;
-        core_session.last_input_tokens = source_core_session.last_input_tokens;
-        core_session.last_turn_tokens = source_core_session.last_turn_tokens;
+        // Fork/rollback starts a new cumulative ledger at the cut point.
+        core_session.total_input_tokens = 0;
+        core_session.total_output_tokens = 0;
+        core_session.total_tokens = 0;
+        core_session.total_cache_creation_tokens = 0;
+        core_session.total_cache_read_tokens = 0;
+        core_session.last_input_tokens = 0;
+        core_session.last_turn_tokens = 0;
 
         let mut rebuilt_history_items = Vec::new();
         let mut rebuilt_messages = Vec::new();
@@ -882,7 +1175,29 @@ impl ServerRuntime {
             .filter(|item| matches!(item.turn_item, TurnItem::UserMessage(_)))
             .count();
 
-        let latest_turn = if let Some(last_turn_id) = kept_items.last().map(|item| item.turn_id) {
+        let last_kept_turn_id = kept_items.last().map(|item| item.turn_id);
+        let kept_turn_ids: HashSet<_> = kept_items.iter().map(|item| item.turn_id).collect();
+        let (cut_occupancy, latest_query_usage, applicable_compaction) =
+            resolve_cut_occupancy_and_usage(
+                &kept_turn_ids,
+                last_kept_turn_id,
+                &source.turn_records_by_id,
+                source.latest_compaction_snapshot.as_ref(),
+            );
+        let cut_turn_record =
+            last_kept_turn_id.and_then(|turn_id| source.turn_records_by_id.get(&turn_id).cloned());
+        let prompt_token_estimate = cut_occupancy
+            .as_ref()
+            .map(|occupancy| occupancy.total_tokens as usize)
+            .or_else(|| {
+                latest_query_usage
+                    .as_ref()
+                    .map(devo_protocol::TurnUsage::display_total_tokens)
+            })
+            .unwrap_or(0);
+        core_session.prompt_token_estimate = prompt_token_estimate;
+
+        let latest_turn = if let Some(last_turn_id) = last_kept_turn_id {
             source
                 .latest_turn
                 .clone()
@@ -927,7 +1242,7 @@ impl ServerRuntime {
                         request_thinking: source.summary.reasoning_effort_selection.clone(),
                         started_at: source.summary.created_at,
                         completed_at: Some(source.summary.updated_at),
-                        usage: None,
+                        usage: cut_turn_record.as_ref().and_then(|turn| turn.usage.clone()),
                         stop_reason: None,
                         failure_reason: None,
                     })
@@ -936,11 +1251,6 @@ impl ServerRuntime {
             None
         };
 
-        let latest_query_usage = source
-            .summary
-            .last_query_usage
-            .clone()
-            .or_else(|| latest_turn.as_ref().and_then(|turn| turn.usage.clone()));
         let updated_at = Utc::now();
         let summary = crate::SessionMetadata {
             session_id,
@@ -960,24 +1270,42 @@ impl ServerRuntime {
             model_binding_id: source.summary.model_binding_id.clone(),
             reasoning_effort_selection: source.summary.reasoning_effort_selection.clone(),
             reasoning_effort: source.summary.reasoning_effort,
-            total_input_tokens: source_core_session.total_input_tokens,
-            total_output_tokens: source_core_session.total_output_tokens,
-            total_tokens: source_core_session.total_tokens,
-            total_cache_creation_tokens: source_core_session.total_cache_creation_tokens,
-            total_cache_read_tokens: source_core_session.total_cache_read_tokens,
-            prompt_token_estimate: source_core_session.prompt_token_estimate,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_cache_read_tokens: 0,
+            prompt_token_estimate,
             last_query_usage: latest_query_usage.clone(),
-            last_query_total_tokens: latest_query_usage
+            last_query_total_tokens: cut_occupancy
                 .as_ref()
-                .map(devo_protocol::TurnUsage::display_total_tokens)
+                .map(|occupancy| occupancy.total_tokens as usize)
+                .or_else(|| {
+                    latest_query_usage
+                        .as_ref()
+                        .map(devo_protocol::TurnUsage::display_total_tokens)
+                })
                 .unwrap_or(0),
+            last_context_occupancy: cut_occupancy.clone(),
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: core_session.collaboration_mode,
+            effective_context_window: None,
+            permission_preset: None,
         };
         drop(source_core_session);
 
+        let turn_records_by_id = source
+            .turn_records_by_id
+            .iter()
+            .filter(|(turn_id, _)| kept_turn_ids.contains(turn_id))
+            .map(|(turn_id, record)| (*turn_id, record.clone()))
+            .collect();
+
+        core_session.pending_turn_queue = Arc::clone(&source.pending_turn_queue);
+        core_session.steer_input_queue = Arc::clone(&source.steer_input_queue);
         let config = core_session.config.clone();
-        let pending_turn_queue = Arc::clone(&core_session.pending_turn_queue);
-        let btw_input_queue = Arc::clone(&core_session.btw_input_queue);
+        let pending_turn_queue = Arc::clone(&source.pending_turn_queue);
+        let steer_input_queue = Arc::clone(&source.steer_input_queue);
         Ok(RuntimeSession {
             runtime_context,
             record: None,
@@ -989,20 +1317,21 @@ impl ServerRuntime {
             loaded_item_count: u64::try_from(kept_items.len()).unwrap_or(u64::MAX),
             history_items: rebuilt_history_items,
             persisted_turn_items: kept_items,
-            latest_compaction_snapshot: None,
+            latest_compaction_snapshot: applicable_compaction,
+            turn_records_by_id,
             pending_turn_queue,
-            btw_input_queue,
-            agent_tool_policy: Default::default(),
-            max_turns: None,
+            steer_input_queue,
+            agent_tool_policy: source.agent_tool_policy,
+            max_turns: source.max_turns,
             deferred_assistant: None,
             deferred_reasoning: None,
             next_item_seq: u64::try_from(source.persisted_turn_items.len().saturating_add(1))
                 .unwrap_or(u64::MAX),
             first_user_input: source.first_user_input.clone(),
             tool_registry: source.tool_registry.clone(),
-            file_read_ledger: std::sync::Arc::new(devo_core::tools::FileReadLedger::new()),
-            session_approval_cache: crate::execution::ApprovalGrantCache::default(),
-            turn_approval_cache: crate::execution::ApprovalGrantCache::default(),
+            file_read_ledger: Arc::clone(&source.file_read_ledger),
+            session_approval_cache: source.session_approval_cache.clone(),
+            turn_approval_cache: source.turn_approval_cache.clone(),
             session_context_recorded: source.session_context_recorded,
         })
     }
@@ -1154,5 +1483,143 @@ mod tests {
         .expect("drop first turn");
 
         assert_eq!(kept, Vec::new());
+    }
+
+    #[test]
+    fn cut_occupancy_uses_cut_turn_not_tip() {
+        use pretty_assertions::assert_eq;
+
+        let turn_a = TurnId::new();
+        let turn_b = TurnId::new();
+        let occupancy_a = devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 20_000,
+        );
+        let occupancy_b = devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 80_000,
+        );
+        let mut records = std::collections::HashMap::new();
+        records.insert(
+            turn_a,
+            devo_core::TurnRecord {
+                id: turn_a,
+                session_id: SessionId::new(),
+                sequence: 1,
+                started_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                status: TurnStatus::Completed,
+                kind: devo_core::TurnKind::Regular,
+                model: "m".into(),
+                model_binding_id: None,
+                reasoning_effort_selection: None,
+                request_model: "m".into(),
+                request_thinking: None,
+                input_token_estimate: None,
+                usage: Some(devo_protocol::TurnUsage {
+                    input_tokens: 30,
+                    output_tokens: 5,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    reasoning_output_tokens: None,
+                    total_tokens: Some(35),
+                }),
+                latest_query_usage: Some(devo_protocol::TurnUsage {
+                    input_tokens: 30,
+                    output_tokens: 5,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    reasoning_output_tokens: None,
+                    total_tokens: Some(35),
+                }),
+                context_occupancy: Some(occupancy_a.clone()),
+                stop_reason: None,
+                failure_reason: None,
+                error: None,
+                session_context: None,
+                turn_context: None,
+                schema_version: 4,
+            },
+        );
+        records.insert(
+            turn_b,
+            devo_core::TurnRecord {
+                id: turn_b,
+                session_id: SessionId::new(),
+                sequence: 2,
+                started_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                status: TurnStatus::Completed,
+                kind: devo_core::TurnKind::Regular,
+                model: "m".into(),
+                model_binding_id: None,
+                reasoning_effort_selection: None,
+                request_model: "m".into(),
+                request_thinking: None,
+                input_token_estimate: None,
+                usage: None,
+                latest_query_usage: Some(devo_protocol::TurnUsage {
+                    input_tokens: 90,
+                    output_tokens: 10,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    reasoning_output_tokens: None,
+                    total_tokens: Some(100),
+                }),
+                context_occupancy: Some(occupancy_b.clone()),
+                stop_reason: None,
+                failure_reason: None,
+                error: None,
+                session_context: None,
+                turn_context: None,
+                schema_version: 4,
+            },
+        );
+
+        let kept = [turn_a].into_iter().collect();
+        let (occupancy, usage, compact) =
+            resolve_cut_occupancy_and_usage(&kept, Some(turn_a), &records, None);
+        assert_eq!(occupancy, Some(occupancy_a.clone()));
+        assert_eq!(usage.map(|u| u.input_tokens), Some(30));
+        assert!(compact.is_none());
+
+        // Compaction on a discarded tip turn must not override the cut turn.
+        let tip_only_snapshot = devo_core::CompactionSnapshotLine {
+            timestamp: Utc::now(),
+            session_id: SessionId::new(),
+            turn_id: turn_b,
+            summary_item_id: ItemId::new(),
+            preserved_item_ids: Vec::new(),
+            context_occupancy: Some(occupancy_b.clone()),
+        };
+        let (occupancy, usage, compact) = resolve_cut_occupancy_and_usage(
+            &kept,
+            Some(turn_a),
+            &records,
+            Some(&tip_only_snapshot),
+        );
+        assert_eq!(occupancy, Some(occupancy_a));
+        assert_eq!(usage.map(|u| u.input_tokens), Some(30));
+        assert!(compact.is_none());
+
+        let kept_all = [turn_a, turn_b].into_iter().collect();
+        let compact_occupancy =
+            devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+                /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
+                /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 5_000,
+            );
+        let snapshot = devo_core::CompactionSnapshotLine {
+            timestamp: Utc::now(),
+            session_id: SessionId::new(),
+            turn_id: turn_b,
+            summary_item_id: ItemId::new(),
+            preserved_item_ids: Vec::new(),
+            context_occupancy: Some(compact_occupancy.clone()),
+        };
+        let (occupancy, usage, compact) =
+            resolve_cut_occupancy_and_usage(&kept_all, Some(turn_b), &records, Some(&snapshot));
+        assert_eq!(occupancy, Some(compact_occupancy));
+        assert_eq!(usage.map(|u| u.input_tokens), Some(90));
+        assert_eq!(compact.as_ref().map(|s| s.turn_id), Some(turn_b));
     }
 }

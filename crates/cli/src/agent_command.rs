@@ -92,6 +92,8 @@ pub(crate) async fn run_agent(
             reasoning_effort_selection: model_reasoning_effort_selection,
             permission_preset,
             sandbox_profile,
+            compaction_token_limit: app_config.compaction_token_limit,
+            default_collaboration_mode: app_config.default_collaboration_mode,
             // TODO: why do we need cwd here, maybe remove it ?
             cwd,
         },

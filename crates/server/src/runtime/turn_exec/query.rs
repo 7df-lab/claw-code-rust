@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use devo_core::tools::{
-    AgentToolCoordinator, ClientFilesystem, ClientTerminal, ToolAgentScope, ToolCall,
-    ToolExecutionOptions, ToolRuntime, ToolRuntimeContext,
+    AgentToolCoordinator, ClientFilesystem, ToolAgentScope, ToolCall, ToolExecutionOptions,
+    ToolRuntime, ToolRuntimeContext,
 };
-use devo_core::{Message, QueryEvent, QueryOptions, TurnConfig, query_with_options};
+use devo_core::{Message, QueryEvent, QueryOptions, TurnConfig, query};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -60,8 +60,10 @@ impl ServerRuntime {
             }
             super::super::TurnInputMode::HiddenGoalContinuation { goal } => Some(goal.clone()),
         };
-        state.core.config.token_budget = turn_config.token_budget();
+        state.core.config.token_budget = turn_config
+            .token_budget_for_session(state.core.config.effective_context_window_override);
         state.core.collaboration_mode = collaboration_mode;
+        state.summary.collaboration_mode = collaboration_mode;
         if let Some(goal) = turn_goal {
             state.core.set_active_goal(goal);
         } else {
@@ -120,7 +122,6 @@ impl ServerRuntime {
                 collaboration_mode,
                 agent_coordinator: Some(Arc::clone(self) as Arc<dyn AgentToolCoordinator>),
                 client_filesystem: Some(Arc::clone(self) as Arc<dyn ClientFilesystem>),
-                client_terminal: Some(Arc::clone(self) as Arc<dyn ClientTerminal>),
                 file_read_ledger: Arc::clone(&state.file_read_ledger),
                 local_web_search: match &turn_config.web_search {
                     devo_core::ResolvedWebSearchConfig::Local(config) => Some(config.clone()),
@@ -161,15 +162,28 @@ impl ServerRuntime {
         // turn cleanly.  The tool-execution cancel guard already handles the
         // "cancel during tools" case (line ~1827).
         let result = {
-            let mut query_future = std::pin::pin!(query_with_options(
+            let provider = self.usage_ledger.instrumented_provider(
+                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                session_id,
+                Some(turn_id),
+                devo_protocol::canonical::usage::UsagePurpose::TurnQuery,
+            );
+            let compaction_provider = self.usage_ledger.instrumented_provider(
+                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                session_id,
+                Some(turn_id),
+                devo_protocol::canonical::usage::UsagePurpose::Compaction,
+            );
+            let mut query_future = std::pin::pin!(query(
                 &mut state.core,
                 turn_config,
-                runtime_context.provider_for_route(turn_config.provider_route.clone()),
+                provider,
                 registry,
                 &runtime,
                 Some(callback),
                 QueryOptions {
                     cancel_token: Some(query_cancel_token.clone()),
+                    compaction_provider: Some(compaction_provider),
                 },
             ));
             tokio::select! {

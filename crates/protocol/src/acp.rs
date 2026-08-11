@@ -18,11 +18,6 @@ pub const ACP_SESSION_SET_MODE_METHOD: &str = "session/set_mode";
 pub const ACP_SESSION_SET_CONFIG_OPTION_METHOD: &str = "session/set_config_option";
 pub const ACP_FS_READ_TEXT_FILE_METHOD: &str = "fs/read_text_file";
 pub const ACP_FS_WRITE_TEXT_FILE_METHOD: &str = "fs/write_text_file";
-pub const ACP_TERMINAL_CREATE_METHOD: &str = "terminal/create";
-pub const ACP_TERMINAL_OUTPUT_METHOD: &str = "terminal/output";
-pub const ACP_TERMINAL_WAIT_FOR_EXIT_METHOD: &str = "terminal/wait_for_exit";
-pub const ACP_TERMINAL_KILL_METHOD: &str = "terminal/kill";
-pub const ACP_TERMINAL_RELEASE_METHOD: &str = "terminal/release";
 pub const ACP_JSONRPC_VERSION: &str = "2.0";
 pub const DEVO_EXTENSION_METHOD_PREFIX: &str = "_devo/";
 pub const DEVO_ORIGINAL_METHOD_META: &str = "devo/originalMethod";
@@ -36,11 +31,27 @@ pub const DEVO_HISTORY_INDEX_META: &str = "devo/historyIndex";
 pub const DEVO_PARENT_MESSAGE_ID_META: &str = "devo/parentMessageId";
 pub const DEVO_ITEM_KIND_META: &str = "devo/itemKind";
 pub const DEVO_TURN_USAGE_META: &str = "devo/turnUsage";
+/// Top-level `_meta` object key that carries devo extension capabilities as
+/// a nested object, e.g. `_meta: { "devo": { "typedItems": true } }`.
+pub const DEVO_EXTENSION_META: &str = "devo";
+/// Capability key inside the `devo` extension meta object: the client opts
+/// in to native typed `item/started` / `item/completed` notifications
+/// carrying the canonical `ItemEnvelope` (P2, 06-item-model step 2).
+pub const DEVO_TYPED_ITEMS_META: &str = "typedItems";
 
 pub type AcpMeta = serde_json::Map<String, serde_json::Value>;
 
 pub use crate::acp_event_to_update::acp_notification_from_server_event;
 pub use crate::acp_event_to_update::original_event_from_acp_notification;
+
+/// Returns whether the given `_meta` map opts in to typed item
+/// notifications (`{ "devo": { "typedItems": true } }`).
+pub fn devo_typed_items_opted_in(meta: Option<&AcpMeta>) -> bool {
+    meta.and_then(|meta| meta.get(DEVO_EXTENSION_META))
+        .and_then(|devo| devo.get(DEVO_TYPED_ITEMS_META))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
 
 pub fn devo_extension_method(method: &str) -> String {
     format!("{DEVO_EXTENSION_METHOD_PREFIX}{method}")
@@ -76,7 +87,6 @@ mod tests {
     use crate::ServerEvent;
     use crate::SessionId;
     use crate::ToolCallPayload;
-    use crate::ToolResultPayload;
     use crate::TurnId;
     use crate::acp_client_io::*;
     use crate::acp_common::*;
@@ -594,16 +604,11 @@ mod tests {
             status: Some(AcpToolCallStatus::Completed),
             raw_input: Some(serde_json::json!({ "path": path_json.clone() })),
             raw_output: Some(serde_json::json!({ "changed": true })),
-            content: vec![
-                AcpToolCallContent::Diff {
-                    path: path.clone(),
-                    old_text: Some("old\n".to_string()),
-                    new_text: "new\n".to_string(),
-                },
-                AcpToolCallContent::Terminal {
-                    terminal_id: "term_1".to_string(),
-                },
-            ],
+            content: vec![AcpToolCallContent::Diff {
+                path: path.clone(),
+                old_text: Some("old\n".to_string()),
+                new_text: "new\n".to_string(),
+            }],
             locations: vec![AcpToolCallLocation {
                 path: path.clone(),
                 line: None,
@@ -627,10 +632,6 @@ mod tests {
                         "path": path_json.clone(),
                         "oldText": "old\n",
                         "newText": "new\n"
-                    },
-                    {
-                        "type": "terminal",
-                        "terminalId": "term_1"
                     }
                 ],
                 "locations": [
@@ -785,6 +786,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 1,
+                item_seq: None,
             },
             item: crate::ItemEnvelope {
                 item_id: ItemId::new(),
@@ -957,6 +959,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 1,
+                item_seq: None,
             },
             item: crate::ItemEnvelope {
                 item_id: ItemId::new(),
@@ -977,67 +980,6 @@ mod tests {
                 content: vec![AcpToolCallContent::content(AcpContentBlock::text(
                     "tests passed\n"
                 ))],
-                locations: Vec::new(),
-                meta: Some(turn_item_meta(&turn_id, &item_id)),
-            })
-        );
-    }
-
-    #[test]
-    fn tool_result_metadata_content_can_emit_terminal_content() {
-        let session_id = SessionId::new();
-        let turn_id = TurnId::new();
-        let item_id = ItemId::new();
-        let raw_output = serde_json::json!({
-            "content": [
-                {
-                    "type": "terminal",
-                    "terminalId": "term_1"
-                }
-            ],
-            "output": "done\n",
-            "truncated": false,
-            "exitStatus": {
-                "exitCode": 0,
-                "signal": null
-            }
-        });
-        let payload_value = serde_json::to_value(ToolResultPayload {
-            tool_call_id: "call-1".to_string(),
-            tool_name: Some("shell_command".to_string()),
-            input: Some(serde_json::json!({"command": "echo done"})),
-            content: raw_output.clone(),
-            display_content: None,
-            is_error: false,
-            summary: "Command executed".to_string(),
-        })
-        .expect("serialize tool result payload");
-        let event = ServerEvent::ItemCompleted(ItemEventPayload {
-            context: EventContext {
-                session_id,
-                turn_id: Some(turn_id),
-                item_id: Some(item_id),
-                seq: 1,
-            },
-            item: crate::ItemEnvelope {
-                item_id: ItemId::new(),
-                item_kind: ItemKind::ToolResult,
-                payload: payload_value,
-            },
-        });
-
-        assert_eq!(
-            strip_update_activity_at(acp_update_from_server_event(&event)),
-            Some(AcpSessionUpdate::ToolCallUpdate {
-                tool_call_id: "call-1".to_string(),
-                title: Some("Command executed".to_string()),
-                kind: Some(AcpToolKind::Execute),
-                status: Some(AcpToolCallStatus::Completed),
-                raw_input: Some(serde_json::json!({"command": "echo done"})),
-                raw_output: Some(raw_output),
-                content: vec![AcpToolCallContent::Terminal {
-                    terminal_id: "term_1".to_string(),
-                }],
                 locations: Vec::new(),
                 meta: Some(turn_item_meta(&turn_id, &item_id)),
             })
@@ -1093,6 +1035,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 0,
+                item_seq: None,
             },
             item: crate::ItemEnvelope {
                 item_id,
@@ -1141,6 +1084,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 seq: 0,
+                item_seq: None,
             },
             item: crate::ItemEnvelope {
                 item_id,
@@ -1179,7 +1123,6 @@ mod tests {
             turn_id,
             tool_call_id: "call-1".to_string(),
             status: "in_progress".to_string(),
-            terminal_id: None,
         });
         let (_, update_value) =
             acp_notification_from_server_event("tool_call/status_updated", &update);
@@ -1193,42 +1136,6 @@ mod tests {
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": "call-1",
                 "status": "in_progress",
-                "_meta": {
-                    "devo/turnId": turn_id.to_string()
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn tool_status_update_can_emit_terminal_content() {
-        let session_id = SessionId::new();
-        let turn_id = TurnId::new();
-        let update = ServerEvent::ToolCallStatusUpdated(crate::ToolCallStatusUpdatedPayload {
-            session_id,
-            turn_id,
-            tool_call_id: "call-1".to_string(),
-            status: "in_progress".to_string(),
-            terminal_id: Some("term_1".to_string()),
-        });
-        let (_, update_value) =
-            acp_notification_from_server_event("tool_call/status_updated", &update);
-        let mut update_json = update_value["update"].clone();
-        assert_activity_at(&update_json);
-        strip_json_activity_at(&mut update_json);
-
-        assert_eq!(
-            update_json,
-            serde_json::json!({
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": "call-1",
-                "status": "in_progress",
-                "content": [
-                    {
-                        "type": "terminal",
-                        "terminalId": "term_1"
-                    }
-                ],
                 "_meta": {
                     "devo/turnId": turn_id.to_string()
                 }
@@ -1248,6 +1155,7 @@ mod tests {
                     turn_id: None,
                     item_id: Some(item_id),
                     seq: 7,
+                    item_seq: None,
                 },
                 delta: "hello".to_string(),
                 stream_index: None,
@@ -1289,6 +1197,7 @@ mod tests {
                     turn_id: None,
                     item_id: Some(reasoning_item_id),
                     seq: 8,
+                    item_seq: None,
                 },
                 delta: "thinking".to_string(),
                 stream_index: None,

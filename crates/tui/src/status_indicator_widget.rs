@@ -34,20 +34,40 @@ use crate::wrapping::word_wrap_lines;
 pub(crate) const STATUS_DETAILS_DEFAULT_MAX_LINES: usize = 3;
 const DETAILS_PREFIX: &str = "  └ ";
 const STATUS_ANIMATION_INTERVAL: Duration = Duration::from_millis(80);
-const TIP_ROTATION_INTERVAL: Duration = Duration::from_secs(6);
-const WORKING_TIPS: &[&str] = &[
+pub(crate) const TIP_ROTATION_INTERVAL: Duration = Duration::from_secs(6);
+pub(crate) const WORKING_TIPS: &[&str] = &[
     "You can type your next message while Devo is working; it will be queued.",
     "Press ESC twice to stop the current turn.",
     "Use /model to switch models for the next turn.",
     "Use /compact when a long session starts losing focus.",
     "Enter '@' to mention file paths when you want Devo to edit specific files.",
+    "@: mention files | ! to run a shell command",
     "Queue follow-up instructions while Devo is working; they will run next.",
     "Use /resume to continue a previous session.",
     "Use /new to start fresh when the current session has too much context.",
     "Keep prompts narrow when you want a small, low-risk code change.",
     "Press SHIFT+TAB to switch modes.",
     "Enter '!' to enter SHELL mode; press SHIFT+TAB to switch modes.",
+    "Press Ctrl+S to add guidance without waiting for the turn to finish.",
+    "You can also send messages while Devo is working; they enter the wait queue.",
+    "Use /status to check current token and context usage.",
+    "Use /settings to change the compact limit, theme, and more.",
 ];
+
+/// Tip text for `elapsed` wall time, rotating every [`TIP_ROTATION_INTERVAL`].
+pub(crate) fn rotating_working_tip(elapsed: Duration) -> Option<&'static str> {
+    if WORKING_TIPS.is_empty() {
+        return None;
+    }
+    let interval_secs = TIP_ROTATION_INTERVAL.as_secs().max(1);
+    let index = (elapsed.as_secs() / interval_secs) as usize % WORKING_TIPS.len();
+    Some(WORKING_TIPS[index])
+}
+
+/// Composer placeholder string for the tip at `elapsed` (`Tip: …`).
+pub(crate) fn composer_tip_placeholder(elapsed: Duration) -> Option<String> {
+    rotating_working_tip(elapsed).map(|tip| format!("Tip: {tip}"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatusDetailsCapitalization {
@@ -252,13 +272,10 @@ impl StatusIndicatorWidget {
     }
 
     fn working_tip_at(&self, elapsed: Duration) -> Option<&'static str> {
-        if !self.show_working_tip || WORKING_TIPS.is_empty() {
+        if !self.show_working_tip {
             return None;
         }
-
-        let interval_secs = TIP_ROTATION_INTERVAL.as_secs().max(1);
-        let index = (elapsed.as_secs() / interval_secs) as usize % WORKING_TIPS.len();
-        Some(WORKING_TIPS[index])
+        rotating_working_tip(elapsed)
     }
 
     fn working_tip_line(&self, width: u16, elapsed: Duration) -> Option<Line<'static>> {
@@ -431,6 +448,18 @@ mod tests {
         assert_eq!(
             widget.working_tip_at(Duration::from_secs(6)),
             Some(WORKING_TIPS[1])
+        );
+    }
+
+    #[test]
+    fn composer_tip_placeholder_reuses_working_tips() {
+        assert_eq!(
+            composer_tip_placeholder(Duration::ZERO),
+            Some(format!("Tip: {}", WORKING_TIPS[0]))
+        );
+        assert_eq!(
+            composer_tip_placeholder(Duration::from_secs(6)),
+            Some(format!("Tip: {}", WORKING_TIPS[1]))
         );
     }
 

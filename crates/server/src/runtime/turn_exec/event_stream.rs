@@ -118,9 +118,14 @@ pub(crate) fn spawn_turn_event_stream(
                         .start(&runtime, session_id, turn_for_events.turn_id)
                         .await;
                 }
-                devo_core::QueryEvent::ContextCompactionCompleted => {
+                devo_core::QueryEvent::ContextCompactionCompleted { compacted_items } => {
                     context_compaction
-                        .complete(&runtime, session_id, turn_for_events.turn_id)
+                        .complete(
+                            &runtime,
+                            session_id,
+                            turn_for_events.turn_id,
+                            compacted_items,
+                        )
                         .await;
                 }
                 devo_core::QueryEvent::ContextCompactionFailed { message } => {
@@ -213,7 +218,6 @@ pub(crate) fn spawn_turn_event_stream(
                                 turn_id: turn_for_events.turn_id,
                                 tool_call_id: id,
                                 status: "in_progress".to_string(),
-                                terminal_id: None,
                             },
                         ))
                         .await;
@@ -437,6 +441,7 @@ async fn handle_reasoning_delta(
                     turn_id: Some(turn_id),
                     item_id: Some(item_id),
                     seq: 0,
+                    item_seq: None,
                 },
                 delta: text,
                 stream_index: None,
@@ -713,20 +718,6 @@ async fn handle_tool_progress(
             None => message,
         }),
         devo_core::tools::ToolProgress::Completion { summary } => Some(summary),
-        devo_core::tools::ToolProgress::Terminal { terminal_id } => {
-            runtime
-                .broadcast_event(ServerEvent::ToolCallStatusUpdated(
-                    devo_protocol::ToolCallStatusUpdatedPayload {
-                        session_id,
-                        turn_id,
-                        tool_call_id: tool_use_id.clone(),
-                        status: "in_progress".to_string(),
-                        terminal_id: Some(terminal_id),
-                    },
-                ))
-                .await;
-            None
-        }
     };
     let Some(content) = content else {
         return;
@@ -744,6 +735,7 @@ async fn handle_tool_progress(
                     turn_id: Some(turn_id),
                     item_id,
                     seq: 0,
+                    item_seq: None,
                 },
                 delta: serde_json::json!({
                     "tool_use_id": tool_use_id,

@@ -3,4 +3,4 @@
 - Returns matching file paths sorted by modification time when supported by the runtime
 - Use this tool when you need to find files by name patterns
 - When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead when available
-- When code_search is available, prefer it for codebase investigation, related-code lookup, module discovery, or natural-language searches
+- Prefer name/pattern matching with this tool. If a semantic code_search MCP tool is available and loaded, prefer that for related-code lookup and natural-language searches

@@ -270,6 +270,7 @@ pub fn build_runtime(
             Arc::clone(&provider),
             Arc::new(SingleProviderRouter::new(provider)),
             Arc::new(create_default_tool_registry()),
+            devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::default()),
             Arc::new(ProviderVendorCatalog::default()),

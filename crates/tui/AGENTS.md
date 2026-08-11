@@ -78,7 +78,7 @@ trait Renderable {
 
 All conversation transcript entries implement `HistoryCell`:
 
-- `display_lines(width)` — lines rendered in the main chat viewport. These may be truncated or compact (e.g., `ToolResultCell` shows only 5 preview rows).
+- `display_lines(width)` — lines rendered in the main chat viewport. These may be truncated or compact (e.g., `ToolResultCell` shows only 3 preview rows).
 - `transcript_lines(width)` — lines rendered in the Ctrl+T pager overlay. These should be complete. Override when the pager view differs from the inline view (e.g., `ExecCell` shows full command output with `$` prefix and exit status).
 - When adding a new cell variant, implement both methods. If they are identical, only implement `display_lines` (the default `transcript_lines` delegates to it).
 - Cells that animate over time (spinners, shimmer) should implement `transcript_animation_tick()` and update an internal timestamp. The transcript overlay cache key is invalidated when the active cell revision changes.

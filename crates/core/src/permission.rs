@@ -488,7 +488,8 @@ impl Default for ApprovalPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
     Default,
-    AutoApprove,
+    #[serde(alias = "auto_approve")]
+    Yolo,
     Deny,
 }
 
@@ -571,7 +572,7 @@ pub enum AutoReviewerStatus {
 
 /// Authorize a tool request through the four-layer pipeline.
 ///
-/// Layer 1 — PermissionMode override (AutoApprove/Deny)
+/// Layer 1 — PermissionMode override (Yolo/Deny)
 /// Layer 2 — Profile evaluation against RuntimePermissionProfile
 /// Layer 3 — Approval cache check
 /// Layer 4 — Return Ask for user prompt (handled by server)
@@ -583,7 +584,7 @@ pub fn authorize_tool_request(
 ) -> PermissionDecision {
     // Layer 1 — PermissionMode override
     match policy.permission_mode {
-        PermissionMode::AutoApprove => return PermissionDecision::Allow,
+        PermissionMode::Yolo => return PermissionDecision::Allow,
         PermissionMode::Deny => {
             return PermissionDecision::Deny {
                 reason: "permission mode is Deny".into(),
@@ -951,7 +952,7 @@ mod tests {
     // ── authorize_tool_request ───────────────────────────────────
 
     #[test]
-    fn auto_approve_mode_allows_everything() {
+    fn yolo_mode_allows_everything() {
         let request = ToolPermissionRequest {
             tool_name: "shell".into(),
             tool_category: ToolCategory::Command,
@@ -973,7 +974,7 @@ mod tests {
         };
         let mut cache = ApprovalCache::new();
         let policy = ApprovalPolicy {
-            permission_mode: PermissionMode::AutoApprove,
+            permission_mode: PermissionMode::Yolo,
             ..Default::default()
         };
 

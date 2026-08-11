@@ -43,6 +43,8 @@ fn onboarding_widget_with_models(
         initial_reasoning_effort_selection: None,
         initial_permission_preset: devo_protocol::PermissionPreset::Default,
         initial_sandbox_profile: Some("workspace".to_string()),
+        initial_compaction_token_limit: None,
+        initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
         initial_user_message: None,
         enhanced_keys_supported: true,
         is_first_run: false,
@@ -149,16 +151,36 @@ fn model_selection_footer_stays_visible_in_short_viewport() {
         widget.handle_key_event(press_key(KeyCode::Down));
     }
 
-    let rows = rendered_rows(&widget, 80, 8).join("\n");
+    let height = widget.desired_height(80);
+    let rows = rendered_rows(&widget, 80, height).join("\n");
     assert!(
         rows.contains("model-10"),
         "expected selected model in:\n{rows}"
+    );
+    assert!(
+        rows.contains("↓ more") || rows.contains("↑ more"),
+        "expected scroll overflow marker in:\n{rows}"
+    );
+    assert!(
+        !rows.contains("Model 10 Display Name"),
+        "display name subtitle should not render:\n{rows}"
     );
     assert!(
         rows.contains("Enter select  ·  Esc cancel"),
         "expected fixed onboarding footer in:\n{rows}"
     );
     assert!(!rows.contains("Complete onboarding to start chatting"));
+
+    // Short viewports still keep selection + footer visible (overflow markers may clip).
+    let short = rendered_rows(&widget, 80, 8).join("\n");
+    assert!(
+        short.contains("model-10"),
+        "expected selected model in short viewport:\n{short}"
+    );
+    assert!(
+        short.contains("Enter select  ·  Esc cancel"),
+        "expected fixed onboarding footer in short viewport:\n{short}"
+    );
 }
 
 #[test]
@@ -197,7 +219,10 @@ fn onboarding_completion_appends_header_after_success_record() {
     });
 
     assert_eq!(widget.is_onboarding_active(), false);
-    assert_eq!(widget.placeholder_text(), "Ask Devo");
+    assert_eq!(
+        widget.placeholder_text(),
+        format!("Tip: {}", crate::status_indicator_widget::WORKING_TIPS[0])
+    );
     assert_eq!(
         widget.current_model().map(|model| model.slug.as_str()),
         Some("deepseek-v4-flash")

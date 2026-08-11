@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use devo_core::{SessionId, TurnError, TurnStatus, TurnUsage};
-use devo_protocol::{SessionHistoryItem, SessionHistoryItemKind, TurnFailedPayload};
+use devo_protocol::{
+    SessionHistoryItem, SessionHistoryItemKind, SessionHistoryMetadata, TurnFailedPayload,
+};
 
 use super::super::ServerRuntime;
 use super::super::subagent_usage::ParentUsageSnapshot;
@@ -92,6 +94,7 @@ impl ServerRuntime {
             .map(|error| TurnError {
                 code: error.code,
                 message: error.message,
+                recovery_hint: error.recovery_hint,
             });
         if let Some(snapshot) = usage_snapshot {
             session_total_input_tokens = snapshot.session_totals.input_tokens;
@@ -158,7 +161,7 @@ impl ServerRuntime {
         } else {
             state.core.last_turn_interrupted = false;
         }
-        self.clear_btw_input_queue(state, session_id).await;
+        self.clear_steer_input_queue(state, session_id).await;
         self.append_terminal_turn_record(
             state,
             session_id,
@@ -227,11 +230,27 @@ impl ServerRuntime {
         state.summary.total_cache_creation_tokens = session_total_cache_creation_tokens;
         state.summary.total_cache_read_tokens = session_total_cache_read_tokens;
         state.summary.prompt_token_estimate = session_prompt_token_estimate;
+        let last_input_for_stats = latest_query_usage
+            .as_ref()
+            .map(|usage| usage.input_tokens as usize)
+            .unwrap_or(session_last_input_tokens);
         if let Some(usage) = latest_query_usage {
             // Context length uses latest-query display total, not session
             // cumulative total_input/output/tokens.
             state.summary.last_query_usage = Some(usage.clone());
             state.summary.last_query_total_tokens = usage.display_total_tokens();
+            state.core.last_input_tokens = usage.input_tokens as usize;
+            state.core.last_turn_tokens = usage.display_total_tokens();
+            if let Some(raw) = state.core.raw_context_breakdown {
+                let window = effective_context_window_tokens(state, self);
+                let occupancy = super::super::context_occupancy::occupancy_from_raw(
+                    window,
+                    raw,
+                    usage.display_total_tokens() as u64,
+                );
+                state.core.last_turn_tokens = occupancy.total_tokens as usize;
+                state.summary.last_context_occupancy = Some(occupancy);
+            }
         }
         state.core.total_input_tokens = session_total_input_tokens;
         state.core.total_output_tokens = session_total_output_tokens;
@@ -245,13 +264,12 @@ impl ServerRuntime {
                 total_tokens: session_total_tokens,
                 total_cache_creation_tokens: session_total_cache_creation_tokens,
                 total_cache_read_tokens: session_total_cache_read_tokens,
-                last_input_tokens: final_turn
-                    .usage
-                    .as_ref()
-                    .map(|usage| usage.input_tokens as usize)
-                    .unwrap_or(session_last_input_tokens),
+                // Persist latest-query input only — turn-aggregate usage would
+                // inflate auto-compact after resume via hydrate.
+                last_input_tokens: last_input_for_stats,
                 turn_count: state.summary.updated_at.timestamp() as usize,
                 prompt_token_estimate: session_prompt_token_estimate,
+                last_context_occupancy: state.summary.last_context_occupancy.clone(),
             };
             if let Err(err) = self.deps.db.update_stats(&session_id, &stats) {
                 tracing::warn!(
@@ -264,23 +282,82 @@ impl ServerRuntime {
         final_turn
     }
 
-    async fn clear_btw_input_queue(
+    async fn clear_steer_input_queue(
         self: &Arc<Self>,
         state: &SessionActorState,
         session_id: SessionId,
     ) {
         let is_ephemeral = state.summary.ephemeral;
-        let btw_input_queue = Arc::clone(&state.btw_input_queue);
-        btw_input_queue
-            .lock()
-            .expect("btw input queue mutex should not be poisoned")
-            .clear();
-        if !is_ephemeral && let Err(err) = self.deps.db.clear_pending(&session_id, QueueType::Btw) {
-            tracing::warn!(
-                session_id = %session_id,
-                error = %err,
-                "failed to clear btw input messages from database"
-            );
+        let steer_input_queue = Arc::clone(&state.steer_input_queue);
+        let leftover: Vec<devo_core::PendingInputItem> = {
+            let mut queue = steer_input_queue
+                .lock()
+                .expect("steer input queue mutex should not be poisoned");
+            queue.drain(..).collect()
+        };
+        if !leftover.is_empty() {
+            // Any unconsumed steer degrades into the session turn queue
+            // (01 §4.3); normally `SessionState::end_turn` already moved
+            // them, this covers terminal paths that skip it.
+            let mut queue = state
+                .pending_turn_queue
+                .lock()
+                .expect("pending turn queue mutex should not be poisoned");
+            for item in &leftover {
+                queue.push_back(item.clone());
+            }
+        }
+        if !is_ephemeral {
+            // The database mirrors the same degradation, but only for ids that
+            // remain in the shared in-memory turn queue. A steer already
+            // drained by follow-up scheduling was consumed into its next turn;
+            // retaining or moving its steer row would leave an orphan and make
+            // a restart resurrect a duplicate. Every other steer row is dropped.
+            let queued_ids: std::collections::HashSet<devo_core::PendingInputId> = state
+                .pending_turn_queue
+                .lock()
+                .expect("pending turn queue mutex should not be poisoned")
+                .iter()
+                .map(|item| item.id)
+                .collect();
+            match self.deps.db.drain_pending(&session_id, QueueType::Steer) {
+                Ok(rows) => {
+                    for item in &rows {
+                        if !queued_ids.contains(&item.id) {
+                            continue;
+                        }
+                        if let Err(error) =
+                            self.deps
+                                .db
+                                .push_pending(&session_id, QueueType::Turn, item)
+                        {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = %error,
+                                "failed to degrade steer input into the turn queue"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %err,
+                        "failed to drain steer input messages from database"
+                    );
+                }
+            }
+        }
+        for item in &leftover {
+            self.broadcast_queue_updated(
+                session_id,
+                devo_protocol::canonical::queue::QueueChange::Added,
+                devo_protocol::canonical::ids::QueueItemId::from_legacy_uuid(uuid::Uuid::from(
+                    item.id,
+                )),
+                None,
+            )
+            .await;
         }
     }
 
@@ -295,8 +372,17 @@ impl ServerRuntime {
         let record = state.record.clone();
         let turn_context = state.core.latest_turn_context.clone();
         let session_context = state.core.session_context.clone();
-        let mut turn_record = build_turn_record(final_turn, None, turn_context, latest_query_usage);
+        let mut turn_record = build_turn_record(
+            final_turn,
+            None,
+            turn_context,
+            latest_query_usage,
+            state.summary.last_context_occupancy.clone(),
+        );
         turn_record.error = terminal_error;
+        state
+            .turn_records_by_id
+            .insert(turn_record.id, turn_record.clone());
         if let Some(record) = record
             && let Err(error) = self.rollout_store.append_turn_deduped(
                 &record,
@@ -344,6 +430,7 @@ impl ServerRuntime {
                     error: terminal_error.map(|error| devo_protocol::TurnErrorPayload {
                         code: error.code.clone(),
                         message: error.message.clone(),
+                        recovery_hint: error.recovery_hint.clone(),
                     }),
                 }))
                 .await;
@@ -372,7 +459,54 @@ impl ServerRuntime {
             },
         ))
         .await;
+        if let Some(occupancy) = state.summary.last_context_occupancy.clone() {
+            self.broadcast_event(crate::ServerEvent::ContextUsageUpdated(
+                crate::ContextUsageUpdatedPayload {
+                    session_id,
+                    occupancy,
+                },
+            ))
+            .await;
+        }
     }
+}
+
+fn effective_context_window_tokens(state: &SessionActorState, runtime: &ServerRuntime) -> u64 {
+    let model = state
+        .core
+        .latest_turn_context
+        .as_ref()
+        .map(|context| &context.model)
+        .or_else(|| {
+            state
+                .summary
+                .model
+                .as_deref()
+                .and_then(|slug| runtime.deps.model_catalog.get(slug))
+        });
+    let Some(model) = model else {
+        return state
+            .core
+            .config
+            .effective_context_window_override
+            .or(state.core.config.token_budget.auto_compact_token_limit)
+            .map(|limit| limit as u64)
+            .unwrap_or(0);
+    };
+    let global = runtime
+        .deps
+        .config_store
+        .lock()
+        .expect("app config store mutex should not be poisoned")
+        .effective_config()
+        .compaction_token_limit;
+    // Live session override (from a hot global apply) wins; otherwise resolve
+    // from the global preference / model default.
+    if let Some(limit) = state.core.config.effective_context_window_override {
+        let model_window = u64::from(model.context_window.max(1));
+        return (limit as u64).min(model_window).max(1);
+    }
+    crate::runtime::context_occupancy::resolved_compaction_limit(global, model)
 }
 
 fn append_terminal_history_items(
@@ -381,10 +515,14 @@ fn append_terminal_history_items(
     terminal_error: Option<&TurnError>,
 ) {
     if let Some(error) = terminal_error {
+        let title = error
+            .recovery_hint
+            .clone()
+            .unwrap_or_else(|| error.code.clone());
         state.history_items.push(SessionHistoryItem::new(
             None,
             SessionHistoryItemKind::Error,
-            error.code.clone(),
+            title,
             error.message.clone(),
         ));
     }
@@ -405,7 +543,9 @@ fn append_terminal_history_items(
         title: final_turn.model.clone(),
         body: outcome.to_string(),
         tool_io: None,
-        metadata: None,
+        metadata: Some(SessionHistoryMetadata::TurnSummary {
+            collaboration_mode: state.core.collaboration_mode,
+        }),
         duration_ms: duration_secs,
     });
 }

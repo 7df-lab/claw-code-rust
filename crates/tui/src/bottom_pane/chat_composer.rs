@@ -57,7 +57,7 @@
 //!
 //! The bottom pane owns the active input mode and passes it into the composer for footer rendering.
 //! The composer renders the uppercase mode label as the first passive bottom status-line field and
-//! colors the bottom input marker `┃` with the active [`InputMode`] color.
+//! colors the bottom input marker `❯` with the active [`InputMode`] color.
 //!
 //! Mode-changing keys and shell-prefix parsing are handled by the bottom pane before normal text
 //! editing: `Shift+Tab` toggles Build <-> Plan, bare `!` enters Shell Mode with an empty draft,
@@ -146,7 +146,6 @@ use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::StatefulWidgetRef;
 use ratatui::widgets::WidgetRef;
@@ -189,7 +188,7 @@ use crate::render::Insets;
 use crate::render::RectExt;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
-use crate::style::user_message_style;
+use crate::style::user_message_rule_line;
 use devo_protocol::ReferenceSearchSnapshot;
 use devo_protocol::user_input::TextElement;
 use devo_protocol::user_input::Utf8ByteSpan as ByteRange;
@@ -342,6 +341,9 @@ pub(crate) struct ChatComposer {
     #[cfg(not(target_os = "linux"))]
     next_element_id: u64,
     context_window_used_tokens: Option<i64>,
+    /// Optional custom right-side context label (e.g. progress bar + token counts).
+    /// When set, it takes precedence over `context_window_percent` / used-token fallbacks.
+    context_window_label: Option<String>,
     skills: Option<Vec<SkillMetadata>>,
     plugins: Option<Vec<PluginCapabilitySummary>>,
     connectors_snapshot: Option<ConnectorsSnapshot>,
@@ -466,6 +468,7 @@ impl ChatComposer {
             #[cfg(not(target_os = "linux"))]
             next_element_id: 0,
             context_window_used_tokens: None,
+            context_window_label: None,
             skills: None,
             plugins: None,
             connectors_snapshot: None,
@@ -1314,6 +1317,28 @@ impl ChatComposer {
 
     pub(crate) fn insert_str(&mut self, text: &str) {
         self.textarea.insert_str(text);
+        self.sync_popups();
+    }
+
+    /// Insert `display` as a highlighted atomic chip bound to a model-facing value.
+    ///
+    /// `display` must be a mention-shaped token (e.g. `@get_current_time`) so the
+    /// existing submit/history mention machinery can restore and expand it.
+    pub(crate) fn insert_bound_element(&mut self, display: &str, binding_path: &str) {
+        let Some(mention) = Self::mention_name_from_insert_text(display) else {
+            self.insert_str(display);
+            self.insert_str(" ");
+            return;
+        };
+        let id = self.textarea.insert_element(display);
+        self.mention_bindings.insert(
+            id,
+            ComposerMentionBinding {
+                mention,
+                path: binding_path.to_string(),
+            },
+        );
+        self.textarea.insert_str(" ");
         self.sync_popups();
     }
 
@@ -3180,6 +3205,14 @@ impl ChatComposer {
         self.context_window_used_tokens = used_tokens;
     }
 
+    pub(crate) fn set_context_window_label(&mut self, label: Option<String>) -> bool {
+        if self.context_window_label == label {
+            return false;
+        }
+        self.context_window_label = label;
+        true
+    }
+
     #[allow(dead_code)]
     pub(crate) fn set_esc_backtrack_hint(&mut self, show: bool) {
         self.esc_backtrack_hint = show;
@@ -3426,14 +3459,20 @@ impl ChatComposer {
                         show_queue_hint,
                     )
                 };
-                let right_line = if status_line_active {
-                    None
-                } else {
-                    Some(context_window_line(
-                        footer_props.context_window_percent,
-                        footer_props.context_window_used_tokens,
-                    ))
-                };
+                let right_line = self
+                    .context_window_label
+                    .as_ref()
+                    .map(|label| Line::from(label.clone()).dim())
+                    .or_else(|| {
+                        if status_line_active {
+                            None
+                        } else {
+                            Some(context_window_line(
+                                footer_props.context_window_percent,
+                                footer_props.context_window_used_tokens,
+                            ))
+                        }
+                    });
                 let right_width = right_line.as_ref().map(|l| l.width() as u16).unwrap_or(0);
                 let can_show_left_and_context =
                     can_show_left_with_context(hint_rect, left_width, right_width);
@@ -3561,12 +3600,27 @@ impl ChatComposer {
         mask_char: Option<char>,
     ) {
         let is_zellij = self.is_zellij;
-        let style = user_message_style();
-        let textarea_style = style.fg(ratatui::style::Color::Reset);
-        Block::default().style(style).render_ref(composer_rect, buf);
+        let textarea_style = Style::default().fg(ratatui::style::Color::Reset);
+        if composer_rect.height > 0 && composer_rect.width > 0 {
+            let top = Rect {
+                x: composer_rect.x,
+                y: composer_rect.y,
+                width: composer_rect.width,
+                height: 1,
+            };
+            Paragraph::new(user_message_rule_line(composer_rect.width)).render_ref(top, buf);
+            if composer_rect.height > 1 {
+                let bottom = Rect {
+                    x: composer_rect.x,
+                    y: composer_rect.y + composer_rect.height - 1,
+                    width: composer_rect.width,
+                    height: 1,
+                };
+                Paragraph::new(user_message_rule_line(composer_rect.width)).render_ref(bottom, buf);
+            }
+        }
         if !remote_images_rect.is_empty() {
             Paragraph::new(self.remote_images_lines(remote_images_rect.width))
-                .style(style)
                 .render_ref(remote_images_rect, buf);
         }
         if is_zellij && !textarea_rect.is_empty() {
@@ -3578,15 +3632,9 @@ impl ChatComposer {
                 .map(InputMode::color)
                 .unwrap_or(self.accent_color);
             let prompt = if self.input_enabled {
-                if is_zellij {
-                    Span::styled("┃", style.fg(mode_color))
-                } else {
-                    Span::styled("┃", Style::default().fg(mode_color))
-                }
-            } else if is_zellij {
-                Span::styled("┃", style.fg(ratatui::style::Color::DarkGray))
+                Span::styled("❯", Style::default().fg(mode_color))
             } else {
-                "┃".dark_gray()
+                "❯".dark_gray()
             };
             buf.set_span(
                 textarea_rect.x - LIVE_PREFIX_COLS,
@@ -3822,7 +3870,7 @@ mod reference_popup_tests {
 
         assert_eq!(
             composer.handle_key_event(press(KeyCode::Enter)),
-            (InputResult::Command(SlashCommand::Model), true)
+            (InputResult::Command(SlashCommand::Skills), true)
         );
         assert_eq!(composer.current_text(), "");
     }

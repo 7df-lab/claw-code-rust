@@ -4,6 +4,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::task;
 
+#[path = "support/rollout.rs"]
+mod support;
+
 use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -412,6 +415,215 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
 }
 
 #[tokio::test]
+async fn resume_restores_plan_collaboration_mode_from_latest_turn() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let runtime = build_runtime(data_root.path())?;
+    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
+
+    let start_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 1,
+                "method": "session/start",
+                "params": {
+                    "cwd": data_root.path(),
+                    "ephemeral": false,
+                    "title": "Plan mode session",
+                    "model": "test-model"
+                }
+            }),
+        )
+        .await
+        .context("session/start response")?;
+    let session_id = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionStartResult>,
+    >(start_response)?
+    .result
+    .session
+    .session_id;
+
+    let turn_start_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 2,
+                "method": "_devo/turn/start",
+                "params": {
+                    "session_id": session_id,
+                    "input": [{ "type": "text", "text": "draft a plan" }],
+                    "sandbox": null,
+                    "approval_policy": null,
+                    "cwd": null,
+                    "collaboration_mode": "plan"
+                }
+            }),
+        )
+        .await
+        .context("turn/start response")?;
+    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+        serde_json::from_value(turn_start_response)?;
+
+    wait_for_turn_completed(&mut notifications_rx).await?;
+
+    let rebuilt_runtime = build_runtime(data_root.path())?;
+    rebuilt_runtime.load_persisted_sessions().await?;
+    let (rebuilt_connection_id, _rebuilt_notifications_rx) =
+        initialize_connection(&rebuilt_runtime).await?;
+
+    let resume_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 3,
+                "method": "_devo/session/resume",
+                "params": {
+                    "session_id": session_id
+                }
+            }),
+        )
+        .await
+        .context("session/resume response")?;
+    let resume_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    >(resume_response)?
+    .result;
+
+    assert_eq!(
+        resume_result.session.collaboration_mode,
+        devo_protocol::CollaborationMode::Plan
+    );
+    let turn_summary = resume_result
+        .history_items
+        .iter()
+        .rev()
+        .find(|item| item.kind == SessionHistoryItemKind::TurnSummary)
+        .expect("resumed plan turn should include a turn summary");
+    assert_eq!(
+        turn_summary.metadata,
+        Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
+            collaboration_mode: devo_protocol::CollaborationMode::Plan,
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_restores_session_permission_preset_and_plan_mode_without_turn() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let runtime = build_runtime(data_root.path())?;
+    let (connection_id, _notifications_rx) = initialize_connection(&runtime).await?;
+
+    let start_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 1,
+                "method": "session/start",
+                "params": {
+                    "cwd": data_root.path(),
+                    "ephemeral": false,
+                    "title": "Session overrides",
+                    "model": "test-model"
+                }
+            }),
+        )
+        .await
+        .context("session/start response")?;
+    let start_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionStartResult>,
+    >(start_response)?
+    .result;
+    let session_id = start_result.session.session_id;
+    let started_model = start_result.session.model.clone();
+
+    let permissions_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 2,
+                "method": "_devo/session/permissions/update",
+                "params": {
+                    "session_id": session_id,
+                    "preset": "full-access"
+                }
+            }),
+        )
+        .await
+        .context("session/permissions/update response")?;
+    let permissions_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionPermissionsUpdateResult>,
+    >(permissions_response)?
+    .result;
+    assert_eq!(
+        permissions_result.preset,
+        devo_protocol::PermissionPreset::FullAccess
+    );
+
+    let metadata_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 3,
+                "method": "_devo/session/metadata/update",
+                "params": {
+                    "session_id": session_id,
+                    "collaboration_mode": "plan"
+                }
+            }),
+        )
+        .await
+        .context("session/metadata/update response")?;
+    let metadata_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionMetadataUpdateResult>,
+    >(metadata_response)?
+    .result;
+    assert_eq!(
+        metadata_result.session.collaboration_mode,
+        devo_protocol::CollaborationMode::Plan
+    );
+    assert_eq!(
+        metadata_result.session.permission_preset,
+        Some(devo_protocol::PermissionPreset::FullAccess)
+    );
+    assert_eq!(metadata_result.session.model, started_model);
+
+    drop(runtime);
+    let rebuilt_runtime = build_runtime(data_root.path())?;
+    rebuilt_runtime.load_persisted_sessions().await?;
+    let (connection_id, _notifications_rx) = initialize_connection(&rebuilt_runtime).await?;
+
+    let resume_response = rebuilt_runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 4,
+                "method": "_devo/session/resume",
+                "params": {
+                    "session_id": session_id
+                }
+            }),
+        )
+        .await
+        .context("session/resume response")?;
+    let resume_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    >(resume_response.clone())
+    .with_context(|| format!("decode session/resume response: {resume_response}"))?
+    .result;
+
+    assert_eq!(
+        resume_result.session.collaboration_mode,
+        devo_protocol::CollaborationMode::Plan
+    );
+    assert_eq!(
+        resume_result.session.permission_preset,
+        Some(devo_protocol::PermissionPreset::FullAccess)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
@@ -543,9 +755,12 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
         rebuilt_result.session.title.as_deref(),
         Some("Rollout persistence follow-up")
     );
+    // v2 title-update lines deliberately drop the title lifecycle (a derived
+    // cache in the canonical model); any Final variant is preserved, which
+    // keeps suppressing regeneration of the recorded title.
     assert_eq!(
         rebuilt_result.session.title_state,
-        devo_core::SessionTitleState::Final(devo_core::SessionTitleFinalSource::UserRename)
+        devo_core::SessionTitleState::Final(devo_core::SessionTitleFinalSource::ExplicitCreate)
     );
     Ok(())
 }
@@ -748,6 +963,7 @@ async fn resume_normalizes_historical_default_reasoning_effort() -> Result<()> {
             ),
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
+            effective_context_window: None,
             tokens_used: 0,
             first_user_message: None,
             archived_at: None,
@@ -757,6 +973,8 @@ async fn resume_normalizes_historical_default_reasoning_effort() -> Result<()> {
             parent_session_id: None,
             session_context: None,
             latest_turn_context: None,
+            collaboration_mode: None,
+            permission_preset: None,
             schema_version: 2,
         };
         let turn = TurnRecord {
@@ -775,6 +993,7 @@ async fn resume_normalizes_historical_default_reasoning_effort() -> Result<()> {
             input_token_estimate: None,
             usage: None,
             latest_query_usage: None,
+            context_occupancy: None,
             stop_reason: None,
             failure_reason: None,
             error: None,
@@ -867,6 +1086,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
     let terminal_error = TurnError {
         code: "PROVIDER_SERVER_ERROR".to_string(),
         message: "exact persisted provider failure".to_string(),
+        recovery_hint: None,
     };
     let session = SessionRecord {
         id: session_id,
@@ -891,6 +1111,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         ),
         sandbox_policy: "workspace-write".into(),
         approval_mode: "on-request".into(),
+        effective_context_window: None,
         tokens_used: 0,
         first_user_message: Some("failing prompt".into()),
         archived_at: None,
@@ -900,6 +1121,8 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         parent_session_id: None,
         session_context: None,
         latest_turn_context: None,
+        collaboration_mode: None,
+        permission_preset: None,
         schema_version: 2,
     };
     let failed_running = TurnRecord {
@@ -918,6 +1141,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         input_token_estimate: None,
         usage: None,
         latest_query_usage: None,
+        context_occupancy: None,
         stop_reason: None,
         failure_reason: None,
         error: None,
@@ -1059,7 +1283,9 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         title: "test-model".to_string(),
         body: "failed".to_string(),
         tool_io: None,
-        metadata: None,
+        metadata: Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
+            collaboration_mode: devo_protocol::CollaborationMode::Build,
+        }),
         duration_ms: Some(2),
     };
     let terminal_index = resume
@@ -1179,6 +1405,9 @@ async fn runtime_recovers_session_when_middle_rollout_line_is_corrupted() -> Res
     lines[2] = "{\"Turn\":{\"timestamp\":\"broken\"".to_string();
     std::fs::write(&rollout_path, format!("{}\n", lines.join("\n")))?;
 
+    // Fail closed (05 §2.2): a damaged mid-file line marks the session
+    // damaged — it is skipped at load and refuses to resume, rather than
+    // silently dropping the history after the damage.
     let rebuilt_runtime = build_runtime(data_root.path())?;
     rebuilt_runtime.load_persisted_sessions().await?;
     let (rebuilt_connection_id, _notifications_rx) =
@@ -1197,17 +1426,10 @@ async fn runtime_recovers_session_when_middle_rollout_line_is_corrupted() -> Res
         )
         .await
         .context("session/resume response")?;
-    let resume_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
-    >(resume_response)?
-    .result;
-
-    assert_eq!(resume_result.session.session_id, session_id);
-    assert_eq!(
-        resume_result.session.title.as_deref(),
-        Some("Recoverable session")
+    assert!(
+        resume_response.get("error").is_some(),
+        "damaged session must refuse resume: {resume_response}"
     );
-    assert!(resume_result.loaded_item_count >= 1);
     Ok(())
 }
 
@@ -1275,11 +1497,15 @@ async fn session_compact_runs_asynchronously_and_emits_lifecycle_events() -> Res
         .await
         .context("session/compact response")?;
     let compact_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionCompactResult>,
+        devo_server::SuccessResponse<devo_server::TurnStartResult>,
     >(compact_response)?
     .result;
-    assert_eq!(compact_result.session.session_id, session_id);
+    match compact_result {
+        devo_server::TurnStartResult::Started { .. } => {}
+        other => panic!("expected TurnStartResult::Started, got {other:?}"),
+    };
 
+    wait_for_notification_method(&mut notifications_rx, "turn/started").await?;
     wait_for_notification_method(&mut notifications_rx, "session/compaction/started").await?;
     wait_for_notification_method(&mut notifications_rx, "session/compaction/completed").await?;
     Ok(())
@@ -1378,6 +1604,14 @@ async fn compacted_session_resume_keeps_full_transcript_after_restart() -> Resul
     assert!(
         resume_result.history_items.len() >= 6,
         "expected full transcript to survive compaction, got {:?}",
+        resume_result.history_items
+    );
+    assert!(
+        resume_result.history_items.iter().any(|item| {
+            item.kind == SessionHistoryItemKind::ContextCompaction
+                && item.title == "Context compacted"
+        }),
+        "expected ContextCompaction history row after compact resume, got {:?}",
         resume_result.history_items
     );
     assert!(
@@ -1529,6 +1763,228 @@ async fn compacted_session_next_query_uses_compaction_summary_after_restart() ->
     Ok(())
 }
 
+/// High-usage streaming provider that also captures requests and returns a
+/// compaction summary from the non-streaming completion path.
+struct AutoCompactTestProvider {
+    requests: Mutex<Vec<ModelRequest>>,
+    input_tokens: usize,
+    output_tokens: usize,
+}
+
+impl AutoCompactTestProvider {
+    fn new(input_tokens: usize, output_tokens: usize) -> Self {
+        Self {
+            requests: Mutex::new(Vec::new()),
+            input_tokens,
+            output_tokens,
+        }
+    }
+
+    fn usage(&self) -> Usage {
+        Usage {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: Some(self.input_tokens / 2),
+            reasoning_output_tokens: None,
+            total_tokens: Some(self.input_tokens + self.output_tokens),
+        }
+    }
+}
+
+#[async_trait]
+impl ModelProviderSDK for AutoCompactTestProvider {
+    async fn completion(&self, request: ModelRequest) -> Result<ModelResponse> {
+        self.requests.lock().expect("lock requests").push(request);
+        Ok(ModelResponse {
+            id: "compact-summary".into(),
+            content: vec![ResponseContent::Text(
+                "auto compact summary for resume".to_string(),
+            )],
+            stop_reason: Some(StopReason::EndTurn),
+            usage: Usage::default(),
+            metadata: ResponseMetadata::default(),
+        })
+    }
+
+    async fn completion_stream(
+        &self,
+        request: ModelRequest,
+    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent>> + Send>>> {
+        self.requests.lock().expect("lock requests").push(request);
+        let usage = self.usage();
+        Ok(Box::pin(stream::iter(vec![
+            Ok(StreamEvent::UsageDelta(usage.clone())),
+            Ok(StreamEvent::TextDelta {
+                index: 0,
+                text: "Hello from auto compact test.".into(),
+            }),
+            Ok(StreamEvent::MessageDone {
+                response: ModelResponse {
+                    id: "resp-auto-compact".into(),
+                    content: vec![ResponseContent::Text(
+                        "Hello from auto compact test.".into(),
+                    )],
+                    stop_reason: Some(StopReason::EndTurn),
+                    usage,
+                    metadata: ResponseMetadata::default(),
+                },
+            }),
+        ])))
+    }
+
+    fn name(&self) -> &str {
+        "auto-compact-test-provider"
+    }
+}
+
+#[tokio::test]
+async fn auto_compaction_persists_snapshot_and_survives_resume() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let provider = Arc::new(AutoCompactTestProvider::new(
+        /*input_tokens*/ 80_000, /*output_tokens*/ 1_000,
+    ));
+    let runtime = build_runtime_with_provider(data_root.path(), provider.clone())?;
+    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
+
+    let start_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 201,
+                "method": "session/start",
+                "params": {
+                    "cwd": data_root.path(),
+                    "ephemeral": false,
+                    "title": "Auto compact persist session",
+                    "model": "test-model"
+                }
+            }),
+        )
+        .await
+        .context("session/start response")?;
+    let session_id = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionStartResult>,
+    >(start_response)?
+    .result
+    .session
+    .session_id;
+
+    let _ = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 202,
+                "method": "session/compaction/update",
+                "params": {
+                    "sessionId": session_id,
+                    "effectiveContextWindow": 5_000
+                }
+            }),
+        )
+        .await
+        .context("session/compaction/update response")?;
+
+    // Build enough oversized history that Auto preserve budget cannot keep it all.
+    for request_id in 0..3 {
+        let large_prompt = "x".repeat(100_000);
+        let _ = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 210 + request_id,
+                    "method": "_devo/turn/start",
+                    "params": {
+                        "session_id": session_id,
+                        "input": [{ "type": "text", "text": large_prompt }],
+                        "model": null,
+                        "sandbox": null,
+                        "approval_policy": null,
+                        "cwd": null
+                    }
+                }),
+            )
+            .await
+            .context("turn/start response")?;
+        wait_for_turn_completed(&mut notifications_rx).await?;
+    }
+
+    let capturing_provider = Arc::new(CapturingProvider::default());
+    let rebuilt_runtime =
+        build_runtime_with_provider(data_root.path(), capturing_provider.clone())?;
+    rebuilt_runtime.load_persisted_sessions().await?;
+    let (rebuilt_connection_id, mut rebuilt_notifications_rx) =
+        initialize_connection(&rebuilt_runtime).await?;
+    let resume_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 220,
+                "method": "_devo/session/resume",
+                "params": {
+                    "session_id": session_id
+                }
+            }),
+        )
+        .await
+        .context("session/resume after auto compact")?;
+    let resume_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    >(resume_response)?
+    .result;
+
+    assert!(
+        resume_result.history_items.iter().any(|item| {
+            item.kind == SessionHistoryItemKind::ContextCompaction
+                && item.title == "Context compacted"
+        }),
+        "expected ContextCompaction history after auto-compact resume, got {:?}",
+        resume_result.history_items
+    );
+
+    let _ = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 221,
+                "method": "_devo/turn/start",
+                "params": {
+                    "session_id": session_id,
+                    "input": [{ "type": "text", "text": "continue" }],
+                    "model": null,
+                    "sandbox": null,
+                    "approval_policy": null,
+                    "cwd": null
+                }
+            }),
+        )
+        .await
+        .context("post-resume turn")?;
+    wait_for_turn_completed(&mut rebuilt_notifications_rx).await?;
+
+    let requests = capturing_provider.requests.lock().expect("lock requests");
+    let request = requests
+        .last()
+        .context("expected captured model request after auto-compact resume")?;
+    assert!(
+        request.messages.iter().any(|message| {
+            message.content.iter().any(|content| match content {
+                devo_protocol::RequestContent::Text { text }
+                | devo_protocol::RequestContent::Reasoning { text } => {
+                    text.contains("<compaction_summary>") || text.contains("auto compact summary")
+                }
+                devo_protocol::RequestContent::ProviderReasoning { .. }
+                | devo_protocol::RequestContent::ToolUse { .. }
+                | devo_protocol::RequestContent::HostedToolUse { .. }
+                | devo_protocol::RequestContent::ToolResult { .. } => false,
+            })
+        }),
+        "expected post-resume prompt to use compacted history, got {:?}",
+        request.messages
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn configured_request_model_is_used_for_turn_metadata_and_provider_request() -> Result<()> {
     let data_root = TempDir::new()?;
@@ -1628,6 +2084,7 @@ fn build_runtime_with_provider(
             Arc::clone(&provider),
             Arc::new(SingleProviderRouter::new(provider)),
             Arc::new(ToolRegistry::new()),
+            devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::new(vec![
                 Model {
@@ -2212,11 +2669,10 @@ async fn rollout_writes_base_instructions_once_across_multiple_turns() -> Result
     let db = devo_server::db::Database::open(data_root.path().join("test_persistence.db"))?;
     let index = db.get_session_index(&session_id)?.expect("indexed session");
     let rollout_path = index.rollout_path.expect("rollout path");
-    let rollout = std::fs::read_to_string(&rollout_path)?;
+    let rollout_lines = support::read_rollout_lines_dual(&rollout_path)?;
     let mut session_context_lines = 0usize;
     let mut turn_lines_with_session_context = 0usize;
-    for line in rollout.lines().filter(|line| !line.trim().is_empty()) {
-        let rollout_line: RolloutLine = serde_json::from_str(line)?;
+    for rollout_line in rollout_lines {
         match rollout_line {
             RolloutLine::SessionContextUpdated(_) => session_context_lines += 1,
             RolloutLine::Turn(turn_line) if turn_line.turn.session_context.is_some() => {
@@ -2306,11 +2762,10 @@ async fn turn_start_persists_session_context_before_turn_completes() -> Result<(
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let (session_context_lines, turn_lines) = loop {
-        let rollout = std::fs::read_to_string(&rollout_path)?;
+        let rollout_lines = support::read_rollout_lines_dual(&rollout_path)?;
         let mut session_context_lines = 0usize;
         let mut turn_lines = 0usize;
-        for line in rollout.lines().filter(|line| !line.trim().is_empty()) {
-            let rollout_line: RolloutLine = serde_json::from_str(line)?;
+        for rollout_line in rollout_lines {
             match rollout_line {
                 RolloutLine::SessionContextUpdated(_) => session_context_lines += 1,
                 RolloutLine::Turn(_) => turn_lines += 1,
@@ -2733,6 +3188,10 @@ fn sample_indexed_session(
         prompt_token_estimate: 0,
         last_query_usage: None,
         last_query_total_tokens: 0,
+        last_context_occupancy: None,
         status: devo_protocol::SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
+        effective_context_window: None,
+        permission_preset: None,
     }
 }

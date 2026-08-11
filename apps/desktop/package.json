@@ -1,7 +1,7 @@
 {
 	"name": "@devo/desktop",
 	"productName": "Devo",
-	"version": "0.1.31",
+	"version": "0.1.33",
 	"description": "AI-powered coding assistant desktop app",
 	"author": "Devo",
 	"license": "MIT",
@@ -26,6 +26,7 @@
 		"dev:wayland": "bun run sync:version && bun run gen:protocol-types && bun run dev:cli && bun run brand:electron-dev && electron-vite dev -- --ozone-platform=wayland --enable-features=WaylandWindowDecorations --disable-features=WaylandFractionalScaleV1",
 		"dev:web": "bun run sync:version && bun run gen:protocol-types && vite --config src/renderer/vite.web.config.ts",
 		"runtime:host": "cargo build --manifest-path ../../Cargo.toml --release -p devo-cli --bin devo && bun scripts/prepare-runtime.ts",
+		"runtime:prebuilt": "bun scripts/prepare-runtime.ts",
 		"runtime:mac:arm64": "cargo build --manifest-path ../../Cargo.toml --release --target aarch64-apple-darwin -p devo-cli --bin devo && bun scripts/prepare-runtime.ts --target aarch64-apple-darwin",
 		"runtime:mac:x64": "cargo build --manifest-path ../../Cargo.toml --release --target x86_64-apple-darwin -p devo-cli --bin devo && bun scripts/prepare-runtime.ts --target x86_64-apple-darwin",
 		"runtime:linux:arm64": "cargo zigbuild --manifest-path ../../Cargo.toml --release --target aarch64-unknown-linux-musl -p devo-cli --bin devo && bun scripts/prepare-runtime.ts --target aarch64-unknown-linux-musl",

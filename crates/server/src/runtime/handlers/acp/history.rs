@@ -104,6 +104,7 @@ pub(super) fn acp_update_from_history_item(
                 meta: Some(meta),
             })
         }
+        SessionHistoryItemKind::ContextCompaction => None,
     }
 }
 

@@ -6,7 +6,6 @@
 
 mod acp_fs;
 mod acp_permissions;
-mod acp_terminal;
 mod client_core;
 mod events;
 mod protocol_trace;

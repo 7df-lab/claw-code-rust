@@ -3,6 +3,9 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+#[path = "support/rollout.rs"]
+mod support;
+
 use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -160,6 +163,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
                 | ServerEvent::SessionCompactionCompleted(_)
                 | ServerEvent::SessionCompactionFailed(_)
                 | ServerEvent::SessionStatusChanged(_)
+                | ServerEvent::SessionEffectiveContextWindowUpdated(_)
                 | ServerEvent::SessionArchived(_)
                 | ServerEvent::SessionUnarchived(_)
                 | ServerEvent::SessionClosed(_)
@@ -170,14 +174,13 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
                 | ServerEvent::TurnPlanUpdated(_)
                 | ServerEvent::TurnDiffUpdated(_)
                 | ServerEvent::TurnUsageUpdated(_)
+                | ServerEvent::ContextUsageUpdated(_)
                 | ServerEvent::ItemStarted(_)
                 | ServerEvent::ItemCompleted(_)
                 | ServerEvent::ItemDelta { .. }
                 | ServerEvent::WorkspaceChangesUpdated(_)
                 | ServerEvent::ToolCallStatusUpdated(_)
                 | ServerEvent::RequestUserInput(_)
-                | ServerEvent::InputQueueUpdated(_)
-                | ServerEvent::SteerAccepted(_)
                 | ServerEvent::MessageEditRecorded(_)
                 | ServerEvent::TurnSuperseded(_)
                 | ServerEvent::WorkspaceRestoreStarted(_)
@@ -205,6 +208,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
             message: format!(
                 "model provider error: provider server error (Some(500)): {PROVIDER_ERROR_TEXT}"
             ),
+            recovery_hint: None,
         })
     );
     assert_eq!(failed_agent_items, Vec::new());
@@ -212,13 +216,15 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
     wait_for_original_event(&mut notifications_rx, "turn/completed").await?;
     let rollout = std::fs::read_to_string(rollout_path(data_root.path(), &session))?;
     assert!(rollout.contains(PROVIDER_ERROR_TEXT));
-    let persisted_error = rollout
-        .lines()
-        .filter_map(|line| serde_json::from_str::<devo_core::RolloutLine>(line).ok())
-        .find_map(|line| match line {
-            devo_core::RolloutLine::Turn(line) if line.turn.id == failed_turn_id => line.turn.error,
-            _ => None,
-        });
+    let persisted_error =
+        support::read_rollout_lines_dual(&rollout_path(data_root.path(), &session))?
+            .into_iter()
+            .find_map(|line| match line {
+                devo_core::RolloutLine::Turn(line) if line.turn.id == failed_turn_id => {
+                    line.turn.error
+                }
+                _ => None,
+            });
     assert_eq!(
         persisted_error,
         Some(devo_core::TurnError {
@@ -226,6 +232,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
             message: format!(
                 "model provider error: provider server error (Some(500)): {PROVIDER_ERROR_TEXT}"
             ),
+            recovery_hint: None,
         })
     );
 
@@ -278,7 +285,9 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
                 title: failed_turn.model,
                 body: "failed".to_string(),
                 tool_io: None,
-                metadata: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
+                    collaboration_mode: devo_protocol::CollaborationMode::Build,
+                }),
                 duration_ms: duration_secs,
             },
         ]
@@ -308,7 +317,7 @@ fn expected_retry_statuses(
             turn_id,
             attempt,
             backoff_ms,
-            provider: "exhausting-router".to_string(),
+            provider: "openai".to_string(),
             model: "default-model".to_string(),
             phase: ProviderRetryPhase::Scheduled,
             message: format!(
@@ -321,7 +330,7 @@ fn expected_retry_statuses(
             turn_id,
             attempt,
             backoff_ms: 0,
-            provider: "exhausting-router".to_string(),
+            provider: "openai".to_string(),
             model: "default-model".to_string(),
             phase: ProviderRetryPhase::Resumed,
             message: "Retrying provider request now".to_string(),
@@ -378,6 +387,7 @@ fn build_runtime(
             provider,
             provider_router,
             Arc::new(ToolRegistry::new()),
+            devo_server::empty_mcp_manager(),
             "default-model".to_string(),
             Arc::new(PresetModelCatalog::new(vec![Model {
                 slug: "default-model".to_string(),

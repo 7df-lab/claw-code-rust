@@ -60,7 +60,7 @@ fn context_compaction_events_share_stable_item_lifecycle() {
     assert_eq!(
         vec![
             started_event(session_id, turn_id, item_id),
-            completed_event(session_id, turn_id, item_id),
+            completed_event(session_id, turn_id, item_id, None),
         ],
         vec![
             ServerEvent::ItemStarted(ItemEventPayload {
@@ -69,6 +69,7 @@ fn context_compaction_events_share_stable_item_lifecycle() {
                     turn_id: Some(turn_id),
                     item_id: Some(item_id),
                     seq: 0,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id,
@@ -82,6 +83,7 @@ fn context_compaction_events_share_stable_item_lifecycle() {
                     turn_id: Some(turn_id),
                     item_id: Some(item_id),
                     seq: 0,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id,
@@ -109,6 +111,7 @@ fn context_compaction_failure_closes_item_and_reports_visible_error() {
                     turn_id: Some(turn_id),
                     item_id: Some(item_id),
                     seq: 0,
+                    item_seq: None,
                 },
                 item: ItemEnvelope {
                     item_id,
@@ -493,7 +496,9 @@ async fn provider_retry_status_waits_for_channel_capacity() {
 fn lifecycle_and_control_query_events_are_must_deliver() {
     let events = [
         devo_core::QueryEvent::ContextCompactionStarted,
-        devo_core::QueryEvent::ContextCompactionCompleted,
+        devo_core::QueryEvent::ContextCompactionCompleted {
+            compacted_items: Vec::new(),
+        },
         devo_core::QueryEvent::ContextCompactionFailed {
             message: "context limit".to_string(),
         },
@@ -514,12 +519,6 @@ fn lifecycle_and_control_query_events_are_must_deliver() {
             display_content: None,
             is_error: false,
             summary: "read README.md".to_string(),
-        },
-        devo_core::QueryEvent::ToolProgress {
-            tool_use_id: "tool-1".to_string(),
-            progress: devo_core::tools::ToolProgress::Terminal {
-                terminal_id: "terminal-1".to_string(),
-            },
         },
         devo_core::QueryEvent::TextDelta("text".to_string()),
         devo_core::QueryEvent::ReasoningDelta("reasoning".to_string()),

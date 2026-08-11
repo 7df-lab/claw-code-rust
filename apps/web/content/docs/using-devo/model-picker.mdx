@@ -9,8 +9,16 @@ Use `/model` to switch the active model for the current session.
 /model
 ```
 
-The picker opens in the bottom pane. Use `Up` and `Down` to move, `Enter` to
-select, and `Esc` to close without changing the model.
+The picker opens in the bottom pane and replaces the composer input area:
+
+- `Up` / `Down` (or `j` / `k`) move through the model list
+- `Left` / `Right` cycle reasoning effort for the focused model when that model
+  supports it
+- `Enter` applies the focused model and selected effort together
+- `Esc` closes without changing the model
+
+When there are many saved bindings, the model list shows at most eight rows and
+scrolls so the focused row stays visible.
 
 ## What The Picker Shows
 
@@ -36,16 +44,16 @@ match either, Devo still sets the requested model name for the turn context.
 
 ## Reasoning Effort
 
-Some models expose configurable reasoning effort. When you select one of those
-models, Devo may open a second picker for reasoning effort before finalizing
-the model change.
+Some models expose configurable reasoning effort. For those models, the picker
+shows a horizontal effort strip below the model list. Changing the focused
+model updates the available options; if the previously selected effort is still
+supported it is preserved, otherwise Devo falls back to that model's default.
 
-The reasoning effort picker uses the model's configured capability and reasoning-effort
-options. If the model does not expose options, Devo applies the model
-immediately.
+If the focused model does not expose effort options, the strip is hidden and
+`Enter` applies the model alone.
 
-After selection, Devo updates the header and sends the model and reasoning effort
-selection to the runtime as turn context.
+After confirmation, Devo updates the header and sends the model and reasoning
+effort selection to the runtime as turn context.
 
 ## Session Scope
 

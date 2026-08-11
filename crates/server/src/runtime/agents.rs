@@ -132,7 +132,7 @@ impl ServerRuntime {
             .filter(|item| matches!(item.turn_item, TurnItem::UserMessage(_)))
             .count();
         let pending_turn_queue = Arc::clone(&core_session.pending_turn_queue);
-        let btw_input_queue = Arc::clone(&core_session.btw_input_queue);
+        let steer_input_queue = Arc::clone(&core_session.steer_input_queue);
         let latest_turn = if stable_items.is_empty() {
             None
         } else {
@@ -167,7 +167,15 @@ impl ServerRuntime {
             prompt_token_estimate: core_session.prompt_token_estimate,
             last_query_usage: None,
             last_query_total_tokens: 0,
+            last_context_occupancy: None,
             status: SessionRuntimeStatus::Idle,
+            collaboration_mode: Default::default(),
+            effective_context_window: parent_summary.effective_context_window.or_else(|| {
+                parent_config
+                    .effective_context_window_override
+                    .map(|limit| limit as u64)
+            }),
+            permission_preset: parent_summary.permission_preset,
         };
         let child_session = RuntimeSession {
             runtime_context,
@@ -181,8 +189,9 @@ impl ServerRuntime {
             history_items: rebuilt_history_items,
             persisted_turn_items: stable_items,
             latest_compaction_snapshot: None,
+            turn_records_by_id: std::collections::HashMap::new(),
             pending_turn_queue,
-            btw_input_queue,
+            steer_input_queue,
             agent_tool_policy: effective_tool_policy,
             max_turns: params.max_turns,
             deferred_assistant: None,
@@ -399,9 +408,10 @@ impl ServerRuntime {
         let session_handle = self.session(session_id).await.ok_or_else(|| {
             ToolCallError::InvalidInput(format!("session not found: {session_id}"))
         })?;
+        let _state_change_guard = session_handle.lock_state_change().await;
 
-        let reservation = session_handle
-            .turn_reservation_snapshot()
+        let reservation = self
+            .session_turn_reservation_snapshot(session_id)
             .await
             .ok_or_else(|| {
                 ToolCallError::InvalidInput(format!(
@@ -446,7 +456,6 @@ impl ServerRuntime {
                     "failed to persist agent follow-up pending message"
                 );
             }
-            self.broadcast_updated_queue(session_id).await;
             return Ok(active_turn);
         }
 

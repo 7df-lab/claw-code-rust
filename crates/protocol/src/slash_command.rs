@@ -13,10 +13,12 @@ pub enum SlashCommand {
     Compact,
     Resume,
     New,
+    Rename,
+    Delete,
     Status,
+    Settings,
     Permissions,
     ShowReasoning,
-    Clear,
     Diff,
     Exit,
     Btw,
@@ -26,21 +28,23 @@ pub enum SlashCommand {
 impl SlashCommand {
     pub fn description(self) -> &'static str {
         match self {
-            SlashCommand::Theme => "switch the UI theme",
+            SlashCommand::Theme => "open appearance settings to switch the UI theme",
             SlashCommand::Model => "choose the active model",
-            SlashCommand::Skills => "show available skills",
-            SlashCommand::Mcp => "show configured MCP servers",
+            SlashCommand::Skills => "browse available skills",
+            SlashCommand::Mcp => "browse MCP servers",
             SlashCommand::Compact => "compact the current session context",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::New => "start a new chat",
-            SlashCommand::Status => "show current session configuration and token usage",
+            SlashCommand::Rename => "rename the current session",
+            SlashCommand::Delete => "delete the current session and start a new one",
+            SlashCommand::Status => "show cwd, permissions, and context window occupancy",
+            SlashCommand::Settings => "open session and appearance settings",
             SlashCommand::Permissions => {
                 "choose what Devo is allowed to do (also sets the OS sandbox)"
             }
             SlashCommand::ShowReasoning => {
                 "choose how reasoning content is shown in the transcript"
             }
-            SlashCommand::Clear => "clear the current transcript",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Btw => {
                 "Ask a quick side question without interrupting the main conversation"
@@ -55,14 +59,16 @@ impl SlashCommand {
             SlashCommand::Theme => "theme",
             SlashCommand::Model => "model",
             SlashCommand::Skills => "skills",
-            SlashCommand::Mcp => "mcp",
+            SlashCommand::Mcp => "mcps",
             SlashCommand::Compact => "compact",
             SlashCommand::Resume => "resume",
             SlashCommand::New => "new",
+            SlashCommand::Rename => "rename",
+            SlashCommand::Delete => "delete",
             SlashCommand::Status => "status",
+            SlashCommand::Settings => "settings",
             SlashCommand::Permissions => "permissions",
             SlashCommand::ShowReasoning => "show-reasoning",
-            SlashCommand::Clear => "clear",
             SlashCommand::Diff => "diff",
             SlashCommand::Btw => "btw",
             SlashCommand::Goal => "goal",
@@ -70,17 +76,13 @@ impl SlashCommand {
         }
     }
 
-    pub fn supports_inline_args(self) -> bool {
-        matches!(
-            self,
-            SlashCommand::Model | SlashCommand::Btw | SlashCommand::Goal
-        )
-    }
-
-    pub fn parameter_hint(self) -> Option<&'static str> {
+    /// Soft alternate names accepted by parsing / popup filtering.
+    ///
+    /// These are not listed as separate built-in entries; the canonical
+    /// [`SlashCommand::command`] remains the display and insertion name.
+    pub fn aliases(self) -> &'static [&'static str] {
         match self {
-            SlashCommand::Btw => Some("<side conversation message>"),
-            SlashCommand::Goal => Some("<objective for autonomous work>"),
+            SlashCommand::Exit => &["quit"],
             SlashCommand::Theme
             | SlashCommand::Model
             | SlashCommand::Skills
@@ -88,10 +90,42 @@ impl SlashCommand {
             | SlashCommand::Compact
             | SlashCommand::Resume
             | SlashCommand::New
+            | SlashCommand::Rename
+            | SlashCommand::Delete
             | SlashCommand::Status
+            | SlashCommand::Settings
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning
-            | SlashCommand::Clear
+            | SlashCommand::Diff
+            | SlashCommand::Btw
+            | SlashCommand::Goal => &[],
+        }
+    }
+
+    pub fn supports_inline_args(self) -> bool {
+        matches!(
+            self,
+            SlashCommand::Model | SlashCommand::Btw | SlashCommand::Goal | SlashCommand::Rename
+        )
+    }
+
+    pub fn parameter_hint(self) -> Option<&'static str> {
+        match self {
+            SlashCommand::Btw => Some("<side conversation message>"),
+            SlashCommand::Goal => Some("<objective for autonomous work>"),
+            SlashCommand::Rename => Some("<new title>"),
+            SlashCommand::Theme
+            | SlashCommand::Model
+            | SlashCommand::Skills
+            | SlashCommand::Mcp
+            | SlashCommand::Compact
+            | SlashCommand::Resume
+            | SlashCommand::New
+            | SlashCommand::Delete
+            | SlashCommand::Status
+            | SlashCommand::Settings
+            | SlashCommand::Permissions
+            | SlashCommand::ShowReasoning
             | SlashCommand::Diff
             | SlashCommand::Exit => None,
         }
@@ -105,8 +139,10 @@ impl SlashCommand {
                 | SlashCommand::Compact
                 | SlashCommand::Diff
                 | SlashCommand::New
+                | SlashCommand::Delete
                 | SlashCommand::Resume
                 | SlashCommand::Permissions
+                | SlashCommand::Settings
         )
     }
 
@@ -124,10 +160,12 @@ impl SlashCommand {
             | SlashCommand::Compact
             | SlashCommand::Resume
             | SlashCommand::New
+            | SlashCommand::Rename
+            | SlashCommand::Delete
             | SlashCommand::Status
+            | SlashCommand::Settings
             | SlashCommand::Permissions
             | SlashCommand::ShowReasoning
-            | SlashCommand::Clear
             | SlashCommand::Diff
             | SlashCommand::Exit
             | SlashCommand::Btw => None,
@@ -143,18 +181,22 @@ impl FromStr for SlashCommand {
             "theme" => Ok(Self::Theme),
             "model" => Ok(Self::Model),
             "skills" => Ok(Self::Skills),
-            "mcp" => Ok(Self::Mcp),
+            "mcps" | "mcp" => Ok(Self::Mcp),
             "compact" => Ok(Self::Compact),
             "resume" => Ok(Self::Resume),
             "new" => Ok(Self::New),
-            "status" => Ok(Self::Status),
+            "rename" => Ok(Self::Rename),
+            "delete" => Ok(Self::Delete),
+            // `/context` remains a soft alias for the status panel.
+            "status" | "context" => Ok(Self::Status),
+            "settings" => Ok(Self::Settings),
             "permissions" | "approvals" => Ok(Self::Permissions),
             "show-reasoning" | "reasoning-view" => Ok(Self::ShowReasoning),
-            "clear" => Ok(Self::Clear),
             "diff" => Ok(Self::Diff),
             "btw" => Ok(Self::Btw),
             "goal" => Ok(Self::Goal),
-            "exit" => Ok(Self::Exit),
+            // `/quit` is a soft alias for exit.
+            "exit" | "quit" => Ok(Self::Exit),
             _ => Err(()),
         }
     }
@@ -162,17 +204,18 @@ impl FromStr for SlashCommand {
 
 pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
     vec![
-        ("theme", SlashCommand::Theme),
         ("model", SlashCommand::Model),
         ("skills", SlashCommand::Skills),
-        ("mcp", SlashCommand::Mcp),
+        ("mcps", SlashCommand::Mcp),
         ("compact", SlashCommand::Compact),
         ("resume", SlashCommand::Resume),
         ("new", SlashCommand::New),
+        ("rename", SlashCommand::Rename),
+        ("delete", SlashCommand::Delete),
         ("status", SlashCommand::Status),
+        ("settings", SlashCommand::Settings),
         ("permissions", SlashCommand::Permissions),
         ("show-reasoning", SlashCommand::ShowReasoning),
-        ("clear", SlashCommand::Clear),
         ("diff", SlashCommand::Diff),
         ("goal", SlashCommand::Goal),
         ("btw", SlashCommand::Btw),
@@ -241,6 +284,9 @@ mod tests {
         assert!(!SlashCommand::Model.available_over_acp());
         assert!(!SlashCommand::Btw.available_over_acp());
         assert!(!SlashCommand::Exit.available_over_acp());
+        assert!(!SlashCommand::Rename.available_over_acp());
+        assert!(!SlashCommand::Delete.available_over_acp());
+        assert!(!SlashCommand::Settings.available_over_acp());
     }
 
     #[test]
@@ -248,7 +294,99 @@ mod tests {
         assert!(!SlashCommand::Model.available_during_task());
         assert!(!SlashCommand::Permissions.available_during_task());
         assert!(!SlashCommand::Theme.available_during_task());
+        assert!(!SlashCommand::Delete.available_during_task());
+        assert!(!SlashCommand::Settings.available_during_task());
         assert!(SlashCommand::Status.available_during_task());
         assert!(SlashCommand::Goal.available_during_task());
+        assert!(SlashCommand::Rename.available_during_task());
+    }
+
+    #[test]
+    fn theme_slash_command_is_hidden_alias_for_settings() {
+        assert_eq!("theme".parse::<SlashCommand>(), Ok(SlashCommand::Theme));
+        assert!(!SlashCommand::Theme.available_during_task());
+        assert!(
+            !built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "theme")
+        );
+        assert!(
+            built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "settings" && *command == SlashCommand::Settings)
+        );
+    }
+
+    #[test]
+    fn status_slash_command_parses_and_context_is_alias() {
+        assert_eq!("status".parse::<SlashCommand>(), Ok(SlashCommand::Status));
+        assert_eq!("context".parse::<SlashCommand>(), Ok(SlashCommand::Status));
+        assert!(SlashCommand::Status.available_during_task());
+        assert!(!SlashCommand::Status.available_over_acp());
+        assert_eq!(
+            SlashCommand::Status.description(),
+            "show cwd, permissions, and context window occupancy"
+        );
+        assert!(
+            built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "status" && *command == SlashCommand::Status)
+        );
+        assert!(
+            !built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "context")
+        );
+    }
+
+    #[test]
+    fn settings_slash_command_parses_and_is_unavailable_during_task() {
+        assert_eq!(
+            "settings".parse::<SlashCommand>(),
+            Ok(SlashCommand::Settings)
+        );
+        assert!(!SlashCommand::Settings.available_during_task());
+        assert_eq!(
+            SlashCommand::Settings.description(),
+            "open session and appearance settings"
+        );
+    }
+
+    #[test]
+    fn rename_and_delete_slash_commands_parse_and_describe() {
+        assert_eq!("rename".parse::<SlashCommand>(), Ok(SlashCommand::Rename));
+        assert_eq!("delete".parse::<SlashCommand>(), Ok(SlashCommand::Delete));
+        assert!(SlashCommand::Rename.supports_inline_args());
+        assert!(!SlashCommand::Delete.supports_inline_args());
+        assert_eq!(SlashCommand::Rename.parameter_hint(), Some("<new title>"));
+        assert_eq!(SlashCommand::Delete.parameter_hint(), None);
+    }
+
+    #[test]
+    fn exit_slash_command_parses_and_quit_is_alias() {
+        assert_eq!("exit".parse::<SlashCommand>(), Ok(SlashCommand::Exit));
+        assert_eq!("quit".parse::<SlashCommand>(), Ok(SlashCommand::Exit));
+        assert_eq!(SlashCommand::Exit.command(), "exit");
+        assert_eq!(SlashCommand::Exit.aliases(), &["quit"]);
+        assert!(
+            built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "exit" && *command == SlashCommand::Exit)
+        );
+        assert!(
+            !built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "quit")
+        );
+    }
+
+    #[test]
+    fn clear_slash_command_is_removed() {
+        assert_eq!("clear".parse::<SlashCommand>(), Err(()));
+        assert!(
+            !built_in_slash_commands()
+                .iter()
+                .any(|(name, _)| *name == "clear")
+        );
     }
 }

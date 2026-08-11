@@ -1,10 +1,14 @@
 ---
 title: Code Search
-description: Understand Devo's local semantic code search.
+description: Understand Devo's local semantic code search MCP server.
 ---
 
-`code_search` is Devo's built-in read-only retrieval tool for finding relevant
-code by meaning, identifiers, and related locations.
+`code_search` is Devo's optional semantic retrieval tool for finding relevant
+code by meaning, identifiers, and related locations. It ships as the bundled
+stdio MCP server `devo-code-search-mcp` and is **disabled by default**.
+
+Enable it with `devo mcp enable code_search` or the TUI `/mcps` picker. When
+enabled, the model sees the tool as `mcp__code_search__code_search`.
 
 It is different from shell search. Shell search is exact text search. Code
 search builds a local index of the workspace and ranks chunks with hybrid
@@ -50,16 +54,16 @@ Production code search uses a local model2vec embedding provider with the
 `minishlab/potion-code-16M` model. The model is loaded lazily on first embedding
 call.
 
-If the model files are missing, Devo tries to fetch them on first use. In an
-offline environment, pre-populate the local model cache before relying on
+If the model files are missing, the MCP server tries to fetch them on first use.
+In an offline environment, pre-populate the local model cache before relying on
 `code_search`; otherwise the tool reports a recoverable model-unavailable
 configuration error.
 
 ## Cache Behavior
 
-Devo keeps one in-memory index per workspace root, content filter, and embedding
-model identity. It also stores disk cache metadata and embedding rows so repeat
-queries do not always rebuild the whole index.
+The MCP process keeps one in-memory index per workspace root, content filter,
+and embedding model identity. It also stores disk cache metadata and embedding
+rows so repeat queries do not always rebuild the whole index.
 
 The service prefers correctness over speed:
 

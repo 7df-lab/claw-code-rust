@@ -7,6 +7,18 @@ use devo_protocol::{ContentBlock, Message, RequestContent, RequestMessage, Role}
 /// This is the core IR that the history management system operates on,
 /// bridging provider-agnostic protocol types with normalization and
 /// compaction workflows.
+///
+/// # Why `ResponseItem` is separate from [`Message`]
+///
+/// [`Message`] is the session/protocol shape: one role turn that may bundle
+/// several [`ContentBlock`]s (text, reasoning, tool use, tool result) together.
+/// That is the natural unit for "append what the assistant just said."
+///
+/// [`ResponseItem`] is a flatter working representation for history algorithms
+/// that need to operate on atomic records—pairing tool calls with outputs,
+/// dropping reasoning before summarization, estimating tokens per item, or
+/// trimming a turn from the tail. Mixed-content messages are therefore split
+/// by [`message_to_response_items`]; see that function for a concrete example.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ResponseItem {
     /// Model reasoning / thinking output.
@@ -185,6 +197,42 @@ impl From<&ResponseItem> for RequestMessage {
 /// A `Message` can contain multiple content blocks of different types.
 /// This split representation is useful for normalization (e.g. pairing
 /// tool calls with their outputs) and modality-based filtering.
+///
+/// # Example: splitting a mixed assistant turn
+///
+/// Session storage keeps one assistant [`Message`] for a single model turn:
+///
+/// ```text
+/// Message {
+///   role: Assistant,
+///   content: [
+///     Reasoning { "hmm" },
+///     Text      { "hello" },
+///     ToolUse   { id: "tu-1", name: "bash", input: { "cmd": "ls" } },
+///   ]
+/// }
+/// ```
+///
+/// History algorithms need each of those blocks as a standalone record, so
+/// this function yields three items:
+///
+/// ```text
+/// [
+///   ResponseItem::Reason   { text: "hmm" },
+///   ResponseItem::Message  { role: Assistant, content: [Text("hello")] },
+///   ResponseItem::ToolCall { id: "tu-1", name: "bash", input: { "cmd": "ls" } },
+/// ]
+/// ```
+///
+/// A following user message that only carries `ToolResult { tool_use_id: "tu-1", ... }`
+/// becomes `ResponseItem::ToolCallOutput { tool_use_id: "tu-1", ... }`. The history
+/// is then a flat sequence where tool calls and outputs are adjacent and easy to
+/// pair, filter, or drop independently of the original message boundaries.
+///
+/// When converting back to provider `RequestMessage`s, consecutive assistant
+/// fragments produced by this split are merged again (see
+/// `merge_consecutive_assistant_messages` in `history`) so the wire format still
+/// satisfies provider adjacency rules.
 pub fn message_to_response_items(msg: Message) -> Vec<ResponseItem> {
     let role = msg.role;
     let content = msg.content;

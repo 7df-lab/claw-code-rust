@@ -80,7 +80,7 @@ impl ServerRuntime {
         state
             .tool_registry
             .clone()
-            .unwrap_or_else(|| Arc::clone(&state.runtime_context.registry))
+            .unwrap_or_else(|| state.runtime_context.tool_registry())
     }
 }
 

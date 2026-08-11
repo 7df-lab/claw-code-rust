@@ -12,6 +12,7 @@ use ratatui::text::Line;
 
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
+use crate::bottom_pane::ModelPickerEffortOption;
 use crate::bottom_pane::ModelPickerEntry;
 use crate::bottom_pane::list_selection_view::ListSelectionView;
 use crate::bottom_pane::list_selection_view::SelectionViewParams;
@@ -19,13 +20,10 @@ use crate::events::SavedModelEntry;
 use crate::history_cell;
 
 use super::ChatWidget;
-use super::PendingModelSelection;
-use super::PickerMode;
 use super::permission_preset_items;
 use super::permission_preset_label;
 use super::reasoning_effort;
 use super::reasoning_effort::ReasoningEffortListEntry;
-use super::sandbox_profile_label;
 
 impl ChatWidget {
     pub(crate) fn set_model(&mut self, model: Model) {
@@ -323,49 +321,59 @@ impl ChatWidget {
     }
 
     pub(super) fn open_model_picker(&mut self) {
-        self.picker_mode = Some(PickerMode::Model);
-        self.pending_model_selection = None;
+        self.open_model_picker_with_scope(crate::app_command::PersistScope::Session);
+    }
+
+    pub(super) fn open_model_picker_for_defaults(&mut self) {
+        self.open_model_picker_with_scope(crate::app_command::PersistScope::Default);
+    }
+
+    fn open_model_picker_with_scope(&mut self, persist_scope: crate::app_command::PersistScope) {
+        self.settings_picker_persist_scope = persist_scope;
+        let session_effort = self.reasoning_effort_selection.clone();
         let entries = self
             .saved_models
             .iter()
-            .map(|entry| ModelPickerEntry {
-                selection_value: Self::saved_model_selection_value(entry).to_string(),
-                display_name: self.saved_model_display_label(entry),
-                description: None,
-                right_hint: Self::saved_model_provider_name(entry),
-                is_current: self.saved_model_entry_is_current(entry),
+            .map(|entry| {
+                let model = self.model_for_saved_entry(entry);
+                let effort_entries = reasoning_effort::reasoning_effort_entries_for_model(
+                    &model,
+                    session_effort.as_deref(),
+                );
+                let selected_effort = effort_entries
+                    .iter()
+                    .find(|option| option.is_current)
+                    .map(|option| option.value.clone());
+                ModelPickerEntry {
+                    selection_value: Self::saved_model_selection_value(entry).to_string(),
+                    display_name: self.saved_model_display_label(entry),
+                    right_hint: Self::saved_model_provider_name(entry),
+                    is_current: self.saved_model_entry_is_current(entry),
+                    effort_options: effort_entries
+                        .into_iter()
+                        .map(|option| ModelPickerEffortOption {
+                            label: option.label,
+                            value: option.value,
+                        })
+                        .collect(),
+                    selected_effort,
+                }
             })
             .collect();
         self.bottom_pane.open_model_picker(entries);
         self.set_status_message("Select a model");
     }
 
-    pub(super) fn handle_model_picker_selection(&mut self, slug: String) {
+    pub(super) fn handle_model_picker_selection(
+        &mut self,
+        slug: String,
+        reasoning_effort: Option<String>,
+    ) {
         if let Some(entry) = self.saved_model_entry_for_selection(&slug).cloned() {
             let selected_model = self.apply_saved_model_entry_to_session(&entry);
-            let reasoning_effort_selection =
-                reasoning_effort::current_reasoning_effort_selection_for_model(
-                    &selected_model,
-                    self.reasoning_effort_selection.as_deref(),
-                );
-            self.pending_model_selection = Some(PendingModelSelection {
-                selection: Self::saved_model_selection_value(&entry).to_string(),
-                display_name: self.saved_model_display_label(&entry),
-                reasoning_effort_selection: reasoning_effort_selection.clone(),
-            });
-            self.reasoning_effort_selection = reasoning_effort_selection;
-            self.refresh_header_box();
-
-            if selected_model
-                .effective_reasoning_capability()
-                .options()
-                .is_empty()
-            {
-                self.finalize_pending_model_selection();
-                return;
-            }
-
-            self.open_reasoning_effort_picker();
+            let display_name = self.saved_model_display_label(&entry);
+            let selection = Self::saved_model_selection_value(&entry).to_string();
+            self.apply_model_and_effort(selection, display_name, &selected_model, reasoning_effort);
             return;
         }
 
@@ -379,34 +387,50 @@ impl ChatWidget {
             return;
         };
 
-        let reasoning_effort_selection =
-            reasoning_effort::current_reasoning_effort_selection_for_model(
-                &selected_model,
-                self.reasoning_effort_selection.as_deref(),
-            );
-        self.pending_model_selection = Some(PendingModelSelection {
-            selection: selected_model.slug.clone(),
-            display_name: selected_model.display_name.clone(),
-            reasoning_effort_selection: reasoning_effort_selection.clone(),
-        });
         self.current_model_binding_id = None;
         self.session.model_binding_id = None;
         self.session.provider = Some(selected_model.provider);
         self.session.model = Some(selected_model.clone());
         self.session.request_model = None;
-        self.reasoning_effort_selection = reasoning_effort_selection;
+        let display_name = selected_model.display_name.clone();
+        let selection = selected_model.slug.clone();
+        self.apply_model_and_effort(selection, display_name, &selected_model, reasoning_effort);
+    }
+
+    fn apply_model_and_effort(
+        &mut self,
+        selection: String,
+        display_name: String,
+        model: &Model,
+        reasoning_effort: Option<String>,
+    ) {
+        self.reasoning_effort_selection =
+            if model.effective_reasoning_capability().options().is_empty() {
+                None
+            } else {
+                reasoning_effort::current_reasoning_effort_selection_for_model(
+                    model,
+                    reasoning_effort
+                        .as_deref()
+                        .or(self.reasoning_effort_selection.as_deref()),
+                )
+            };
+        self.session.reasoning_effort = model
+            .resolve_reasoning_effort_selection(self.reasoning_effort_selection.as_deref())
+            .effective_reasoning_effort;
         self.refresh_header_box();
-
-        if selected_model
-            .effective_reasoning_capability()
-            .options()
-            .is_empty()
-        {
-            self.finalize_pending_model_selection();
-            return;
-        }
-
-        self.open_reasoning_effort_picker();
+        self.app_event_tx.send(AppEvent::Command(
+            AppCommand::override_turn_context_with_scope(
+                /*cwd*/ None,
+                Some(selection),
+                Some(self.reasoning_effort_selection.clone()),
+                /*sandbox*/ None,
+                /*approval_policy*/ None,
+                self.settings_picker_persist_scope,
+            ),
+        ));
+        self.settings_picker_persist_scope = crate::app_command::PersistScope::Session;
+        self.set_status_message(format!("Model set to {display_name}"));
     }
 
     pub(super) fn open_theme_picker(&mut self) {
@@ -416,13 +440,25 @@ impl ChatWidget {
     }
 
     pub(super) fn open_permissions_picker(&mut self) {
+        self.open_permissions_picker_with_scope(crate::app_command::PersistScope::Session);
+    }
+
+    pub(super) fn open_permissions_picker_for_defaults(&mut self) {
+        self.open_permissions_picker_with_scope(crate::app_command::PersistScope::Default);
+    }
+
+    fn open_permissions_picker_with_scope(
+        &mut self,
+        persist_scope: crate::app_command::PersistScope,
+    ) {
+        self.settings_picker_persist_scope = persist_scope;
         let current = self.permission_preset;
         self.bottom_pane
             .open_popup_view(Box::new(ListSelectionView::new(
                 SelectionViewParams {
                     title: Some("Update Permissions".to_string()),
                     footer_hint: Some(Line::from("Press enter to confirm or esc to go back")),
-                    items: permission_preset_items(current),
+                    items: permission_preset_items(current, persist_scope),
                     ..SelectionViewParams::default()
                 },
                 self.app_event_tx.clone(),
@@ -467,6 +503,20 @@ impl ChatWidget {
         self.frame_requester.schedule_frame();
     }
 
+    pub(crate) fn apply_collaboration_mode(
+        &mut self,
+        collaboration_mode: devo_protocol::CollaborationMode,
+        persist_scope: crate::app_command::PersistScope,
+    ) {
+        let input_mode = crate::bottom_pane::InputMode::from_collaboration_mode(collaboration_mode);
+        if persist_scope == crate::app_command::PersistScope::Default {
+            self.default_collaboration_mode = collaboration_mode;
+        }
+        self.current_turn_mode = input_mode;
+        self.bottom_pane.set_input_mode(input_mode);
+        self.refresh_settings_hub_if_open();
+    }
+
     pub(crate) fn note_permissions_updated(&mut self, preset: devo_protocol::PermissionPreset) {
         self.permission_preset = preset;
         self.sandbox_profile = Some(
@@ -483,20 +533,51 @@ impl ChatWidget {
             None,
         ));
         self.set_status_message(format!("Permissions updated to {label}"));
+        self.refresh_settings_hub_if_open();
+    }
+
+    pub(crate) fn note_effective_context_window_updated(&mut self, effective_context_window: u64) {
+        self.effective_context_window = Some(effective_context_window);
+        self.default_compaction_token_limit = Some(effective_context_window);
+        if let Some(occupancy) = self.last_context_occupancy.as_mut() {
+            occupancy.context_window_tokens = effective_context_window;
+        }
+        let label = crate::bottom_pane::format_token_limit(effective_context_window);
+        self.add_to_history(history_cell::new_info_event(
+            format!("Compaction threshold updated to {label}"),
+            None,
+        ));
+        self.set_status_message(format!("Compaction threshold updated to {label}"));
+        self.sync_bottom_pane_summary();
+        self.refresh_status_panel_if_open();
+        self.refresh_settings_hub_if_open();
+    }
+
+    fn refresh_status_panel_if_open(&mut self) {
+        self.bottom_pane.refresh_status_panel(
+            self.last_context_occupancy.clone(),
+            crate::bottom_pane::SessionTokenTotals {
+                input: self.total_input_tokens,
+                output: self.total_output_tokens,
+                cache_read: self.total_cache_read_tokens,
+            },
+        );
     }
 
     pub(crate) fn note_sandbox_profile_updated(&mut self, profile: String) {
-        let label = sandbox_profile_label(&profile).to_string();
+        // Sandbox follows the permission preset (or an explicit /sandbox pick). Keep local
+        // state in sync for settings/status, but do not emit a transcript or status line —
+        // "Sandbox profile updated to …" is noise next to "Permissions updated to …".
         self.sandbox_profile = Some(profile);
-        self.add_to_history(history_cell::new_info_event(
-            format!("Sandbox profile updated to {label}"),
-            None,
-        ));
-        self.set_status_message(format!("Sandbox profile updated to {label}"));
+        self.refresh_settings_hub_if_open();
     }
 
     pub(super) fn apply_theme_selection(&mut self, name: String) {
         if let Some(theme) = self.theme_set.find(&name).cloned() {
+            if self.active_theme_name == name {
+                self.refresh_settings_hub_if_open();
+                return;
+            }
             self.active_theme_name = name.clone();
             self.bottom_pane.set_accent_color(theme.accent_color);
             let _ = crate::onboarding::save_theme_selection(&name);
@@ -510,16 +591,167 @@ impl ChatWidget {
                 ));
             }
             self.set_status_message(format!("Theme set to {name}"));
+            self.refresh_settings_hub_if_open();
             // Header/logo are flushed into terminal scrollback. Reset the flush
             // cursor and ask the host to clear the managed inline area so the
             // next draw re-emits transcript lines with the new accent.
             if self.next_history_flush_index > 0 {
                 self.next_history_flush_index = 0;
-                self.app_event_tx.send(AppEvent::ReloadInlineTranscript);
+                self.schedule_debounced_inline_transcript_reload();
             } else {
                 self.frame_requester.schedule_frame();
             }
         }
+    }
+
+    pub(super) fn cycle_theme(&mut self, direction: crate::app_event::SettingsCycleDirection) {
+        let themes = &self.theme_set.themes;
+        if themes.is_empty() {
+            return;
+        }
+        let current = themes
+            .iter()
+            .position(|theme| theme.name == self.active_theme_name)
+            .unwrap_or(0);
+        let next = match direction {
+            crate::app_event::SettingsCycleDirection::Next => (current + 1) % themes.len(),
+            crate::app_event::SettingsCycleDirection::Previous => {
+                if current == 0 {
+                    themes.len() - 1
+                } else {
+                    current - 1
+                }
+            }
+        };
+        let name = themes[next].name.clone();
+        self.apply_theme_selection(name);
+    }
+
+    fn schedule_debounced_inline_transcript_reload(&mut self) {
+        self.theme_reload_epoch = self.theme_reload_epoch.wrapping_add(1);
+        let epoch = self.theme_reload_epoch;
+        let tx = self.app_event_tx.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                    tx.send(crate::app_event::AppEvent::FlushDebouncedThemeReload { epoch });
+                });
+            }
+            Err(_) => {
+                // Unit tests may lack a Tokio runtime; reload immediately.
+                tx.send(crate::app_event::AppEvent::ReloadInlineTranscript);
+            }
+        }
+    }
+
+    pub(super) fn flush_debounced_theme_reload(&mut self, epoch: u64) {
+        if epoch != self.theme_reload_epoch {
+            return;
+        }
+        self.app_event_tx
+            .send(crate::app_event::AppEvent::ReloadInlineTranscript);
+    }
+
+    pub(super) fn open_settings_hub(&mut self) {
+        let snapshot = self.settings_hub_snapshot();
+        self.bottom_pane.open_settings_hub(snapshot);
+        self.set_status_message("Settings");
+    }
+
+    pub(super) fn open_settings_hub_appearance(&mut self) {
+        let snapshot = self.settings_hub_snapshot();
+        self.bottom_pane
+            .open_settings_hub_on_tab(snapshot, crate::bottom_pane::SettingsHubTab::Appearance);
+        self.set_status_message("Settings");
+    }
+
+    pub(super) fn open_compaction_threshold_picker(&mut self) {
+        let snapshot = self.compaction_threshold_snapshot();
+        self.bottom_pane.open_compaction_threshold(snapshot);
+        self.set_status_message("Select compaction threshold");
+    }
+
+    pub(super) fn refresh_settings_hub_if_open(&mut self) {
+        let snapshot = self.settings_hub_snapshot();
+        self.bottom_pane.refresh_settings_hub(snapshot);
+    }
+
+    fn settings_hub_snapshot(&self) -> crate::bottom_pane::SettingsHubSnapshot {
+        crate::bottom_pane::SettingsHubSnapshot {
+            model_label: self
+                .session
+                .model
+                .as_ref()
+                .map(|model| model.slug.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
+            permissions_label: permission_preset_label(self.permission_preset).to_string(),
+            mode: crate::bottom_pane::InputMode::from_collaboration_mode(
+                self.default_collaboration_mode,
+            ),
+            compaction_threshold_label: crate::bottom_pane::format_token_limit(
+                self.default_compaction_token_limit
+                    .map(|limit| {
+                        let model_window = self
+                            .session
+                            .model
+                            .as_ref()
+                            .map(|model| u64::from(model.context_window.max(1)))
+                            .unwrap_or(u64::MAX);
+                        limit.min(model_window).max(1)
+                    })
+                    .unwrap_or_else(|| self.effective_compaction_threshold_tokens()),
+            ),
+            theme_label: self.active_theme_name.clone(),
+            reasoning_view_label: super::reasoning_view::reasoning_view_label(
+                self.collapse_reasoning,
+            )
+            .to_string(),
+        }
+    }
+
+    fn compaction_threshold_snapshot(&self) -> crate::bottom_pane::CompactionThresholdSnapshot {
+        let model = self.session.model.as_ref();
+        let context_window_tokens = model
+            .map(|model| u64::from(model.context_window.max(1)))
+            .unwrap_or(1);
+        let model_effective = model
+            .map(|model| u64::from(model.effective_context_window()))
+            .unwrap_or(context_window_tokens);
+        let recommended_token_limit = crate::bottom_pane::recommended_compaction_token_limit(
+            context_window_tokens,
+            model_effective,
+        );
+        // Current / hub label follow the applied (model-clamped) window so they
+        // stay consistent with the status bar. The stored global preference is
+        // kept separately for picker memory when this client initiated an update.
+        let current_token_limit = self
+            .effective_context_window
+            .unwrap_or(model_effective)
+            .min(context_window_tokens)
+            .max(1);
+        crate::bottom_pane::CompactionThresholdSnapshot {
+            model_label: model
+                .map(|model| model.slug.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
+            context_window_tokens,
+            recommended_token_limit,
+            current_token_limit,
+        }
+    }
+
+    fn effective_compaction_threshold_tokens(&self) -> u64 {
+        let model = self.session.model.as_ref();
+        let model_window = model
+            .map(|model| u64::from(model.context_window.max(1)))
+            .unwrap_or(u64::MAX);
+        let model_effective = model
+            .map(|model| u64::from(model.effective_context_window()))
+            .unwrap_or(1);
+        self.effective_context_window
+            .unwrap_or(model_effective)
+            .min(model_window)
+            .max(1)
     }
 
     pub(super) fn active_accent_color(&self) -> Color {
@@ -605,35 +837,13 @@ impl ChatWidget {
         self.set_status_message(format!("Model set to {slug}"));
     }
 
-    pub(super) fn open_reasoning_effort_picker(&mut self) {
-        self.picker_mode = Some(PickerMode::ReasoningEffort);
-        let entries = self.reasoning_effort_entries();
-        if entries.is_empty() {
-            self.set_status_message("Reasoning effort unsupported");
-            return;
-        }
-        let model_entries = entries
-            .into_iter()
-            .map(|entry| ModelPickerEntry {
-                selection_value: entry.value,
-                display_name: entry.label,
-                description: Some(entry.description),
-                right_hint: None,
-                is_current: entry.is_current,
-            })
-            .collect();
-        self.bottom_pane.open_model_picker(model_entries);
-        self.set_status_message("Select reasoning effort");
-    }
-
     pub(super) fn apply_reasoning_effort_selection(&mut self, value: String) {
         self.reasoning_effort_selection = Some(value.clone());
-        if let Some(pending) = self.pending_model_selection.as_mut() {
-            pending.reasoning_effort_selection = Some(value);
-            self.finalize_pending_model_selection();
-            return;
+        if let Some(model) = self.session.model.as_ref() {
+            self.session.reasoning_effort = model
+                .resolve_reasoning_effort_selection(Some(value.as_str()))
+                .effective_reasoning_effort;
         }
-
         self.refresh_header_box();
         self.app_event_tx
             .send(AppEvent::Command(AppCommand::override_turn_context(
@@ -644,24 +854,5 @@ impl ChatWidget {
                 /*approval_policy*/ None,
             )));
         self.set_status_message(format!("Reasoning effort set to {value}"));
-    }
-
-    pub(super) fn finalize_pending_model_selection(&mut self) {
-        let Some(pending) = self.pending_model_selection.take() else {
-            return;
-        };
-
-        self.picker_mode = None;
-        self.reasoning_effort_selection = pending.reasoning_effort_selection.clone();
-        self.refresh_header_box();
-        self.app_event_tx
-            .send(AppEvent::Command(AppCommand::override_turn_context(
-                /*cwd*/ None,
-                Some(pending.selection.clone()),
-                Some(self.reasoning_effort_selection.clone()),
-                /*sandbox*/ None,
-                /*approval_policy*/ None,
-            )));
-        self.set_status_message(format!("Model set to {}", pending.display_name));
     }
 }

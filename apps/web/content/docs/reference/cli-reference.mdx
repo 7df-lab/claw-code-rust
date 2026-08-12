@@ -69,6 +69,23 @@ devo prompt --format jsonl "List the main config files."
 `devo prompt` runs with an always-allow permission checker. Use it for trusted
 automation where the prompt and working tree are controlled.
 
+## Server Protocols
+
+Start the singleton server with the Native API only (the default):
+
+```bash
+devo server
+```
+
+ACP v1 must be enabled explicitly. You can expose ACP alone or alongside Native:
+
+```bash
+devo server --protocols acp
+devo server --protocols native,acp
+```
+
+If the singleton is already running, another `devo server` invocation adds the requested protocols to its current set. Protocols remain enabled until the server restarts. Use `devo server --status` to inspect the server without changing its protocols.
+
 ## Health Check
 
 Diagnose config, provider connectivity, and system health:

@@ -3,25 +3,37 @@
 This crate defines the protocol types shared by Devo clients and the Devo
 server.
 
-## ACP and Devo extension methods
+## ACP v1.20 and Devo Native extensions
 
-Devo uses ACP JSON-RPC methods for the portable protocol surface. The current
-client-to-server ACP methods are:
+ACP support targets the stable v1.20 schema in `protocol-lock.json`. The schema
+and v1 protocol documentation are normative for ACP wire behavior; the v2
+draft is out of scope.
+
+The current client-to-server ACP methods are:
 
 - `initialize`: negotiate protocol version, client capabilities, and server
   metadata.
 - `session/new`: create a new session for a working directory.
 - `session/list`: list persisted sessions.
-- `session/resume`: load a persisted session.
+- `session/resume`: resume a persisted session without replaying its history.
 - `session/prompt`: submit a prompt to an active session. The JSON-RPC response
   returns when the turn completes (`AcpPromptResult.stopReason`). Streaming
   progress is delivered through `session/update` notifications during the turn.
-- `session/cancel`: cancel the active session turn (including manual
-  `/compact`, which is admitted as a `ManualCompaction` turn).
+- `session/cancel`: cancel the active session turn. This is an ACP notification
+  and has no JSON-RPC response.
+- `logout`: end the authenticated ACP client session when the server advertises
+  the ACP logout capability.
 
-Event-driven clients that need an immediate turn acknowledgement should use the
-Devo extension `_devo/turn/start`, which returns `TurnStartResult::Started`
-promptly and streams turn progress through server notifications.
+ACP `session/load` always replays the complete conversation before returning.
+The desktop SDK applies display history limits locally after replay; it does
+not send a Devo-specific history-limit extension.
+
+ACP paths (`cwd`, additional directories, file-system paths, and tool-call
+locations) are absolute. ACP stdio MCP commands are absolute executable paths.
+
+Event-driven clients that need an immediate turn acknowledgement should use
+Native `turn/start`, which returns a turn snapshot promptly and streams turn
+progress through server notifications.
 
 The current server-to-client ACP notification method is:
 
@@ -47,90 +59,101 @@ The current server-to-client ACP notification method is:
 
 The current server-to-client ACP request methods are:
 
-- `session/request_permission`: ask the client to approve or reject a tool or
-  runtime action.
-- `fs/read_text_file`: ask the client to read an absolute text-file path.
-- `fs/write_text_file`: ask the client to write text to an absolute file path.
+- `session/request_permission`: ask an ACP client to approve or reject a tool
+  or runtime action.
+- `fs/read_text_file`: ask an ACP client to read an absolute text-file path.
+- `fs/write_text_file`: ask an ACP client to write text to an absolute file
+  path.
 
-Devo-specific client-to-server APIs are sent with the `_devo/` method prefix.
-The prefix is applied by the client transport, then removed by the server before
-dispatching to `ClientMethod`. These methods remain non-standard ACP extension
-points because they expose Devo-specific TUI, runtime, or local workflow
-behavior that is not represented by the portable ACP method set.
+First-party Native clients do not implement these ACP reverse requests;
+Native approval requests are used for those clients instead.
+
+Devo-specific client-to-server APIs belong to the Native surface. Existing
+route modules may retain their historical internal layout during migration,
+but users and new documentation should call this surface Native. They are not
+ACP methods.
+In particular, `userInput/request` is a Native server-initiated request and is
+not registered as an ACP extension.
+
+ACP extensions must follow ACP's underscore-prefixed method/notification rule.
+Devo metadata may be carried in `_meta`, but it must not add non-standard root
+fields or change standard ACP replay semantics.
 
 ### Session extensions
 
-- `_devo/session/title/update`: rename a session from the client.
-- `_devo/session/metadata/update`: update session metadata such as the active
-  model or reasoning-effort selection.
-- `_devo/session/permissions/update`: update the current permission preset.
-- `_devo/session/compact`: start a manual compaction turn (`TurnStartResult`);
-  keep emitting `session/compaction/*` for UI.
-- `_devo/session/fork`: fork a new session from an existing turn.
-- `_devo/session/rollback`: roll back a session to a selected user turn.
+- `session/metadata/update`: update session metadata and settings with the
+  Native patch shape, including title, model, reasoning effort, permission
+  preset, sandbox profile, and compaction threshold.
+- `session/compact/start`: start a manual compaction turn; keep emitting
+  `session/compaction/*` for UI.
+- `session/fork`: fork a new session from an existing turn.
+- `session/rollback/preview` followed by `session/rollback/commit`: roll back
+  a session to a selected user turn with an explicit restore plan.
+- `session/interrupt`: stop the active session turn, a Native task, or a
+  sessionless command process through one scoped request.
 
 ### Turn extensions
 
-- `_devo/turn/start`: start a Devo turn with the full Devo turn request shape.
-  If an older server does not support it, the client falls back to ACP
-  `session/prompt`.
-- `_devo/turn/shell_command`: run a user shell command through the server
-  runtime.
-- `_devo/turn/interrupt`: interrupt the active Devo turn.
-- `_devo/turn/steer`: send steering input into a running turn.
+- `turn/start`: start a Devo turn with the Native turn request shape.
+- `session/queue/steer`: send steering input into a running turn.
 
 ### Workspace extensions
 
-- `_devo/workspace/changes/read`: read branch, uncommitted, or turn-scoped
+- `workspace/changes/read`: read branch, uncommitted, or turn-scoped
   workspace change views. Git workspaces support branch and uncommitted scopes;
   non-Git workspaces report those scopes as unsupported and only expose
   turn-scoped bounded filesystem snapshots.
 - `workspace/changes/updated`: notify subscribed clients that the turn-scoped
   workspace change summary was finalized or updated. The notification carries a
-  summary only; clients call `_devo/workspace/changes/read` for full diffs.
+  summary only; clients call `workspace/changes/read` for full diffs.
 
-### Provider and model extensions
+### Provider and model methods
 
-- `_devo/provider/list`: list configured provider vendors.
-- `_devo/provider/upsert`: add or update a provider vendor and optional model
-  binding.
-- `_devo/provider/validate`: validate provider credentials and model settings.
-- `_devo/model/catalog`: read the effective model catalog.
-- `_devo/model/saved`: notify the server that model configuration was saved.
+- `provider/list`: list configured providers using the Native camelCase
+  result.
+- `provider/upsert`: add or update a provider and optional model binding.
+- `provider/validate`: validate provider credentials and model settings.
+- `model/list` and `model/preferences/*`: read and update the Native model
+  catalog and preferences.
 
-### Skills extensions
+### MCP methods
 
-- `_devo/skills/list`: list available skills for a working directory.
-- `_devo/skills/changed`: notify the server that skill files changed.
-- `_devo/skills/set_enabled`: persistently enable or disable a skill.
+- `mcp/list`: list configured MCP servers.
+- `mcp/tools`: list tools exposed by one MCP server.
+- `mcp/set_enabled`: enable or disable one MCP server.
+
+### Skills methods
+
+- `skill/list`: list available skills for a working directory; pass
+  `forceReload: true` after workspace changes.
+- `skill/set_enabled`: persistently enable or disable a skill.
 
 ### Command execution extensions
 
-- `_devo/command/exec`: launch a command execution request.
-- `_devo/command/exec/write`: write input to a running command.
-- `_devo/command/exec/resize`: resize a running command terminal.
-- `_devo/command/exec/terminate`: terminate a running command.
+- `task/start` with `kind: "process"`: launch a command execution task.
+- `task/write_stdin`, `task/resize`, and `task/interrupt`: control the
+  session-owned process task returned by `task/start`.
 
-### Goal extensions
+### Goal methods
 
-- `_devo/goal/create`: create a goal for the active thread.
-- `_devo/goal/set`: update the current goal objective.
-- `_devo/goal/status`: read the current goal state.
-- `_devo/goal/pause`: pause goal continuation.
-- `_devo/goal/resume`: resume goal continuation.
-- `_devo/goal/complete`: mark the goal complete.
-- `_devo/goal/clear`: clear the current goal.
+- `session/goal/set`: create or replace a session goal.
+- `session/goal/read`: read the current goal state.
+- `session/goal/update`: edit the current goal in place.
+- `session/goal/pause`, `session/goal/resume`, `session/goal/complete`,
+  `session/goal/cancel`, and `session/goal/clear`: transition or clear a goal.
 
 ### Agent extensions
 
-- `_devo/agent/list`: list subagents associated with a session.
-- `_devo/agent/spawn`: spawn a subagent.
-- `_devo/agent/close`: close a subagent.
+- `task/start` with `kind: "agent"`: spawn a subagent task.
+- `agent/list` and `agent/read`: inspect subagent tasks.
+- `agent/message`: send a follow-up message to a subagent.
+- `agent/cancel`: stop a subagent task.
 
-### Reference search and user-input extensions
+### Reference search and user-input methods
 
-- `_devo/search/start`: start a server-backed composer reference search.
-- `_devo/search/update`: update the active reference-search query.
-- `_devo/search/cancel`: cancel the active reference search.
-- `_devo/request_user_input/respond`: answer a pending structured user-input
-  request.
+- `search/start`: start a server-backed composer reference search.
+- `search/update`: update the active reference-search query.
+- `search/cancel`: cancel the active reference search.
+Native-only user-input requests are deliberately excluded from the ACP method
+registry. ACP clients use only the standard ACP request/response methods
+advertised during initialization.

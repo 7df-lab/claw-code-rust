@@ -98,7 +98,8 @@ Settings › Compaction
 - Near-million values render as `1M` (for example `996147` → `1M`).
 - Scroll overflow uses `↑ more` / `↓ more`, matching the model picker.
 - Both annotations may appear on the same row.
-- Apply calls `session/compaction/update` with `effectiveContextWindow` and must hot-update the session without process restart.
+- Apply calls `session/metadata/update` with `settings.effectiveContextWindow`
+  and must hot-update the session without process restart.
 - Values above the model `context_window` are clamped on apply (not rejected).
 - In-flight turns keep their frozen budget; the next compaction decision uses the new limit.
 - First milestone is session-scoped persistence via `SessionSettings.effective_context_window` (resume restores it). No `config.toml` write.

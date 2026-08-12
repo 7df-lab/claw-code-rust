@@ -1,8 +1,6 @@
 use super::*;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -11,21 +9,12 @@ use uuid::Uuid;
 use crate::ACP_AUTHENTICATE_METHOD;
 use crate::ACP_INITIALIZE_METHOD;
 use crate::ACP_LOGOUT_METHOD;
-use crate::ACP_SESSION_CANCEL_METHOD;
-use crate::ACP_SESSION_CLOSE_METHOD;
-use crate::ACP_SESSION_DELETE_METHOD;
-use crate::ACP_SESSION_LIST_METHOD;
-use crate::ACP_SESSION_LOAD_METHOD;
-use crate::ACP_SESSION_NEW_METHOD;
-use crate::ACP_SESSION_PROMPT_METHOD;
-use crate::ACP_SESSION_RESUME_METHOD;
-use crate::ACP_SESSION_SET_CONFIG_OPTION_METHOD;
-use crate::ACP_SESSION_SET_MODE_METHOD;
 use crate::acp_auth_required_response;
 use crate::acp_notification_from_server_event;
-use crate::devo_extension_inner_method;
-use devo_protocol::canonical::wire_projector::typed_item_notification_from_server_event;
+use devo_protocol::native::wire_projector::typed_item_notification_from_server_event;
 
+use super::handlers::acp::AcpRoute;
+use super::handlers::acp::acp_route;
 use super::outbound::OutboundDeliveryPolicy;
 use super::outbound::OutboundFrame;
 use super::outbound::enqueue_outbound;
@@ -89,44 +78,20 @@ enum PostResponseAction {
     },
 }
 
+/// Which protocol surface a connection is bound to, negotiated at
+/// `initialize` via `_meta.devo.protocol` (L2-DES-APP-008 / L2-DES-APP-009).
+///
+/// ACP and the native protocol share method names (`session/new`,
+/// `session/resume`, `session/list`, `session/delete`, …), so routing cannot
+/// key on the method name alone: ACP connections keep the ACP adapter
+/// behavior pinned by `protocol-lock.json`, native connections route
+/// those names to the native handlers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(clippy::enum_variant_names)]
-enum AcpRoute {
-    CancelSession,
-    CloseSession,
-    DeleteSession,
-    ListSession,
-    LoadSession,
-    NewSession,
-    PromptSession,
-    ResumeSession,
-    SetConfigOptionSession,
-    SetModeSession,
-}
-
-fn acp_route_registry() -> &'static BTreeMap<&'static str, AcpRoute> {
-    static ACP_ROUTES: OnceLock<BTreeMap<&'static str, AcpRoute>> = OnceLock::new();
-    ACP_ROUTES.get_or_init(|| {
-        BTreeMap::from([
-            (ACP_SESSION_CANCEL_METHOD, AcpRoute::CancelSession),
-            (ACP_SESSION_CLOSE_METHOD, AcpRoute::CloseSession),
-            (ACP_SESSION_DELETE_METHOD, AcpRoute::DeleteSession),
-            (ACP_SESSION_LIST_METHOD, AcpRoute::ListSession),
-            (ACP_SESSION_LOAD_METHOD, AcpRoute::LoadSession),
-            (ACP_SESSION_NEW_METHOD, AcpRoute::NewSession),
-            (ACP_SESSION_PROMPT_METHOD, AcpRoute::PromptSession),
-            (ACP_SESSION_RESUME_METHOD, AcpRoute::ResumeSession),
-            (
-                ACP_SESSION_SET_CONFIG_OPTION_METHOD,
-                AcpRoute::SetConfigOptionSession,
-            ),
-            (ACP_SESSION_SET_MODE_METHOD, AcpRoute::SetModeSession),
-        ])
-    })
-}
-
-fn acp_route(method: &str) -> Option<AcpRoute> {
-    acp_route_registry().get(method).copied()
+pub(crate) enum ConnectionProtocol {
+    /// ACP adapter surface.
+    Acp,
+    /// Native protocol surface for first-party clients.
+    Native,
 }
 
 impl ServerRuntime {
@@ -142,6 +107,7 @@ impl ServerRuntime {
             ConnectionRuntime {
                 transport,
                 state: ConnectionState::Connected,
+                protocol: None,
                 acp_authenticated: false,
                 acp_client_capabilities: crate::AcpClientCapabilities::default(),
                 typed_items: false,
@@ -251,42 +217,51 @@ impl ServerRuntime {
             });
         }
 
-        if method == ACP_AUTHENTICATE_METHOD {
-            return Some(IncomingResponse::new(
-                self.handle_acp_authenticate(connection_id, id, params)
-                    .await,
-            ));
-        }
-        if method == ACP_LOGOUT_METHOD {
-            return Some(IncomingResponse::new(
-                self.handle_acp_logout(connection_id, id, params).await,
-            ));
-        }
-
-        if !self.connection_authenticated(connection_id).await {
-            if let Some(request_id) = id {
-                return Some(IncomingResponse::new(acp_auth_required_response(
-                    request_id,
-                )));
+        let protocol = self
+            .connection_protocol(connection_id)
+            .await
+            .expect("ready connection must have a negotiated protocol");
+        if protocol == ConnectionProtocol::Acp {
+            if method == ACP_AUTHENTICATE_METHOD {
+                return Some(IncomingResponse::new(
+                    self.handle_acp_authenticate(connection_id, id, params)
+                        .await,
+                ));
             }
-            tracing::warn!(
-                connection_id,
-                method,
-                "dropping unauthenticated client notification"
-            );
-            return None;
+            if method == ACP_LOGOUT_METHOD {
+                return Some(IncomingResponse::new(
+                    self.handle_acp_logout(connection_id, id, params).await,
+                ));
+            }
+            if !self.connection_authenticated(connection_id).await {
+                if let Some(request_id) = id {
+                    return Some(IncomingResponse::new(acp_auth_required_response(
+                        request_id,
+                    )));
+                }
+                tracing::warn!(
+                    connection_id,
+                    method,
+                    "dropping unauthenticated ACP client notification"
+                );
+                return None;
+            }
+            if let Some(route) = acp_route(&method) {
+                return self
+                    .handle_acp_route(route, connection_id, id, params)
+                    .await;
+            }
+            return id.map(|request_id| {
+                IncomingResponse::new(crate::acp_error_response(
+                    request_id,
+                    crate::AcpErrorCode::MethodNotFound,
+                    format!("unknown ACP method: {method}"),
+                ))
+            });
         }
 
-        if let Some(route) = acp_route(&method) {
-            return self
-                .handle_acp_route(route, connection_id, id, params)
-                .await;
-        }
-
-        let client_method = ClientMethod::parse(&method)
-            .or_else(|| devo_extension_inner_method(&method).and_then(ClientMethod::parse));
-        let response = match client_method {
-            None if method == "session/start" => {
+        let response = match method.as_str() {
+            "session/start" => {
                 let request_id = id?;
                 let params: SessionStartParams = match serde_json::from_value(params) {
                     Ok(params) => params,
@@ -314,202 +289,149 @@ impl ServerRuntime {
                 Some(response)
             }
             // Update session metadata, including the current model and reasoning effort.
-            Some(ClientMethod::SessionMetadataUpdate) => {
-                Some(self.handle_session_metadata_update(id?, params).await)
-            }
-            // update session's permission mode, including yolo, default, full-access, readonly
-            Some(ClientMethod::SessionPermissionsUpdate) => {
-                Some(self.handle_session_permissions_update(id?, params).await)
-            }
-            Some(ClientMethod::SessionCompactionUpdate) => {
-                Some(self.handle_session_compaction_update(id?, params).await)
-            }
-            // update the session's sandbox profile for spawned commands
-            Some(ClientMethod::SessionSandboxProfileUpdate) => Some(
-                self.handle_session_sandbox_profile_update(id?, params)
+            "session/metadata/update" => Some(
+                self.handle_native_session_metadata_update(id?, params)
                     .await,
             ),
-            // update session title, user may customized session title from ui client
-            Some(ClientMethod::SessionTitleUpdate) => {
-                Some(self.handle_session_title_update(id?, params).await)
-            }
             // resume a history session, server load the jsonl file then replay the events in jsonl
-            Some(ClientMethod::SessionResume) => {
-                Some(self.handle_session_resume(connection_id, id?, params).await)
-            }
+            "session/resume" => Some(self.handle_session_resume(connection_id, id?, params).await),
             // fork a given session at given user turn index
-            Some(ClientMethod::SessionFork) => {
-                Some(self.handle_session_fork(connection_id, id?, params).await)
-            }
-            // rollback session at given point
-            Some(ClientMethod::SessionRollback) => Some(
-                self.handle_session_rollback(connection_id, id?, params)
-                    .await,
-            ),
-            Some(ClientMethod::SessionRollbackPreview) => Some(
+            "session/fork" => Some(self.handle_session_fork(connection_id, id?, params).await),
+            "session/rollback/preview" => Some(
                 self.handle_session_rollback_preview(connection_id, id?, params)
                     .await,
             ),
-            Some(ClientMethod::SessionRollbackCommit) => Some(
+            "session/rollback/commit" => Some(
                 self.handle_session_rollback_commit(connection_id, id?, params)
                     .await,
             ),
             // compact session context history
-            Some(ClientMethod::SessionCompact) => {
-                Some(self.handle_session_compact(id?, params).await)
+            "session/compact/start" => {
+                Some(self.handle_native_session_compact_start(id?, params).await)
             }
-            // list the current skills, including given cwd param
-            Some(ClientMethod::SkillsList) => Some(self.handle_skills_list(id?, params).await),
-            // TODO: not sure what is the endpoint
-            Some(ClientMethod::SkillsChanged) => {
-                Some(self.handle_skills_changed(id?, params).await)
-            }
-            Some(ClientMethod::SkillsSetEnabled) => {
-                Some(self.handle_skills_set_enabled(id?, params).await)
-            }
-            Some(ClientMethod::McpList) => Some(self.handle_mcp_list(id?, params).await),
-            Some(ClientMethod::McpTools) => Some(self.handle_mcp_tools(id?, params).await),
-            Some(ClientMethod::McpSetEnabled) => {
-                Some(self.handle_mcp_set_enabled(id?, params).await)
-            }
-            Some(ClientMethod::ContextUsageRead) => {
-                Some(self.handle_context_usage_read(id?, params).await)
-            }
-            // get the model catalog, aka the configured models list
-            Some(ClientMethod::ModelCatalog) => Some(self.handle_model_catalog(id?, params).await),
-            Some(ClientMethod::ModelConfig) => Some(self.handle_model_config(id?, params).await),
-            Some(ClientMethod::ModelConfigSet) => {
-                Some(self.handle_model_config_set(id?, params).await)
-            }
-            // TODO: not sure, config model from client should be deprecated
-            Some(ClientMethod::ModelSaved) => Some(self.handle_model_saved(id?, params).await),
-            Some(ClientMethod::CommandExec) => {
-                Some(self.handle_command_exec(connection_id, id?, params).await)
-            }
-            Some(ClientMethod::CommandExecWrite) => Some(
-                self.handle_command_exec_write(connection_id, id?, params)
+            "session/new" => Some(
+                self.handle_native_session_new(connection_id, id?, params)
                     .await,
             ),
-            Some(ClientMethod::CommandExecResize) => Some(
-                self.handle_command_exec_resize(connection_id, id?, params)
+            "session/list" => Some(self.handle_native_session_list(id?, params).await),
+            "session/read" => Some(self.handle_native_session_read(id?, params).await),
+            "session/interrupt" => Some(
+                self.handle_session_interrupt(connection_id, id?, params)
                     .await,
             ),
-            Some(ClientMethod::CommandExecTerminate) => Some(
-                self.handle_command_exec_terminate(connection_id, id?, params)
-                    .await,
+            "runtime/ping" => Some(
+                serde_json::to_value(SuccessResponse {
+                    id: id?,
+                    result: devo_protocol::native::rpc_admin::RuntimePingResult {
+                        server_time_ms: Utc::now().timestamp_millis(),
+                    },
+                })
+                .expect("serialize runtime/ping response"),
             ),
-            Some(ClientMethod::MessageEditPrevious) => {
-                Some(self.handle_message_edit_previous(id?, params).await)
+            "model/list" => Some(self.handle_native_model_list(id?, params).await),
+            "model/preferences/read" => {
+                Some(self.handle_native_model_preferences_read(id?, params).await)
             }
+            "model/preferences/write" => Some(
+                self.handle_native_model_preferences_write(id?, params)
+                    .await,
+            ),
+            "session/delete" => Some(self.handle_native_session_delete(id?, params).await),
+            "session/goal/set" => Some(self.handle_native_session_goal_set(id?, params).await),
+            "session/goal/read" => Some(self.handle_native_session_goal_read(id?, params).await),
+            "session/goal/update" => {
+                Some(self.handle_native_session_goal_update(id?, params).await)
+            }
+            "session/message/edit" => {
+                Some(self.handle_native_session_message_edit(id?, params).await)
+            }
+            "task/start" => Some(
+                self.handle_native_task_start(connection_id, id?, params)
+                    .await,
+            ),
+            "task/read" => Some(self.handle_native_task_read(id?, params).await),
+            "task/list" => Some(self.handle_native_task_list(id?, params).await),
+            "task/interrupt" => Some(
+                self.handle_native_task_interrupt(connection_id, id?, params)
+                    .await,
+            ),
+            "task/write_stdin" => Some(
+                self.handle_native_task_write_stdin(connection_id, id?, params)
+                    .await,
+            ),
+            "task/resize" => Some(
+                self.handle_native_task_resize(connection_id, id?, params)
+                    .await,
+            ),
+            "agent/cancel" => Some(self.handle_native_agent_cancel(id?, params).await),
+            "agent/list" => Some(self.handle_native_agent_list(id?, params).await),
+            "agent/message" => Some(self.handle_native_agent_message(id?, params).await),
+            "agent/read" => Some(self.handle_native_agent_read(id?, params).await),
+            "session/goal/pause"
+            | "session/goal/resume"
+            | "session/goal/complete"
+            | "session/goal/cancel"
+            | "session/goal/clear" => Some(
+                self.handle_native_session_goal_transition(&method, id?, params)
+                    .await,
+            ),
+            "skill/list" => Some(self.handle_native_skill_list(id?, params).await),
+            "skill/set_enabled" => Some(self.handle_native_skill_set_enabled(id?, params).await),
+            "mcp/list" => Some(self.handle_mcp_list(id?, params).await),
+            "mcp/tools" => Some(self.handle_mcp_tools(id?, params).await),
+            "mcp/set_enabled" => Some(self.handle_mcp_set_enabled(id?, params).await),
+            "context/usage/read" => Some(self.handle_context_usage_read(id?, params).await),
+            "search/start" => Some(
+                self.handle_native_search_start(connection_id, id?, params)
+                    .await,
+            ),
+            "search/update" => Some(self.handle_native_search_update(id?, params).await),
+            "search/cancel" => Some(self.handle_native_search_cancel(id?, params).await),
+            "command/exec" => Some(self.handle_command_exec(connection_id, id?, params).await),
             // TODO: start a new user turn, maybe should change name to "turn/submit"
-            Some(ClientMethod::TurnStart) => Some(
+            "turn/start" => Some(
                 self.handle_turn_start_for_connection(Some(connection_id), id?, params)
                     .await,
             ),
-            Some(ClientMethod::TurnShellCommand) => Some(
-                self.handle_turn_shell_command_for_connection(Some(connection_id), id?, params)
-                    .await,
-            ),
-            // interupt the current working turn
-            Some(ClientMethod::TurnInterrupt) => {
-                Some(self.handle_turn_interrupt(id?, params).await)
-            }
-            Some(ClientMethod::WorkspaceChangesRead) => {
-                Some(self.handle_workspace_changes_read(id?, params).await)
-            }
-            Some(ClientMethod::RequestUserInputRespond) => {
-                Some(self.handle_request_user_input_respond(id?, params).await)
-            }
-            Some(ClientMethod::SearchStart) => Some(
-                self.handle_reference_search_start(connection_id, id?, params)
-                    .await,
-            ),
-            Some(ClientMethod::SearchUpdate) => {
-                Some(self.handle_reference_search_update(id?, params).await)
-            }
-            Some(ClientMethod::SearchCancel) => {
-                Some(self.handle_reference_search_cancel(id?, params).await)
-            }
-            Some(ClientMethod::EventsSubscribe) => Some(
-                self.handle_events_subscribe(connection_id, id?, params)
-                    .await,
-            ),
-            // TODO: the goal design should be simplified
-            Some(ClientMethod::GoalCreate) => Some(self.handle_goal_create(id?, params).await),
-            Some(ClientMethod::GoalSet) => Some(self.handle_goal_set(id?, params).await),
-            Some(ClientMethod::GoalPause) => Some(self.handle_goal_pause(id?, params).await),
-            Some(ClientMethod::GoalResume) => Some(self.handle_goal_resume(id?, params).await),
-            Some(ClientMethod::GoalComplete) => Some(self.handle_goal_complete(id?, params).await),
-            // cancel the current goal loop
-            Some(ClientMethod::GoalCancel) => Some(self.handle_goal_cancel(id?, params).await),
-            Some(ClientMethod::GoalClear) => Some(self.handle_goal_clear(id?, params).await),
-            Some(ClientMethod::GoalStatus) => Some(self.handle_goal_status(id?, params).await),
-            Some(ClientMethod::AgentSpawn) => Some(self.handle_agent_spawn(id?, params).await),
-            Some(ClientMethod::AgentSendMessage) => {
-                Some(self.handle_agent_send_message(id?, params).await)
-            }
-            Some(ClientMethod::AgentWait) => Some(self.handle_agent_wait(id?, params).await),
-            // TODO: list the current sub agents, not sure whther the current agent is right.
-            Some(ClientMethod::AgentList) => Some(self.handle_agent_list(id?, params).await),
-            // TODO: get the agent status, it is the subagent session status, maybe the design is not right, wait for reviewing.
-            Some(ClientMethod::AgentStatus) => Some(self.handle_agent_status(id?, params).await),
-            Some(ClientMethod::AgentClose) => Some(self.handle_agent_close(id?, params).await),
-            // TODO: list the current provider vender list
-            Some(ClientMethod::ProviderVendorList) => {
-                Some(self.handle_provider_vendor_list(id?, params).await)
-            }
-            Some(ClientMethod::ProviderValidate) => {
-                Some(self.handle_provider_validate(id?, params).await)
-            }
-            // TODO: update / add provider vendor to the provider vendor list
-            Some(ClientMethod::ProviderVendorUpsert) => {
-                Some(self.handle_provider_vendor_upsert(id?, params).await)
-            }
-            // Paged history reads of the new Native API (canonical types).
-            Some(ClientMethod::SessionTurnsList) => {
-                Some(self.handle_session_turns_list(id?, params).await)
-            }
-            Some(ClientMethod::SessionItemsList) => {
-                Some(self.handle_session_items_list(id?, params).await)
-            }
+            "workspace/changes/read" => Some(self.handle_workspace_changes_read(id?, params).await),
+            "provider/list" => Some(self.handle_native_provider_list(id?).await),
+            "provider/validate" => Some(self.handle_native_provider_validate(id?, params).await),
+            "provider/upsert" => Some(self.handle_native_provider_upsert(id?, params).await),
+            // Paged history reads of the new Native API (native types).
+            "session/turns/list" => Some(self.handle_session_turns_list(id?, params).await),
+            "session/items/list" => Some(self.handle_session_items_list(id?, params).await),
             // Durable event subscriptions (08 §4).
-            Some(ClientMethod::SubscriptionCreate) => Some(
+            "subscription/create" => Some(
                 self.handle_subscription_create(connection_id, id?, params)
                     .await,
             ),
-            Some(ClientMethod::SubscriptionUpdate) => Some(
+            "subscription/update" => Some(
                 self.handle_subscription_update(connection_id, id?, params)
                     .await,
             ),
-            Some(ClientMethod::SubscriptionAck) => Some(
+            "subscription/ack" => Some(
                 self.handle_subscription_ack(connection_id, id?, params)
                     .await,
             ),
-            Some(ClientMethod::SubscriptionUnsubscribe) => Some(
+            "subscription/unsubscribe" => Some(
                 self.handle_subscription_unsubscribe(connection_id, id?, params)
                     .await,
             ),
             // Session input queue of the new Native API (01 §4.3).
-            Some(ClientMethod::SessionQueuePush) => Some(
+            "session/queue/push" => Some(
                 self.handle_session_queue_push(connection_id, id?, params)
                     .await,
             ),
-            Some(ClientMethod::SessionQueueList) => {
-                Some(self.handle_session_queue_list(id?, params).await)
-            }
-            Some(ClientMethod::SessionQueueUpdate) => {
-                Some(self.handle_session_queue_update(id?, params).await)
-            }
-            Some(ClientMethod::SessionQueueRemove) => {
-                Some(self.handle_session_queue_remove(id?, params).await)
-            }
-            Some(ClientMethod::SessionQueueSteer) => Some(
+            "session/queue/list" => Some(self.handle_session_queue_list(id?, params).await),
+            "session/queue/update" => Some(self.handle_session_queue_update(id?, params).await),
+            "session/queue/remove" => Some(self.handle_session_queue_remove(id?, params).await),
+            "session/queue/steer" => Some(
                 self.handle_session_queue_steer(connection_id, id?, params)
                     .await,
             ),
             // TODO: add endpoint to kill background process opened by unified exec command.
             // TODO: add endpoint to list current background processes.
-            None => Some(self.error_response(
+            _ => Some(self.error_response(
                 id?,
                 ProtocolErrorCode::InvalidParams,
                 format!("unknown method: {method}"),
@@ -531,23 +453,27 @@ impl ServerRuntime {
         params: serde_json::Value,
     ) -> Option<IncomingResponse> {
         match route {
-            AcpRoute::CancelSession => {
+            AcpRoute::Cancel => {
                 self.handle_acp_session_cancel(params).await;
                 Some(IncomingResponse::new(crate::acp_success_response(
                     request_id?,
                     crate::AcpEmptyResult::default(),
                 )))
             }
-            AcpRoute::CloseSession => Some(IncomingResponse::new(
+            AcpRoute::SessionInterrupt => Some(IncomingResponse::new(
+                self.handle_session_interrupt(connection_id, request_id?, params)
+                    .await,
+            )),
+            AcpRoute::Close => Some(IncomingResponse::new(
                 self.handle_acp_session_close(request_id?, params).await,
             )),
-            AcpRoute::DeleteSession => Some(IncomingResponse::new(
+            AcpRoute::Delete => Some(IncomingResponse::new(
                 self.handle_acp_session_delete(request_id?, params).await,
             )),
-            AcpRoute::ListSession => Some(IncomingResponse::new(
+            AcpRoute::List => Some(IncomingResponse::new(
                 self.handle_acp_session_list(request_id?, params).await,
             )),
-            AcpRoute::LoadSession => {
+            AcpRoute::Load => {
                 let session_id =
                     serde_json::from_value::<crate::AcpLoadSessionParams>(params.clone())
                         .ok()
@@ -561,7 +487,7 @@ impl ServerRuntime {
                         .with_acp_session_state_snapshot_after_success(connection_id, session_id),
                 )
             }
-            AcpRoute::NewSession => {
+            AcpRoute::New => {
                 let response = IncomingResponse::new(
                     self.handle_acp_session_new(connection_id, request_id?, params)
                         .await,
@@ -576,11 +502,11 @@ impl ServerRuntime {
                         .with_acp_session_state_snapshot_after_success(connection_id, session_id),
                 )
             }
-            AcpRoute::PromptSession => self
+            AcpRoute::Prompt => self
                 .handle_acp_session_prompt(connection_id, request_id?, params)
                 .await
                 .map(IncomingResponse::new),
-            AcpRoute::ResumeSession => {
+            AcpRoute::Resume => {
                 let session_id =
                     serde_json::from_value::<crate::AcpResumeSessionParams>(params.clone())
                         .ok()
@@ -594,11 +520,11 @@ impl ServerRuntime {
                         .with_acp_session_state_snapshot_after_success(connection_id, session_id),
                 )
             }
-            AcpRoute::SetConfigOptionSession => Some(IncomingResponse::new(
+            AcpRoute::SetConfigOption => Some(IncomingResponse::new(
                 self.handle_acp_session_set_config_option(request_id?, params)
                     .await,
             )),
-            AcpRoute::SetModeSession => Some(IncomingResponse::new(
+            AcpRoute::SetMode => Some(IncomingResponse::new(
                 self.handle_acp_session_set_mode(request_id?, params).await,
             )),
         }
@@ -652,6 +578,17 @@ impl ServerRuntime {
             .is_some_and(|connection| connection.state == ConnectionState::Ready)
     }
 
+    pub(super) async fn connection_protocol(
+        &self,
+        connection_id: u64,
+    ) -> Option<ConnectionProtocol> {
+        self.connections
+            .lock()
+            .await
+            .get(&connection_id)
+            .and_then(|connection| connection.protocol)
+    }
+
     pub async fn resolve_client_response(
         self: &Arc<Self>,
         connection_id: u64,
@@ -691,7 +628,7 @@ impl ServerRuntime {
             }
             let event_seq = connection.next_seq();
             let event = event.clone().with_seq(event_seq);
-            let (method, value) = acp_notification_from_server_event(method, &event);
+            let (method, value) = connection.notification_for(method, &event);
             Some((
                 connection.outbound_tx.clone(),
                 OutboundFrame::notification(connection_id, method, event_seq, value),
@@ -733,7 +670,7 @@ impl ServerRuntime {
             }
             let event_seq = connection.next_seq();
             let event = event.with_seq(event_seq);
-            let (method, value) = acp_notification_from_server_event(method, &event);
+            let (method, value) = connection.notification_for(method, &event);
             Some((
                 connection.outbound_tx.clone(),
                 OutboundFrame::notification(connection_id, method, event_seq, value),
@@ -1099,8 +1036,8 @@ impl ServerRuntime {
         session_id: SessionId,
         owner_connection_id: Option<u64>,
     ) -> Vec<u64> {
-        let canonical_session_id =
-            devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::from(session_id));
+        let native_session_id =
+            devo_protocol::native::ids::SessionId::from_legacy_uuid(Uuid::from(session_id));
         let connections = self.connections.lock().await;
         let mut connection_ids = connections
             .iter()
@@ -1108,9 +1045,9 @@ impl ServerRuntime {
                 let subscribed = connection.event_selectors.iter().any(|selector| {
                     matches!(
                         selector,
-                        devo_protocol::canonical::event::StreamSelector::Session {
+                        devo_protocol::native::event::StreamSelector::Session {
                             session_id
-                        } if session_id == &canonical_session_id
+                        } if session_id == &native_session_id
                     )
                 });
                 (subscribed || Some(*connection_id) == owner_connection_id)
@@ -1304,6 +1241,8 @@ fn should_skip_non_owner_stdio_stream(
 pub(crate) struct ConnectionRuntime {
     pub(crate) transport: ClientTransportKind,
     pub(crate) state: ConnectionState,
+    /// Negotiated protocol surface; gates ACP route dispatch.
+    pub(crate) protocol: Option<ConnectionProtocol>,
     pub(crate) acp_authenticated: bool,
     pub(crate) acp_client_capabilities: crate::AcpClientCapabilities,
     /// Whether the client opted in to native typed `item/*` notifications
@@ -1312,7 +1251,7 @@ pub(crate) struct ConnectionRuntime {
     /// Cached union of this connection's new-style (`subscription/*`)
     /// selector sets; rebuilt on every create/update/unsubscribe. Delivery
     /// reads only this cache (the registry is authoritative for ack state).
-    pub(crate) event_selectors: Vec<devo_protocol::canonical::event::StreamSelector>,
+    pub(crate) event_selectors: Vec<devo_protocol::native::event::StreamSelector>,
     pub(crate) outbound_tx: mpsc::Sender<OutboundFrame>,
     pub(crate) opt_out_notification_methods: HashSet<String>,
     pub(crate) subscriptions: Vec<SubscriptionFilter>,
@@ -1338,20 +1277,29 @@ impl ConnectionRuntime {
         !self.opt_out_notification_methods.contains(method)
     }
 
-    /// Routes one server event to its wire notification for this connection:
-    /// native typed `item/*` when the connection opted in and the payload
-    /// projects, otherwise the legacy ACP-wrapped shape (P2 fallback).
+    /// Routes one server event to its wire notification for this connection
+    /// (L2-DES-APP-009 DD-4): native-surface connections get the native
+    /// typed notification when the event projects, otherwise the raw devo
+    /// envelope — no ACP wrap, no `_meta` smuggling. ACP-surface connections
+    /// keep the ACP envelope (with `_meta` for devo-only events) unchanged.
     pub(super) fn notification_for(
         &self,
         method: &str,
         event: &ServerEvent,
     ) -> (String, serde_json::Value) {
-        if self.typed_items
-            && let Some(typed) = typed_item_notification_from_server_event(event)
-        {
-            return typed;
+        match self.protocol {
+            Some(ConnectionProtocol::Native) => {
+                if let Some(typed) = typed_item_notification_from_server_event(event) {
+                    return typed;
+                }
+                (
+                    method.to_string(),
+                    serde_json::to_value(event).expect("serialize devo envelope event"),
+                )
+            }
+            Some(ConnectionProtocol::Acp) => acp_notification_from_server_event(method, event),
+            None => panic!("uninitialized connection cannot project events"),
         }
-        acp_notification_from_server_event(method, event)
     }
 
     pub(super) fn should_deliver(
@@ -1466,10 +1414,36 @@ mod tests {
         data_root: &std::path::Path,
         provider: Arc<dyn ModelProviderSDK>,
     ) -> Arc<ServerRuntime> {
+        build_runtime_with_provider_and_catalog(
+            data_root,
+            provider,
+            Arc::new(PresetModelCatalog::default()),
+        )
+    }
+
+    fn build_runtime_with_provider_and_catalog(
+        data_root: &std::path::Path,
+        provider: Arc<dyn ModelProviderSDK>,
+        model_catalog: Arc<PresetModelCatalog>,
+    ) -> Arc<ServerRuntime> {
+        build_runtime_with_provider_catalog_and_protocols(
+            data_root,
+            provider,
+            model_catalog,
+            ProtocolSet::all(),
+        )
+    }
+
+    fn build_runtime_with_provider_catalog_and_protocols(
+        data_root: &std::path::Path,
+        provider: Arc<dyn ModelProviderSDK>,
+        model_catalog: Arc<PresetModelCatalog>,
+        protocols: ProtocolSet,
+    ) -> Arc<ServerRuntime> {
         let db = Arc::new(
             crate::db::Database::open(data_root.join("connection.db")).expect("open test database"),
         );
-        ServerRuntime::new(
+        ServerRuntime::with_protocols(
             data_root.to_path_buf(),
             ServerRuntimeDependencies::new(
                 Arc::clone(&provider),
@@ -1477,7 +1451,7 @@ mod tests {
                 Arc::new(ToolRegistry::new()),
                 crate::empty_mcp_manager(),
                 "test-model".to_string(),
-                Arc::new(PresetModelCatalog::default()),
+                model_catalog,
                 Arc::new(ProviderVendorCatalog::default()),
                 Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                     bundled: Some(BundledSkillsConfig { enabled: false }),
@@ -1490,6 +1464,7 @@ mod tests {
                         .expect("load app config store"),
                 )),
             ),
+            protocols,
         )
     }
 
@@ -1529,7 +1504,7 @@ mod tests {
             )
             .await
             .expect("mcp/list response");
-        let result: SuccessResponse<devo_protocol::canonical::rpc_admin::McpListResult> =
+        let result: SuccessResponse<devo_protocol::native::rpc_admin::McpListResult> =
             serde_json::from_value(response.clone()).expect("deserialize mcp/list");
         let code_search = result
             .result
@@ -1616,7 +1591,7 @@ mod tests {
             )
             .await
             .expect("mcp/set_enabled response");
-        let result: SuccessResponse<devo_protocol::canonical::rpc_admin::McpSetEnabledResult> =
+        let result: SuccessResponse<devo_protocol::native::rpc_admin::McpSetEnabledResult> =
             serde_json::from_value(response).expect("deserialize mcp/set_enabled");
         let bad = result
             .result
@@ -1638,7 +1613,7 @@ mod tests {
             )
             .await
             .expect("mcp/list response");
-        let list: SuccessResponse<devo_protocol::canonical::rpc_admin::McpListResult> =
+        let list: SuccessResponse<devo_protocol::native::rpc_admin::McpListResult> =
             serde_json::from_value(list_response).expect("deserialize mcp/list");
         let listed = list
             .result
@@ -1725,6 +1700,7 @@ mod tests {
                     delta: "token".to_string(),
                     stream_index: None,
                     channel: None,
+                    chunk_index: None,
                 },
             },
         ];
@@ -1847,142 +1823,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timed_out_client_request_removes_pending_request() -> Result<()> {
-        let data_root = TempDir::new()?;
-        let runtime = build_runtime(data_root.path());
-        let (outbound_tx, mut receiver) = super::outbound::test_outbound_channel(1);
-        let connection_id = runtime
-            .register_connection(ClientTransportKind::Stdio, outbound_tx)
-            .await;
-
-        let result = runtime
-            .send_request_to_connection_with_timeout(
-                connection_id,
-                "fs/read_text_file",
-                serde_json::json!({}),
-                Duration::from_millis(1),
-                CancellationToken::new(),
-            )
-            .await;
-
-        let request = receiver.recv().await.expect("client request");
-        assert_eq!(
-            request,
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "fs/read_text_file",
-                "params": {},
-            })
-        );
-        assert!(
-            result
-                .expect_err("request should time out")
-                .contains("timed out")
-        );
-        let connections = runtime.connections.lock().await;
-        let connection = connections.get(&connection_id).expect("connection");
-        assert_eq!(connection.pending_client_requests.len(), 0);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cancelled_client_request_removes_pending_request() -> Result<()> {
-        let data_root = TempDir::new()?;
-        let runtime = build_runtime(data_root.path());
-        let (outbound_tx, mut receiver) = super::outbound::test_outbound_channel(1);
-        let connection_id = runtime
-            .register_connection(ClientTransportKind::Stdio, outbound_tx)
-            .await;
-        let cancel_token = CancellationToken::new();
-        cancel_token.cancel();
-
-        let result = runtime
-            .send_request_to_connection_with_timeout(
-                connection_id,
-                "fs/write_text_file",
-                serde_json::json!({}),
-                Duration::from_secs(30),
-                cancel_token,
-            )
-            .await;
-
-        let request = receiver.recv().await.expect("client request");
-        assert_eq!(
-            request,
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "fs/write_text_file",
-                "params": {},
-            })
-        );
-        assert_eq!(
-            result.expect_err("request should be cancelled"),
-            "client request cancelled"
-        );
-        let connections = runtime.connections.lock().await;
-        let connection = connections.get(&connection_id).expect("connection");
-        assert_eq!(connection.pending_client_requests.len(), 0);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn dropped_client_request_removes_pending_request() -> Result<()> {
-        let data_root = TempDir::new()?;
-        let runtime = build_runtime(data_root.path());
-        let (outbound_tx, mut receiver) = super::outbound::test_outbound_channel(1);
-        let connection_id = runtime
-            .register_connection(ClientTransportKind::Stdio, outbound_tx)
-            .await;
-        let runtime_for_request = Arc::clone(&runtime);
-
-        let handle = tokio::spawn(async move {
-            runtime_for_request
-                .send_request_to_connection_with_timeout(
-                    connection_id,
-                    "fs/read_text_file",
-                    serde_json::json!({}),
-                    Duration::from_secs(30),
-                    CancellationToken::new(),
-                )
-                .await
-        });
-
-        let request = receiver.recv().await.expect("client request");
-        assert_eq!(
-            request,
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "fs/read_text_file",
-                "params": {},
-            })
-        );
-        handle.abort();
-        let join_error = handle.await.expect_err("request task should be aborted");
-        assert!(join_error.is_cancelled());
-
-        for _ in 0..10 {
-            let connections = runtime.connections.lock().await;
-            let connection = connections.get(&connection_id).expect("connection");
-            if connection.pending_client_requests.is_empty() {
-                return Ok(());
-            }
-            drop(connections);
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        let connections = runtime.connections.lock().await;
-        let connection = connections.get(&connection_id).expect("connection");
-        assert_eq!(connection.pending_client_requests.len(), 0);
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn stdio_live_agent_deltas_only_deliver_to_active_turn_owner() -> Result<()> {
         let data_root = TempDir::new()?;
         let runtime = build_runtime(data_root.path());
@@ -1997,6 +1837,17 @@ mod tests {
         let observer_connection_id = runtime
             .register_connection(ClientTransportKind::StdioProxy, observer_outbound)
             .await;
+        {
+            let mut connections = runtime.connections.lock().await;
+            connections
+                .get_mut(&owner_connection_id)
+                .expect("owner connection")
+                .protocol = Some(ConnectionProtocol::Acp);
+            connections
+                .get_mut(&observer_connection_id)
+                .expect("observer connection")
+                .protocol = Some(ConnectionProtocol::Acp);
+        }
 
         runtime
             .subscribe_connection_to_session(owner_connection_id, session_id, None)
@@ -2023,6 +1874,7 @@ mod tests {
                     delta: "hello".to_string(),
                     stream_index: None,
                     channel: None,
+                    chunk_index: None,
                 },
             })
             .await;
@@ -2056,6 +1908,17 @@ mod tests {
         let watcher_connection_id = runtime
             .register_connection(ClientTransportKind::Stdio, watcher_outbound)
             .await;
+        {
+            let mut connections = runtime.connections.lock().await;
+            connections
+                .get_mut(&owner_connection_id)
+                .expect("owner connection")
+                .protocol = Some(ConnectionProtocol::Acp);
+            connections
+                .get_mut(&watcher_connection_id)
+                .expect("watcher connection")
+                .protocol = Some(ConnectionProtocol::Acp);
+        }
 
         runtime
             .subscribe_connection_to_session(owner_connection_id, session_id, None)
@@ -2082,6 +1945,7 @@ mod tests {
                     delta: "hello".to_string(),
                     stream_index: None,
                     channel: None,
+                    chunk_index: None,
                 },
             })
             .await;
@@ -2116,6 +1980,13 @@ mod tests {
         let _other_connection_id = runtime
             .register_connection(ClientTransportKind::Stdio, other_outbound)
             .await;
+        runtime
+            .connections
+            .lock()
+            .await
+            .get_mut(&owner_connection_id)
+            .expect("owner connection")
+            .protocol = Some(ConnectionProtocol::Native);
 
         runtime
             .subscribe_connection_to_session(owner_connection_id, session_id, None)
@@ -2140,7 +2011,7 @@ mod tests {
         let owner_message = tokio::time::timeout(Duration::from_secs(1), owner_receiver.recv())
             .await?
             .expect("owner receives connection-local search notification");
-        assert_eq!(owner_message["method"], "_devo/search/completed");
+        assert_eq!(owner_message["method"], "search/completed");
         assert!(
             tokio::time::timeout(Duration::from_millis(50), other_receiver.recv())
                 .await
@@ -2171,9 +2042,9 @@ mod tests {
     /// `item/completed` while a legacy connection on the same session keeps
     /// the ACP-wrapped shape for the same event.
     #[tokio::test]
-    async fn typed_items_opt_in_receives_native_item_notification() -> Result<()> {
+    async fn native_and_acp_connections_receive_one_projected_event() -> Result<()> {
         use devo_protocol::TypedItemEventPayload;
-        use devo_protocol::canonical::item::{Item, ItemState};
+        use devo_protocol::native::item::{Item, ItemState};
 
         let data_root = TempDir::new()?;
         let runtime = build_runtime(data_root.path());
@@ -2187,6 +2058,27 @@ mod tests {
             .register_connection(ClientTransportKind::Stdio, legacy_outbound)
             .await;
         runtime
+            .handle_acp_initialize(
+                typed_connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                    "_meta": { "devo": { "protocol": "native" } },
+                }),
+            )
+            .await;
+        runtime
+            .handle_acp_initialize(
+                legacy_connection_id,
+                Some(serde_json::json!(2)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                }),
+            )
+            .await;
+        runtime
             .subscribe_connection_to_session(typed_connection_id, session_id, None)
             .await;
         runtime
@@ -2197,8 +2089,12 @@ mod tests {
             .lock()
             .await
             .get_mut(&typed_connection_id)
-            .expect("typed connection")
-            .typed_items = true;
+            .expect("Native connection")
+            .event_selectors = vec![devo_protocol::native::event::StreamSelector::Session {
+            session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(Uuid::from(
+                session_id,
+            )),
+        }];
 
         let turn_id = TurnId::new();
         let item_id = ItemId::new();
@@ -2245,14 +2141,105 @@ mod tests {
             legacy["method"],
             serde_json::json!(crate::ACP_SESSION_UPDATE_METHOD)
         );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), typed_receiver.recv())
+                .await
+                .is_err(),
+            "overlapping subscription selectors must not duplicate Native delivery"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), legacy_receiver.recv())
+                .await
+                .is_err(),
+            "ACP delivery must occur once"
+        );
 
         Ok(())
     }
 
-    /// Verifies (P2): an opted-in connection falls back to the legacy
-    /// ACP-wrapped shape when the payload does not project.
+    /// Trace: L2-DES-APP-009
+    /// Verifies: a Native connection receives typed assistant deltas carrying
+    /// the emit-site `chunk_index`, while an ACP connection receives the ACP
+    /// v1 projection of the same application event.
     #[tokio::test]
-    async fn typed_items_falls_back_to_legacy_shape_on_unprojectable_payload() -> Result<()> {
+    async fn native_connection_receives_assistant_delta_with_chunk_index() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = SessionId::new();
+        let (native_outbound, mut native_receiver) = super::outbound::test_outbound_channel(1);
+        let (acp_outbound, mut acp_receiver) = super::outbound::test_outbound_channel(1);
+        let native_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, native_outbound)
+            .await;
+        let acp_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, acp_outbound)
+            .await;
+        runtime
+            .subscribe_connection_to_session(native_connection_id, session_id, None)
+            .await;
+        runtime
+            .subscribe_connection_to_session(acp_connection_id, session_id, None)
+            .await;
+        {
+            let mut connections = runtime.connections.lock().await;
+            let native = connections
+                .get_mut(&native_connection_id)
+                .expect("Native connection");
+            native.protocol = Some(ConnectionProtocol::Native);
+            native.typed_items = true;
+            connections
+                .get_mut(&acp_connection_id)
+                .expect("ACP connection")
+                .protocol = Some(ConnectionProtocol::Acp);
+        }
+
+        runtime
+            .broadcast_event(ServerEvent::ItemDelta {
+                delta_kind: ItemDeltaKind::AgentMessageDelta,
+                payload: ItemDeltaPayload {
+                    context: EventContext {
+                        session_id,
+                        turn_id: Some(TurnId::new()),
+                        item_id: Some(ItemId::new()),
+                        seq: 0,
+                        item_seq: None,
+                    },
+                    delta: "hello".to_string(),
+                    stream_index: None,
+                    channel: None,
+                    chunk_index: Some(4),
+                },
+            })
+            .await;
+
+        let native = tokio::time::timeout(Duration::from_secs(1), native_receiver.recv())
+            .await?
+            .expect("Native connection receives delta");
+        assert_eq!(
+            native["method"],
+            serde_json::json!("item/assistantMessage/delta")
+        );
+        let delta: devo_protocol::native::event::ItemDelta =
+            serde_json::from_value(native["params"].clone()).expect("typed delta payload");
+        assert_eq!(delta.chunk_index, 4);
+        assert_eq!(delta.base_revision, 1);
+        assert_eq!(delta.delta, "hello");
+
+        let acp = tokio::time::timeout(Duration::from_secs(1), acp_receiver.recv())
+            .await?
+            .expect("ACP connection receives delta");
+        assert_eq!(
+            acp["method"],
+            serde_json::json!(crate::ACP_SESSION_UPDATE_METHOD)
+        );
+
+        Ok(())
+    }
+
+    /// Verifies: ACP projection remains selected even if an old client sends
+    /// the historical typed-items opt-in.
+    #[tokio::test]
+    async fn acp_projection_ignores_typed_items_opt_in() -> Result<()> {
         let data_root = TempDir::new()?;
         let runtime = build_runtime(data_root.path());
         let session_id = SessionId::new();
@@ -2263,13 +2250,12 @@ mod tests {
         runtime
             .subscribe_connection_to_session(connection_id, session_id, None)
             .await;
-        runtime
-            .connections
-            .lock()
-            .await
-            .get_mut(&connection_id)
-            .expect("connection")
-            .typed_items = true;
+        {
+            let mut connections = runtime.connections.lock().await;
+            let connection = connections.get_mut(&connection_id).expect("connection");
+            connection.protocol = Some(ConnectionProtocol::Acp);
+            connection.typed_items = true;
+        }
 
         runtime
             .broadcast_event(ServerEvent::ItemStarted(ItemEventPayload {
@@ -2433,6 +2419,10 @@ mod tests {
     }
 
     async fn initialized_connection(runtime: &Arc<ServerRuntime>) -> u64 {
+        initialized_native_connection(runtime).await
+    }
+
+    async fn initialized_acp_connection(runtime: &Arc<ServerRuntime>) -> u64 {
         let (outbound, _rx) = super::outbound::test_outbound_channel(16);
         let connection_id = runtime
             .register_connection(ClientTransportKind::Stdio, outbound)
@@ -2450,6 +2440,176 @@ mod tests {
         connection_id
     }
 
+    /// Initializes a connection that declares the native protocol surface
+    /// (`_meta.devo.protocol = "native"`), so colliding method names such
+    /// as `session/new` route to the native handlers.
+    async fn initialized_native_connection(runtime: &Arc<ServerRuntime>) -> u64 {
+        let (outbound, _rx) = super::outbound::test_outbound_channel(16);
+        let connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, outbound)
+            .await;
+        runtime
+            .handle_acp_initialize(
+                connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                    "_meta": { "devo": { "protocol": "native" } },
+                }),
+            )
+            .await;
+        connection_id
+    }
+
+    #[tokio::test]
+    async fn initialize_respects_protocol_exposure_matrix() {
+        let native_temp = TempDir::new().expect("native temp");
+        let native_runtime = build_runtime_with_provider_catalog_and_protocols(
+            native_temp.path(),
+            Arc::new(NoopProvider),
+            Arc::new(PresetModelCatalog::default()),
+            ProtocolSet::only(ServerProtocol::Native),
+        );
+        let (outbound, _rx) = super::outbound::test_outbound_channel(4);
+        let acp_id = native_runtime
+            .register_connection(ClientTransportKind::Stdio, outbound)
+            .await;
+        let rejected = native_runtime
+            .handle_acp_initialize(
+                acp_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                }),
+            )
+            .await;
+        assert_eq!(rejected["error"]["code"], serde_json::json!(-32600));
+        assert_eq!(native_runtime.connection_protocol(acp_id).await, None);
+        assert!(!native_runtime.connection_ready(acp_id).await);
+
+        let native_id = initialized_native_connection(&native_runtime).await;
+        assert_eq!(
+            native_runtime.connection_protocol(native_id).await,
+            Some(ConnectionProtocol::Native)
+        );
+
+        let acp_temp = TempDir::new().expect("ACP temp");
+        let acp_runtime = build_runtime_with_provider_catalog_and_protocols(
+            acp_temp.path(),
+            Arc::new(NoopProvider),
+            Arc::new(PresetModelCatalog::default()),
+            ProtocolSet::only(ServerProtocol::Acp),
+        );
+        let acp_id = initialized_acp_connection(&acp_runtime).await;
+        assert_eq!(
+            acp_runtime.connection_protocol(acp_id).await,
+            Some(ConnectionProtocol::Acp)
+        );
+        let (outbound, _rx) = super::outbound::test_outbound_channel(4);
+        let native_id = acp_runtime
+            .register_connection(ClientTransportKind::Stdio, outbound)
+            .await;
+        let rejected = acp_runtime
+            .handle_acp_initialize(
+                native_id,
+                Some(serde_json::json!(2)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                    "_meta": { "devo": { "protocol": "native" } },
+                }),
+            )
+            .await;
+        assert_eq!(rejected["error"]["code"], serde_json::json!(-32600));
+        assert_eq!(acp_runtime.connection_protocol(native_id).await, None);
+    }
+
+    #[tokio::test]
+    async fn rejected_initialize_can_retry_after_protocol_extension() {
+        let temp = TempDir::new().expect("temp");
+        let runtime = build_runtime_with_provider_catalog_and_protocols(
+            temp.path(),
+            Arc::new(NoopProvider),
+            Arc::new(PresetModelCatalog::default()),
+            ProtocolSet::only(ServerProtocol::Native),
+        );
+        let (outbound, _rx) = super::outbound::test_outbound_channel(4);
+        let connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, outbound)
+            .await;
+        let params = serde_json::json!({
+            "protocolVersion": 1,
+            "clientCapabilities": { "terminal": false },
+        });
+
+        let rejected = runtime
+            .handle_acp_initialize(connection_id, Some(serde_json::json!(1)), params.clone())
+            .await;
+        assert_eq!(rejected["error"]["code"], serde_json::json!(-32600));
+
+        assert_eq!(
+            runtime
+                .enable_protocols(&ProtocolSet::only(ServerProtocol::Acp))
+                .await,
+            ProtocolSet::all()
+        );
+        let accepted = runtime
+            .handle_acp_initialize(connection_id, Some(serde_json::json!(2)), params)
+            .await;
+        assert!(
+            accepted.get("result").is_some(),
+            "initialize failed: {accepted}"
+        );
+        assert_eq!(
+            runtime.connection_protocol(connection_id).await,
+            Some(ConnectionProtocol::Acp)
+        );
+    }
+
+    #[tokio::test]
+    async fn initialized_connection_cannot_switch_adapters() {
+        let temp = TempDir::new().expect("temp");
+        let runtime = build_runtime(temp.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+
+        let response = runtime
+            .handle_acp_initialize(
+                connection_id,
+                Some(serde_json::json!(2)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                }),
+            )
+            .await;
+
+        assert_eq!(response["error"]["code"], serde_json::json!(-32600));
+        assert_eq!(
+            runtime.connection_protocol(connection_id).await,
+            Some(ConnectionProtocol::Native)
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_connection_cannot_fall_through_to_native_routes() {
+        let temp = TempDir::new().expect("temp");
+        let runtime = build_runtime(temp.path());
+        let connection_id = initialized_acp_connection(&runtime).await;
+
+        let response = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "runtime/ping",
+            serde_json::json!({}),
+        )
+        .await;
+
+        assert_eq!(response["error"]["code"], serde_json::json!(-32601));
+    }
+
     #[tokio::test]
     async fn controlling_connections_union_owner_and_session_subscribers() {
         let temp = TempDir::new().expect("temp dir");
@@ -2458,15 +2618,15 @@ mod tests {
         let subscriber_id = initialized_connection(&runtime).await;
         let unrelated_id = initialized_connection(&runtime).await;
         let session_id = SessionId::new();
-        let canonical_session_id =
-            devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::from(session_id));
+        let native_session_id =
+            devo_protocol::native::ids::SessionId::from_legacy_uuid(Uuid::from(session_id));
         {
             let mut connections = runtime.connections.lock().await;
             connections
                 .get_mut(&subscriber_id)
                 .expect("subscriber connection")
-                .event_selectors = vec![devo_protocol::canonical::event::StreamSelector::Session {
-                session_id: canonical_session_id,
+                .event_selectors = vec![devo_protocol::native::event::StreamSelector::Session {
+                session_id: native_session_id,
             }];
         }
 
@@ -2502,8 +2662,8 @@ mod tests {
 
     #[tokio::test]
     async fn turns_and_items_list_paginate_without_gaps_or_duplicates() -> Result<()> {
-        use devo_protocol::canonical::page::Page;
-        use devo_protocol::canonical::turn::Turn;
+        use devo_protocol::native::page::Page;
+        use devo_protocol::native::turn::Turn;
 
         let data_root = TempDir::new()?;
         let runtime = build_runtime(data_root.path());
@@ -2534,11 +2694,11 @@ mod tests {
         assert_eq!(first_turn.session_id.as_str(), session_id.to_string());
         assert_eq!(
             first_turn.status,
-            devo_protocol::canonical::turn::TurnStatus::Completed
+            devo_protocol::native::turn::TurnStatus::Completed
         );
         assert_eq!(
             first_turn.kind,
-            devo_protocol::canonical::turn::TurnKind::Regular
+            devo_protocol::native::turn::TurnKind::Regular
         );
 
         let second = history_request(
@@ -2567,7 +2727,7 @@ mod tests {
             serde_json::json!({ "sessionId": session_id.to_string(), "limit": 3 }),
         )
         .await;
-        let first_items: Page<devo_protocol::canonical::item::ItemEnvelope> =
+        let first_items: Page<devo_protocol::native::item::ItemEnvelope> =
             serde_json::from_value(first_items["result"].clone()).expect("items page 1");
         assert_eq!(first_items.data.len(), 3);
         assert_eq!(
@@ -2584,10 +2744,10 @@ mod tests {
         assert_eq!(envelope.revision, 1);
         assert_eq!(
             envelope.state,
-            devo_protocol::canonical::item::ItemState::Completed
+            devo_protocol::native::item::ItemState::Completed
         );
         assert!(
-            matches!(&envelope.item, devo_protocol::canonical::item::Item::AssistantMessage { text, .. } if text == "first-t1")
+            matches!(&envelope.item, devo_protocol::native::item::Item::AssistantMessage { text, .. } if text == "first-t1")
         );
 
         let second_items = history_request(
@@ -2602,7 +2762,7 @@ mod tests {
             }),
         )
         .await;
-        let second_items: Page<devo_protocol::canonical::item::ItemEnvelope> =
+        let second_items: Page<devo_protocol::native::item::ItemEnvelope> =
             serde_json::from_value(second_items["result"].clone()).expect("items page 2");
         assert_eq!(
             second_items
@@ -2632,7 +2792,7 @@ mod tests {
             serde_json::json!({ "sessionId": session_id.to_string() }),
         )
         .await;
-        let turns: devo_protocol::canonical::page::Page<devo_protocol::canonical::turn::Turn> =
+        let turns: devo_protocol::native::page::Page<devo_protocol::native::turn::Turn> =
             serde_json::from_value(turns["result"].clone()).expect("turns result");
         let turn_two = &turns.data[1];
 
@@ -2647,13 +2807,12 @@ mod tests {
             }),
         )
         .await;
-        let items: devo_protocol::canonical::page::Page<
-            devo_protocol::canonical::item::ItemEnvelope,
-        > = serde_json::from_value(items["result"].clone()).expect("items result");
+        let items: devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope> =
+            serde_json::from_value(items["result"].clone()).expect("items result");
         assert_eq!(items.data.len(), 2);
         assert!(items.data.iter().all(|item| item.turn_id == turn_two.id));
         assert!(
-            matches!(&items.data[0].item, devo_protocol::canonical::item::Item::AssistantMessage { text, .. } if text == "first-t2")
+            matches!(&items.data[0].item, devo_protocol::native::item::Item::AssistantMessage { text, .. } if text == "first-t2")
         );
 
         Ok(())
@@ -2676,9 +2835,8 @@ mod tests {
             serde_json::json!({ "sessionId": session_id.to_string() }),
         )
         .await;
-        let items: devo_protocol::canonical::page::Page<
-            devo_protocol::canonical::item::ItemEnvelope,
-        > = serde_json::from_value(items["result"].clone()).expect("items result");
+        let items: devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope> =
+            serde_json::from_value(items["result"].clone()).expect("items result");
         assert_eq!(items.data.len(), 5);
         assert_eq!(items.next_cursor, None);
 
@@ -2687,8 +2845,8 @@ mod tests {
 
     #[tokio::test]
     async fn history_lists_handle_empty_session_bad_cursor_and_unknown_session() -> Result<()> {
-        use devo_protocol::canonical::page::Page;
-        use devo_protocol::canonical::turn::Turn;
+        use devo_protocol::native::page::Page;
+        use devo_protocol::native::turn::Turn;
 
         let data_root = TempDir::new()?;
         let runtime = build_runtime(data_root.path());
@@ -2816,13 +2974,13 @@ mod tests {
 
     #[tokio::test]
     async fn subscription_create_returns_barrier_consistent_replay_and_snapshot() -> Result<()> {
-        use devo_protocol::canonical::event::{SnapshotData, SubscriptionCreateResult};
+        use devo_protocol::native::event::{SnapshotData, SubscriptionCreateResult};
 
         let data_root = TempDir::new()?;
         let runtime = build_runtime(data_root.path());
         let session_id = write_subscribed_rollout(&runtime).await;
         let stream_id = devo_core::session_stream_id(
-            &devo_protocol::canonical::ids::SessionId::from_string(session_id.to_string()),
+            &devo_protocol::native::ids::SessionId::from_string(session_id.to_string()),
         );
         let connection_id = initialized_connection(&runtime).await;
 
@@ -2856,7 +3014,7 @@ mod tests {
         );
         assert!(matches!(
             &result.replay[0].notification,
-            devo_protocol::canonical::event::ServerNotification::SessionCreated { .. }
+            devo_protocol::native::event::ServerNotification::SessionCreated { .. }
         ));
         assert!(result.replay.iter().all(|event| event.meta.persisted));
 
@@ -2882,8 +3040,8 @@ mod tests {
 
     #[tokio::test]
     async fn subscription_snapshot_reads_in_memory_queue_with_1_based_positions() -> Result<()> {
-        use devo_protocol::canonical::event::{SnapshotData, SubscriptionCreateResult};
-        use devo_protocol::canonical::rpc_turn::SessionQueuePushResult;
+        use devo_protocol::native::event::{SnapshotData, SubscriptionCreateResult};
+        use devo_protocol::native::rpc_turn::SessionQueuePushResult;
 
         let data_root = TempDir::new()?;
         let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2972,7 +3130,7 @@ mod tests {
     #[tokio::test]
     async fn subscription_snapshot_falls_back_to_persisted_queue_for_unloaded_session() -> Result<()>
     {
-        use devo_protocol::canonical::event::{SnapshotData, SubscriptionCreateResult};
+        use devo_protocol::native::event::{SnapshotData, SubscriptionCreateResult};
 
         let data_root = TempDir::new()?;
         let runtime = build_runtime(data_root.path());
@@ -3062,7 +3220,7 @@ mod tests {
         let runtime = build_runtime(data_root.path());
         let session_id = write_subscribed_rollout(&runtime).await;
         let stream_id = devo_core::session_stream_id(
-            &devo_protocol::canonical::ids::SessionId::from_string(session_id.to_string()),
+            &devo_protocol::native::ids::SessionId::from_string(session_id.to_string()),
         );
         let connection_id = initialized_connection(&runtime).await;
 
@@ -3110,6 +3268,7 @@ mod tests {
                 serde_json::json!({
                     "protocolVersion": 1,
                     "clientCapabilities": { "terminal": false },
+                    "_meta": { "devo": { "protocol": "native" } },
                 }),
             )
             .await;
@@ -3149,15 +3308,10 @@ mod tests {
         let frame = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
             .await?
             .expect("new-style subscriber receives live event");
+        assert_eq!(frame["method"], serde_json::json!("item/completed"));
         assert_eq!(
-            frame["method"],
-            serde_json::json!(crate::ACP_SESSION_UPDATE_METHOD)
-        );
-        assert!(
-            frame["params"]["_meta"]["devo/originalEvent"]
-                .to_string()
-                .contains("live"),
-            "frame carries the original item event: {frame}"
+            frame["params"]["item"]["item"]["text"],
+            serde_json::json!("live")
         );
 
         // A connection without any selector sees nothing.
@@ -3172,6 +3326,7 @@ mod tests {
                 serde_json::json!({
                     "protocolVersion": 1,
                     "clientCapabilities": { "terminal": false },
+                    "_meta": { "devo": { "protocol": "native" } },
                 }),
             )
             .await;
@@ -3201,10 +3356,10 @@ mod tests {
         let second = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
             .await?
             .expect("second live event");
-        assert!(
-            second["params"]["_meta"]["devo/originalEvent"]
-                .to_string()
-                .contains("second")
+        assert_eq!(second["method"], serde_json::json!("item/completed"));
+        assert_eq!(
+            second["params"]["item"]["item"]["text"],
+            serde_json::json!("second")
         );
 
         Ok(())
@@ -3212,13 +3367,13 @@ mod tests {
 
     #[tokio::test]
     async fn subscription_ack_is_monotonic_and_unsubscribe_removes() -> Result<()> {
-        use devo_protocol::canonical::event::SubscriptionCreateResult;
+        use devo_protocol::native::event::SubscriptionCreateResult;
 
         let data_root = TempDir::new()?;
         let runtime = build_runtime(data_root.path());
         let session_id = write_subscribed_rollout(&runtime).await;
         let stream_id = devo_core::session_stream_id(
-            &devo_protocol::canonical::ids::SessionId::from_string(session_id.to_string()),
+            &devo_protocol::native::ids::SessionId::from_string(session_id.to_string()),
         );
         let connection_id = initialized_connection(&runtime).await;
 
@@ -3436,7 +3591,7 @@ mod tests {
                 connection_id,
                 serde_json::json!({
                     "id": 101,
-                    "method": "_devo/turn/start",
+                    "method": "turn/start",
                     "params": {
                         "session_id": session_id,
                         "input": [{ "type": "text", "text": text }],
@@ -3456,7 +3611,7 @@ mod tests {
 
     #[tokio::test]
     async fn rollback_preview_commit_restores_git_and_is_idempotent() -> Result<()> {
-        use devo_protocol::canonical::rpc_session::{RestorePlan, SessionRollbackCommitResult};
+        use devo_protocol::native::rpc_session::{RestorePlan, SessionRollbackCommitResult};
 
         let data_root = TempDir::new()?;
         let repo = TempDir::new()?;
@@ -3574,9 +3729,10 @@ mod tests {
             &runtime,
             connection_id,
             206,
-            "session/title/update",
+            "session/metadata/update",
             serde_json::json!({
-                "session_id": session_id,
+                "sessionId": session_id,
+                "expectedVersion": 0,
                 "title": "Preserved rollback title",
             }),
         )
@@ -3694,7 +3850,7 @@ mod tests {
                     connection_id,
                     serde_json::json!({
                         "id": 300,
-                        "method": "_devo/turn/start",
+                        "method": "turn/start",
                         "params": {
                             "session_id": session_id,
                             "input": [{ "type": "text", "text": "wait" }],
@@ -3787,10 +3943,10 @@ mod tests {
     }
 
     /// Trace: L2-DES-AGENT-002
-    /// Verifies: session/cancel (via turn interrupt) stops hanging compaction
+    /// Verifies: Native session/interrupt stops hanging compaction
     /// and reopens admission.
     #[tokio::test]
-    async fn session_cancel_stops_in_flight_compaction() -> Result<()> {
+    async fn session_interrupt_stops_in_flight_compaction() -> Result<()> {
         let data_root = TempDir::new()?;
         let runtime =
             build_runtime_with_provider(data_root.path(), Arc::new(TurnOkCompactHangProvider));
@@ -3813,8 +3969,8 @@ mod tests {
                 connection_id,
                 serde_json::json!({
                     "id": 200,
-                    "method": "_devo/session/compact",
-                    "params": { "session_id": session_id }
+                    "method": "session/compact/start",
+                    "params": { "sessionId": session_id }
                 }),
             )
             .await
@@ -3823,15 +3979,14 @@ mod tests {
             compact_response.get("error").is_none(),
             "session/compact: {compact_response}"
         );
-        let compact_result: TurnStartResult = serde_json::from_value(
-            compact_response
-                .get("result")
-                .cloned()
-                .expect("compact result"),
-        )?;
-        let TurnStartResult::Started { turn_id, .. } = compact_result else {
-            panic!("expected TurnStartResult::Started, got {compact_result:?}");
-        };
+        let compact_result: devo_protocol::native::rpc_turn::TurnStartResult =
+            serde_json::from_value(
+                compact_response
+                    .get("result")
+                    .cloned()
+                    .expect("compact result"),
+            )?;
+        let turn_id = devo_protocol::TurnId::try_from(compact_result.turn.id.as_str())?;
 
         for _ in 0..50 {
             if runtime.runtime_active_turn_id(session_id).await == Some(turn_id) {
@@ -3845,20 +4000,22 @@ mod tests {
             "compaction should own the active turn while summarizer hangs"
         );
 
-        let cancel_response = runtime
+        let interrupt_response = runtime
             .handle_incoming(
                 connection_id,
                 serde_json::json!({
                     "id": 201,
-                    "method": "session/cancel",
-                    "params": { "sessionId": session_id }
+                    "method": "session/interrupt",
+                    "params": {
+                        "scope": { "scope": "session", "sessionId": session_id }
+                    }
                 }),
             )
             .await
-            .expect("session/cancel response");
+            .expect("session/interrupt response");
         assert!(
-            cancel_response.get("error").is_none(),
-            "session/cancel: {cancel_response}"
+            interrupt_response.get("error").is_none(),
+            "session/interrupt: {interrupt_response}"
         );
 
         for _ in 0..200 {
@@ -3872,29 +4029,13 @@ mod tests {
             "cancel should clear the active compaction turn"
         );
 
-        let idle_cancel = runtime
-            .handle_incoming(
-                connection_id,
-                serde_json::json!({
-                    "id": 202,
-                    "method": "session/cancel",
-                    "params": { "sessionId": session_id }
-                }),
-            )
-            .await
-            .expect("idempotent cancel response");
-        assert!(
-            idle_cancel.get("error").is_none(),
-            "idle cancel should be idempotent: {idle_cancel}"
-        );
-
         let compact_again = runtime
             .handle_incoming(
                 connection_id,
                 serde_json::json!({
                     "id": 203,
-                    "method": "_devo/session/compact",
-                    "params": { "session_id": session_id }
+                    "method": "session/compact/start",
+                    "params": { "sessionId": session_id }
                 }),
             )
             .await
@@ -3903,17 +4044,15 @@ mod tests {
             compact_again.get("error").is_none(),
             "session should accept compact after cancel: {compact_again}"
         );
-        if let Some(active_turn_id) = runtime.runtime_active_turn_id(session_id).await {
+        if runtime.runtime_active_turn_id(session_id).await.is_some() {
             let _ = runtime
                 .handle_incoming(
                     connection_id,
                     serde_json::json!({
                         "id": 204,
-                        "method": "_devo/turn/interrupt",
+                        "method": "session/interrupt",
                         "params": {
-                            "session_id": session_id,
-                            "turn_id": active_turn_id,
-                            "reason": "test cleanup"
+                            "scope": { "scope": "session", "sessionId": session_id }
                         }
                     }),
                 )
@@ -3949,21 +4088,20 @@ mod tests {
                 connection_id,
                 serde_json::json!({
                     "id": 210,
-                    "method": "_devo/session/compact",
-                    "params": { "session_id": session_id }
+                    "method": "session/compact/start",
+                    "params": { "sessionId": session_id }
                 }),
             )
             .await
             .expect("session/compact response");
-        let compact_result: TurnStartResult = serde_json::from_value(
-            compact_response
-                .get("result")
-                .cloned()
-                .expect("compact result"),
-        )?;
-        let TurnStartResult::Started { turn_id, .. } = compact_result else {
-            panic!("expected TurnStartResult::Started, got {compact_result:?}");
-        };
+        let compact_result: devo_protocol::native::rpc_turn::TurnStartResult =
+            serde_json::from_value(
+                compact_response
+                    .get("result")
+                    .cloned()
+                    .expect("compact result"),
+            )?;
+        let turn_id = devo_protocol::TurnId::try_from(compact_result.turn.id.as_str())?;
         for _ in 0..50 {
             if runtime.runtime_active_turn_id(session_id).await == Some(turn_id) {
                 break;
@@ -4012,8 +4150,8 @@ mod tests {
                 connection_id,
                 serde_json::json!({
                     "id": 211,
-                    "method": "_devo/session/compact",
-                    "params": { "session_id": session_id }
+                    "method": "session/compact/start",
+                    "params": { "sessionId": session_id }
                 }),
             )
             .await
@@ -4022,17 +4160,15 @@ mod tests {
             compact_again.get("error").is_none(),
             "session should accept compact after orphan recovery: {compact_again}"
         );
-        if let Some(active_turn_id) = runtime.runtime_active_turn_id(session_id).await {
+        if runtime.runtime_active_turn_id(session_id).await.is_some() {
             let _ = runtime
                 .handle_incoming(
                     connection_id,
                     serde_json::json!({
                         "id": 212,
-                        "method": "_devo/turn/interrupt",
+                        "method": "session/interrupt",
                         "params": {
-                            "session_id": session_id,
-                            "turn_id": active_turn_id,
-                            "reason": "test cleanup"
+                            "scope": { "scope": "session", "sessionId": session_id }
                         }
                     }),
                 )
@@ -4245,12 +4381,12 @@ mod tests {
             .context("busy push must respond immediately while the gate is held")??
             .expect("push response");
         assert!(response.get("error").is_none(), "push: {response}");
-        let result: devo_protocol::canonical::rpc_turn::SessionQueuePushResult =
+        let result: devo_protocol::native::rpc_turn::SessionQueuePushResult =
             serde_json::from_value(response["result"].clone()).expect("push result");
         assert!(
             matches!(
                 result,
-                devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Queued { .. }
+                devo_protocol::native::rpc_turn::SessionQueuePushResult::Queued { .. }
             ),
             "busy push must queue: {response}"
         );
@@ -4286,25 +4422,20 @@ mod tests {
                 connection_id,
                 serde_json::json!({
                     "id": 200,
-                    "method": "_devo/session/compact",
-                    "params": { "session_id": session_id }
+                    "method": "session/compact/start",
+                    "params": { "sessionId": session_id }
                 }),
             )
             .await
             .expect("session/compact response");
-        let compact_result: TurnStartResult = serde_json::from_value(
-            compact_response
-                .get("result")
-                .cloned()
-                .expect("compact result"),
-        )?;
-        let TurnStartResult::Started {
-            turn_id: compaction_turn_id,
-            ..
-        } = compact_result
-        else {
-            panic!("expected TurnStartResult::Started, got {compact_result:?}");
-        };
+        let compact_result: devo_protocol::native::rpc_turn::TurnStartResult =
+            serde_json::from_value(
+                compact_response
+                    .get("result")
+                    .cloned()
+                    .expect("compact result"),
+            )?;
+        let compaction_turn_id = devo_protocol::TurnId::try_from(compact_result.turn.id.as_str())?;
         for _ in 0..50 {
             if runtime.runtime_active_turn_id(session_id).await == Some(compaction_turn_id) {
                 break;
@@ -4369,12 +4500,12 @@ mod tests {
             .context("busy push must respond immediately during compaction")??
             .expect("push response");
         assert!(response.get("error").is_none(), "push: {response}");
-        let result: devo_protocol::canonical::rpc_turn::SessionQueuePushResult =
+        let result: devo_protocol::native::rpc_turn::SessionQueuePushResult =
             serde_json::from_value(response["result"].clone()).expect("push result");
         assert!(
             matches!(
                 result,
-                devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Queued { .. }
+                devo_protocol::native::rpc_turn::SessionQueuePushResult::Queued { .. }
             ),
             "busy push must queue: {response}"
         );
@@ -4385,19 +4516,17 @@ mod tests {
                 connection_id,
                 serde_json::json!({
                     "id": 201,
-                    "method": "_devo/turn/interrupt",
+                    "method": "session/interrupt",
                     "params": {
-                        "session_id": session_id,
-                        "turn_id": compaction_turn_id,
-                        "reason": "cleanup"
+                        "scope": { "scope": "session", "sessionId": session_id }
                     }
                 }),
             )
             .await
-            .expect("turn/interrupt response");
+            .expect("session/interrupt response");
         assert!(
             interrupt_response.get("error").is_none(),
-            "turn/interrupt: {interrupt_response}"
+            "session/interrupt: {interrupt_response}"
         );
         Ok(())
     }
@@ -4428,7 +4557,7 @@ mod tests {
             }),
         )
         .await;
-        let plan: devo_protocol::canonical::rpc_session::RestorePlan =
+        let plan: devo_protocol::native::rpc_session::RestorePlan =
             serde_json::from_value(preview["result"].clone())?;
         let params = serde_json::json!({
             "restorePlanId": plan.restore_plan_id.as_str(),
@@ -4466,7 +4595,7 @@ mod tests {
 
     #[tokio::test]
     async fn rollback_in_non_git_workspace_is_history_only() -> Result<()> {
-        use devo_protocol::canonical::rpc_session::{RestorePlan, SessionRollbackCommitResult};
+        use devo_protocol::native::rpc_session::{RestorePlan, SessionRollbackCommitResult};
 
         let data_root = TempDir::new()?;
         let workspace = TempDir::new()?;
@@ -4603,7 +4732,7 @@ mod tests {
         runtime: &Arc<ServerRuntime>,
         connection_id: u64,
         session_id: SessionId,
-    ) -> Vec<devo_protocol::canonical::queue::QueueEntry> {
+    ) -> Vec<devo_protocol::native::queue::QueueEntry> {
         let response = history_request(
             runtime,
             connection_id,
@@ -4612,7 +4741,7 @@ mod tests {
             serde_json::json!({ "sessionId": session_id.to_string() }),
         )
         .await;
-        let result: devo_protocol::canonical::rpc_turn::SessionQueueListResult =
+        let result: devo_protocol::native::rpc_turn::SessionQueueListResult =
             serde_json::from_value(response["result"].clone()).expect("queue/list result");
         result.entries
     }
@@ -4638,10 +4767,8 @@ mod tests {
 
     #[tokio::test]
     async fn queue_push_idle_starts_turn_and_busy_queues_then_update_remove() -> Result<()> {
-        use devo_protocol::canonical::rpc_turn::{
-            SessionQueuePushResult, SessionQueueUpdateResult,
-        };
-        use devo_protocol::canonical::turn::TurnStatus as CanonicalTurnStatus;
+        use devo_protocol::native::rpc_turn::{SessionQueuePushResult, SessionQueueUpdateResult};
+        use devo_protocol::native::turn::TurnStatus as NativeTurnStatus;
 
         let data_root = TempDir::new()?;
         let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4663,6 +4790,7 @@ mod tests {
                 serde_json::json!({
                     "protocolVersion": 1,
                     "clientCapabilities": { "terminal": false },
+                    "_meta": { "devo": { "protocol": "native" } },
                 }),
             )
             .await;
@@ -4700,7 +4828,7 @@ mod tests {
             panic!("idle push must start a turn");
         };
         assert_eq!(turn.session_id.as_str(), session_id.to_string());
-        assert_eq!(turn.status, CanonicalTurnStatus::InProgress);
+        assert_eq!(turn.status, NativeTurnStatus::InProgress);
         assert_eq!(turn.sequence, 1);
 
         // Busy push → queued pre-item.
@@ -4724,7 +4852,7 @@ mod tests {
         assert_eq!(entry.position, 1);
         assert_eq!(entry.preview, "second");
         assert!(
-            matches!(&entry.input.as_slice(), [devo_protocol::canonical::item::UserInput::Text { text }] if text == "second")
+            matches!(&entry.input.as_slice(), [devo_protocol::native::item::UserInput::Text { text }] if text == "second")
         );
 
         // Update replaces the content wholesale.
@@ -4743,7 +4871,7 @@ mod tests {
         let updated: SessionQueueUpdateResult =
             serde_json::from_value(updated["result"].clone()).expect("update result");
         assert!(
-            matches!(&updated.entry.input.as_slice(), [devo_protocol::canonical::item::UserInput::Text { text }] if text == "edited")
+            matches!(&updated.entry.input.as_slice(), [devo_protocol::native::item::UserInput::Text { text }] if text == "edited")
         );
 
         // Reorder: push another entry, then move it to position 1.
@@ -4853,7 +4981,7 @@ mod tests {
 
     #[tokio::test]
     async fn queue_steer_promotes_and_late_steer_degrades_back_to_queue() -> Result<()> {
-        use devo_protocol::canonical::rpc_turn::SessionQueueSteerResult;
+        use devo_protocol::native::rpc_turn::SessionQueueSteerResult;
 
         let data_root = TempDir::new()?;
         let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4891,9 +5019,9 @@ mod tests {
             }),
         )
         .await;
-        let queued: devo_protocol::canonical::rpc_turn::SessionQueuePushResult =
+        let queued: devo_protocol::native::rpc_turn::SessionQueuePushResult =
             serde_json::from_value(queued["result"].clone()).expect("push result");
-        let devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Queued { entry } = queued
+        let devo_protocol::native::rpc_turn::SessionQueuePushResult::Queued { entry } = queued
         else {
             panic!("busy push must queue");
         };
@@ -4927,10 +5055,12 @@ mod tests {
             &runtime,
             connection_id,
             5,
-            "turn/interrupt",
+            "session/interrupt",
             serde_json::json!({
-                "session_id": session_id.to_string(),
-                "turn_id": turn_id.to_string(),
+                "scope": {
+                    "scope": "session",
+                    "sessionId": session_id.to_string()
+                },
             }),
         )
         .await;
@@ -4975,7 +5105,7 @@ mod tests {
             .collect();
         assert_eq!(turn_ids.len(), 2, "expected two distinct turns: {turns:?}");
 
-        // Canonical semantics: steering after the turn ends is an explicit
+        // Native semantics: steering after the turn ends is an explicit
         // error (nothing is silently dropped), and a fresh push on the now
         // idle session starts a new turn (message preserved).
         let late_steer = history_request(
@@ -5006,12 +5136,12 @@ mod tests {
             }),
         )
         .await;
-        let pushed: devo_protocol::canonical::rpc_turn::SessionQueuePushResult =
+        let pushed: devo_protocol::native::rpc_turn::SessionQueuePushResult =
             serde_json::from_value(pushed["result"].clone()).expect("push result");
         assert!(
             matches!(
                 pushed,
-                devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Started { .. }
+                devo_protocol::native::rpc_turn::SessionQueuePushResult::Started { .. }
             ),
             "idle push must start a new turn: {pushed:?}"
         );
@@ -5155,6 +5285,1870 @@ mod tests {
         assert_eq!(entries.len(), PUSH_COUNT);
 
         open.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    // ── Native session/metadata/update (L2-DES-CONV-002 Phase 2) ──
+
+    /// Trace: L2-DES-CONV-002, L2-DES-APP-008
+    /// Verifies: the native settings update persists a field-level
+    /// settings line and returns the updated native session built from
+    /// the rollout (persist-first; no actor wait).
+    #[tokio::test]
+    async fn native_metadata_update_persists_preset_and_returns_updated_session() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let response = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/metadata/update",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "expectedVersion": 1,
+                "settings": { "permissionProfile": "fullAccess" },
+            }),
+        )
+        .await;
+        let result: devo_protocol::native::rpc_session::SessionMetadataUpdateResult =
+            serde_json::from_value(response["result"].clone()).expect("native update result");
+        assert_eq!(
+            result.session.settings.permission_profile,
+            devo_protocol::native::model::PermissionProfile::FullAccess
+        );
+        assert_eq!(result.session.version, 2);
+
+        // Crash-recovery: the field line alone restores the preset.
+        let rollout_path = runtime
+            .rollout_store
+            .find_rollout_by_session_id(&session_id)?
+            .expect("rollout exists");
+        let history = devo_core::read_canonical_history(&rollout_path)?;
+        assert_eq!(
+            history
+                .session
+                .expect("session")
+                .settings
+                .permission_profile,
+            devo_protocol::native::model::PermissionProfile::FullAccess
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-CONV-002, L2-DES-APP-008
+    /// Verifies: a stale expectedVersion is rejected with
+    /// WORKSPACE_VERSION_CONFLICT and writes nothing.
+    #[tokio::test]
+    async fn native_metadata_update_rejects_stale_expected_version() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let params = |version| {
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "expectedVersion": version,
+                "settings": { "permissionProfile": "autoReview" },
+            })
+        };
+        let first = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/metadata/update",
+            params(1),
+        )
+        .await;
+        assert!(first.get("result").is_some(), "first update: {first}");
+
+        let conflict = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "session/metadata/update",
+            params(1),
+        )
+        .await;
+        assert_eq!(
+            conflict["error"]["code"].as_str(),
+            Some("WORKSPACE_VERSION_CONFLICT"),
+            "stale write must conflict: {conflict}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-CONV-002, L2-DES-APP-008
+    /// Verifies: the native settings update returns while a turn is in
+    /// flight (the persist-first path never waits on the session actor).
+    #[tokio::test]
+    async fn native_metadata_update_returns_during_active_turn() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Default::default(),
+            }),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        let _turn_id = start_turn(&runtime, connection_id, session_id, "hold the turn").await?;
+
+        let update = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            history_request(
+                &runtime,
+                connection_id,
+                7,
+                "session/metadata/update",
+                serde_json::json!({
+                    "sessionId": session_id.to_string(),
+                    "expectedVersion": 1,
+                    "settings": { "permissionProfile": "fullAccess" },
+                }),
+            ),
+        )
+        .await;
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+        let response = update.expect("settings update must return while the turn is in flight");
+        assert!(
+            response.get("result").is_some(),
+            "update during active turn: {response}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-CONV-002
+    /// Verifies: a settings update during an active turn is delivered to the
+    /// turn-inline override — permission profile, live sandbox handle — and
+    /// implicit approval caches are invalidated (Phase 3).
+    #[tokio::test]
+    async fn native_metadata_update_applies_overlay_to_active_turn() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Arc::clone(&started),
+            }),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        let _turn_id = start_turn(&runtime, connection_id, session_id, "hold the turn").await?;
+        // Wait until the provider stream is actually in flight so the
+        // turn-inline state is registered before the update arrives.
+        let wait_started = async {
+            while !started.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), wait_started)
+            .await
+            .expect("turn should start streaming");
+
+        let response = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/metadata/update",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "expectedVersion": 1,
+                "settings": { "permissionProfile": "fullAccess" },
+            }),
+        )
+        .await;
+        let result: devo_protocol::native::rpc_session::SessionMetadataUpdateResult =
+            serde_json::from_value(response["result"].clone()).expect("native update result");
+        assert!(
+            result.applied_to_active_turn,
+            "update during an active turn must report overlay delivery"
+        );
+
+        let stream = runtime
+            .active_stream_state(session_id)
+            .await
+            .expect("active stream state");
+        let stream = stream.lock().await;
+        let inline = stream.turn_inline.as_ref().expect("turn inline state");
+        assert_eq!(
+            inline.hook_context.config.permission_profile.preset,
+            devo_safety::PermissionPreset::FullAccess
+        );
+        let implied = inline
+            .hook_context
+            .config
+            .permission_profile
+            .implied_sandbox_profile()
+            .to_string();
+        assert_eq!(
+            inline.hook_context.config.sandbox_profile.as_deref(),
+            Some(implied.as_str())
+        );
+        assert_eq!(
+            inline
+                .sandbox_profile_live
+                .lock()
+                .expect("live mutex")
+                .as_deref(),
+            Some(implied.as_str())
+        );
+        drop(stream);
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    // ── Native turn/start (L2-DES-APP-008 Phase B) ──
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native turn/start admits a turn and returns the
+    /// native turn snapshot; a busy session rejects with
+    /// TURN_ALREADY_RUNNING instead of queueing.
+    #[tokio::test]
+    async fn native_turn_start_admits_and_busy_rejects() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Default::default(),
+            }),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let started = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "turn/start",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "hello" }],
+                "idempotencyKey": "turn-1",
+            }),
+        )
+        .await;
+        let result: devo_protocol::native::rpc_turn::TurnStartResult =
+            serde_json::from_value(started["result"].clone()).expect("native turn/start result");
+        assert_eq!(result.turn.session_id.as_str(), session_id.to_string());
+        assert_eq!(
+            result.turn.status,
+            devo_protocol::native::turn::TurnStatus::InProgress
+        );
+
+        let busy = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "turn/start",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "second" }],
+                "idempotencyKey": "turn-2",
+            }),
+        )
+        .await;
+        assert_eq!(
+            busy["error"]["code"].as_str(),
+            Some("TurnAlreadyRunning"),
+            "busy session must reject: {busy}"
+        );
+
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: an idempotent replay of native turn/start returns the
+    /// originally started turn without starting a second one.
+    #[tokio::test]
+    async fn native_turn_start_idempotent_replay_returns_same_turn() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Default::default(),
+            }),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let params = serde_json::json!({
+            "sessionId": session_id.to_string(),
+            "input": [{ "type": "text", "text": "hello" }],
+            "idempotencyKey": "turn-replay",
+        });
+        let first = history_request(&runtime, connection_id, 7, "turn/start", params.clone()).await;
+        let first: devo_protocol::native::rpc_turn::TurnStartResult =
+            serde_json::from_value(first["result"].clone()).expect("first result");
+        let replay = history_request(&runtime, connection_id, 8, "turn/start", params).await;
+        let replay: devo_protocol::native::rpc_turn::TurnStartResult =
+            serde_json::from_value(replay["result"].clone()).expect("replay result");
+        assert_eq!(replay.turn, first.turn);
+
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: unsupported native input variants (remote image, audio,
+    /// skill) are rejected with a clear InvalidParams error.
+    #[tokio::test]
+    async fn native_turn_start_rejects_unsupported_input_variants() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let response = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "turn/start",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "image", "uri": "https://example.com/x.png" }],
+                "idempotencyKey": "turn-image",
+            }),
+        )
+        .await;
+        assert!(
+            response["error"]["code"]
+                .as_str()
+                .is_some_and(|code| { code.contains("InvalidParams") || code == "INVALID_PARAMS" }),
+            "unsupported input must be rejected: {response}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native session/compact/start rejects while a turn is
+    /// active, and starts a compaction turn with a native turn snapshot
+    /// once the session is idle again.
+    #[tokio::test]
+    async fn native_session_compact_start_busy_rejects_and_idle_compacts() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Default::default(),
+            }),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        let _turn_id = start_turn(&runtime, connection_id, session_id, "hold the turn").await?;
+
+        let busy = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/compact/start",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        assert_eq!(
+            busy["error"]["code"].as_str(),
+            Some("TurnAlreadyRunning"),
+            "active turn must reject compaction: {busy}"
+        );
+
+        // Interrupting the held turn ends it deterministically; the session
+        // is idle afterwards and compaction may start.
+        let interrupted = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "session/interrupt",
+            serde_json::json!({
+                "scope": {
+                    "scope": "session",
+                    "sessionId": session_id.to_string()
+                },
+            }),
+        )
+        .await;
+        assert!(
+            interrupted.get("error").is_none(),
+            "interrupt failed: {interrupted}"
+        );
+        let started = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "session/compact/start",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let result: devo_protocol::native::rpc_turn::TurnStartResult =
+            serde_json::from_value(started["result"].clone()).expect("native compact/start result");
+        assert_eq!(
+            result.turn.kind,
+            devo_protocol::native::turn::TurnKind::Compaction
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native session/new creates a durable session with a
+    /// native snapshot, an idempotency-key replay returns the same
+    /// session, and native session/resume answers with the rollout-backed
+    /// snapshot.
+    #[tokio::test]
+    async fn native_session_new_idempotent_replay_and_resume() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+
+        let params = serde_json::json!({
+            "cwd": data_root.path(),
+            "idempotencyKey": "session-new-1",
+        });
+        let created =
+            history_request(&runtime, connection_id, 7, "session/new", params.clone()).await;
+        let created: devo_protocol::native::rpc_session::SessionNewResult =
+            serde_json::from_value(created["result"].clone()).expect("native session/new result");
+        assert_eq!(created.session.cwd, data_root.path());
+
+        let replay = history_request(&runtime, connection_id, 8, "session/new", params).await;
+        let replay: devo_protocol::native::rpc_session::SessionNewResult =
+            serde_json::from_value(replay["result"].clone()).expect("replay result");
+        assert_eq!(replay.session.id, created.session.id);
+
+        let resumed = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "session/resume",
+            serde_json::json!({ "sessionId": created.session.id.as_str() }),
+        )
+        .await;
+        let resumed: devo_protocol::native::rpc_session::SessionResumeResult =
+            serde_json::from_value(resumed["result"].clone())
+                .expect("native session/resume result");
+        assert_eq!(resumed.session.id, created.session.id);
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-009
+    /// Verifies: a connection that did not declare the native protocol
+    /// surface keeps ACP routing for the colliding `session/new` method
+    /// (ACP-shaped result), while a native connection gets the native
+    /// handler.
+    #[tokio::test]
+    async fn acp_connection_keeps_acp_routing_for_colliding_method_names() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let acp_connection_id = initialized_acp_connection(&runtime).await;
+        let native_connection_id = initialized_native_connection(&runtime).await;
+
+        let acp_params = serde_json::json!({
+            "cwd": data_root.path(),
+            "mcpServers": [],
+        });
+        let acp_response =
+            history_request(&runtime, acp_connection_id, 7, "session/new", acp_params).await;
+        assert!(
+            acp_response["result"]["sessionId"].is_string()
+                && acp_response["result"]["session"].is_null(),
+            "ACP connection must get the ACP session/new shape: {acp_response}"
+        );
+
+        let native_params = serde_json::json!({
+            "cwd": data_root.path(),
+            "idempotencyKey": "session-new-native",
+        });
+        let native_response = history_request(
+            &runtime,
+            native_connection_id,
+            7,
+            "session/new",
+            native_params,
+        )
+        .await;
+        assert!(
+            native_response["result"]["session"]["id"].is_string(),
+            "native connection must get the native session/new shape: {native_response}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native session/list returns a created session as a
+    /// native snapshot, and native session/delete removes it from the
+    /// listing.
+    #[tokio::test]
+    async fn native_session_list_and_delete() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+
+        let created = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/new",
+            serde_json::json!({
+                "cwd": data_root.path(),
+                "idempotencyKey": "session-list-delete",
+            }),
+        )
+        .await;
+        let created: devo_protocol::native::rpc_session::SessionNewResult =
+            serde_json::from_value(created["result"].clone()).expect("native session/new result");
+
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "session/list",
+            serde_json::json!({}),
+        )
+        .await;
+        let listed: devo_protocol::native::rpc_session::SessionListResult =
+            serde_json::from_value(listed["result"].clone()).expect("native session/list result");
+        assert_eq!(listed.data.len(), 1);
+        assert_eq!(listed.data[0].id, created.session.id);
+        assert_eq!(listed.next_cursor, None);
+
+        let deleted = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "session/delete",
+            serde_json::json!({ "sessionId": created.session.id.as_str() }),
+        )
+        .await;
+        assert!(
+            deleted.get("error").is_none(),
+            "session/delete failed: {deleted}"
+        );
+
+        let listed_after = history_request(
+            &runtime,
+            connection_id,
+            10,
+            "session/list",
+            serde_json::json!({}),
+        )
+        .await;
+        let listed_after: devo_protocol::native::rpc_session::SessionListResult =
+            serde_json::from_value(listed_after["result"].clone())
+                .expect("native session/list result after delete");
+        assert!(listed_after.data.is_empty());
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native session/read returns one session's rollout-backed
+    /// native snapshot, and SessionNotFound for an unknown id.
+    #[tokio::test]
+    async fn native_session_read_returns_snapshot() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+
+        let created = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/new",
+            serde_json::json!({
+                "cwd": data_root.path(),
+                "idempotencyKey": "session-read",
+            }),
+        )
+        .await;
+        let created: devo_protocol::native::rpc_session::SessionNewResult =
+            serde_json::from_value(created["result"].clone()).expect("native session/new result");
+
+        let read = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "session/read",
+            serde_json::json!({ "sessionId": created.session.id.as_str() }),
+        )
+        .await;
+        let read: devo_protocol::native::rpc_session::SessionReadResult =
+            serde_json::from_value(read["result"].clone()).expect("native session/read result");
+        assert_eq!(read.session, created.session);
+
+        let missing = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "session/read",
+            serde_json::json!({ "sessionId": SessionId::new().to_string() }),
+        )
+        .await;
+        assert_eq!(
+            missing["error"]["code"].as_str(),
+            Some("SessionNotFound"),
+            "unknown session must be SessionNotFound: {missing}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native runtime/ping answers with a server timestamp.
+    #[tokio::test]
+    async fn native_runtime_ping_returns_server_time() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+        let pong = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "runtime/ping",
+            serde_json::json!({}),
+        )
+        .await;
+        let pong: devo_protocol::native::rpc_admin::RuntimePingResult =
+            serde_json::from_value(pong["result"].clone()).expect("runtime/ping result");
+        assert!(pong.server_time_ms > 0);
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native session/goal/set creates a goal with a native
+    /// snapshot and idempotent replay; session/goal/read returns it;
+    /// ifExists=reject on an existing goal fails.
+    #[tokio::test]
+    async fn native_session_goal_set_and_read() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let params = serde_json::json!({
+            "sessionId": session_id.to_string(),
+            "objective": "ship the protocol unification",
+            "ifExists": "replace",
+            "idempotencyKey": "goal-set-1",
+        });
+        let created = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/goal/set",
+            params.clone(),
+        )
+        .await;
+        let created: devo_protocol::native::rpc_session::SessionGoalSetResult =
+            serde_json::from_value(created["result"].clone()).expect("goal/set result");
+        assert_eq!(created.goal.objective, "ship the protocol unification");
+        assert_eq!(
+            created.goal.status,
+            devo_protocol::native::goal::GoalStatus::Active
+        );
+
+        let replay = history_request(&runtime, connection_id, 8, "session/goal/set", params).await;
+        let replay: devo_protocol::native::rpc_session::SessionGoalSetResult =
+            serde_json::from_value(replay["result"].clone()).expect("replay result");
+        assert_eq!(replay.goal, created.goal);
+
+        let read = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "session/goal/read",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let read: devo_protocol::native::rpc_session::SessionGoalReadResult =
+            serde_json::from_value(read["result"].clone()).expect("goal/read result");
+        assert_eq!(read.goal, Some(created.goal.clone()));
+
+        let rejected = history_request(
+            &runtime,
+            connection_id,
+            10,
+            "session/goal/set",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "objective": "a different objective",
+                "ifExists": "reject",
+                "idempotencyKey": "goal-set-2",
+            }),
+        )
+        .await;
+        assert!(
+            rejected.get("error").is_some(),
+            "ifExists=reject must fail on an existing goal: {rejected}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native session/fork without atTurnId forks at the
+    /// session tip and returns the native snapshot of the forked session.
+    #[tokio::test]
+    async fn native_session_fork_at_tip_returns_forked_session() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let forked = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/fork",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let result: devo_protocol::native::rpc_session::SessionForkResult =
+            serde_json::from_value(forked["result"].clone()).expect("native fork result");
+        assert_ne!(result.session.id.as_str(), session_id.to_string());
+        assert!(
+            result.session.parent.is_some(),
+            "fork must record parentage"
+        );
+
+        let missing = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "session/fork",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "atTurnId": "turn_00000000-0000-0000-0000-000000000000",
+            }),
+        )
+        .await;
+        assert!(
+            missing.get("error").is_some(),
+            "unknown atTurnId must be rejected: {missing}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: a title patch on native session/metadata/update renames
+    /// the session and the returned native snapshot carries the new title
+    /// (SessionTitleUpdated line folds into the rollout read).
+    #[tokio::test]
+    async fn native_metadata_update_title_patch_renames_session() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let renamed = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/metadata/update",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "expectedVersion": 0,
+                "title": "renamed session",
+            }),
+        )
+        .await;
+        let result: devo_protocol::native::rpc_session::SessionMetadataUpdateResult =
+            serde_json::from_value(renamed["result"].clone()).expect("metadata update result");
+        assert_eq!(result.session.title.as_deref(), Some("renamed session"));
+
+        let cleared = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "session/metadata/update",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "expectedVersion": 0,
+                "title": null,
+            }),
+        )
+        .await;
+        assert!(
+            cleared.get("error").is_some(),
+            "title clearing must be rejected: {cleared}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native task/start kind=process spawns a process with a
+    /// server-assigned item id, idempotent replay returns the same id, and
+    /// task/interrupt terminates it; kind=agent returns a child task item.
+    #[tokio::test]
+    async fn native_task_start_process_and_interrupt() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let params = serde_json::json!({
+            "kind": "process",
+            "sessionId": session_id.to_string(),
+            "command": "sleep 60",
+            "idempotencyKey": "task-1",
+        });
+        let started =
+            history_request(&runtime, connection_id, 7, "task/start", params.clone()).await;
+        let started: devo_protocol::native::rpc_turn::TaskStartResult =
+            serde_json::from_value(started["result"].clone()).expect("task/start result");
+        assert!(started.item_id.as_str().starts_with("item_"));
+
+        let replay = history_request(&runtime, connection_id, 8, "task/start", params).await;
+        let replay: devo_protocol::native::rpc_turn::TaskStartResult =
+            serde_json::from_value(replay["result"].clone()).expect("replay result");
+        assert_eq!(replay.item_id, started.item_id);
+
+        let interrupted = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "session/interrupt",
+            serde_json::json!({
+                "scope": { "scope": "task", "itemId": started.item_id.as_str() }
+            }),
+        )
+        .await;
+        assert!(
+            interrupted.get("error").is_none(),
+            "session/interrupt failed: {interrupted}"
+        );
+
+        let agent = history_request(
+            &runtime,
+            connection_id,
+            10,
+            "task/start",
+            serde_json::json!({
+                "kind": "agent",
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "hi" }],
+                "idempotencyKey": "task-2",
+            }),
+        )
+        .await;
+        let agent: devo_protocol::native::rpc_turn::TaskStartResult =
+            serde_json::from_value(agent["result"].clone()).expect("agent task/start result");
+        assert!(agent.item_id.as_str().starts_with("item_"));
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native task/write_stdin feeds a running process and
+    /// task/resize is accepted (DD-7 facade verbs share the process lookup).
+    #[tokio::test]
+    async fn native_task_write_stdin_and_resize() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let started = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "task/start",
+            serde_json::json!({
+                "kind": "process",
+                "sessionId": session_id.to_string(),
+                "command": "cat",
+                "idempotencyKey": "task-io",
+            }),
+        )
+        .await;
+        let started: devo_protocol::native::rpc_turn::TaskStartResult =
+            serde_json::from_value(started["result"].clone()).expect("task/start result");
+
+        let written = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "task/write_stdin",
+            serde_json::json!({
+                "itemId": started.item_id.as_str(),
+                "data": "hello task\n",
+            }),
+        )
+        .await;
+        assert!(
+            written.get("error").is_none(),
+            "task/write_stdin failed: {written}"
+        );
+
+        let resized = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "task/resize",
+            serde_json::json!({
+                "itemId": started.item_id.as_str(),
+                "rows": 40,
+                "cols": 120,
+            }),
+        )
+        .await;
+        assert!(
+            resized.get("error").is_none(),
+            "task/resize failed: {resized}"
+        );
+
+        let _ = history_request(
+            &runtime,
+            connection_id,
+            10,
+            "task/interrupt",
+            serde_json::json!({ "itemId": started.item_id.as_str() }),
+        )
+        .await;
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: the approval fan-out projects one logical approval request
+    /// to both Native and ACP controller surfaces.
+    #[tokio::test]
+    async fn approval_fanout_mixes_native_and_acp_surfaces() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = SessionId::new();
+
+        let (native_outbound, mut native_receiver) = super::outbound::test_outbound_channel(4);
+        let native_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, native_outbound)
+            .await;
+        runtime
+            .handle_acp_initialize(
+                native_connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                    "_meta": { "devo": { "protocol": "native" } },
+                }),
+            )
+            .await;
+        let (acp_outbound, mut acp_receiver) = super::outbound::test_outbound_channel(4);
+        let acp_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, acp_outbound)
+            .await;
+        runtime
+            .handle_acp_initialize(
+                acp_connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                }),
+            )
+            .await;
+        // Controllers = owner ∪ connections with a Session stream selector.
+        let native_session_id =
+            devo_protocol::native::ids::SessionId::from_legacy_uuid(Uuid::from(session_id));
+        {
+            let mut connections = runtime.connections.lock().await;
+            connections
+                .get_mut(&acp_connection_id)
+                .expect("acp connection")
+                .event_selectors = vec![devo_protocol::native::event::StreamSelector::Session {
+                session_id: native_session_id.clone(),
+            }];
+            connections
+                .get_mut(&native_connection_id)
+                .expect("native connection")
+                .event_selectors = vec![devo_protocol::native::event::StreamSelector::Session {
+                session_id: native_session_id,
+            }];
+        }
+
+        let acp_params: devo_protocol::AcpRequestPermissionParams =
+            serde_json::from_value(serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "toolCall": { "toolCallId": "call-1" },
+                "options": [],
+            }))?;
+        let runtime_for_request = Arc::clone(&runtime);
+        let request = tokio::spawn(async move {
+            runtime_for_request
+                .request_permission_from_controllers(
+                    session_id,
+                    Some(native_connection_id),
+                    acp_params,
+                    "approval/command/request",
+                    serde_json::json!({
+                        "type": "approval",
+                        "approvalId": "call-1",
+                        "actionSummary": "run tests",
+                        "justification": "",
+                    }),
+                    CancellationToken::new(),
+                )
+                .await
+        });
+
+        let native_request = native_receiver.recv().await.expect("native request");
+        assert_eq!(
+            native_request["method"].as_str(),
+            Some("approval/command/request"),
+            "native connection must get the native reverse request: {native_request}"
+        );
+        assert_eq!(
+            native_request["params"]["approvalId"].as_str(),
+            Some("call-1")
+        );
+        let acp_request = acp_receiver.recv().await.expect("ACP request");
+        assert_eq!(
+            acp_request["method"].as_str(),
+            Some("session/request_permission"),
+            "ACP connection must get the ACP permission envelope: {acp_request}"
+        );
+
+        runtime
+            .resolve_client_response(
+                native_connection_id,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": native_request["id"].clone(),
+                    "result": {
+                        "requestId": "call-1",
+                        "decision": {
+                            "decision": "approved",
+                            "scope": "session",
+                            "decidedAt": "2026-08-09T00:00:00Z",
+                        },
+                    },
+                }),
+            )
+            .await;
+        let (decision, scope) = request
+            .await?
+            .map_err(|error| anyhow::anyhow!("permission fan-out failed: {error}"))?;
+        assert_eq!(decision, devo_protocol::ApprovalDecisionValue::Approve);
+        assert_eq!(scope, devo_protocol::ApprovalScopeValue::Session);
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: a tool's user-input question fans out to native-surface
+    /// controllers as `userInput/request` with the waiting-state payload, and
+    /// the native answer resolves the pending tool call (DD-8).
+    #[tokio::test]
+    async fn native_user_input_request_resolves_pending_question() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let (outbound, mut receiver) = super::outbound::test_outbound_channel(8);
+        let connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, outbound)
+            .await;
+        runtime
+            .handle_acp_initialize(
+                connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                    "_meta": { "devo": { "protocol": "native" } },
+                }),
+            )
+            .await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        {
+            let mut connections = runtime.connections.lock().await;
+            connections
+                .get_mut(&connection_id)
+                .expect("native connection")
+                .event_selectors = vec![devo_protocol::native::event::StreamSelector::Session {
+                session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(Uuid::from(
+                    session_id,
+                )),
+            }];
+        }
+
+        let turn_id = TurnId::new();
+        let runtime_for_tool = Arc::clone(&runtime);
+        let tool_call = tokio::spawn(async move {
+            runtime_for_tool
+                .request_user_input_for_tool(
+                    session_id,
+                    turn_id,
+                    "question-call-1".to_string(),
+                    devo_protocol::RequestUserInputArgs {
+                        questions: vec![
+                            serde_json::from_value(serde_json::json!({
+                                "id": "q1",
+                                "header": "Pick one",
+                                "question": "Which color?",
+                                "isOther": false,
+                                "isSecret": false,
+                            }))
+                            .expect("question"),
+                        ],
+                    },
+                )
+                .await
+        });
+
+        // Session setup emits its own notifications first; scan forward to
+        // the reverse request frame.
+        let request = {
+            let mut request = None;
+            for _ in 0..8 {
+                let frame = receiver.recv().await.expect("userInput/request frame");
+                if frame["method"].as_str() == Some("userInput/request") {
+                    request = Some(frame);
+                    break;
+                }
+            }
+            request.expect("userInput/request must be fanned out")
+        };
+        assert_eq!(request["method"].as_str(), Some("userInput/request"));
+        assert_eq!(
+            request["params"]["requestId"].as_str(),
+            Some("question-call-1")
+        );
+
+        runtime
+            .resolve_client_response(
+                connection_id,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {
+                        "requestId": "question-call-1",
+                        "answers": { "q1": { "answers": ["blue"] } },
+                    },
+                }),
+            )
+            .await;
+        let response = tool_call
+            .await?
+            .map_err(|error| anyhow::anyhow!("user input tool call failed: {error}"))?;
+        assert_eq!(
+            response.answers.get("q1"),
+            Some(&devo_protocol::RequestUserInputAnswer {
+                answers: vec!["blue".to_string()],
+            })
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native search/start answers with the camelCase native
+    /// snapshot on a native-surface connection (connection-local search;
+    /// params are wire-identical to legacy, results project by surface).
+    #[tokio::test]
+    async fn native_search_start_returns_camel_case_snapshot() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+
+        let started = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "search/start",
+            serde_json::json!({
+                "cwd": data_root.path(),
+                "query": "nothing-matches-this-query",
+            }),
+        )
+        .await;
+        let result: devo_protocol::native::rpc_search::SearchStartResult =
+            serde_json::from_value(started["result"].clone()).expect("native search/start result");
+        assert_eq!(result.snapshot.query, "nothing-matches-this-query");
+        assert!(
+            started["result"]["snapshot"]["searchId"].is_string()
+                && started["result"]["snapshot"]["fileSearchComplete"].is_boolean(),
+            "native snapshot must use camelCase keys: {started}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native workspace/changes/read answers with camelCase
+    /// native views on a native-surface connection (the desktop
+    /// client's diff read model).
+    #[tokio::test]
+    async fn native_workspace_changes_read_returns_camel_case_views() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let read = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "workspace/changes/read",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "scopes": ["uncommitted"],
+            }),
+        )
+        .await;
+        let result: devo_protocol::native::rpc_workspace::WorkspaceChangesReadResult =
+            serde_json::from_value(read["result"].clone())
+                .expect("native workspace/changes/read result");
+        assert_eq!(result.views.len(), 1);
+        assert_eq!(
+            result.views[0].scope,
+            devo_protocol::WorkspaceChangeScope::Uncommitted
+        );
+        assert!(
+            read["result"]["views"][0]["workspaceRoot"].is_string()
+                && read["result"]["views"][0]["changeSetStatus"].is_string()
+                && read["result"]["views"][0]["generatedAt"].is_string(),
+            "native views must use camelCase keys: {read}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native model/list answers with the parity ModelInfo
+    /// shape (slug, provider wire API, context window, reasoning capability)
+    /// from the same catalog source as model/catalog (ratified #7).
+    #[tokio::test]
+    async fn native_model_list_returns_parity_entries() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime_with_provider_and_catalog(
+            data_root.path(),
+            Arc::new(NoopProvider),
+            Arc::new(PresetModelCatalog::load().expect("embedded model catalog")),
+        );
+        let connection_id = initialized_native_connection(&runtime).await;
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "model/list",
+            serde_json::json!({}),
+        )
+        .await;
+        let listed: devo_protocol::native::rpc_admin::ModelListResult =
+            serde_json::from_value(listed["result"].clone()).expect("native model/list result");
+        assert!(
+            !listed.models.is_empty(),
+            "test catalog must list at least one model"
+        );
+        let model = &listed.models[0];
+        assert!(!model.slug.is_empty());
+        assert!(!model.display_name.is_empty());
+        assert!(model.context_window > 0);
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native model/preferences read returns the workspace's
+    /// effective defaults with selectable values, and write patches them
+    /// with validation (ratified #12).
+    #[tokio::test]
+    async fn native_model_preferences_read_write_round_trip() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime_with_provider_and_catalog(
+            data_root.path(),
+            Arc::new(NoopProvider),
+            Arc::new(PresetModelCatalog::load().expect("embedded model catalog")),
+        );
+        let connection_id = initialized_native_connection(&runtime).await;
+
+        let read = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "model/preferences/read",
+            serde_json::json!({ "cwd": data_root.path() }),
+        )
+        .await;
+        let read: devo_protocol::native::rpc_admin::ModelPreferencesReadResult =
+            serde_json::from_value(read["result"].clone())
+                .expect("native model/preferences/read result");
+        assert!(
+            !read.preferences.available_models.is_empty(),
+            "embedded catalog must offer models"
+        );
+        assert!(
+            !read.preferences.available_efforts.is_empty(),
+            "reasoning effort levels must be offered"
+        );
+
+        let slug = read.preferences.available_models[0].value.clone();
+        let written = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "model/preferences/write",
+            serde_json::json!({
+                "cwd": data_root.path(),
+                "patch": { "reasoningEffort": "high" },
+            }),
+        )
+        .await;
+        let written: devo_protocol::native::rpc_admin::ModelPreferencesWriteResult =
+            serde_json::from_value(written["result"].clone())
+                .expect("native model/preferences/write result");
+        assert_eq!(
+            written.preferences.reasoning_effort.as_deref(),
+            Some("high")
+        );
+
+        // The user config store keys the default model by provider binding
+        // id, so a bare slug is rejected with the legacy store semantics.
+        let slug_write = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "model/preferences/write",
+            serde_json::json!({
+                "cwd": data_root.path(),
+                "patch": { "model": slug },
+            }),
+        )
+        .await;
+        assert!(
+            slug_write["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("does not exist")),
+            "bare slug without bindings must surface the store error: {slug_write}"
+        );
+
+        let rejected = history_request(
+            &runtime,
+            connection_id,
+            10,
+            "model/preferences/write",
+            serde_json::json!({
+                "cwd": data_root.path(),
+                "patch": { "model": "no-such-model" },
+            }),
+        )
+        .await;
+        assert!(
+            rejected.get("error").is_some(),
+            "unknown model must be rejected: {rejected}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native provider/list answers with camelCase vendor
+    /// entries and native provider/upsert (dual-shape via providerVendor)
+    /// writes through the legacy store path (ratified #11).
+    #[tokio::test]
+    async fn native_provider_list_and_upsert_round_trip() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "provider/list",
+            serde_json::json!({}),
+        )
+        .await;
+        let listed: devo_protocol::native::rpc_admin::ProviderListResult =
+            serde_json::from_value(listed["result"].clone()).expect("native provider/list result");
+        assert!(listed.providers.is_empty());
+
+        let upserted = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "provider/upsert",
+            serde_json::json!({
+                "providerVendor": {
+                    "name": "test-provider",
+                    "baseUrl": "https://example.com/v1",
+                    "wireApis": ["openai_chat_completions"],
+                    "enabled": true,
+                },
+            }),
+        )
+        .await;
+        assert!(
+            upserted.get("error").is_none(),
+            "native provider/upsert failed: {upserted}"
+        );
+
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "provider/list",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(
+            listed["result"]["providers"][0]["name"].as_str(),
+            Some("test-provider")
+        );
+        assert_eq!(
+            listed["result"]["providers"][0]["baseUrl"].as_str(),
+            Some("https://example.com/v1"),
+            "native vendors must use camelCase keys: {listed}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native skill/list answers with native SkillInfo
+    /// records (path-keyed, workspace-scoped via cwd), and native
+    /// skill/set_enabled surfaces the store error for unknown paths
+    /// (ratified #4).
+    #[tokio::test]
+    async fn native_skill_list_and_set_enabled() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "skill/list",
+            serde_json::json!({ "cwd": data_root.path() }),
+        )
+        .await;
+        assert!(
+            listed.get("error").is_none(),
+            "native skill/list must succeed: {listed}"
+        );
+        let listed: devo_protocol::native::rpc_admin::SkillListResult =
+            serde_json::from_value(listed["result"].clone()).expect("native skill/list result");
+        for skill in &listed.skills {
+            assert!(!skill.id.is_empty() && !skill.name.is_empty());
+        }
+
+        // Legacy store semantics: an unknown path is a no-op that returns the
+        // current list unchanged (no error).
+        let noop = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "skill/set_enabled",
+            serde_json::json!({
+                "path": data_root.path().join("no-such-skill/SKILL.md"),
+                "enabled": true,
+                "cwd": data_root.path(),
+            }),
+        )
+        .await;
+        let noop: devo_protocol::native::rpc_admin::SkillSetEnabledResult =
+            serde_json::from_value(noop["result"].clone())
+                .expect("native skill/set_enabled result");
+        assert_eq!(noop.skills.len(), listed.skills.len());
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native session/goal/update edits the current goal in
+    /// place (same goal id, updated objective/status/budget), replays by
+    /// idempotency key, rejects system-computed statuses, and fails with
+    /// GoalNotFound without an active goal (ratified #3).
+    #[tokio::test]
+    async fn native_session_goal_update_in_place() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let created = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "session/goal/set",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "objective": "original objective",
+                "ifExists": "reject",
+                "idempotencyKey": "goal-update-seed",
+            }),
+        )
+        .await;
+        let created: devo_protocol::native::rpc_session::SessionGoalSetResult =
+            serde_json::from_value(created["result"].clone()).expect("goal/set result");
+
+        let update_params = serde_json::json!({
+            "sessionId": session_id.to_string(),
+            "expectedGoalId": created.goal.id.as_str(),
+            "patch": {
+                "objective": "edited objective",
+                "status": "paused",
+                "tokenBudget": 5000,
+            },
+            "idempotencyKey": "goal-update-1",
+        });
+        let updated = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "session/goal/update",
+            update_params.clone(),
+        )
+        .await;
+        let updated: devo_protocol::native::rpc_session::SessionGoalUpdateResult =
+            serde_json::from_value(updated["result"].clone()).expect("goal/update result");
+        assert_eq!(
+            updated.goal.id, created.goal.id,
+            "edit preserves the goal id"
+        );
+        assert_eq!(updated.goal.objective, "edited objective");
+        assert_eq!(
+            updated.goal.status,
+            devo_protocol::native::goal::GoalStatus::Paused
+        );
+
+        let replay = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "session/goal/update",
+            update_params,
+        )
+        .await;
+        let replay: devo_protocol::native::rpc_session::SessionGoalUpdateResult =
+            serde_json::from_value(replay["result"].clone()).expect("replay result");
+        assert_eq!(replay.goal, updated.goal);
+
+        let system_status = history_request(
+            &runtime,
+            connection_id,
+            10,
+            "session/goal/update",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "patch": { "status": "budgetLimited" },
+                "idempotencyKey": "goal-update-2",
+            }),
+        )
+        .await;
+        assert!(
+            system_status.get("error").is_some(),
+            "system-computed status must be rejected: {system_status}"
+        );
+
+        let no_goal_session =
+            start_durable_session(&runtime, connection_id, &data_root.path().join("empty")).await?;
+        let no_goal = history_request(
+            &runtime,
+            connection_id,
+            11,
+            "session/goal/update",
+            serde_json::json!({
+                "sessionId": no_goal_session.to_string(),
+                "patch": { "objective": "x" },
+                "idempotencyKey": "goal-update-3",
+            }),
+        )
+        .await;
+        assert_eq!(
+            no_goal["error"]["code"].as_str(),
+            Some("GoalNotFound"),
+            "update without an active goal must fail GoalNotFound: {no_goal}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native session/message/edit supersedes the previous user
+    /// message with a new revision, starts a replacement turn, and enforces
+    /// expectedRevision against the native history (ratified #10).
+    #[tokio::test]
+    async fn native_session_message_edit_supersedes_previous_message() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_native_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let _turn = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "turn/start",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "original message" }],
+                "idempotencyKey": "edit-target-turn",
+            }),
+        )
+        .await;
+        // The noop provider fails the turn immediately; wait for terminal so
+        // the edit is not rejected as active-turn.
+        for _ in 0..100 {
+            if runtime.runtime_active_turn_id(session_id).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(runtime.runtime_active_turn_id(session_id).await.is_none());
+
+        let items = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "session/items/list",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let items: devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope> =
+            serde_json::from_value(items["result"].clone()).expect("items/list result");
+        let user_item = items
+            .data
+            .iter()
+            .find(|item| {
+                matches!(
+                    &item.item,
+                    devo_protocol::native::item::Item::UserMessage { .. }
+                )
+            })
+            .expect("user message item");
+        let expected_revision = user_item.revision;
+
+        let edited = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "session/message/edit",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "itemId": user_item.id.as_str(),
+                "expectedRevision": expected_revision,
+                "content": [{ "type": "text", "text": "edited message" }],
+                "idempotencyKey": "edit-1",
+            }),
+        )
+        .await;
+        let edited: devo_protocol::native::rpc_session::SessionMessageEditResult =
+            serde_json::from_value(edited["result"].clone())
+                .expect("native session/message/edit result");
+        assert_eq!(edited.item.revision, expected_revision + 1);
+        assert_eq!(
+            edited.edit_state,
+            devo_protocol::native::rpc_session::MessageEditState::Accepted
+        );
+        assert!(edited.replacement_turn_id.is_some());
+        match &edited.item.item {
+            devo_protocol::native::item::Item::UserMessage { content, .. } => {
+                assert!(
+                    matches!(&content[0], devo_protocol::native::item::UserInput::Text { text } if text == "edited message")
+                );
+            }
+            other => panic!("edited item must be a UserMessage: {other:?}"),
+        }
+
+        let stale = history_request(
+            &runtime,
+            connection_id,
+            10,
+            "session/message/edit",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "itemId": user_item.id.as_str(),
+                "expectedRevision": 999,
+                "content": [{ "type": "text", "text": "stale edit" }],
+                "idempotencyKey": "edit-2",
+            }),
+        )
+        .await;
+        assert_eq!(
+            stale["error"]["code"].as_str(),
+            Some("WORKSPACE_VERSION_CONFLICT"),
+            "stale revision must conflict: {stale}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native task/read returns a process task's BackgroundTask
+    /// item with exit code and captured output tail once the process exits,
+    /// and native task/list includes the session's process task.
+    #[tokio::test]
+    async fn native_task_read_and_list() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let started = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "task/start",
+            serde_json::json!({
+                "kind": "process",
+                "sessionId": session_id.to_string(),
+                "command": "echo native-task-read",
+                "idempotencyKey": "task-read",
+            }),
+        )
+        .await;
+        let started: devo_protocol::native::rpc_turn::TaskStartResult =
+            serde_json::from_value(started["result"].clone()).expect("task/start result");
+
+        // The echo process exits quickly; poll task/read until the terminal
+        // snapshot (exit code + output tail) is retained.
+        let mut terminal = None;
+        for _ in 0..100 {
+            let read = history_request(
+                &runtime,
+                connection_id,
+                8,
+                "task/read",
+                serde_json::json!({ "itemId": started.item_id.as_str() }),
+            )
+            .await;
+            let result: devo_protocol::native::rpc_turn::TaskReadResult =
+                serde_json::from_value(read["result"].clone()).expect("native task/read result");
+            let devo_protocol::native::item::Item::BackgroundTask {
+                exit_code, state, ..
+            } = &result.item.item
+            else {
+                panic!(
+                    "process task must project as BackgroundTask: {:?}",
+                    result.item.item
+                );
+            };
+            if let Some(exit_code) = exit_code {
+                terminal = Some((*exit_code, *state, result.output_tail.clone()));
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let (exit_code, state, output_tail) =
+            terminal.expect("process task must reach a terminal snapshot");
+        assert_eq!(exit_code, 0);
+        assert_eq!(
+            state,
+            devo_protocol::native::item::SpawnedWorkState::Completed
+        );
+        assert!(
+            output_tail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("native-task-read"),
+            "output tail must capture the echo: {output_tail:?}"
+        );
+
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "task/list",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let listed: devo_protocol::native::rpc_turn::TaskListResult =
+            serde_json::from_value(listed["result"].clone()).expect("native task/list result");
+        assert!(
+            listed.tasks.iter().any(|task| task.id == started.item_id),
+            "task/list must include the process task: {:?}",
+            listed
+                .tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native agent/list answers with the SubAgent item result
+    /// shape for a session (empty when no agents), and requires a session id.
+    #[tokio::test]
+    async fn native_agent_list_returns_subagent_item_result() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "agent/list",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let result: devo_protocol::native::rpc_turn::AgentListResult =
+            serde_json::from_value(listed["result"].clone()).expect("native agent/list result");
+        assert!(result.agents.is_empty());
+
+        let missing = history_request(
+            &runtime,
+            connection_id,
+            8,
+            "agent/list",
+            serde_json::json!({}),
+        )
+        .await;
+        assert!(
+            missing.get("error").is_some(),
+            "session-less native agent/list must be rejected: {missing}"
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-008
+    /// Verifies: native task/start kind=agent spawns a child-session
+    /// agent, returns the child as an `item_<uuid>` id, and honors the
+    /// spawn policies (DD-7).
+    #[tokio::test]
+    async fn native_task_start_agent_spawns_child_session() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let params = serde_json::json!({
+            "kind": "agent",
+            "sessionId": session_id.to_string(),
+            "input": [{ "type": "text", "text": "quick question" }],
+            "forkTurns": "all",
+            "maxTurns": 1,
+            "toolPolicy": "deny_all",
+            "ephemeral": true,
+            "idempotencyKey": "agent-task-1",
+        });
+        let started =
+            history_request(&runtime, connection_id, 7, "task/start", params.clone()).await;
+        let started: devo_protocol::native::rpc_turn::TaskStartResult =
+            serde_json::from_value(started["result"].clone())
+                .expect("task/start kind=agent result");
+        assert!(
+            started.item_id.as_str().starts_with("item_"),
+            "agent item id must be item_-prefixed: {}",
+            started.item_id.as_str()
+        );
+
+        let replay = history_request(&runtime, connection_id, 8, "task/start", params).await;
+        let replay: devo_protocol::native::rpc_turn::TaskStartResult =
+            serde_json::from_value(replay["result"].clone()).expect("replay result");
+        assert_eq!(replay.item_id, started.item_id);
+
+        // The spawned child is visible through native agent/list.
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "agent/list",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let listed: devo_protocol::native::rpc_turn::AgentListResult =
+            serde_json::from_value(listed["result"].clone()).expect("agent/list result");
+        assert_eq!(listed.agents.len(), 1, "spawned agent must be listed");
         Ok(())
     }
 }

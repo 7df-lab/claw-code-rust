@@ -5,7 +5,6 @@ mod finalize;
 mod followup;
 mod item_stream;
 mod query;
-mod shell;
 mod tool_display;
 mod tool_results;
 mod trace;

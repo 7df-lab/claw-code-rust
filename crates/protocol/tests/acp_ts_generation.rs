@@ -12,22 +12,31 @@ fn generated_acp_typescript_contains_wire_discriminants_and_names() {
     assert!(output.contains("currentValue"));
     assert!(!output.contains("current_value"));
     assert!(output.contains("export type AcpRequestPermissionParams"));
-    assert!(output.contains("export type RequestUserInputRespondParams"));
-    assert!(output.contains("request_id"));
+    assert!(output.contains("export type AcpRequestPermissionResponse"));
+    assert!(output.contains("export type AcpFsReadTextFileParams"));
+    assert!(output.contains("export type AcpFsReadTextFileResult"));
+    assert!(output.contains("export type AcpFsWriteTextFileParams"));
+    assert!(output.contains("export type RequestUserInputResponse"));
+    assert!(output.contains("switch_mode"));
+    assert!(output.contains("type: AcpSetConfigOptionValueType"));
+    assert!(output.contains(
+        "export type AcpMcpServer = AcpMcpServerHttp | AcpMcpServerSse | AcpMcpServerStdio"
+    ));
+    assert!(!output.contains("AcpUnsupportedMcpServer"));
+    assert!(!output.contains("AcpAuthMethodType"));
 }
 
 #[test]
 fn generated_protocol_typescript_contains_non_acp_client_method_roots() {
     let output = devo_protocol::acp_ts::generate_protocol_typescript();
 
-    assert!(output.contains("export type GoalStatusParams"));
-    assert!(output.contains("export type GoalStatusResult"));
     assert!(output.contains("export type SkillListParams"));
     assert!(output.contains("export type SkillListResult"));
     assert!(output.contains("export type CommandExecParams"));
-    assert!(output.contains("export type EventsSubscribeParams"));
+    assert!(output.contains("export type SubscriptionCreateParams"));
+    assert!(output.contains("export type SearchStartParams"));
     assert!(output.contains("session_id"));
-    assert!(output.contains("threadId"));
+    assert!(output.contains("searchId"));
 }
 
 #[test]
@@ -43,15 +52,55 @@ fn generated_protocol_schema_contains_method_bindings() {
         value["methods"]["session/prompt"]["outgoingRequest"],
         "AcpPromptParams"
     );
+    assert!(value["methods"]["goal/status"].is_null());
     assert_eq!(
-        value["methods"]["goal/status"]["outgoingRequest"],
-        "GoalStatusParams"
-    );
-    assert_eq!(
-        value["methods"]["skills/list"]["incomingResult"],
+        value["methods"]["skill/list"]["incomingResult"],
         "SkillListResult"
     );
     assert!(value["schemas"]["AcpSessionNotification"].is_object());
-    assert!(value["schemas"]["GoalStatusParams"].is_object());
     assert!(value["schemas"]["SkillListResult"].is_object());
+    assert_eq!(
+        value["methods"]["session/request_permission"]["incomingRequest"],
+        "AcpRequestPermissionParams"
+    );
+    assert_eq!(
+        value["methods"]["fs/read_text_file"]["incomingRequest"],
+        "AcpFsReadTextFileParams"
+    );
+    assert_eq!(
+        value["methods"]["fs/write_text_file"]["incomingRequest"],
+        "AcpFsWriteTextFileParams"
+    );
+    assert_eq!(
+        value["methods"]["session/cancel"]["outgoingNotification"],
+        "AcpCancelParams"
+    );
+    assert_eq!(
+        value["methods"]["logout"]["incomingResult"],
+        "AcpLogoutResult"
+    );
+    assert!(value["methods"]["userInput/request"].is_null());
+    assert!(value["schemas"]["AcpRequestPermissionParams"].is_object());
+    assert!(value["schemas"]["AcpFsReadTextFileParams"].is_object());
+    assert!(value["schemas"]["AcpFsWriteTextFileParams"].is_object());
+    assert!(
+        value["schemas"]["AcpNewSessionParams"]["required"]
+            .as_array()
+            .is_some_and(|required| required.iter().any(|item| item == "mcpServers"))
+    );
+    assert!(
+        value["schemas"]["AcpLoadSessionParams"]["required"]
+            .as_array()
+            .is_some_and(|required| required.iter().any(|item| item == "mcpServers"))
+    );
+    assert!(
+        value["schemas"]["AcpResumeSessionParams"]["required"]
+            .as_array()
+            .is_some_and(|required| required.iter().any(|item| item == "mcpServers"))
+    );
+    assert!(
+        value["schemas"]["AcpSetConfigOptionResult"]["required"]
+            .as_array()
+            .is_some_and(|required| required.iter().any(|item| item == "configOptions"))
+    );
 }

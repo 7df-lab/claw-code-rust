@@ -274,7 +274,13 @@ impl ToolRuntime {
             }
         };
 
-        let mut sandbox_profile = self.context.sandbox_profile.clone();
+        let mut sandbox_profile = match &self.context.sandbox_profile_live {
+            Some(live) => live
+                .lock()
+                .expect("sandbox profile live mutex poisoned")
+                .clone(),
+            None => self.context.sandbox_profile.clone(),
+        };
         let mut already_bypassed_sandbox = sandbox_profile_is_inactive(sandbox_profile.as_deref());
         // `already_approved`: only user/session/auto-review approvals unlock
         // a silent unsandbox retry after SANDBOX_DENIED (UnlessTrusted). Policy
@@ -669,6 +675,12 @@ pub struct ToolRuntimeContext {
     pub network_no_proxy: Option<String>,
     /// Active sandbox profile name for child processes spawned by tools.
     pub sandbox_profile: Option<String>,
+    /// Live sandbox profile handle shared with the session's settings
+    /// override channel (L2-DES-CONV-002 Phase 3). When present, each tool
+    /// call reads the profile from this handle instead of the turn-start
+    /// snapshot in `sandbox_profile`, so a mid-turn settings change takes
+    /// effect at the next spawn.
+    pub sandbox_profile_live: Option<Arc<std::sync::Mutex<Option<String>>>>,
 }
 
 impl Default for ToolRuntimeContext {
@@ -687,6 +699,7 @@ impl Default for ToolRuntimeContext {
             network_proxy: None,
             network_no_proxy: None,
             sandbox_profile: None,
+            sandbox_profile_live: None,
         }
     }
 }
@@ -1813,6 +1826,7 @@ mod tests {
                 network_proxy: None,
                 network_no_proxy: None,
                 sandbox_profile: None,
+                sandbox_profile_live: None,
             },
         );
         let call = ToolCall {

@@ -413,10 +413,20 @@ pub async fn spawn_process_no_stdin_sandboxed(
         env,
         arg0,
         inherited_fds,
-        sandbox_profile,
-        None,
+        SandboxProcessOptions {
+            sandbox_profile,
+            sandbox_overlay: None,
+        },
     )
     .await
+}
+
+/// Optional sandbox settings for a pipe-backed process.
+pub struct SandboxProcessOptions {
+    /// Named sandbox profile applied before the child process starts.
+    pub sandbox_profile: Option<String>,
+    /// Per-invocation permissions merged into the named profile.
+    pub sandbox_overlay: Option<devo_sandbox::SandboxPermissionOverlay>,
 }
 
 /// Spawn a pipe process with a named sandbox profile and per-invocation overlay.
@@ -427,8 +437,7 @@ pub async fn spawn_process_no_stdin_sandboxed_with_overlay(
     env: &HashMap<String, String>,
     arg0: &Option<String>,
     inherited_fds: &[i32],
-    sandbox_profile: Option<String>,
-    sandbox_overlay: Option<devo_sandbox::SandboxPermissionOverlay>,
+    options: SandboxProcessOptions,
 ) -> Result<SpawnedProcess> {
     spawn_process_with_stdin_mode(
         program,
@@ -438,8 +447,8 @@ pub async fn spawn_process_no_stdin_sandboxed_with_overlay(
         arg0,
         PipeStdinMode::Null,
         inherited_fds,
-        sandbox_profile,
-        sandbox_overlay,
+        options.sandbox_profile,
+        options.sandbox_overlay,
     )
     .await
 }

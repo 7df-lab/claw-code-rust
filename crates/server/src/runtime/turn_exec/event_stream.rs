@@ -75,6 +75,11 @@ pub(crate) fn spawn_turn_event_stream(
         let mut reasoning_item_id = None;
         let mut reasoning_item_seq = None;
         let mut reasoning_text = String::new();
+        // Native delta chunk counters (L2-DES-APP-009 DD-2): per item,
+        // reset when a new item starts.
+        let mut reasoning_delta_seq = 0_u64;
+        let mut command_output_delta_seqs: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
         let mut tool_names_by_id = std::collections::HashMap::new();
         let mut pending_tool_calls: std::collections::HashMap<String, PendingToolCall> =
             std::collections::HashMap::new();
@@ -97,6 +102,7 @@ pub(crate) fn spawn_turn_event_stream(
                                 session_id,
                                 turn_id: turn_for_events.turn_id,
                                 attempt: status.attempt,
+                                max_attempts: u32::try_from(status.max_attempts).ok(),
                                 backoff_ms: status.backoff_ms,
                                 provider: status.provider,
                                 model: status.model,
@@ -175,6 +181,7 @@ pub(crate) fn spawn_turn_event_stream(
                         &mut reasoning_item_id,
                         &mut reasoning_item_seq,
                         &mut reasoning_text,
+                        &mut reasoning_delta_seq,
                     )
                     .await;
                 }
@@ -260,6 +267,7 @@ pub(crate) fn spawn_turn_event_stream(
                         tool_use_id,
                         progress,
                         &pending_tool_calls,
+                        &mut command_output_delta_seqs,
                     )
                     .await;
                 }
@@ -413,6 +421,7 @@ async fn handle_reasoning_delta(
     reasoning_item_id: &mut Option<ItemId>,
     reasoning_item_seq: &mut Option<u64>,
     reasoning_text: &mut String,
+    reasoning_delta_seq: &mut u64,
 ) {
     let (item_id, item_seq) = match (*reasoning_item_id, *reasoning_item_seq) {
         (Some(item_id), Some(item_seq)) => (item_id, item_seq),
@@ -427,15 +436,19 @@ async fn handle_reasoning_delta(
                 .await;
             *reasoning_item_id = Some(item_id);
             *reasoning_item_seq = Some(item_seq);
+            *reasoning_delta_seq = 0;
             (item_id, item_seq)
         }
         _ => return,
     };
     reasoning_text.push_str(&text);
+    let chunk_index = *reasoning_delta_seq;
+    *reasoning_delta_seq = reasoning_delta_seq.saturating_add(1);
     runtime
         .broadcast_event(ServerEvent::ItemDelta {
             delta_kind: ItemDeltaKind::ReasoningTextDelta,
             payload: ItemDeltaPayload {
+                chunk_index: Some(chunk_index),
                 context: crate::EventContext {
                     session_id,
                     turn_id: Some(turn_id),
@@ -710,6 +723,7 @@ async fn handle_tool_progress(
     tool_use_id: String,
     progress: devo_core::tools::ToolProgress,
     pending_tool_calls: &std::collections::HashMap<String, PendingToolCall>,
+    command_output_delta_seqs: &mut std::collections::HashMap<String, u64>,
 ) {
     let content = match progress {
         devo_core::tools::ToolProgress::OutputDelta { delta } => Some(delta),
@@ -726,6 +740,11 @@ async fn handle_tool_progress(
         pending_tool_calls,
         &tool_use_id,
     );
+    let chunk_index = command_output_delta_seqs
+        .get(&tool_use_id)
+        .copied()
+        .unwrap_or(0);
+    command_output_delta_seqs.insert(tool_use_id.clone(), chunk_index + 1);
     let _ = runtime
         .broadcast_event(ServerEvent::ItemDelta {
             delta_kind: ItemDeltaKind::CommandExecutionOutputDelta,
@@ -744,6 +763,7 @@ async fn handle_tool_progress(
                 .to_string(),
                 stream_index: None,
                 channel: None,
+                chunk_index: Some(chunk_index),
             },
         })
         .await;

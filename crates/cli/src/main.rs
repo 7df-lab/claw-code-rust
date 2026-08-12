@@ -20,6 +20,7 @@ use devo_core::SessionId;
 use devo_core::UpdateCheckOutcome;
 use devo_core::UpdateChecker;
 use devo_core::format_update_notification;
+use devo_server::ProtocolSet;
 use devo_server::ServerProcessArgs;
 use devo_server::ServerProcessRunOptions;
 use devo_server::ServerTransportMode;
@@ -237,6 +238,7 @@ async fn run_cli() -> Result<()> {
         }
         Some(Command::Server {
             transport: _,
+            protocols: _,
             status: _,
             shutdown: _,
         }) => {
@@ -293,10 +295,12 @@ fn server_process_args_from_cli(cli: &Cli) -> Option<ServerProcessArgs> {
     match &cli.command {
         Some(Command::Server {
             transport,
+            protocols,
             status,
             shutdown,
         }) => Some(ServerProcessArgs {
             transport: *transport,
+            protocols: protocols.clone(),
             status: *status,
             shutdown: *shutdown,
         }),
@@ -342,6 +346,9 @@ enum Command {
         /// Override the transport mode used by this server process.
         #[arg(long, value_enum, hide = true, default_value_t = ServerTransportMode::Config)]
         transport: ServerTransportMode,
+        /// Protocol adapters exposed by this server process.
+        #[arg(long, default_value = "native")]
+        protocols: ProtocolSet,
         /// Print status for an existing singleton server and exit.
         #[arg(long, hide = true)]
         status: bool,
@@ -428,6 +435,7 @@ fn cli_logging_overrides(cli: &Cli) -> toml::Value {
 mod tests {
     use clap::Parser;
     use devo_core::SessionId;
+    use devo_server::ProtocolSet;
     use pretty_assertions::assert_eq;
     use tracing_subscriber::filter::LevelFilter;
 
@@ -566,6 +574,7 @@ mod tests {
         let server = Cli {
             command: Some(Command::Server {
                 transport: devo_server::ServerTransportMode::Config,
+                protocols: ProtocolSet::default(),
                 status: false,
                 shutdown: false,
             }),
@@ -764,10 +773,12 @@ mod tests {
         match status.command {
             Some(Command::Server {
                 transport,
+                protocols,
                 status,
                 shutdown,
             }) => {
                 assert_eq!(transport, devo_server::ServerTransportMode::Config);
+                assert_eq!(protocols, ProtocolSet::default());
                 assert_eq!([status, shutdown], [true, false]);
             }
             other => panic!("expected server command, got {other:?}"),
@@ -775,14 +786,40 @@ mod tests {
         match shutdown.command {
             Some(Command::Server {
                 transport,
+                protocols,
                 status,
                 shutdown,
             }) => {
                 assert_eq!(transport, devo_server::ServerTransportMode::Config);
+                assert_eq!(protocols, ProtocolSet::default());
                 assert_eq!([status, shutdown], [false, true]);
             }
             other => panic!("expected server command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cli_parses_server_protocol_sets() {
+        for (value, expected) in [
+            ("native", vec!["native"]),
+            ("acp", vec!["acp"]),
+            ("native,acp", vec!["native", "acp"]),
+            ("native, acp,native", vec!["native", "acp"]),
+        ] {
+            let cli = Cli::try_parse_from(["devo", "server", "--protocols", value])
+                .expect("parse protocols");
+            let Some(Command::Server { protocols, .. }) = cli.command else {
+                panic!("expected server command");
+            };
+            assert_eq!(protocols.names(), expected);
+        }
+    }
+
+    #[test]
+    fn cli_rejects_empty_and_unknown_server_protocol_sets() {
+        assert!(Cli::try_parse_from(["devo", "server", "--protocols", ""]).is_err());
+        assert!(Cli::try_parse_from(["devo", "server", "--protocols", "a2a"]).is_err());
+        assert!(Cli::try_parse_from(["devo", "server", "--protocols", "Native"]).is_err());
     }
 
     #[test]
@@ -807,6 +844,7 @@ mod tests {
             super::server_process_args_from_cli(&cli),
             Some(devo_server::ServerProcessArgs {
                 transport: devo_server::ServerTransportMode::Stdio,
+                protocols: ProtocolSet::default(),
                 status: false,
                 shutdown: false,
             })
@@ -823,6 +861,7 @@ mod tests {
             super::server_process_args_from_cli(&cli),
             Some(devo_server::ServerProcessArgs {
                 transport: devo_server::ServerTransportMode::Config,
+                protocols: ProtocolSet::default(),
                 status: true,
                 shutdown: false,
             })

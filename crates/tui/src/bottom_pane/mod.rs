@@ -660,7 +660,7 @@ impl BottomPane {
 
     pub(crate) fn open_status_panel(
         &mut self,
-        occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+        occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
         session: SessionTokenTotals,
         status: StatusPanelSnapshot,
     ) {
@@ -718,7 +718,7 @@ impl BottomPane {
 
     pub(crate) fn refresh_status_panel(
         &mut self,
-        occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+        occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
         session: SessionTokenTotals,
     ) {
         for view in self.view_stack.iter_mut().rev() {

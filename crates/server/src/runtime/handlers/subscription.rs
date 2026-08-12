@@ -11,25 +11,25 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use devo_core::event_projection::{session_stream_id, sessions_stream_id};
-use devo_protocol::canonical::error::AgentError;
-use devo_protocol::canonical::error::codes;
-use devo_protocol::canonical::event::{
+use devo_protocol::native::error::AgentError;
+use devo_protocol::native::error::codes;
+use devo_protocol::native::event::{
     ControlRequestKind, EventCursor, EventEnvelope, PendingControlRequest, SnapshotData,
     StreamSelector, StreamSnapshot, SubscriptionAckParams, SubscriptionCreateParams,
     SubscriptionCreateResult, SubscriptionUnsubscribeParams, SubscriptionUpdateParams,
 };
-use devo_protocol::canonical::ids::{
-    ItemId as CanonicalItemId, QueueItemId, SessionId as CanonicalSessionId, SubscriptionId,
-    TurnId as CanonicalTurnId,
+use devo_protocol::native::ids::{
+    ItemId as NativeItemId, QueueItemId, SessionId as NativeSessionId, SubscriptionId,
+    TurnId as NativeTurnId,
 };
-use devo_protocol::canonical::item::{ApprovalTarget, Item, ItemEnvelope, ItemState, UserInput};
-use devo_protocol::canonical::queue::QueueEntry;
-use devo_protocol::canonical::rpc_admin::RuntimePingResult;
-use devo_protocol::canonical::turn::TurnStatus;
+use devo_protocol::native::item::{ApprovalTarget, Item, ItemEnvelope, ItemState, UserInput};
+use devo_protocol::native::queue::QueueEntry;
+use devo_protocol::native::rpc_admin::RuntimePingResult;
+use devo_protocol::native::turn::TurnStatus;
 use uuid::Uuid;
 
 use super::super::*;
-use super::queue::canonical_queue_entries;
+use super::queue::native_queue_entries;
 use crate::db::QueueType;
 
 /// One server-side subscription record (registry entry, 08 §4).
@@ -502,7 +502,7 @@ impl ServerRuntime {
             }
             StreamSelector::SessionsByCwd { cwd } => {
                 let sessions = self
-                    .canonical_sessions_for_cwd(cwd)
+                    .native_sessions_for_cwd(cwd)
                     .await
                     .map_err(|error| error.to_string())?;
                 Ok(Some(StreamSnapshot {
@@ -517,13 +517,13 @@ impl ServerRuntime {
         }
     }
 
-    /// Canonical sessions under one cwd: the rollout history reader is the
+    /// Native sessions under one cwd: the rollout history reader is the
     /// source of truth (the SQLite index is a cache that may lag or lack
     /// rows for never-indexed files).
-    async fn canonical_sessions_for_cwd(
+    async fn native_sessions_for_cwd(
         &self,
         cwd: &std::path::Path,
-    ) -> anyhow::Result<Vec<devo_protocol::canonical::session::Session>> {
+    ) -> anyhow::Result<Vec<devo_protocol::native::session::Session>> {
         let mut sessions = Vec::new();
         for rollout_path in self.rollout_store.rollout_paths()? {
             let Ok(history) = devo_core::read_canonical_history(&rollout_path) else {
@@ -552,7 +552,7 @@ impl ServerRuntime {
     /// turn-event persistence.
     async fn snapshot_rollout_path(
         &self,
-        session_id: &CanonicalSessionId,
+        session_id: &NativeSessionId,
     ) -> Option<std::path::PathBuf> {
         let legacy_id = SessionId::try_from(session_id.as_str()).ok()?;
         if let Some(stream) = self.active_stream_state(legacy_id).await
@@ -587,7 +587,7 @@ impl ServerRuntime {
     /// queue std::Mutex is held only for the entry build.
     async fn snapshot_queue_entries(
         &self,
-        session_id: &CanonicalSessionId,
+        session_id: &NativeSessionId,
     ) -> anyhow::Result<Vec<QueueEntry>> {
         let legacy_id = SessionId::try_from(session_id.as_str())
             .map_err(|error| anyhow::anyhow!("invalid session id: {error}"))?;
@@ -596,12 +596,12 @@ impl ServerRuntime {
                 .pending_turn_queue
                 .lock()
                 .expect("pending turn queue mutex should not be poisoned");
-            return Ok(canonical_queue_entries(&queue));
+            return Ok(native_queue_entries(&queue));
         }
         self.queue_entries(session_id)
     }
 
-    fn queue_entries(&self, session_id: &CanonicalSessionId) -> anyhow::Result<Vec<QueueEntry>> {
+    fn queue_entries(&self, session_id: &NativeSessionId) -> anyhow::Result<Vec<QueueEntry>> {
         let legacy_id = SessionId::try_from(session_id.as_str())
             .map_err(|error| anyhow::anyhow!("invalid session id: {error}"))?;
         let pending = self.deps.db.list_pending(&legacy_id, QueueType::Turn)?;
@@ -612,7 +612,7 @@ impl ServerRuntime {
                 let (input, preview) = queue_entry_content(&item);
                 QueueEntry {
                     queue_item_id: QueueItemId::from_legacy_uuid(Uuid::from(item.id)),
-                    // 1-based, matching `canonical_queue_entries` (in-memory
+                    // 1-based, matching `native_queue_entries` (in-memory
                     // path) and `session/queue/list`.
                     position: (index + 1) as u32,
                     input,
@@ -696,7 +696,7 @@ impl ServerRuntime {
                             questions: user_input
                                 .questions
                                 .into_iter()
-                                .map(|question| devo_protocol::canonical::item::UserQuestion {
+                                .map(|question| devo_protocol::native::item::UserQuestion {
                                     id: question.id,
                                     header: question.header,
                                     question: question.question,
@@ -706,7 +706,7 @@ impl ServerRuntime {
                                         options
                                             .into_iter()
                                             .map(|option| {
-                                                devo_protocol::canonical::item::UserQuestionOption {
+                                                devo_protocol::native::item::UserQuestionOption {
                                                     label: option.label,
                                                     description: option.description,
                                                 }
@@ -721,7 +721,7 @@ impl ServerRuntime {
                 });
             }
 
-            // Only live lanes are actionable. Canonical waiting revisions stay
+            // Only live lanes are actionable. Native waiting revisions stay
             // in history for audit after a crash, but are not advertised as
             // pending because the interrupted tool continuation and its reply
             // channel cannot be reconstructed honestly yet.
@@ -766,7 +766,7 @@ impl ServerRuntime {
 
 /// Builds the waiting-state envelope for a pending control request. The
 fn waiting_item_envelope(
-    session_id: &CanonicalSessionId,
+    session_id: &NativeSessionId,
     turn_id: devo_core::TurnId,
     persisted: Option<&crate::execution::PersistedLivingItem>,
     item: Item,
@@ -775,9 +775,9 @@ fn waiting_item_envelope(
     ItemEnvelope {
         id: persisted
             .map(|persisted| persisted.item_id.clone())
-            .unwrap_or_else(|| CanonicalItemId::from_legacy_uuid(Uuid::now_v7())),
+            .unwrap_or_else(|| NativeItemId::from_legacy_uuid(Uuid::now_v7())),
         session_id: session_id.clone(),
-        turn_id: CanonicalTurnId::from_legacy_uuid(Uuid::from(turn_id)),
+        turn_id: NativeTurnId::from_legacy_uuid(Uuid::from(turn_id)),
         seq: persisted.map_or(0, |persisted| persisted.seq),
         revision: 1,
         created_at: persisted.map_or(now, |persisted| persisted.created_at),

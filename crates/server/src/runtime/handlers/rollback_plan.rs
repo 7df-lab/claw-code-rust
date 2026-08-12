@@ -6,9 +6,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 use devo_core::TurnWorkspaceRestoreCompletedRecord;
 use devo_core::{ItemId, SessionId, TurnWorkspaceCheckpointRecordedRecord};
-use devo_protocol::canonical::rpc_session::{
-    RestorePlan, RollbackMode, SessionRollbackCommitResult,
-};
+use devo_protocol::native::rpc_session::{RestorePlan, RollbackMode, SessionRollbackCommitResult};
 use tokio::sync::Notify;
 
 use super::super::*;
@@ -26,7 +24,7 @@ pub(crate) struct StoredRestorePlan {
     pub(super) owner_disconnected: bool,
     pub(super) session_id: SessionId,
     pub(super) user_turn_index: u32,
-    pub(super) rollback_mode: SessionRollbackMode,
+    pub(super) rollback_mode: RollbackMode,
     pub(super) history_fingerprint: Vec<(TurnId, ItemId)>,
     pub(super) checkpoint: Option<TurnWorkspaceCheckpointRecordedRecord>,
     pub(super) public_plan: RestorePlan,
@@ -74,13 +72,6 @@ pub(super) enum CommitAction {
 pub(super) struct CommitAttemptFailure {
     pub response: serde_json::Value,
     pub next_status: RestorePlanStatus,
-}
-
-pub(super) fn legacy_rollback_mode(mode: RollbackMode) -> SessionRollbackMode {
-    match mode {
-        RollbackMode::ThroughUserTurn => SessionRollbackMode::ThroughUserTurn,
-        RollbackMode::BeforeUserTurn => SessionRollbackMode::BeforeUserTurn,
-    }
 }
 
 pub(super) fn status_for_retry(action: &CommitAction) -> RestorePlanStatus {

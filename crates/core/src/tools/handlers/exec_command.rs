@@ -224,8 +224,12 @@ impl ToolHandler for ExecCommandHandler {
             args.shell.as_deref(),
             args.login,
             args.tty,
-            ctx.sandbox_profile.clone(),
-            crate::tools::sandbox_overlay_for_spawn(ctx.sandbox_permission_overlay.as_ref()),
+            crate::unified_exec::process::SandboxExecutionOptions {
+                sandbox_profile: ctx.sandbox_profile.clone(),
+                sandbox_overlay: crate::tools::sandbox_overlay_for_spawn(
+                    ctx.sandbox_permission_overlay.as_ref(),
+                ),
+            },
         )
         .await;
         let (proc, _broadcast_rx) = match spawned_process {

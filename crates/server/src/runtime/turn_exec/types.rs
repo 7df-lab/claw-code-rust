@@ -12,7 +12,7 @@ pub(crate) struct ExecuteTurnRequest {
     /// User-facing rendering of the submitted input. Visible turns persist this as the displayed
     /// user message; hidden continuation turns keep it out of the transcript.
     pub(crate) display_input: String,
-    /// Canonical resolved prompt text. Visible turns push this as the user-role message when the
+    /// Native resolved prompt text. Visible turns push this as the user-role message when the
     /// input resolver did not return structured `input_messages`.
     pub(crate) input: String,
     /// Structured user-role messages produced by input resolution, such as expanded skill content.
@@ -79,9 +79,9 @@ pub(crate) struct TurnQueryOutcome {
 }
 
 pub(super) struct QueuedTurnInput {
-    /// Canonical queue entry id of the drained entry (`queue/updated`
+    /// Native queue entry id of the drained entry (`queue/updated`
     /// `drained` notification, 01 §4.3).
-    pub(super) queued_item_id: devo_protocol::canonical::ids::QueueItemId,
+    pub(super) queued_item_id: devo_protocol::native::ids::QueueItemId,
     pub(super) display_input: String,
     pub(super) input_text: String,
     pub(super) input_messages: Vec<String>,

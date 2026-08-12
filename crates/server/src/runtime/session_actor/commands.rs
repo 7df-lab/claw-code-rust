@@ -95,7 +95,6 @@ pub(crate) enum SessionCommand {
     TakeDeferredItems {
         reply: oneshot::Sender<DeferredItems>,
     },
-    ResetTurnApprovalCache,
     TouchLastActivity,
     ApplyApprovalScope {
         scope: ApprovalScopeValue,
@@ -127,11 +126,6 @@ pub(crate) enum SessionCommand {
     ActivateQueuedTurn {
         turn: TurnMetadata,
         turn_config: TurnConfig,
-    },
-    CompleteShellTurn {
-        turn: TurnMetadata,
-        is_error: bool,
-        reply: oneshot::Sender<TurnMetadata>,
     },
     UpdateCorePermissionMode {
         permission_mode: devo_safety::PermissionMode,

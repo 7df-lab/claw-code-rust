@@ -18,20 +18,16 @@ use devo_core::PresetModelCatalog;
 use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
-use devo_protocol::ItemKind;
 use devo_protocol::Model;
 use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
-use devo_protocol::ProviderRetryPhase;
 use devo_protocol::ResponseContent;
 use devo_protocol::ResponseMetadata;
-use devo_protocol::ServerEvent;
 use devo_protocol::SessionId;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
 use devo_protocol::TurnErrorPayload;
 use devo_protocol::TurnId;
-use devo_protocol::TurnProviderRetryStatusPayload;
 use devo_protocol::Usage;
 use devo_provider::ModelProviderSDK;
 use devo_provider::ProviderRoute;
@@ -143,54 +139,28 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
     let mut failed_agent_items = Vec::new();
     timeout(Duration::from_secs(30), async {
         while let Some(value) = notifications_rx.recv().await {
-            let Some(event) = original_event(&value) else {
-                continue;
-            };
-            match event {
-                ServerEvent::TurnProviderRetryStatus(payload) => retry_statuses.push(payload),
-                ServerEvent::ItemStarted(payload) | ServerEvent::ItemCompleted(payload)
-                    if payload.item.item_kind == ItemKind::AgentMessage =>
+            match value.get("method").and_then(serde_json::Value::as_str) {
+                Some("model/queryRetrying") => retry_statuses.push(value["params"].clone()),
+                Some("item/started" | "item/completed")
+                    if value["params"]["item"]["item"]["type"]
+                        == serde_json::json!("assistantMessage") =>
                 {
-                    failed_agent_items.push(payload.item)
+                    failed_agent_items.push(value["params"]["item"].clone());
                 }
-                ServerEvent::TurnFailed(payload) => {
-                    failed_error = payload.error;
+                Some("turn/completed")
+                    if value["params"]["turn"]["status"] == serde_json::json!("failed") =>
+                {
+                    let error = &value["params"]["turn"]["error"];
+                    failed_error = Some(TurnErrorPayload {
+                        code: error["errorCode"].as_str().unwrap_or_default().to_string(),
+                        message: error["message"].as_str().unwrap_or_default().to_string(),
+                        recovery_hint: error["details"]["recoveryHint"]
+                            .as_str()
+                            .map(ToString::to_string),
+                    });
                     break;
                 }
-                ServerEvent::SessionStarted(_)
-                | ServerEvent::SessionTitleUpdated(_)
-                | ServerEvent::SessionCompactionStarted(_)
-                | ServerEvent::SessionCompactionCompleted(_)
-                | ServerEvent::SessionCompactionFailed(_)
-                | ServerEvent::SessionStatusChanged(_)
-                | ServerEvent::SessionEffectiveContextWindowUpdated(_)
-                | ServerEvent::SessionArchived(_)
-                | ServerEvent::SessionUnarchived(_)
-                | ServerEvent::SessionClosed(_)
-                | ServerEvent::SessionDeleted(_)
-                | ServerEvent::TurnStarted(_)
-                | ServerEvent::TurnCompleted(_)
-                | ServerEvent::TurnInterrupted(_)
-                | ServerEvent::TurnPlanUpdated(_)
-                | ServerEvent::TurnDiffUpdated(_)
-                | ServerEvent::TurnUsageUpdated(_)
-                | ServerEvent::ContextUsageUpdated(_)
-                | ServerEvent::ItemStarted(_)
-                | ServerEvent::ItemCompleted(_)
-                | ServerEvent::ItemDelta { .. }
-                | ServerEvent::WorkspaceChangesUpdated(_)
-                | ServerEvent::ToolCallStatusUpdated(_)
-                | ServerEvent::RequestUserInput(_)
-                | ServerEvent::MessageEditRecorded(_)
-                | ServerEvent::TurnSuperseded(_)
-                | ServerEvent::WorkspaceRestoreStarted(_)
-                | ServerEvent::WorkspaceRestoreCompleted(_)
-                | ServerEvent::ServerRequestResolved(_)
-                | ServerEvent::ReferenceSearchUpdated(_)
-                | ServerEvent::ReferenceSearchCompleted(_)
-                | ServerEvent::ReferenceSearchFailed(_)
-                | ServerEvent::CommandExecOutputDelta(_)
-                | ServerEvent::CommandExecExited(_) => {}
+                Some(_) | None => {}
             }
         }
     })
@@ -211,9 +181,8 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
             recovery_hint: None,
         })
     );
-    assert_eq!(failed_agent_items, Vec::new());
+    assert_eq!(failed_agent_items, Vec::<serde_json::Value>::new());
 
-    wait_for_original_event(&mut notifications_rx, "turn/completed").await?;
     let rollout = std::fs::read_to_string(rollout_path(data_root.path(), &session))?;
     assert!(rollout.contains(PROVIDER_ERROR_TEXT));
     let persisted_error =
@@ -241,7 +210,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
             connection_id,
             serde_json::json!({
                 "id": 5,
-                "method": "_devo/session/resume",
+                "method": "session/resume",
                 "params": { "session_id": session.session_id }
             }),
         )
@@ -294,7 +263,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
     );
 
     let successful_turn_id = start_turn(&runtime, connection_id, session.session_id, 4).await?;
-    wait_for_original_event(&mut notifications_rx, "turn/completed").await?;
+    wait_for_turn_completed(&mut notifications_rx, successful_turn_id).await?;
     let requests = router.requests();
     let successful_request = requests.last().context("successful provider request")?;
     let request_json = serde_json::to_string(successful_request)?;
@@ -305,36 +274,47 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
     Ok(())
 }
 
-fn expected_retry_statuses(
-    session_id: SessionId,
-    turn_id: TurnId,
-) -> Vec<TurnProviderRetryStatusPayload> {
+fn expected_retry_statuses(session_id: SessionId, turn_id: TurnId) -> Vec<serde_json::Value> {
     let mut statuses = Vec::new();
     for attempt in 1..=5 {
         let backoff_ms = 250 * 2_u64.pow((attempt - 1) as u32);
-        statuses.push(TurnProviderRetryStatusPayload {
-            session_id,
-            turn_id,
-            attempt,
-            backoff_ms,
-            provider: "openai".to_string(),
-            model: "default-model".to_string(),
-            phase: ProviderRetryPhase::Scheduled,
-            message: format!(
-                "Retrying provider request in {:.1}s",
-                Duration::from_millis(backoff_ms).as_secs_f64()
-            ),
-        });
-        statuses.push(TurnProviderRetryStatusPayload {
-            session_id,
-            turn_id,
-            attempt,
-            backoff_ms: 0,
-            provider: "openai".to_string(),
-            model: "default-model".to_string(),
-            phase: ProviderRetryPhase::Resumed,
-            message: "Retrying provider request now".to_string(),
-        });
+        statuses.push(serde_json::json!({
+            "sessionId": session_id,
+            "turnId": turn_id,
+            "attempt": attempt,
+            "maxAttempts": 5,
+            "nextDelayMs": backoff_ms,
+            "error": {
+                "errorCode": "PROVIDER_TEMPORARY_FAILURE",
+                "message": format!(
+                    "Retrying provider request in {:.1}s",
+                    Duration::from_millis(backoff_ms).as_secs_f64()
+                ),
+                "retryable": true,
+                "retryAfterMs": backoff_ms,
+                "requiresSnapshot": false
+            },
+            "provider": "openai",
+            "model": "default-model",
+            "phase": "scheduled"
+        }));
+        statuses.push(serde_json::json!({
+            "sessionId": session_id,
+            "turnId": turn_id,
+            "attempt": attempt,
+            "maxAttempts": 5,
+            "nextDelayMs": 0,
+            "error": {
+                "errorCode": "PROVIDER_TEMPORARY_FAILURE",
+                "message": "Retrying provider request now",
+                "retryable": true,
+                "retryAfterMs": 0,
+                "requiresSnapshot": false
+            },
+            "provider": "openai",
+            "model": "default-model",
+            "phase": "resumed"
+        }));
     }
     statuses
 }
@@ -425,6 +405,7 @@ async fn initialize_connection(
                 "params": {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                     "clientInfo": { "name": "failure-test", "version": "1.0.0" }
                 }
             }),
@@ -471,7 +452,7 @@ async fn start_turn(
             connection_id,
             serde_json::json!({
                 "id": id,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [{ "type": "text", "text": "try the provider" }],
@@ -486,31 +467,23 @@ async fn start_turn(
     response.result.turn_id().context("turn should start")
 }
 
-fn original_event(value: &serde_json::Value) -> Option<ServerEvent> {
-    if value.get("method") != Some(&serde_json::json!("session/update")) {
-        return None;
-    }
-    let notification = serde_json::from_value::<devo_protocol::AcpSessionNotification>(
-        value.get("params")?.clone(),
-    )
-    .ok()?;
-    devo_protocol::original_event_from_acp_notification(&notification).map(|(_, event)| event)
-}
-
-async fn wait_for_original_event(
+async fn wait_for_turn_completed(
     notifications_rx: &mut mpsc::Receiver<serde_json::Value>,
-    method: &str,
+    turn_id: TurnId,
 ) -> Result<()> {
+    let turn_id = turn_id.to_string();
     timeout(Duration::from_secs(5), async {
         while let Some(value) = notifications_rx.recv().await {
-            if value["params"]["_meta"]["devo/originalMethod"].as_str() == Some(method) {
+            if value.get("method").and_then(serde_json::Value::as_str) == Some("turn/completed")
+                && value["params"]["turn"]["id"].as_str() == Some(turn_id.as_str())
+            {
                 return Ok(());
             }
         }
-        anyhow::bail!("notification channel closed before {method}")
+        anyhow::bail!("notification channel closed before turn/completed for {turn_id}")
     })
     .await
-    .with_context(|| format!("timed out waiting for {method}"))?
+    .with_context(|| format!("timed out waiting for turn/completed for {turn_id}"))?
 }
 
 fn rollout_path(

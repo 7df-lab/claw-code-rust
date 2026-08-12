@@ -14,16 +14,12 @@ use devo_file_search::FileSearchOptions;
 use devo_file_search::FileSearchSession;
 use devo_file_search::FileSearchSnapshot;
 use devo_file_search::SessionReporter;
-use devo_protocol::ReferenceSearchCancelParams;
-use devo_protocol::ReferenceSearchCancelResult;
 use devo_protocol::ReferenceSearchId;
 use devo_protocol::ReferenceSearchResult;
 use devo_protocol::ReferenceSearchResultKind;
 use devo_protocol::ReferenceSearchSnapshot;
 use devo_protocol::ReferenceSearchStartParams;
-use devo_protocol::ReferenceSearchStartResult;
 use devo_protocol::ReferenceSearchUpdateParams;
-use devo_protocol::ReferenceSearchUpdateResult;
 use devo_util_fuzzy::fuzzy_match;
 use tokio::sync::mpsc;
 
@@ -88,29 +84,45 @@ impl SessionReporter for ReferenceSearchReporter {
 }
 
 impl ServerRuntime {
-    pub(super) async fn handle_reference_search_start(
+    /// Native `search/start` (L2-DES-APP-008): connection-local composer
+    /// search; translates into the legacy machinery and projects the
+    /// snapshot to the canonical camelCase shape.
+    pub(super) async fn handle_native_search_start(
         self: &Arc<Self>,
         connection_id: u64,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        let params = match serde_json::from_value::<ReferenceSearchStartParams>(params) {
+        let params = match serde_json::from_value::<
+            devo_protocol::native::rpc_search::SearchStartParams,
+        >(params)
+        {
             Ok(params) => params,
             Err(error) => {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InvalidParams,
-                    format!("invalid search/start params: {error}"),
+                    format!("invalid canonical search/start params: {error}"),
                 );
             }
         };
-
-        match self.start_reference_search(connection_id, params).await {
+        match self
+            .start_reference_search(
+                connection_id,
+                ReferenceSearchStartParams {
+                    cwd: params.cwd,
+                    query: params.query,
+                },
+            )
+            .await
+        {
             Ok(snapshot) => serde_json::to_value(SuccessResponse {
                 id: request_id,
-                result: ReferenceSearchStartResult { snapshot },
+                result: devo_protocol::native::rpc_search::SearchStartResult {
+                    snapshot: snapshot.into(),
+                },
             })
-            .expect("serialize search/start response"),
+            .expect("serialize canonical search/start response"),
             Err(error) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,
@@ -119,28 +131,39 @@ impl ServerRuntime {
         }
     }
 
-    pub(super) async fn handle_reference_search_update(
+    /// Native `search/update` (L2-DES-APP-008).
+    pub(super) async fn handle_native_search_update(
         self: &Arc<Self>,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        let params = match serde_json::from_value::<ReferenceSearchUpdateParams>(params) {
+        let params = match serde_json::from_value::<
+            devo_protocol::native::rpc_search::SearchUpdateParams,
+        >(params)
+        {
             Ok(params) => params,
             Err(error) => {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InvalidParams,
-                    format!("invalid search/update params: {error}"),
+                    format!("invalid canonical search/update params: {error}"),
                 );
             }
         };
-
-        match self.update_reference_search(params).await {
+        match self
+            .update_reference_search(ReferenceSearchUpdateParams {
+                search_id: params.search_id,
+                query: params.query,
+            })
+            .await
+        {
             Ok(snapshot) => serde_json::to_value(SuccessResponse {
                 id: request_id,
-                result: ReferenceSearchUpdateResult { snapshot },
+                result: devo_protocol::native::rpc_search::SearchUpdateResult {
+                    snapshot: snapshot.into(),
+                },
             })
-            .expect("serialize search/update response"),
+            .expect("serialize canonical search/update response"),
             Err(error) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,
@@ -149,31 +172,34 @@ impl ServerRuntime {
         }
     }
 
-    pub(super) async fn handle_reference_search_cancel(
+    /// Native `search/cancel` (L2-DES-APP-008).
+    pub(super) async fn handle_native_search_cancel(
         &self,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        let params = match serde_json::from_value::<ReferenceSearchCancelParams>(params) {
+        let params = match serde_json::from_value::<
+            devo_protocol::native::rpc_search::SearchCancelParams,
+        >(params)
+        {
             Ok(params) => params,
             Err(error) => {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InvalidParams,
-                    format!("invalid search/cancel params: {error}"),
+                    format!("invalid canonical search/cancel params: {error}"),
                 );
             }
         };
-
         self.reference_searches
             .lock()
             .await
             .remove(&params.search_id);
         serde_json::to_value(SuccessResponse {
             id: request_id,
-            result: ReferenceSearchCancelResult::default(),
+            result: devo_protocol::native::rpc_search::SearchCancelResult {},
         })
-        .expect("serialize search/cancel response")
+        .expect("serialize canonical search/cancel response")
     }
 
     async fn start_reference_search(

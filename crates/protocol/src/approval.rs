@@ -38,19 +38,3 @@ pub enum ApprovalScopeValue {
     CommandPrefix,
     CommandPrefixPersist,
 }
-
-/// Describes the payload for `events/subscribe`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct EventsSubscribeParams {
-    pub session_id: Option<SessionId>,
-    pub event_types: Option<Vec<String>>,
-    #[serde(default)]
-    pub include_child_agents: bool,
-}
-
-/// Describes the response returned by `events/subscribe`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct EventsSubscribeResult {
-    #[schemars(with = "String")]
-    pub subscription_id: SmolStr,
-}

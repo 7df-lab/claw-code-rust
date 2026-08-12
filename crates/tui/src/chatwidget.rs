@@ -286,7 +286,7 @@ pub(crate) struct ChatWidget {
     prompt_token_estimate: usize,
     last_query_input_tokens: usize,
     last_query_total_tokens: usize,
-    last_context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+    last_context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
     last_plan_progress: Option<(usize, usize)>,
     queued_count: usize,
     queued_input_modes: VecDeque<InputMode>,

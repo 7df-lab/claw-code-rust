@@ -12,19 +12,19 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::PathBuf;
 
-use devo_protocol::canonical::error::AgentError;
-use devo_protocol::canonical::ids::{ItemId, SessionId, TurnId};
-use devo_protocol::canonical::item::{
+use devo_protocol::native::error::AgentError;
+use devo_protocol::native::ids::{ItemId, SessionId, TurnId};
+use devo_protocol::native::item::{
     ApprovalDecision, ApprovalDecisionKind, ApprovalScope, ApprovalTarget, CompactionTrigger,
     ContextUsage, ExecOrigin, ExecutionMode, InternalEntry, Item, ItemEnvelope, ItemState,
     PlanEntry, PlanStepStatus, ToolSource, UserInput, UserMessageEntry,
 };
-use devo_protocol::canonical::model::{ModelBinding, PermissionProfile};
-use devo_protocol::canonical::session::{
+use devo_protocol::native::model::{ModelBinding, PermissionProfile};
+use devo_protocol::native::session::{
     GitInfo, Session, SessionParent, SessionSettings, SessionStatus,
 };
-use devo_protocol::canonical::turn::{Turn, TurnKind, TurnStatus};
-use devo_protocol::canonical::usage::{SessionUsage, TurnUsage as CanonicalTurnUsage, UsageTotals};
+use devo_protocol::native::turn::{Turn, TurnKind, TurnStatus};
+use devo_protocol::native::usage::{SessionUsage, TurnUsage as CanonicalTurnUsage, UsageTotals};
 use uuid::Uuid;
 
 use crate::TurnKind as LegacyTurnKind;
@@ -87,6 +87,10 @@ pub struct LegacyProjector {
     /// Next sequence number to assign on an item's first appearance. Starts
     /// at 1 and is strictly increasing within the session.
     next_seq: u64,
+    /// Next epoch to assign to a field-level session settings line
+    /// (L2-DES-CONV-002 DD-4). Hydrated from existing v2 lines and strictly
+    /// increasing within the session.
+    next_settings_epoch: u64,
     /// Session cwd learned from SessionMeta; the fallback `CommandExecution`
     /// cwd because legacy exec payloads never recorded one.
     session_cwd: Option<PathBuf>,
@@ -105,9 +109,16 @@ impl LegacyProjector {
     pub fn new() -> Self {
         Self {
             next_seq: 1,
+            next_settings_epoch: 1,
             session_cwd: None,
             approvals: HashMap::new(),
         }
+    }
+
+    /// The epoch the next settings write will receive; `1` when no settings
+    /// line has been written yet.
+    pub fn next_settings_epoch(&self) -> u64 {
+        self.next_settings_epoch
     }
 
     fn next_seq(&mut self) -> u64 {
@@ -166,8 +177,11 @@ impl LegacyProjector {
                     }
                 }
             }
-            RolloutLineV2::Internal { seq, .. } => {
+            RolloutLineV2::Internal { seq, entry, .. } => {
                 self.next_seq = self.next_seq.max(seq + 1);
+                if let InternalRecordV2::SessionSettings { epoch, .. } = entry {
+                    self.next_settings_epoch = self.next_settings_epoch.max(epoch + 1);
+                }
             }
             RolloutLineV2::Turn { .. }
             | RolloutLineV2::SessionTitleUpdated { .. }
@@ -209,6 +223,26 @@ impl LegacyProjector {
                 seq: 0,
                 entry: InternalRecordV2::SessionContext(Box::new(line.session_context.clone())),
             }]),
+            RolloutLine::SessionSettings(line) => {
+                // The projector is the per-file authority for settings epochs:
+                // callers pass a placeholder and the assigned epoch is what
+                // lands on disk.
+                let epoch = self.next_settings_epoch;
+                self.next_settings_epoch = self.next_settings_epoch.saturating_add(1);
+                Ok(vec![RolloutLineV2::Internal {
+                    v: ROLLOUT_FORMAT_VERSION,
+                    timestamp: line.timestamp,
+                    session_id: SessionId::from_legacy_uuid(legacy_uuid(line.session_id)?),
+                    turn_id: None,
+                    seq: 0,
+                    entry: InternalRecordV2::SessionSettings {
+                        schema_version: 1,
+                        field: line.field,
+                        value: line.value.clone(),
+                        epoch,
+                    },
+                }])
+            }
             RolloutLine::CompactionSnapshot(line) => Ok(vec![RolloutLineV2::CompactionSnapshot {
                 v: ROLLOUT_FORMAT_VERSION,
                 timestamp: line.timestamp,

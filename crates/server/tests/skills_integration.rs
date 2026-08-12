@@ -32,7 +32,6 @@ use devo_core::tools::tool_handler::ToolHandler;
 use devo_core::tools::tool_spec::ToolExecutionMode;
 use devo_core::tools::tool_spec::ToolOutputMode;
 use devo_core::tools::tool_spec::ToolSpec;
-use devo_protocol::AcpNewSessionResult;
 use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
 use devo_protocol::RequestContent;
@@ -43,14 +42,11 @@ use devo_protocol::StreamEvent;
 use devo_protocol::Usage;
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
-use devo_server::AcpSuccessResponse;
 use devo_server::ClientTransportKind;
 use devo_server::ErrorResponse;
 use devo_server::ProtocolErrorCode;
 use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
-use devo_server::SkillChangedResult;
-use devo_server::SkillListResult;
 use devo_server::SkillRecord;
 use devo_server::SkillScope;
 use devo_server::SkillSource;
@@ -111,14 +107,12 @@ fn create_skill(root: &Path, name: &str, content: &str) -> PathBuf {
     skill_path
 }
 
-fn canonical_skill_path(path: &Path) -> PathBuf {
-    devo_core::normalize_canonical_path(
-        std::fs::canonicalize(path).expect("canonicalize skill path"),
-    )
+fn native_skill_path(path: &Path) -> PathBuf {
+    devo_core::normalize_native_path(std::fs::canonicalize(path).expect("canonicalize skill path"))
 }
 
-fn canonical_skill_base_dir(path: &Path) -> PathBuf {
-    canonical_skill_path(path)
+fn native_skill_base_dir(path: &Path) -> PathBuf {
+    native_skill_path(path)
         .parent()
         .expect("canonical skill base directory")
         .to_path_buf()
@@ -236,6 +230,7 @@ async fn initialize_connection(
                 "params": {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                     "clientInfo": {
                         "name": "test",
                         "title": "test",
@@ -267,33 +262,34 @@ async fn start_session(
                 "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "additionalDirectories": [],
-                    "mcpServers": []
+                    "idempotencyKey": "skills-integration-session"
                 }
             }),
         )
         .await
         .context("session/start response")?;
-    let result: AcpSuccessResponse<AcpNewSessionResult> = serde_json::from_value(response.clone())
-        .with_context(|| format!("session/start response: {response}"))?;
-    let session_id = result.result.session_id;
+    let result: SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult> =
+        serde_json::from_value(response.clone())
+            .with_context(|| format!("session/new response: {response}"))?;
+    let session_id = devo_core::SessionId::try_from(result.result.session.id.as_str())?;
     let title_response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 3,
-                "method": "_devo/session/title/update",
+                "method": "session/metadata/update",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
                     "title": "Skills integration"
                 }
             }),
         )
         .await
-        .context("session/title/update response")?;
-    let _: SuccessResponse<devo_server::SessionTitleUpdateResult> =
+        .context("session/metadata/update response")?;
+    let _: SuccessResponse<devo_protocol::native::rpc_session::SessionMetadataUpdateResult> =
         serde_json::from_value(title_response.clone())
-            .with_context(|| format!("session/title/update response: {title_response}"))?;
+            .with_context(|| format!("session/metadata/update response: {title_response}"))?;
     Ok(session_id)
 }
 
@@ -364,7 +360,15 @@ async fn wait_for_approval_request(
 }
 
 fn is_approval_request_notification(value: &serde_json::Value) -> bool {
-    if value.get("method") == Some(&serde_json::json!("session/request_permission")) {
+    if matches!(
+        value.get("method").and_then(serde_json::Value::as_str),
+        Some(
+            "session/request_permission"
+                | "approval/command/request"
+                | "approval/fileChange/request"
+                | "approval/permission/request"
+        )
+    ) {
         return true;
     }
     let direct = value.get("method") == Some(&serde_json::json!("item/started"))
@@ -442,20 +446,21 @@ async fn update_permissions_to_auto_review(
             connection_id,
             serde_json::json!({
                 "id": 3,
-                "method": "_devo/session/permissions/update",
+                "method": "session/metadata/update",
                 "params": {
-                    "session_id": session_id,
-                    "preset": "auto-review"
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "settings": { "permissionProfile": "autoReview" }
                 }
             }),
         )
         .await
-        .context("session/permissions/update response")?;
-    let result: SuccessResponse<devo_server::SessionPermissionsUpdateResult> =
+        .context("session/metadata/update response")?;
+    let result: SuccessResponse<devo_protocol::native::rpc_session::SessionMetadataUpdateResult> =
         serde_json::from_value(response)?;
     assert_eq!(
-        result.result.preset,
-        devo_protocol::PermissionPreset::AutoReview
+        result.result.session.settings.permission_profile,
+        devo_protocol::native::model::PermissionProfile::AutoReview
     );
     Ok(())
 }
@@ -470,7 +475,7 @@ async fn start_auto_review_turn(
             connection_id,
             serde_json::json!({
                 "id": 4,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [
@@ -770,59 +775,64 @@ async fn skills_list_returns_user_and_workspace_skills() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 3,
-                "method": "_devo/skills/list",
+                "method": "skill/list",
                 "params": {
                     "cwd": workspace_root,
+                    "forceReload": false,
                 }
             }),
         )
         .await
-        .context("skills/list response")?;
-    let result: SuccessResponse<SkillListResult> = serde_json::from_value(response.clone())
-        .with_context(|| format!("skills/list response: {response}"))?;
-    let canonical_rust_skill_path = canonical_skill_path(&rust_skill_path);
-    let canonical_team_skill_path = canonical_skill_path(&team_skill_path);
+        .context("skill/list response")?;
+    let result: devo_protocol::native::rpc_admin::SkillListResult =
+        serde_json::from_value(response["result"].clone())
+            .with_context(|| format!("skill/list response: {response}"))?;
+    let result_skills = result
+        .skills
+        .into_iter()
+        .map(SkillRecord::from)
+        .collect::<Vec<_>>();
+    let native_rust_skill_path = native_skill_path(&rust_skill_path);
+    let native_team_skill_path = native_skill_path(&team_skill_path);
 
     assert_eq!(
-        result.result,
-        SkillListResult {
-            skills: vec![
-                SkillRecord {
-                    id: "team-style".into(),
-                    name: "team-style".into(),
-                    description: skill_description(&canonical_team_skill_path),
-                    short_description: None,
-                    interface: None,
-                    dependencies: None,
-                    path: canonical_team_skill_path,
-                    enabled: true,
-                    source: SkillSource::Workspace {
-                        cwd: workspace_root,
-                    },
-                    scope: SkillScope::Repo,
-                    plugin_id: None,
+        result_skills,
+        vec![
+            SkillRecord {
+                id: "team-style".into(),
+                name: "team-style".into(),
+                description: skill_description(&native_team_skill_path),
+                short_description: None,
+                interface: None,
+                dependencies: None,
+                path: native_team_skill_path,
+                enabled: true,
+                source: SkillSource::Workspace {
+                    cwd: workspace_root,
                 },
-                SkillRecord {
-                    id: "rust-docs".into(),
-                    name: "rust-docs".into(),
-                    description: skill_description(&canonical_rust_skill_path),
-                    short_description: None,
-                    interface: None,
-                    dependencies: None,
-                    path: canonical_rust_skill_path,
-                    enabled: true,
-                    source: SkillSource::User,
-                    scope: SkillScope::User,
-                    plugin_id: None,
-                },
-            ],
-        }
+                scope: SkillScope::Repo,
+                plugin_id: None,
+            },
+            SkillRecord {
+                id: "rust-docs".into(),
+                name: "rust-docs".into(),
+                description: skill_description(&native_rust_skill_path),
+                short_description: None,
+                interface: None,
+                dependencies: None,
+                path: native_rust_skill_path,
+                enabled: true,
+                source: SkillSource::User,
+                scope: SkillScope::User,
+                plugin_id: None,
+            },
+        ]
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn skills_changed_rediscovers_new_workspace_skill() -> Result<()> {
+async fn skill_list_force_reload_rediscovers_new_workspace_skill() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let user_skill_root = temp_dir.path().join("user-skills");
     let workspace_root = temp_dir.path().join("workspace");
@@ -843,35 +853,40 @@ async fn skills_changed_rediscovers_new_workspace_skill() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 4,
-                "method": "_devo/skills/changed",
+                "method": "skill/list",
                 "params": {
                     "cwd": workspace_root.clone(),
+                    "forceReload": true,
                 }
             }),
         )
         .await
-        .context("first skills/changed response")?;
-    let first_result: SuccessResponse<SkillChangedResult> = serde_json::from_value(first_response)?;
-    let canonical_alpha_skill_path = canonical_skill_path(&alpha_skill_path);
+        .context("first skill/list response")?;
+    let first_result: devo_protocol::native::rpc_admin::SkillListResult =
+        serde_json::from_value(first_response["result"].clone())?;
+    let first_skills = first_result
+        .skills
+        .into_iter()
+        .map(SkillRecord::from)
+        .collect::<Vec<_>>();
+    let native_alpha_skill_path = native_skill_path(&alpha_skill_path);
     assert_eq!(
-        first_result.result,
-        SkillChangedResult {
-            skills: vec![SkillRecord {
-                id: "alpha".into(),
-                name: "alpha".into(),
-                description: skill_description(&canonical_alpha_skill_path),
-                short_description: None,
-                interface: None,
-                dependencies: None,
-                path: canonical_alpha_skill_path.clone(),
-                enabled: true,
-                source: SkillSource::Workspace {
-                    cwd: workspace_root.clone(),
-                },
-                scope: SkillScope::Repo,
-                plugin_id: None,
-            }],
-        }
+        first_skills,
+        vec![SkillRecord {
+            id: "alpha".into(),
+            name: "alpha".into(),
+            description: skill_description(&native_alpha_skill_path),
+            short_description: None,
+            interface: None,
+            dependencies: None,
+            path: native_alpha_skill_path.clone(),
+            enabled: true,
+            source: SkillSource::Workspace {
+                cwd: workspace_root.clone(),
+            },
+            scope: SkillScope::Repo,
+            plugin_id: None,
+        }]
     );
 
     let bravo_skill_path = create_skill(&workspace_skill_root, "bravo", "# Bravo\n\nSecond skill.");
@@ -880,53 +895,57 @@ async fn skills_changed_rediscovers_new_workspace_skill() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 5,
-                "method": "_devo/skills/changed",
+                "method": "skill/list",
                 "params": {
                     "cwd": workspace_root,
+                    "forceReload": true,
                 }
             }),
         )
         .await
-        .context("second skills/changed response")?;
-    let second_result: SuccessResponse<SkillChangedResult> =
-        serde_json::from_value(second_response)?;
-    let canonical_bravo_skill_path = canonical_skill_path(&bravo_skill_path);
+        .context("second skill/list response")?;
+    let second_result: devo_protocol::native::rpc_admin::SkillListResult =
+        serde_json::from_value(second_response["result"].clone())?;
+    let second_skills = second_result
+        .skills
+        .into_iter()
+        .map(SkillRecord::from)
+        .collect::<Vec<_>>();
+    let native_bravo_skill_path = native_skill_path(&bravo_skill_path);
     assert_eq!(
-        second_result.result,
-        SkillChangedResult {
-            skills: vec![
-                SkillRecord {
-                    id: "alpha".into(),
-                    name: "alpha".into(),
-                    description: skill_description(&canonical_alpha_skill_path),
-                    short_description: None,
-                    interface: None,
-                    dependencies: None,
-                    path: canonical_alpha_skill_path,
-                    enabled: true,
-                    source: SkillSource::Workspace {
-                        cwd: workspace_root.clone(),
-                    },
-                    scope: SkillScope::Repo,
-                    plugin_id: None,
+        second_skills,
+        vec![
+            SkillRecord {
+                id: "alpha".into(),
+                name: "alpha".into(),
+                description: skill_description(&native_alpha_skill_path),
+                short_description: None,
+                interface: None,
+                dependencies: None,
+                path: native_alpha_skill_path,
+                enabled: true,
+                source: SkillSource::Workspace {
+                    cwd: workspace_root.clone(),
                 },
-                SkillRecord {
-                    id: "bravo".into(),
-                    name: "bravo".into(),
-                    description: skill_description(&canonical_bravo_skill_path),
-                    short_description: None,
-                    interface: None,
-                    dependencies: None,
-                    path: canonical_bravo_skill_path,
-                    enabled: true,
-                    source: SkillSource::Workspace {
-                        cwd: workspace_root,
-                    },
-                    scope: SkillScope::Repo,
-                    plugin_id: None,
+                scope: SkillScope::Repo,
+                plugin_id: None,
+            },
+            SkillRecord {
+                id: "bravo".into(),
+                name: "bravo".into(),
+                description: skill_description(&native_bravo_skill_path),
+                short_description: None,
+                interface: None,
+                dependencies: None,
+                path: native_bravo_skill_path,
+                enabled: true,
+                source: SkillSource::Workspace {
+                    cwd: workspace_root,
                 },
-            ],
-        }
+                scope: SkillScope::Repo,
+                plugin_id: None,
+            },
+        ]
     );
     Ok(())
 }
@@ -956,7 +975,7 @@ async fn turn_start_resolves_skill_content_into_model_request() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 6,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [
@@ -988,7 +1007,7 @@ async fn turn_start_resolves_skill_content_into_model_request() -> Result<()> {
         .cloned()
         .context("expected one streamed model request")?;
     let request_text = user_request_text(&captured_request)?;
-    let skill_base_dir = canonical_skill_base_dir(&skill_path);
+    let skill_base_dir = native_skill_base_dir(&skill_path);
 
     assert!(request_text.contains("Follow this skill."));
     assert!(request_text.contains("<skill id=\"rust-docs\" name=\"rust-docs\">"));
@@ -1016,7 +1035,7 @@ async fn turn_start_rejects_missing_skill_references() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 7,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [
@@ -1330,7 +1349,7 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
             connection_id,
             serde_json::json!({
                 "id": 8,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [
@@ -1358,7 +1377,7 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
         .await
         .context("timed out waiting for blocking tool to start")?;
 
-    // Canonical flow: push the input onto the busy session queue, then
+    // Native flow: push the input onto the busy session queue, then
     // promote the queued entry into the running turn as a steer.
     let push_response = runtime
         .handle_incoming(
@@ -1378,10 +1397,10 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
         )
         .await
         .context("session/queue/push response")?;
-    let push_result: SuccessResponse<devo_protocol::canonical::rpc_turn::SessionQueuePushResult> =
+    let push_result: SuccessResponse<devo_protocol::native::rpc_turn::SessionQueuePushResult> =
         serde_json::from_value(push_response.clone())
             .with_context(|| format!("push_response: {push_response}"))?;
-    let devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Queued { entry } =
+    let devo_protocol::native::rpc_turn::SessionQueuePushResult::Queued { entry } =
         push_result.result
     else {
         panic!("busy push must queue");
@@ -1402,7 +1421,7 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
         )
         .await
         .context("session/queue/steer response")?;
-    let steer_result: SuccessResponse<devo_protocol::canonical::rpc_turn::SessionQueueSteerResult> =
+    let steer_result: SuccessResponse<devo_protocol::native::rpc_turn::SessionQueueSteerResult> =
         serde_json::from_value(steer_response)?;
     assert!(!steer_result.result.item_id.as_str().is_empty());
 
@@ -1417,7 +1436,7 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
 
     let first_user_texts = all_user_request_texts(&captured_requests[0]);
     let second_user_texts = all_user_request_texts(&captured_requests[1]);
-    let skill_base_dir = canonical_skill_base_dir(&skill_path);
+    let skill_base_dir = native_skill_base_dir(&skill_path);
 
     assert!(
         first_user_texts

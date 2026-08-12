@@ -25,6 +25,8 @@ async fn stdio_acp_initialize_negotiates_capabilities_and_allows_session_setup()
     let mut command = devo_command()?;
     let mut child = command
         .arg("server")
+        .arg("--protocols")
+        .arg("acp")
         .arg("--transport")
         .arg("stdio")
         .env("DEVO_HOME", home_dir.path().join(".devo"))
@@ -180,6 +182,8 @@ logout = true
     let mut command = devo_command()?;
     let mut child = command
         .arg("server")
+        .arg("--protocols")
+        .arg("acp")
         .arg("--transport")
         .arg("stdio")
         .env("DEVO_HOME", home_dir.path().join(".devo"))

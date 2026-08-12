@@ -4,7 +4,7 @@ use std::time::Duration;
 use super::*;
 
 mod coordinator;
-mod handlers;
+pub(in crate::runtime) mod handlers;
 mod lifecycle;
 
 const AGENT_NAME_ADJECTIVES: &[&str] = &[
@@ -675,7 +675,7 @@ impl ServerRuntime {
             .ok_or_else(|| ToolCallError::InvalidInput(format!("agent not found: {target}")))
     }
 
-    async fn agent_info(
+    pub(in crate::runtime) async fn agent_info(
         &self,
         parent_session_id: SessionId,
         target: &str,

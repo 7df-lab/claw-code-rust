@@ -146,10 +146,10 @@ pub(crate) fn path_set_contains_identity(paths: &HashSet<PathBuf>, path: &Path) 
 
 pub fn canonicalize_for_identity(path: &Path) -> PathBuf {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    normalize_canonical_path(canonical)
+    normalize_native_path(canonical)
 }
 
-pub fn normalize_canonical_path(path: PathBuf) -> PathBuf {
+pub fn normalize_native_path(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
     {
         let normalized = path

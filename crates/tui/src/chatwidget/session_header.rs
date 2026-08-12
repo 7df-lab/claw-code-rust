@@ -631,7 +631,7 @@ mod tests {
     use devo_protocol::PermissionPreset;
     use devo_protocol::ReasoningCapability;
     use devo_protocol::ReasoningEffort;
-    use devo_protocol::canonical::item::ContextOccupancy;
+    use devo_protocol::native::item::ContextOccupancy;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;
 

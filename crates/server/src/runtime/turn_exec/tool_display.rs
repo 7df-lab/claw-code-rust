@@ -271,35 +271,6 @@ pub(super) fn command_execution_item_id_for_progress(
         .and_then(|pending| pending.item_id)
 }
 
-pub(super) fn user_shell_exec_input(command: &str, cwd: std::path::PathBuf) -> serde_json::Value {
-    serde_json::json!({
-        "cmd": command,
-        "workdir": cwd,
-        "login": true,
-        "tty": true,
-    })
-}
-
-pub(super) fn user_shell_command_payload(
-    tool_call_id: &str,
-    command: &str,
-    input: serde_json::Value,
-    command_actions: Vec<devo_protocol::parse_command::ParsedCommand>,
-    output: Option<serde_json::Value>,
-    is_error: bool,
-) -> CommandExecutionPayload {
-    CommandExecutionPayload {
-        tool_call_id: tool_call_id.to_string(),
-        tool_name: "exec_command".to_string(),
-        command: command.to_string(),
-        input: Some(input),
-        source: devo_protocol::protocol::ExecCommandSource::UserShell,
-        command_actions,
-        output,
-        is_error,
-    }
-}
-
 const AGENT_COORDINATION_TOOL_NAMES: &[&str] = &[
     "spawn_agent",
     "send_message",

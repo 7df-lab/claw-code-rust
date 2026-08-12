@@ -36,14 +36,18 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
+use crate::ProtocolSet;
+use crate::ServerProtocol;
+
 const LOCK_FILE_NAME: &str = "server.lock";
 const METADATA_FILE_NAME: &str = "server.lock.json";
 const METADATA_VERSION: u32 = 1;
 /// Real server may still be writing metadata when a proxy process starts.
 const METADATA_READ_RETRIES: usize = 100;
 const METADATA_READ_RETRY_DELAY: Duration = Duration::from_millis(50);
-pub(crate) const SERVER_CONTROL_STATUS_METHOD: &str = "_devo/server/status";
-pub(crate) const SERVER_CONTROL_SHUTDOWN_METHOD: &str = "_devo/server/shutdown";
+pub(crate) const SERVER_CONTROL_STATUS_METHOD: &str = "server/status";
+pub(crate) const SERVER_CONTROL_SHUTDOWN_METHOD: &str = "server/shutdown";
+pub(crate) const SERVER_CONTROL_ENABLE_PROTOCOLS_METHOD: &str = "server/protocols/enable";
 const SERVER_CONTROL_REQUEST_ID: u64 = 1;
 
 /// Outcome of [`acquire_singleton_role`]: either this process runs the server
@@ -69,17 +73,28 @@ pub(crate) struct ServerLockMetadata {
     pub(crate) started_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ServerControlAction {
     Status,
     Shutdown,
+    EnableProtocols(ProtocolSet),
 }
 
 impl ServerControlAction {
-    pub(crate) fn method(self) -> &'static str {
+    pub(crate) fn method(&self) -> &'static str {
         match self {
             ServerControlAction::Status => SERVER_CONTROL_STATUS_METHOD,
             ServerControlAction::Shutdown => SERVER_CONTROL_SHUTDOWN_METHOD,
+            ServerControlAction::EnableProtocols(_) => SERVER_CONTROL_ENABLE_PROTOCOLS_METHOD,
+        }
+    }
+
+    fn params(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::Status | Self::Shutdown => None,
+            Self::EnableProtocols(protocols) => Some(serde_json::json!({
+                "protocols": protocols.names(),
+            })),
         }
     }
 }
@@ -87,6 +102,7 @@ impl ServerControlAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ServerControlResult {
     pub(crate) status: String,
+    pub(crate) enabled_protocols: Option<ProtocolSet>,
 }
 
 impl ServerLockMetadata {
@@ -117,11 +133,14 @@ pub(crate) async fn run_server_control(
         .await
         .context("authenticate singleton server control request")?;
 
-    let request = serde_json::json!({
+    let mut request = serde_json::json!({
         "jsonrpc": "2.0",
         "id": SERVER_CONTROL_REQUEST_ID,
         "method": action.method(),
     });
+    if let Some(params) = action.params() {
+        request["params"] = params;
+    }
     writer
         .send(Message::Text(request.to_string().into()))
         .await
@@ -288,7 +307,18 @@ fn decode_server_control_response(text: &str) -> Result<ServerControlResult> {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("ok")
         .to_string();
-    Ok(ServerControlResult { status })
+    let enabled_protocols = value
+        .pointer("/result/enabledProtocols")
+        .map(|value| {
+            serde_json::from_value::<Vec<ServerProtocol>>(value.clone())
+                .context("decode enabled server protocols")
+                .and_then(|protocols| ProtocolSet::new(protocols).map_err(anyhow::Error::msg))
+        })
+        .transpose()?;
+    Ok(ServerControlResult {
+        status,
+        enabled_protocols,
+    })
 }
 
 fn is_lock_temporarily_unavailable(error: &std::io::Error) -> bool {
@@ -370,9 +400,15 @@ mod tests {
         assert_eq!(
             [
                 ServerControlAction::Status.method(),
-                ServerControlAction::Shutdown.method()
+                ServerControlAction::Shutdown.method(),
+                ServerControlAction::EnableProtocols(ProtocolSet::only(ServerProtocol::Acp))
+                    .method(),
             ],
-            [SERVER_CONTROL_STATUS_METHOD, SERVER_CONTROL_SHUTDOWN_METHOD]
+            [
+                SERVER_CONTROL_STATUS_METHOD,
+                SERVER_CONTROL_SHUTDOWN_METHOD,
+                SERVER_CONTROL_ENABLE_PROTOCOLS_METHOD,
+            ]
         );
     }
 
@@ -384,7 +420,22 @@ mod tests {
             )
             .expect("decode response"),
             ServerControlResult {
-                status: "running".to_string()
+                status: "running".to_string(),
+                enabled_protocols: None,
+            }
+        );
+    }
+
+    #[test]
+    fn decode_server_control_response_reads_enabled_protocols() {
+        assert_eq!(
+            decode_server_control_response(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"status":"running","enabledProtocols":["native","acp"]}}"#
+            )
+            .expect("decode response"),
+            ServerControlResult {
+                status: "running".to_string(),
+                enabled_protocols: Some(ProtocolSet::all()),
             }
         );
     }

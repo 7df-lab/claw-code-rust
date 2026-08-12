@@ -35,12 +35,16 @@ enum RestoreCandidateState {
 }
 
 pub(super) fn core_restore_policy(
-    policy: crate::MessageEditWorkspaceRestorePolicy,
+    policy: devo_protocol::native::rpc_session::MessageEditWorkspaceRestore,
 ) -> WorkspaceRestorePolicy {
     match policy {
-        crate::MessageEditWorkspaceRestorePolicy::Safe => WorkspaceRestorePolicy::Safe,
-        crate::MessageEditWorkspaceRestorePolicy::Skip => WorkspaceRestorePolicy::Skip,
-        crate::MessageEditWorkspaceRestorePolicy::ConfiguredRestore => {
+        devo_protocol::native::rpc_session::MessageEditWorkspaceRestore::Safe => {
+            WorkspaceRestorePolicy::Safe
+        }
+        devo_protocol::native::rpc_session::MessageEditWorkspaceRestore::Skip => {
+            WorkspaceRestorePolicy::Skip
+        }
+        devo_protocol::native::rpc_session::MessageEditWorkspaceRestore::ConfiguredRestore => {
             WorkspaceRestorePolicy::ConfiguredRestore
         }
     }

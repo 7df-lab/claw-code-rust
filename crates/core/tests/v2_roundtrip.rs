@@ -556,27 +556,27 @@ fn inverse_rejects_prefixed_canonical_ids() {
     let line = RolloutLineV2::SessionMeta {
         v: devo_core::ROLLOUT_FORMAT_VERSION,
         timestamp: ts(0),
-        session: Box::new(devo_protocol::canonical::session::Session {
-            id: devo_protocol::canonical::ids::SessionId::new(),
+        session: Box::new(devo_protocol::native::session::Session {
+            id: devo_protocol::native::ids::SessionId::new(),
             version: 1,
             cwd: PathBuf::from("/tmp"),
             additional_directories: Vec::new(),
             parent: None,
             ephemeral: false,
             created_at: ts(0),
-            status: devo_protocol::canonical::session::SessionStatus::Idle,
+            status: devo_protocol::native::session::SessionStatus::Idle,
             flags: Vec::new(),
             archived: false,
             active_turn_id: None,
             queued_count: 0,
             title: None,
-            model: devo_protocol::canonical::model::ModelBinding {
+            model: devo_protocol::native::model::ModelBinding {
                 provider: "openai".into(),
                 model: "gpt-5.2".into(),
                 reasoning_effort: None,
             },
-            settings: devo_protocol::canonical::session::SessionSettings {
-                permission_profile: devo_protocol::canonical::model::PermissionProfile::Default,
+            settings: devo_protocol::native::session::SessionSettings {
+                permission_profile: devo_protocol::native::model::PermissionProfile::Default,
                 reasoning_effort: None,
                 mode: None,
                 sandbox_profile: None,
@@ -585,8 +585,8 @@ fn inverse_rejects_prefixed_canonical_ids() {
             git_info: None,
             preview: String::new(),
             last_activity_at: ts(0),
-            usage: devo_protocol::canonical::usage::SessionUsage {
-                total: devo_protocol::canonical::usage::UsageTotals::default(),
+            usage: devo_protocol::native::usage::SessionUsage {
+                total: devo_protocol::native::usage::UsageTotals::default(),
                 by_purpose: Vec::new(),
                 legacy: None,
                 updated_at: ts(0),
@@ -606,11 +606,11 @@ fn inverse_rejects_turn_scoped_internal_line_without_turn_id() {
     let line = RolloutLineV2::Internal {
         v: devo_core::ROLLOUT_FORMAT_VERSION,
         timestamp: ts(0),
-        session_id: devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::nil()),
+        session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(Uuid::nil()),
         turn_id: None,
         seq: 1,
         entry: devo_core::InternalRecordV2::Entry {
-            entry: devo_protocol::canonical::item::InternalEntry::TurnSummary { text: "1".into() },
+            entry: devo_protocol::native::item::InternalEntry::TurnSummary { text: "1".into() },
         },
     };
     let inverse = V2InverseProjector::new();

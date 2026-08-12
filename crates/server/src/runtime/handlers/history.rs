@@ -10,9 +10,9 @@
 use std::path::PathBuf;
 
 use devo_core::read_canonical_history;
-use devo_protocol::canonical::item::ItemEnvelope;
-use devo_protocol::canonical::page::{Page, PageParams};
-use devo_protocol::canonical::rpc_session::{SessionItemsListParams, SessionTurnsListParams};
+use devo_protocol::native::item::ItemEnvelope;
+use devo_protocol::native::page::{Page, PageParams};
+use devo_protocol::native::rpc_session::{SessionItemsListParams, SessionTurnsListParams};
 
 use super::super::*;
 
@@ -108,7 +108,7 @@ impl ServerRuntime {
     async fn load_canonical_history(
         &self,
         request_id: &serde_json::Value,
-        session_id: devo_protocol::canonical::ids::SessionId,
+        session_id: devo_protocol::native::ids::SessionId,
     ) -> Result<devo_core::CanonicalHistory, serde_json::Value> {
         let Some(rollout_path) = self.resolve_rollout_path(&session_id).await else {
             return Err(self.error_response(
@@ -133,7 +133,7 @@ impl ServerRuntime {
     /// page).
     pub(crate) async fn resolve_rollout_path(
         &self,
-        session_id: &devo_protocol::canonical::ids::SessionId,
+        session_id: &devo_protocol::native::ids::SessionId,
     ) -> Option<PathBuf> {
         let legacy_id = SessionId::try_from(session_id.as_str()).ok()?;
         if let Some(handle) = self.session(legacy_id).await

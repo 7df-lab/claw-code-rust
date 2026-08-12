@@ -75,7 +75,7 @@ async fn sessionless_command_exec_streams_to_owner_without_session() -> Result<(
             owner_connection_id,
             serde_json::json!({
                 "id": 20,
-                "method": "_devo/command/exec",
+                "method": "command/exec",
                 "params": {
                     "process_id": "sessionless-1",
                     "cwd": data_root.path(),
@@ -102,12 +102,79 @@ async fn sessionless_command_exec_streams_to_owner_without_session() -> Result<(
         &mut owner_notifications_rx,
         "sessionless-1",
         /*session_id*/ None,
+        Some(0),
     )
     .await?;
     assert!(output.contains("sessionless-owned"));
 
     assert_no_notification(&mut other_notifications_rx).await?;
 
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn session_interrupt_stops_sessionless_command_without_a_turn() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let runtime = build_runtime(data_root.path())?;
+    let (connection_id, mut notifications_rx) =
+        initialize_connection(&runtime, "command-interrupt-owner").await?;
+
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 22,
+                "method": "command/exec",
+                "params": {
+                    "process_id": "sessionless-interrupt-1",
+                    "cwd": data_root.path(),
+                    "program": {
+                        "type": "one_shot",
+                        "command": "sleep 60"
+                    },
+                    "size": null
+                }
+            }),
+        )
+        .await
+        .context("command/exec response")?;
+    let response: devo_server::SuccessResponse<CommandExecResult> =
+        serde_json::from_value(response)?;
+    assert_eq!(response.result.process_id, "sessionless-interrupt-1");
+
+    let interrupted = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 23,
+                "method": "session/interrupt",
+                "params": {
+                    "scope": {
+                        "scope": "command",
+                        "processId": "sessionless-interrupt-1"
+                    }
+                }
+            }),
+        )
+        .await
+        .context("session/interrupt response")?;
+    assert!(
+        interrupted.get("error").is_none(),
+        "session/interrupt failed: {interrupted}"
+    );
+    let interrupted: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionInterruptResult,
+    > = serde_json::from_value(interrupted)?;
+    assert!(interrupted.result.interrupted);
+
+    let _ = wait_for_command_exec_exit(
+        &mut notifications_rx,
+        "sessionless-interrupt-1",
+        /*session_id*/ None,
+        /*expected_exit_code*/ None,
+    )
+    .await?;
     Ok(())
 }
 
@@ -125,7 +192,7 @@ async fn sessionless_command_exec_requires_explicit_cwd() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 21,
-                "method": "_devo/command/exec",
+                "method": "command/exec",
                 "params": {
                     "process_id": "sessionless-missing-cwd",
                     "program": {
@@ -165,7 +232,7 @@ async fn session_bound_command_exec_resolves_session_cwd() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 23,
-                "method": "_devo/command/exec",
+                "method": "command/exec",
                 "params": {
                     "session_id": session_id,
                     "process_id": "session-bound-1",
@@ -188,9 +255,13 @@ async fn session_bound_command_exec_resolves_session_cwd() -> Result<()> {
         }
     );
 
-    let output =
-        wait_for_command_exec_exit(&mut notifications_rx, "session-bound-1", Some(session_id))
-            .await?;
+    let output = wait_for_command_exec_exit(
+        &mut notifications_rx,
+        "session-bound-1",
+        Some(session_id),
+        Some(0),
+    )
+    .await?;
     assert!(output.contains("session-bound"));
 
     Ok(())
@@ -246,7 +317,8 @@ async fn initialize_connection(
                         "name": client_name,
                         "title": client_name,
                         "version": "1.0.0"
-                    }
+                    },
+                    "_meta": { "devo": { "protocol": "native" } }
                 }
             }),
         )
@@ -292,6 +364,7 @@ async fn wait_for_command_exec_exit(
     notifications_rx: &mut mpsc::Receiver<serde_json::Value>,
     process_id: &str,
     session_id: Option<SessionId>,
+    expected_exit_code: Option<i32>,
 ) -> Result<String> {
     let mut output = String::new();
     loop {
@@ -302,11 +375,8 @@ async fn wait_for_command_exec_exit(
         let payload = {
             let method = notification["method"].as_str();
             match method {
-                Some(method) if method.starts_with("_devo/") => {
-                    let inner_method = method
-                        .strip_prefix("_devo/")
-                        .expect("starts_with checked prefix");
-                    Some((inner_method, &notification["params"]))
+                Some(method @ ("command/exec/outputDelta" | "command/exec/exited")) => {
+                    Some((method, &notification["params"]))
                 }
                 Some("session/update") => {
                     let meta = &notification["params"]["_meta"];
@@ -349,7 +419,9 @@ async fn wait_for_command_exec_exit(
                     continue;
                 }
                 assert_notification_session(params, session_id);
-                assert_eq!(params["exit_code"], 0);
+                if let Some(expected_exit_code) = expected_exit_code {
+                    assert_eq!(params["exit_code"], expected_exit_code);
+                }
                 return Ok(output);
             }
             Some(("session/started", _)) if session_id.is_none() => {

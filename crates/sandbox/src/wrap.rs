@@ -174,16 +174,16 @@ pub fn wrap_command_for_profile_with_overlay(
             resolved.restrict_network = false;
         }
     }
-    let wrap = wrap_for_platform(
-        &profile_name,
-        &config,
-        &resolved,
+    let wrap = wrap_for_platform(WrapContext {
+        profile_name: &profile_name,
+        config: &config,
+        resolved: &resolved,
         workspace,
         mode,
-        launcher_availability(),
+        launchers: launcher_availability(),
         logger,
-        overlay.is_some(),
-    );
+        has_overlay: overlay.is_some(),
+    });
     // Events were recorded at the decision sites; persist them (best-effort).
     if let Err(error) = logger.flush_to_disk() {
         tracing::warn!(error = %error, "failed to flush sandbox events to disk");
@@ -278,56 +278,31 @@ fn bwrap_available() -> bool {
     })
 }
 
-fn wrap_for_platform(
-    profile_name: &ProfileName,
-    config: &SandboxConfig,
-    resolved: &SandboxProfile,
-    workspace: &Path,
+struct WrapContext<'a> {
+    profile_name: &'a ProfileName,
+    config: &'a SandboxConfig,
+    resolved: &'a SandboxProfile,
+    workspace: &'a Path,
     mode: WrapMode,
     launchers: LauncherAvailability,
-    logger: &SandboxLogger,
+    logger: &'a SandboxLogger,
     has_overlay: bool,
-) -> anyhow::Result<SandboxWrap> {
+}
+
+fn wrap_for_platform(context: WrapContext<'_>) -> anyhow::Result<SandboxWrap> {
     #[cfg(target_os = "linux")]
     {
-        linux_wrap(
-            profile_name,
-            config,
-            resolved,
-            workspace,
-            mode,
-            launchers,
-            logger,
-            has_overlay,
-        )
+        linux_wrap(context)
     }
     #[cfg(target_os = "macos")]
     {
         // `config` and bwrap availability are Linux-only inputs.
-        let _ = (config, launchers.bwrap);
-        macos_wrap(
-            profile_name,
-            resolved,
-            workspace,
-            launchers.sandbox_exec,
-            mode,
-            logger,
-            has_overlay,
-        )
+        let _ = (context.config, context.launchers.bwrap);
+        macos_wrap(context)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = (
-            profile_name,
-            config,
-            resolved,
-            workspace,
-            mode,
-            launchers.sandbox_exec,
-            launchers.bwrap,
-            logger,
-            has_overlay,
-        );
+        let _ = context;
         Ok(SandboxWrap::None)
     }
 }
@@ -336,15 +311,18 @@ fn wrap_for_platform(
 /// and PTY children. Base profiles retain warn-and-release behavior; overlays
 /// fail closed if Seatbelt cannot safely apply them.
 #[cfg(all(feature = "enforce", target_os = "macos"))]
-fn macos_wrap(
-    profile_name: &ProfileName,
-    resolved: &SandboxProfile,
-    workspace: &Path,
-    sandbox_exec_available: bool,
-    mode: WrapMode,
-    logger: &SandboxLogger,
-    has_overlay: bool,
-) -> anyhow::Result<SandboxWrap> {
+fn macos_wrap(context: WrapContext<'_>) -> anyhow::Result<SandboxWrap> {
+    let WrapContext {
+        profile_name,
+        resolved,
+        workspace,
+        mode,
+        launchers,
+        logger,
+        has_overlay,
+        ..
+    } = context;
+    let sandbox_exec_available = launchers.sandbox_exec;
     if !sandbox_exec_available {
         if has_overlay {
             return Err(anyhow::anyhow!(
@@ -434,15 +412,15 @@ fn macos_wrap(
 /// Without the `enforce` feature there is no sbpl emitter. Overlays fail
 /// closed because they cannot be represented without Seatbelt.
 #[cfg(all(not(feature = "enforce"), target_os = "macos"))]
-fn macos_wrap(
-    profile_name: &ProfileName,
-    _resolved: &SandboxProfile,
-    workspace: &Path,
-    _sandbox_exec_available: bool,
-    mode: WrapMode,
-    logger: &SandboxLogger,
-    has_overlay: bool,
-) -> anyhow::Result<SandboxWrap> {
+fn macos_wrap(context: WrapContext<'_>) -> anyhow::Result<SandboxWrap> {
+    let WrapContext {
+        profile_name,
+        workspace,
+        mode,
+        logger,
+        has_overlay,
+        ..
+    } = context;
     if has_overlay {
         return Err(anyhow::anyhow!(
             "sandbox overlay requires the sandbox enforce feature"
@@ -466,16 +444,17 @@ fn macos_wrap(
 }
 
 #[cfg(target_os = "linux")]
-fn linux_wrap(
-    profile_name: &ProfileName,
-    config: &SandboxConfig,
-    resolved: &SandboxProfile,
-    workspace: &Path,
-    mode: WrapMode,
-    launchers: LauncherAvailability,
-    logger: &SandboxLogger,
-    has_overlay: bool,
-) -> anyhow::Result<SandboxWrap> {
+fn linux_wrap(context: WrapContext<'_>) -> anyhow::Result<SandboxWrap> {
+    let WrapContext {
+        profile_name,
+        config,
+        resolved,
+        workspace,
+        mode,
+        launchers,
+        logger,
+        has_overlay,
+    } = context;
     // Prefer the Linux helper path (bwrap → apply-seccomp-then-exec) when
     // available: parent only serializes the profile; the helper enforces.
     // Skip when DEVO_SANDBOX_LAUNCHER forces a direct launcher (helper outer

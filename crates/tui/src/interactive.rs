@@ -256,6 +256,7 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
             },
             terminal: false,
             meta: None,
+            ..devo_protocol::AcpClientCapabilities::default()
         },
     });
 
@@ -750,7 +751,7 @@ fn handle_app_event(
 
     if matches!(&app_event, AppEvent::Interrupt) {
         if loop_state.busy && chat_widget.request_interrupt() {
-            worker.interrupt_turn()?;
+            worker.interrupt_active_work()?;
         }
         return Ok(LoopAction::Continue);
     }
@@ -846,7 +847,18 @@ fn handle_worker_event(
         }
         // Streaming deltas are handled entirely within the ChatWidget
         WorkerEvent::ToolOutputDelta { .. } => {}
+        WorkerEvent::CommandExecutionStarted { source, .. }
+            if matches!(
+                source,
+                &devo_protocol::protocol::ExecCommandSource::UserShell
+            ) =>
+        {
+            loop_state.busy = true;
+        }
         WorkerEvent::CommandExecutionStarted { .. } => {}
+        WorkerEvent::ShellCommandFinished { .. } => {
+            loop_state.busy = false;
+        }
         WorkerEvent::UsageUpdated {
             total_input_tokens: next_total_input_tokens,
             total_output_tokens: next_total_output_tokens,
@@ -948,7 +960,6 @@ fn handle_worker_event(
         | WorkerEvent::ToolCallUpdated { .. }
         | WorkerEvent::ToolResult { .. }
         | WorkerEvent::ToolResultIo { .. }
-        | WorkerEvent::ShellCommandFinished { .. }
         | WorkerEvent::PatchApplied { .. }
         | WorkerEvent::PatchAppliedIo { .. }
         | WorkerEvent::PlanUpdated { .. }

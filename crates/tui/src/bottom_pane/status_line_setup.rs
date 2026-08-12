@@ -313,7 +313,7 @@ mod tests {
     use crate::app_event::AppEvent;
 
     #[test]
-    fn context_usage_is_canonical_and_accepts_legacy_ids() {
+    fn context_usage_is_native_and_accepts_legacy_ids() {
         assert_eq!(StatusLineItem::ContextUsage.to_string(), "context-usage");
         assert_eq!(
             "context-usage".parse::<StatusLineItem>(),

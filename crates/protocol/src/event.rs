@@ -103,7 +103,7 @@ pub struct ItemEventPayload {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypedItemEventPayload {
     pub context: EventContext,
-    pub item: crate::canonical::item::ItemEnvelope,
+    pub item: crate::native::item::ItemEnvelope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +112,11 @@ pub struct ItemDeltaPayload {
     pub delta: String,
     pub stream_index: Option<u32>,
     pub channel: Option<String>,
+    /// Per-item monotonically increasing delta counter assigned at the emit
+    /// site (0-based, reset when a new item starts). Carried into the
+    /// canonical typed delta as `chunk_index` (L2-DES-APP-009 DD-2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_index: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +171,10 @@ pub struct TurnProviderRetryStatusPayload {
     pub session_id: SessionId,
     pub turn_id: TurnId,
     pub attempt: usize,
+    // Total attempts allowed by the retry policy; projected into the
+    // canonical `model/queryRetrying` notification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
     pub backoff_ms: u64,
     pub provider: String,
     pub model: String,
@@ -191,7 +200,7 @@ pub struct TurnUsageUpdatedPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextUsageUpdatedPayload {
     pub session_id: SessionId,
-    pub occupancy: crate::canonical::item::ContextOccupancy,
+    pub occupancy: crate::native::item::ContextOccupancy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,6 +239,26 @@ pub struct SessionEffectiveContextWindowUpdatedPayload {
 pub struct SessionCompactionFailedPayload {
     pub session_id: SessionId,
     pub message: String,
+}
+
+/// Emit-site enriched compaction lifecycle payload (L2-DES-APP-009 DD-3):
+/// carries the compaction turn id and trigger so the typed projector can
+/// emit canonical `context/compactionStarted` without degrading the shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCompactionStartedPayload {
+    pub session: SessionMetadata,
+    pub turn_id: TurnId,
+    pub trigger: crate::native::item::CompactionTrigger,
+}
+
+/// Completed compaction; `item_id` links the persisted `ContextCompaction`
+/// item when one was created (compact-with-replacement).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCompactionCompletedPayload {
+    pub session: SessionMetadata,
+    pub turn_id: TurnId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<ItemId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,7 +400,7 @@ pub struct ApprovalDecisionPayload {
     pub scope: String,
     /// Authority that produced the decision. Missing on legacy events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decision_source: Option<crate::canonical::item::ApprovalDecisionSource>,
+    pub decision_source: Option<crate::native::item::ApprovalDecisionSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,8 +414,8 @@ pub struct RequestUserInputPayload {
 pub enum ServerEvent {
     SessionStarted(SessionEventPayload),
     SessionTitleUpdated(SessionEventPayload),
-    SessionCompactionStarted(SessionEventPayload),
-    SessionCompactionCompleted(SessionEventPayload),
+    SessionCompactionStarted(SessionCompactionStartedPayload),
+    SessionCompactionCompleted(SessionCompactionCompletedPayload),
     SessionCompactionFailed(SessionCompactionFailedPayload),
     SessionStatusChanged(SessionStatusChangedPayload),
     SessionEffectiveContextWindowUpdated(SessionEffectiveContextWindowUpdatedPayload),
@@ -429,11 +458,11 @@ impl ServerEvent {
         match self {
             Self::SessionStarted(payload)
             | Self::SessionTitleUpdated(payload)
-            | Self::SessionCompactionStarted(payload)
-            | Self::SessionCompactionCompleted(payload)
             | Self::SessionArchived(payload)
             | Self::SessionUnarchived(payload)
             | Self::SessionClosed(payload) => Some(payload.session.session_id),
+            Self::SessionCompactionStarted(payload) => Some(payload.session.session_id),
+            Self::SessionCompactionCompleted(payload) => Some(payload.session.session_id),
             Self::SessionDeleted(payload) => Some(payload.session_id),
             Self::SessionCompactionFailed(payload) => Some(payload.session_id),
             Self::SessionStatusChanged(payload) => Some(payload.session_id),

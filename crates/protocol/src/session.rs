@@ -8,11 +8,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
-use crate::ItemId;
 use crate::ReasoningEffort;
 use crate::SessionId;
 use crate::SessionTitleState;
-use crate::TurnId;
 use crate::TurnUsage;
 use crate::parse_command::ParsedCommand;
 use crate::permissions::PermissionPreset;
@@ -106,7 +104,7 @@ pub struct SessionMetadata {
     /// reused). When present, [`Self::last_query_total_tokens`] should mirror
     /// `total_tokens` as a compatibility projection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_context_occupancy: Option<crate::canonical::item::ContextOccupancy>,
+    pub last_context_occupancy: Option<crate::native::item::ContextOccupancy>,
     pub status: SessionRuntimeStatus,
     /// Collaboration mode restored from the latest completed turn context.
     ///
@@ -275,62 +273,6 @@ impl SessionHistoryItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct SessionTitleUpdateParams {
-    pub session_id: SessionId,
-    pub title: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct SessionTitleUpdateResult {
-    pub session: SessionMetadata,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct SessionMetadataUpdateParams {
-    pub session_id: SessionId,
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_binding_id: Option<String>,
-    #[serde(default, alias = "thinking", skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort_selection: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collaboration_mode: Option<CollaborationMode>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct SessionMetadataUpdateResult {
-    pub session: SessionMetadata,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct SessionCompactParams {
-    pub session_id: SessionId,
-}
-
-/// Persists a global compaction token limit and hot-applies it to live sessions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionCompactionUpdateParams {
-    pub session_id: SessionId,
-    /// Absolute global compaction threshold in tokens. Written to user
-    /// `config.toml` as `compaction_token_limit`. Values above a session model's
-    /// `context_window` are clamped when applied to that session.
-    pub effective_context_window: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionCompactionUpdateResult {
-    pub session_id: SessionId,
-    /// Applied absolute window for this session after clamp.
-    pub effective_context_window: u64,
-    /// Model default (`effective_context_window()`, clamped) used as recommended.
-    pub recommended_token_limit: u64,
-    /// Raw model context window used for clamp.
-    pub context_window_tokens: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct SessionForkParams {
     pub session_id: SessionId,
     pub title: Option<String>,
@@ -343,31 +285,6 @@ pub struct SessionForkParams {
 pub struct SessionForkResult {
     pub session: SessionMetadata,
     pub forked_from_session_id: SessionId,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionRollbackMode {
-    #[default]
-    ThroughUserTurn,
-    BeforeUserTurn,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct SessionRollbackParams {
-    pub session_id: SessionId,
-    pub user_turn_index: u32,
-    #[serde(default)]
-    pub mode: SessionRollbackMode,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct SessionRollbackResult {
-    pub session: SessionMetadata,
-    pub latest_turn: Option<TurnMetadata>,
-    pub loaded_item_count: u64,
-    pub history_items: Vec<SessionHistoryItem>,
-    pub pending_texts: Vec<String>,
 }
 
 // ── Session Subscribe (L3-BEH-PROTOCOL-001 B3) ───────────────────
@@ -389,51 +306,6 @@ pub struct SessionSubscribeResult {
     pub session_id: SessionId,
     pub next_sequence: u64,
     pub session_snapshot: Option<serde_json::Value>,
-}
-
-// ── Message Edit Previous (L3-BEH-PROTOCOL-001 B11) ──────────────
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct MessageEditPreviousParams {
-    pub session_id: SessionId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_message_id: Option<ItemId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_target_message_id: Option<ItemId>,
-    #[serde(default, alias = "replacement_content_parts")]
-    pub edited_content_parts: Vec<serde_json::Value>,
-    #[serde(default, alias = "replacement_mentions")]
-    pub edited_mentions: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub edit_mode: EditMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_edit_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_restore_policy: Option<MessageEditWorkspaceRestorePolicy>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum EditMode {
-    #[default]
-    Normal,
-    QueuedOnly,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageEditWorkspaceRestorePolicy {
-    Safe,
-    Skip,
-    ConfiguredRestore,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct MessageEditPreviousResult {
-    pub edit_id: String,
-    pub replacement_message_id: ItemId,
-    pub replacement_turn_id: Option<TurnId>,
-    pub edit_state: String,
 }
 
 #[cfg(test)]
@@ -525,76 +397,6 @@ mod tests {
     }
 
     #[test]
-    fn message_edit_previous_params_accept_spec_shape() {
-        let session_id = SessionId::new();
-        let expected_target_message_id = ItemId::new();
-        let payload = serde_json::json!({
-            "session_id": session_id,
-            "expected_target_message_id": expected_target_message_id,
-            "edited_content_parts": [{ "type": "text", "text": "updated" }],
-            "edited_mentions": [{ "type": "file", "path": "src/main.rs" }],
-            "client_edit_id": "client-edit-1",
-            "workspace_restore_policy": "skip"
-        });
-
-        let params: MessageEditPreviousParams =
-            serde_json::from_value(payload).expect("deserialize message/editPrevious params");
-
-        assert_eq!(
-            params,
-            MessageEditPreviousParams {
-                session_id,
-                target_message_id: None,
-                expected_target_message_id: Some(expected_target_message_id),
-                edited_content_parts: vec![serde_json::json!({
-                    "type": "text",
-                    "text": "updated"
-                })],
-                edited_mentions: vec![serde_json::json!({
-                    "type": "file",
-                    "path": "src/main.rs"
-                })],
-                edit_mode: EditMode::Normal,
-                client_edit_id: Some("client-edit-1".to_string()),
-                workspace_restore_policy: Some(MessageEditWorkspaceRestorePolicy::Skip),
-            }
-        );
-    }
-
-    #[test]
-    fn message_edit_previous_params_accept_legacy_replacement_names() {
-        let session_id = SessionId::new();
-        let target_message_id = ItemId::new();
-        let payload = serde_json::json!({
-            "session_id": session_id,
-            "target_message_id": target_message_id,
-            "replacement_content_parts": [{ "type": "text", "text": "legacy" }],
-            "replacement_mentions": [],
-            "edit_mode": "queued_only"
-        });
-
-        let params: MessageEditPreviousParams =
-            serde_json::from_value(payload).expect("deserialize legacy edit params");
-
-        assert_eq!(
-            params,
-            MessageEditPreviousParams {
-                session_id,
-                target_message_id: Some(target_message_id),
-                expected_target_message_id: None,
-                edited_content_parts: vec![serde_json::json!({
-                    "type": "text",
-                    "text": "legacy"
-                })],
-                edited_mentions: Vec::new(),
-                edit_mode: EditMode::QueuedOnly,
-                client_edit_id: None,
-                workspace_restore_policy: None,
-            }
-        );
-    }
-
-    #[test]
     fn session_history_tool_io_is_optional_and_roundtrips() {
         let legacy: SessionHistoryItem = serde_json::from_str(
             r#"{
@@ -624,24 +426,5 @@ mod tests {
         let restored: SessionHistoryItem =
             serde_json::from_str(&json).expect("deserialize history item");
         assert_eq!(restored, item);
-    }
-
-    #[test]
-    fn session_rollback_params_default_to_through_user_turn_mode() {
-        let session_id = SessionId::new();
-        let params: SessionRollbackParams = serde_json::from_value(serde_json::json!({
-            "session_id": session_id,
-            "user_turn_index": 2,
-        }))
-        .expect("deserialize legacy rollback params");
-
-        assert_eq!(
-            params,
-            SessionRollbackParams {
-                session_id,
-                user_turn_index: 2,
-                mode: SessionRollbackMode::ThroughUserTurn,
-            }
-        );
     }
 }

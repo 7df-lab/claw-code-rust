@@ -187,26 +187,6 @@ impl TurnStartResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct ShellCommandParams {
-    pub session_id: SessionId,
-    pub command: String,
-    pub cwd: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct ShellCommandResult {
-    pub turn_id: TurnId,
-    pub status: TurnStatus,
-    pub accepted_at: DateTime<Utc>,
-}
-
-impl ShellCommandResult {
-    pub fn status(&self) -> TurnStatus {
-        self.status.clone()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct TurnInterruptParams {
     pub session_id: SessionId,
     pub turn_id: TurnId,
@@ -509,22 +489,6 @@ mod tests {
         let restored: TurnStartParams = serde_json::from_value(json).expect("deserialize");
 
         assert_eq!(restored.collaboration_mode, CollaborationMode::Plan);
-    }
-
-    #[test]
-    fn shell_command_result_keeps_plain_started_shape() {
-        let result = ShellCommandResult {
-            turn_id: TurnId::new(),
-            status: TurnStatus::Running,
-            accepted_at: Utc::now(),
-        };
-
-        let json = serde_json::to_value(&result).expect("serialize");
-        let turn_id = result.turn_id.to_string();
-
-        assert_eq!(json["turn_id"].as_str(), Some(turn_id.as_str()));
-        assert_eq!(json["status"].as_str(), Some("Running"));
-        assert!(json.get("disposition").is_none());
     }
 
     #[test]

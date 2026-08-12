@@ -11,14 +11,10 @@ use devo_core::PresetModelCatalog;
 use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
-use devo_protocol::InputItem;
 use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
-use devo_protocol::ServerEvent;
 use devo_protocol::StreamEvent;
 use devo_protocol::TurnId;
-use devo_protocol::TurnInterruptParams;
-use devo_protocol::TurnStartParams;
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
 use devo_server::ServerRuntime;
@@ -93,43 +89,34 @@ async fn websocket_server_client_drives_listener_session_and_notifications() -> 
     assert_eq!(initialize.server_name, "devo-server");
 
     let session = client
-        .session_start(devo_protocol::SessionStartParams {
-            cwd: workspace.path().to_path_buf(),
-            additional_directories: Vec::new(),
-            ephemeral: false,
-            title: None,
-            model: None,
-            model_binding_id: None,
-        })
+        .session_new_native(
+            workspace.path().to_path_buf(),
+            "websocket-e2e-session".to_string(),
+        )
         .await?
         .session;
     assert_eq!(session.cwd, workspace.path());
+    let session_id = devo_protocol::SessionId::try_from(session.id.as_str())?;
 
     client
-        .turn_start(TurnStartParams {
-            session_id: session.session_id,
-            input: vec![InputItem::Text {
+        .turn_start_native(
+            session_id,
+            vec![devo_protocol::native::item::UserInput::Text {
                 text: "hello".to_string(),
             }],
-            model: None,
-            model_binding_id: None,
-            reasoning_effort_selection: None,
-            sandbox: None,
-            approval_policy: None,
-            cwd: None,
-            collaboration_mode: Default::default(),
-            execution_mode: Default::default(),
-        })
+            "websocket-e2e-turn".to_string(),
+        )
         .await?;
-    let turn_id = wait_for_turn_started(&mut client).await?;
-    let interrupt = client
-        .turn_interrupt(TurnInterruptParams {
-            session_id: session.session_id,
-            turn_id,
-            reason: Some("websocket client e2e".to_string()),
-        })
+    let _turn_id = wait_for_turn_started(&mut client).await?;
+    client
+        .session_interrupt_native(
+            devo_protocol::native::rpc_session::SessionInterruptScope::Session {
+                session_id: devo_protocol::native::ids::SessionId::from_string(
+                    session_id.to_string(),
+                ),
+            },
+        )
         .await?;
-    assert_eq!(interrupt.turn_id, turn_id);
 
     client.shutdown().await?;
     listener_task.abort();
@@ -153,12 +140,10 @@ async fn wait_for_turn_started(client: &mut WebSocketServerClient) -> Result<Tur
             if notification.method != "turn/started" {
                 continue;
             }
-            let event: ServerEvent =
-                serde_json::from_value(notification.params).context("decode turn/started event")?;
-            let ServerEvent::TurnStarted(payload) = event else {
-                continue;
-            };
-            return Ok(payload.turn.turn_id);
+            let turn: devo_protocol::native::turn::Turn =
+                serde_json::from_value(notification.params["turn"].clone())
+                    .context("decode Native turn/started event")?;
+            return TurnId::try_from(turn.id.as_str()).context("convert Native turn id");
         }
     })
     .await

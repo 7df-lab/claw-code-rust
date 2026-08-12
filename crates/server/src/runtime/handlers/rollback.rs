@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use devo_core::SessionId;
-use devo_protocol::canonical::ids::RestorePlanId;
-use devo_protocol::canonical::rpc_session::{
+use devo_protocol::native::ids::RestorePlanId;
+use devo_protocol::native::rpc_session::{
     RestorePlan, SessionRollbackCommitParams, SessionRollbackCommitResult,
     SessionRollbackPreviewParams,
 };
@@ -106,14 +106,13 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
-        let rollback_mode = legacy_rollback_mode(params.mode);
         let rebuilt = match self
             .build_runtime_session_from_user_turn_cut(
                 &source,
                 RuntimeSessionTurnCutOptions {
                     session_id,
                     user_turn_index: Some(params.user_turn_index),
-                    rollback_mode: rollback_mode.clone(),
+                    rollback_mode: params.mode,
                     cwd_override: None,
                     title_override: source.summary.title.clone(),
                     created_at: source.summary.created_at,
@@ -220,7 +219,7 @@ impl ServerRuntime {
                 owner_disconnected: false,
                 session_id,
                 user_turn_index: params.user_turn_index,
-                rollback_mode,
+                rollback_mode: params.mode,
                 history_fingerprint: history_fingerprint(&source.persisted_turn_items),
                 checkpoint,
                 public_plan: public_plan.clone(),
@@ -553,7 +552,7 @@ impl ServerRuntime {
                 RuntimeSessionTurnCutOptions {
                     session_id: plan.session_id,
                     user_turn_index: Some(plan.user_turn_index),
-                    rollback_mode: plan.rollback_mode.clone(),
+                    rollback_mode: plan.rollback_mode,
                     cwd_override: None,
                     title_override: source.summary.title.clone(),
                     created_at: source.summary.created_at,

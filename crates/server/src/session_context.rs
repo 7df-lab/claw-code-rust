@@ -29,7 +29,7 @@ use devo_core::TurnConfig;
 use devo_core::WebFetchConfig;
 use devo_core::WebSearchConfig;
 use devo_core::default_base_instructions;
-use devo_core::normalize_canonical_path;
+use devo_core::normalize_native_path;
 use devo_core::provider_request_model_map_for_binding;
 use devo_core::read_user_auth_config;
 use devo_core::resolve_enabled_model_binding;
@@ -679,7 +679,7 @@ fn core_skill_record_to_protocol(record: devo_core::CoreSkillRecord) -> SkillRec
                     })
                     .collect(),
             }),
-        path: normalize_canonical_path(record.path),
+        path: normalize_native_path(record.path),
         enabled: record.enabled,
         source: core_skill_source_to_protocol(record.source),
         scope: core_skill_scope_to_protocol(record.scope),
@@ -710,7 +710,7 @@ fn core_skill_scope_to_protocol(scope: devo_core::CoreSkillScope) -> ProtocolSki
 }
 
 fn render_resolved_skill(skill: &ResolvedSkill) -> String {
-    let base_dir = normalize_canonical_path(
+    let base_dir = normalize_native_path(
         skill
             .record
             .path

@@ -2,20 +2,20 @@
   "description": "Lock file pinning the official ACP/A2A specification snapshots used by the adapters. Upgrading a protocol requires explicitly updating this file, the generated bindings, and the conformance fixtures in the same change.",
   "protocols": {
     "acp": {
-      "version": "1",
-      "snapshot": "~/Downloads/agent-client-protocol-main",
+      "version": "1.20.0",
+      "snapshot": "~/Downloads/agent-client-protocol-schema-v1.20.0",
       "truthSources": [
         {
           "path": "schema/v1/schema.json",
           "role": "wire schema (normative)",
-          "sha256": "7f1fba1561163729115247df75b67aeed02085115fbc7ef0131fb01d456c08f9"
+          "sha256": "92c1dfcda10dd47e99127500a3763da2b471f9ac61e12b9bf0430c32cf953796"
         }
       ],
       "supplementary": [
         "schema/v1/src/",
         "docs/protocol/v1/"
       ],
-      "notes": "schema/v2 is unstable and is NOT adopted."
+      "notes": "Stable ACP v1.20 is the target; schema/v2 is draft and is NOT adopted."
     },
     "a2a": {
       "version": "1.0",

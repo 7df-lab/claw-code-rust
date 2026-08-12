@@ -2,8 +2,8 @@
 
 use devo_core::RawContextBreakdown;
 use devo_protocol::Model;
-use devo_protocol::canonical::item::ContextCategoryId;
-use devo_protocol::canonical::item::ContextOccupancy;
+use devo_protocol::native::item::ContextCategoryId;
+use devo_protocol::native::item::ContextOccupancy;
 
 /// Resolve the applied compaction / effective-context limit for a model.
 ///

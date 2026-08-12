@@ -6,7 +6,7 @@ use super::super::*;
 const TURN_INTERRUPT_TERMINAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl ServerRuntime {
-    pub(crate) async fn handle_turn_interrupt(
+    pub(crate) async fn interrupt_turn(
         self: &Arc<Self>,
         request_id: serde_json::Value,
         params: serde_json::Value,
@@ -17,10 +17,19 @@ impl ServerRuntime {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InvalidParams,
-                    format!("invalid turn/interrupt params: {error}"),
+                    format!("invalid interrupt params: {error}"),
                 );
             }
         };
+        self.handle_turn_interrupt_translated(request_id, params)
+            .await
+    }
+
+    async fn handle_turn_interrupt_translated(
+        self: &Arc<Self>,
+        request_id: serde_json::Value,
+        params: TurnInterruptParams,
+    ) -> serde_json::Value {
         let Some(session_handle) = self.session(params.session_id).await else {
             return self.error_response(
                 request_id,
@@ -326,6 +335,6 @@ impl ServerRuntime {
             id: request_id,
             result: TurnInterruptResult { turn_id, status },
         })
-        .expect("serialize turn/interrupt response")
+        .expect("serialize interrupt response")
     }
 }

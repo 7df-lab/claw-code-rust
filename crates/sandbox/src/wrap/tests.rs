@@ -97,15 +97,22 @@ fn macos_pipe_and_pty_wrap_via_sandbox_exec() {
 #[cfg(all(feature = "enforce", target_os = "macos"))]
 fn macos_wrap_without_launcher_records_not_enforced() {
     let logger = SandboxLogger::new();
-    let wrap = macos_wrap(
-        &ProfileName::Workspace,
-        &resolved_profile(&["secret.txt"], false),
-        Path::new("/tmp"),
-        /*sandbox_exec_available*/ false,
-        WrapMode::PtyOnly,
-        &logger,
-        false,
-    )
+    let profile_name = ProfileName::Workspace;
+    let config = SandboxConfig::default();
+    let resolved = resolved_profile(&["secret.txt"], false);
+    let wrap = macos_wrap(WrapContext {
+        profile_name: &profile_name,
+        config: &config,
+        resolved: &resolved,
+        workspace: Path::new("/tmp"),
+        mode: WrapMode::PtyOnly,
+        launchers: LauncherAvailability {
+            sandbox_exec: false,
+            bwrap: false,
+        },
+        logger: &logger,
+        has_overlay: false,
+    })
     .expect("a missing launcher is a warn-and-release, not an error");
 
     assert_eq!(wrap, SandboxWrap::None);
@@ -140,15 +147,19 @@ fn macos_wrap_success_records_profile_applied() {
         .expect("custom profile resolves");
     let logger = SandboxLogger::new();
 
-    let wrap = macos_wrap(
-        &profile,
-        &resolved,
-        &workspace,
-        /*sandbox_exec_available*/ true,
-        WrapMode::PtyOnly,
-        &logger,
-        false,
-    )
+    let wrap = macos_wrap(WrapContext {
+        profile_name: &profile,
+        config: &config,
+        resolved: &resolved,
+        workspace: &workspace,
+        mode: WrapMode::PtyOnly,
+        launchers: LauncherAvailability {
+            sandbox_exec: true,
+            bwrap: false,
+        },
+        logger: &logger,
+        has_overlay: false,
+    })
     .expect("wrap construction must not fail");
 
     assert!(matches!(&wrap, SandboxWrap::Wrapped(_)), "{wrap:?}");
@@ -178,18 +189,22 @@ fn macos_wrap_success_records_profile_applied() {
 #[cfg(target_os = "linux")]
 fn linux_wrap_without_bwrap_records_not_enforced() {
     let logger = SandboxLogger::new();
-    let wrap = linux_wrap(
-        &ProfileName::Workspace,
-        &SandboxConfig::default(),
-        &resolved_profile(&["secret.txt"], false),
-        Path::new("/tmp"),
-        WrapMode::PipeComposed,
-        LauncherAvailability {
+    let profile_name = ProfileName::Workspace;
+    let config = SandboxConfig::default();
+    let resolved = resolved_profile(&["secret.txt"], false);
+    let wrap = linux_wrap(WrapContext {
+        profile_name: &profile_name,
+        config: &config,
+        resolved: &resolved,
+        workspace: Path::new("/tmp"),
+        mode: WrapMode::PipeComposed,
+        launchers: LauncherAvailability {
             sandbox_exec: false,
             bwrap: false,
         },
-        &logger,
-    )
+        logger: &logger,
+        has_overlay: false,
+    })
     .expect("a missing bwrap is a warn-and-release, not an error");
 
     assert_eq!(wrap, SandboxWrap::None);

@@ -136,7 +136,7 @@ pub struct TurnRecord {
     /// Used by resume/fork/rollback to restore category occupancy at a cut
     /// turn rather than copying the session tip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+    pub context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
     /// The terminal provider/model stop reason, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<StopReason>,
@@ -280,7 +280,7 @@ pub struct ApprovalDecisionItem {
     pub scope: String,
     /// Authority that produced the decision. Absent on legacy records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decision_source: Option<devo_protocol::canonical::item::ApprovalDecisionSource>,
+    pub decision_source: Option<devo_protocol::native::item::ApprovalDecisionSource>,
 }
 
 /// Enumerates the canonical persisted item kinds used by the conversation model.
@@ -443,7 +443,52 @@ pub struct CompactionSnapshotLine {
     pub preserved_item_ids: Vec<ItemId>,
     /// Post-compaction context occupancy, when computed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+    pub context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
+}
+
+/// Identifies one field of the field-level session settings log
+/// (L2-DES-CONV-002 DD-4). Field lines supersede the corresponding
+/// `SessionMeta` record fields during replay: the last line per field wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionSettingsField {
+    /// Session permission preset override (`SessionRecord::permission_preset`).
+    PermissionPreset,
+    /// Explicit sandbox profile override. A `PermissionPreset` line clears
+    /// this override (the preset re-implies the sandbox); a later
+    /// `SandboxProfile` line sets it again.
+    SandboxProfile,
+    /// Logical model selection (`SessionRecord::model`).
+    Model,
+    /// Provider model binding id (`SessionRecord::model_binding_id`).
+    ModelBindingId,
+    /// Reasoning effort selection (`SessionRecord::reasoning_effort_selection`).
+    ReasoningEffortSelection,
+    /// Session collaboration mode (`SessionRecord::collaboration_mode`).
+    CollaborationMode,
+}
+
+/// Stores one field-level session settings change in the rollout file.
+/// Carried on disk as `InternalRecordV2::SessionSettings`; the legacy line
+/// exists so replay can consume it through the same `RolloutLine` channel as
+/// every other record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionSettingsLine {
+    /// The time when this rollout line was persisted.
+    pub timestamp: DateTime<Utc>,
+    /// The session whose setting changed.
+    pub session_id: SessionId,
+    /// The settings field that changed.
+    pub field: SessionSettingsField,
+    /// The new value, encoded with the field's natural JSON shape (e.g. the
+    /// `PermissionPreset` string, a sandbox profile name, a model slug).
+    pub value: serde_json::Value,
+    /// Per-session logical sequence number ordering settings writes. Assigned
+    /// authoritatively by the per-file projector at write time (callers pass
+    /// `0` as a placeholder); replay uses line order and treats the epoch as
+    /// an ordering/trace annotation for cross-path writes.
+    #[serde(default)]
+    pub epoch: u64,
 }
 
 /// Stores an append-only rollback marker for a session rollout.
@@ -546,6 +591,8 @@ pub enum RolloutLine {
     TurnWorkspaceRestoreCompleted(Box<TurnWorkspaceRestoreCompletedLine>),
     /// Session rollback marker line.
     SessionRollback(Box<SessionRollbackLine>),
+    /// Field-level session settings change line.
+    SessionSettings(SessionSettingsLine),
 }
 
 #[cfg(test)]
@@ -697,7 +744,7 @@ mod tests {
     fn turn_record_roundtrips_context_occupancy() {
         use pretty_assertions::assert_eq;
 
-        let occupancy = devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+        let occupancy = devo_protocol::native::item::ContextOccupancy::from_category_tokens(
             /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 5_000,
             /*tools_builtin*/ 20_000, /*tools_mcp*/ 15_000, /*conversation*/ 50_000,
         );
@@ -1143,7 +1190,7 @@ mod tests {
             summary_item_id: ItemId::new(),
             preserved_item_ids: vec![ItemId::new(), ItemId::new(), ItemId::new()],
             context_occupancy: Some(
-                devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+                devo_protocol::native::item::ContextOccupancy::from_category_tokens(
                     /*context_window_tokens*/ 80_000, /*base*/ 8_000,
                     /*skills*/ 2_000, /*tools_builtin*/ 10_000, /*tools_mcp*/ 0,
                     /*conversation*/ 20_000,

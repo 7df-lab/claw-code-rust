@@ -35,9 +35,9 @@ mod key_hint;
 mod line_truncation;
 mod live_wrap;
 mod markdown;
-mod math_render;
 pub mod markdown_render;
 mod markdown_stream;
+mod math_render;
 #[cfg(test)]
 mod mcp_command_tests;
 mod mcp_picker;

@@ -177,15 +177,16 @@ async fn acp_session_list_orders_by_last_activity_not_metadata_update() -> Resul
             connection_id,
             serde_json::json!({
                 "id": 12,
-                "method": "_devo/session/title/update",
+                "method": "session/metadata/update",
                 "params": {
-                    "session_id": first_id,
+                    "sessionId": first_id,
+                    "expectedVersion": 0,
                     "title": "Metadata-only rename"
                 }
             }),
         )
         .await
-        .context("session/title/update response")?;
+        .context("session/metadata/update response")?;
 
     let listed = list_acp_sessions(&runtime, connection_id, 13, Some(&cwd), None).await?;
 
@@ -359,9 +360,8 @@ async fn acp_session_load_replays_history_and_rejects_relative_roots() -> Result
     )
     .await?;
 
-    assert_legacy_session_method_removed(&runtime, connection_id, 25, "_devo/session/start")
-        .await?;
-    assert_legacy_session_method_removed(&runtime, connection_id, 26, "_devo/session/list").await?;
+    assert_removed_session_method(&runtime, connection_id, 25, "legacy/session/start").await?;
+    assert_removed_session_method(&runtime, connection_id, 26, "legacy/session/list").await?;
     Ok(())
 }
 
@@ -1379,7 +1379,7 @@ async fn acp_session_resume_lazy_loads_without_memory_actor() -> Result<()> {
     Ok(())
 }
 
-async fn assert_legacy_session_method_removed(
+async fn assert_removed_session_method(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
     request_id: u64,
@@ -1398,13 +1398,10 @@ async fn assert_legacy_session_method_removed(
         .context("legacy session method response")?;
     let response: serde_json::Value = response;
     assert_eq!(response["id"], serde_json::json!(request_id));
-    assert_eq!(
-        response["error"]["code"],
-        serde_json::json!("InvalidParams")
-    );
+    assert_eq!(response["error"]["code"], serde_json::json!(-32601));
     assert_eq!(
         response["error"]["message"],
-        serde_json::json!(format!("unknown method: {method}"))
+        serde_json::json!(format!("unknown ACP method: {method}"))
     );
     Ok(())
 }

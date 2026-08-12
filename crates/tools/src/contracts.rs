@@ -26,18 +26,13 @@ pub struct ToolBudgets {
 }
 
 /// Network access requested by a single sandboxed tool invocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum SandboxNetworkPermission {
     /// Preserve the active profile's network policy.
+    #[default]
     Unchanged,
     /// Allow network access while preserving filesystem sandboxing.
     Enabled,
-}
-
-impl Default for SandboxNetworkPermission {
-    fn default() -> Self {
-        Self::Unchanged
-    }
 }
 
 /// Additional sandbox capabilities granted to one tool invocation.

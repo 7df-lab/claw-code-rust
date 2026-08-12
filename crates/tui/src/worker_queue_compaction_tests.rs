@@ -75,15 +75,15 @@ fn queue_updated_drain_promotes_pending_into_history() {
         turn_id: TurnId::new(),
     });
 
-    let queue_item_id = devo_protocol::canonical::ids::QueueItemId::from_string("qit_test".into());
+    let queue_item_id = devo_protocol::native::ids::QueueItemId::from_string("qit_test".into());
     widget.handle_worker_event(WorkerEvent::QueueUpdated {
-        change: devo_protocol::canonical::queue::QueueChange::Added,
+        change: devo_protocol::native::queue::QueueChange::Added,
         queue_item_id: queue_item_id.clone(),
         started_turn_id: None,
-        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+        entries: vec![devo_protocol::native::queue::QueueEntry {
             queue_item_id: queue_item_id.clone(),
             position: 1,
-            input: vec![devo_protocol::canonical::item::UserInput::Text {
+            input: vec![devo_protocol::native::item::UserInput::Text {
                 text: "remote queued".to_string(),
             }],
             preview: "remote queued".to_string(),
@@ -93,7 +93,7 @@ fn queue_updated_drain_promotes_pending_into_history() {
     assert!(widget.bottom_pane_has_pending_for_test());
 
     widget.handle_worker_event(WorkerEvent::QueueUpdated {
-        change: devo_protocol::canonical::queue::QueueChange::Drained,
+        change: devo_protocol::native::queue::QueueChange::Drained,
         queue_item_id,
         started_turn_id: Some(TurnId::new()),
         entries: Vec::new(),

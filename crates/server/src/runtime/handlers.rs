@@ -1,4 +1,4 @@
-mod acp;
+pub(super) mod acp;
 mod acp_auth;
 pub(crate) mod acp_config_options;
 mod acp_slash_commands;
@@ -12,6 +12,7 @@ pub(super) mod rollback;
 pub(super) mod rollback_plan;
 mod rollback_workspace;
 mod session;
+mod session_interrupt;
 pub(crate) mod subscription;
 mod turn;
 mod turn_interrupt;

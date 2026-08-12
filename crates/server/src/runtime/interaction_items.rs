@@ -1,8 +1,8 @@
 use chrono::Utc;
-use devo_protocol::canonical::ids::{
-    ItemId as CanonicalItemId, SessionId as CanonicalSessionId, TurnId as CanonicalTurnId,
+use devo_protocol::native::ids::{
+    ItemId as NativeItemId, SessionId as NativeSessionId, TurnId as NativeTurnId,
 };
-use devo_protocol::canonical::item::{
+use devo_protocol::native::item::{
     ApprovalDecision, ApprovalDecisionKind, ApprovalDecisionSource, ApprovalScope, ApprovalTarget,
     FileChangeEntry, FileChangeKind, Item, ItemEnvelope, ItemState, UserQuestion,
     UserQuestionOption,
@@ -21,7 +21,7 @@ impl ServerRuntime {
         request: &devo_core::tools::ToolPermissionRequest,
         available_scopes: &[String],
     ) -> Option<crate::execution::PersistedLivingItem> {
-        let item_id = CanonicalItemId::from_legacy_uuid(Uuid::from(item_id));
+        let item_id = NativeItemId::from_legacy_uuid(Uuid::from(item_id));
         let now = Utc::now();
         let item = approval_envelope(
             item_id.clone(),
@@ -37,7 +37,7 @@ impl ServerRuntime {
             available_scopes,
             None,
         );
-        self.persist_canonical_active_turn_item(session_id, item)
+        self.persist_native_active_turn_item(session_id, item)
             .await
             .then_some(crate::execution::PersistedLivingItem {
                 item_id,
@@ -78,8 +78,7 @@ impl ServerRuntime {
                 decided_at: now,
             }),
         );
-        self.persist_canonical_active_turn_item(session_id, item)
-            .await;
+        self.persist_native_active_turn_item(session_id, item).await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -96,7 +95,7 @@ impl ServerRuntime {
     ) {
         let now = Utc::now();
         let item = approval_envelope(
-            CanonicalItemId::from_legacy_uuid(Uuid::from(item_id)),
+            NativeItemId::from_legacy_uuid(Uuid::from(item_id)),
             session_id,
             turn_id,
             seq,
@@ -114,8 +113,7 @@ impl ServerRuntime {
                 decided_at: now,
             }),
         );
-        self.persist_canonical_active_turn_item(session_id, item)
-            .await;
+        self.persist_native_active_turn_item(session_id, item).await;
     }
 
     pub(super) async fn persist_file_change_item(
@@ -129,9 +127,9 @@ impl ServerRuntime {
     ) {
         let now = Utc::now();
         let item = ItemEnvelope {
-            id: CanonicalItemId::from_legacy_uuid(Uuid::from(item_id)),
-            session_id: CanonicalSessionId::from_legacy_uuid(Uuid::from(session_id)),
-            turn_id: CanonicalTurnId::from_legacy_uuid(Uuid::from(turn_id)),
+            id: NativeItemId::from_legacy_uuid(Uuid::from(item_id)),
+            session_id: NativeSessionId::from_legacy_uuid(Uuid::from(session_id)),
+            turn_id: NativeTurnId::from_legacy_uuid(Uuid::from(turn_id)),
             seq,
             revision: 2,
             created_at: now,
@@ -166,8 +164,7 @@ impl ServerRuntime {
                 sandbox: None,
             },
         };
-        self.persist_canonical_active_turn_item(session_id, item)
-            .await;
+        self.persist_native_active_turn_item(session_id, item).await;
     }
 
     pub(super) async fn persist_waiting_user_input_item(
@@ -177,13 +174,13 @@ impl ServerRuntime {
         request_id: String,
         questions: &[devo_protocol::RequestUserInputQuestion],
     ) -> Option<crate::execution::PersistedLivingItem> {
-        let item_id = CanonicalItemId::from_legacy_uuid(Uuid::now_v7());
+        let item_id = NativeItemId::from_legacy_uuid(Uuid::now_v7());
         let seq = self.allocate_item_sequence(session_id).await;
         let now = Utc::now();
         let item = ItemEnvelope {
             id: item_id.clone(),
-            session_id: CanonicalSessionId::from_legacy_uuid(Uuid::from(session_id)),
-            turn_id: CanonicalTurnId::from_legacy_uuid(Uuid::from(turn_id)),
+            session_id: NativeSessionId::from_legacy_uuid(Uuid::from(session_id)),
+            turn_id: NativeTurnId::from_legacy_uuid(Uuid::from(turn_id)),
             seq,
             revision: 1,
             created_at: now,
@@ -192,11 +189,11 @@ impl ServerRuntime {
             item: Item::UserInputRequest {
                 request_id,
                 target_item_id: None,
-                questions: canonical_questions(questions),
+                questions: native_questions(questions),
                 answers: None,
             },
         };
-        self.persist_canonical_active_turn_item(session_id, item)
+        self.persist_native_active_turn_item(session_id, item)
             .await
             .then_some(crate::execution::PersistedLivingItem {
                 item_id,
@@ -217,8 +214,8 @@ impl ServerRuntime {
         let now = Utc::now();
         let item = ItemEnvelope {
             id: persisted.item_id.clone(),
-            session_id: CanonicalSessionId::from_legacy_uuid(Uuid::from(session_id)),
-            turn_id: CanonicalTurnId::from_legacy_uuid(Uuid::from(turn_id)),
+            session_id: NativeSessionId::from_legacy_uuid(Uuid::from(session_id)),
+            turn_id: NativeTurnId::from_legacy_uuid(Uuid::from(turn_id)),
             seq: persisted.seq,
             revision: 2,
             created_at: persisted.created_at,
@@ -227,15 +224,14 @@ impl ServerRuntime {
             item: Item::UserInputRequest {
                 request_id,
                 target_item_id: None,
-                questions: canonical_questions(questions),
+                questions: native_questions(questions),
                 answers: serde_json::to_value(response).ok(),
             },
         };
-        self.persist_canonical_active_turn_item(session_id, item)
-            .await;
+        self.persist_native_active_turn_item(session_id, item).await;
     }
 
-    async fn persist_canonical_active_turn_item(
+    async fn persist_native_active_turn_item(
         &self,
         session_id: SessionId,
         item: ItemEnvelope,
@@ -269,7 +265,7 @@ impl ServerRuntime {
 
 #[allow(clippy::too_many_arguments)]
 fn approval_envelope(
-    item_id: CanonicalItemId,
+    item_id: NativeItemId,
     session_id: SessionId,
     turn_id: TurnId,
     seq: u64,
@@ -284,8 +280,8 @@ fn approval_envelope(
 ) -> ItemEnvelope {
     ItemEnvelope {
         id: item_id,
-        session_id: CanonicalSessionId::from_legacy_uuid(Uuid::from(session_id)),
-        turn_id: CanonicalTurnId::from_legacy_uuid(Uuid::from(turn_id)),
+        session_id: NativeSessionId::from_legacy_uuid(Uuid::from(session_id)),
+        turn_id: NativeTurnId::from_legacy_uuid(Uuid::from(turn_id)),
         seq,
         revision,
         created_at,
@@ -319,7 +315,9 @@ fn approval_envelope(
     }
 }
 
-fn canonical_questions(questions: &[devo_protocol::RequestUserInputQuestion]) -> Vec<UserQuestion> {
+pub(super) fn native_questions(
+    questions: &[devo_protocol::RequestUserInputQuestion],
+) -> Vec<UserQuestion> {
     questions
         .iter()
         .map(|question| UserQuestion {

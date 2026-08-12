@@ -118,16 +118,7 @@ pub(super) async fn run_session_actor(
             }
             SessionCommand::GetShellExecContext { cwd, reply } => {
                 let _ = &cwd;
-                let tool_registry = state
-                    .tool_registry
-                    .clone()
-                    .unwrap_or_else(|| state.runtime_context.tool_registry());
                 let _ = reply.send(ShellExecContextSnapshot {
-                    permission_mode: state.core.config.permission_mode,
-                    permission_profile: state.core.config.permission_profile.clone(),
-                    runtime_context: Arc::clone(&state.runtime_context),
-                    tool_registry,
-                    file_read_ledger: Arc::clone(&state.file_read_ledger),
                     sandbox_profile: state.core.config.sandbox_profile.clone(),
                 });
             }
@@ -227,9 +218,6 @@ pub(super) async fn run_session_actor(
             SessionCommand::TakeDeferredItems { reply } => {
                 let _ = reply.send(state.stream.lock().await.take_deferred_items());
             }
-            SessionCommand::ResetTurnApprovalCache => {
-                state.turn_approval_cache = crate::execution::ApprovalGrantCache::default();
-            }
             SessionCommand::TouchLastActivity => {
                 state.summary.last_activity_at = state.summary.last_activity_at.max(Utc::now());
             }
@@ -324,25 +312,6 @@ pub(super) async fn run_session_actor(
                 state.summary.updated_at = now;
                 state.summary.last_activity_at = now;
                 state.active_turn = Some(turn);
-            }
-            SessionCommand::CompleteShellTurn {
-                turn,
-                is_error,
-                reply,
-            } => {
-                let mut final_turn = turn;
-                final_turn.completed_at = Some(Utc::now());
-                final_turn.status = if is_error {
-                    TurnStatus::Failed
-                } else {
-                    TurnStatus::Completed
-                };
-                state.latest_turn = Some(final_turn.clone());
-                state.active_turn = None;
-                state.summary.status = SessionRuntimeStatus::Idle;
-                state.summary.updated_at = Utc::now();
-                state.summary.last_activity_at = state.summary.updated_at;
-                let _ = reply.send(final_turn);
             }
             SessionCommand::UpdateCorePermissionMode { permission_mode } => {
                 state.core.config.permission_mode = permission_mode;

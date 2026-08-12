@@ -125,6 +125,7 @@ pub(crate) async fn run_prompt(
             network_proxy: None,
             network_no_proxy: None,
             sandbox_profile: session_state.config.sandbox_profile.clone(),
+            sandbox_profile_live: None,
         },
     );
     let provider = Arc::new(RoutedPromptProvider::new(

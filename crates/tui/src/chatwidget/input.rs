@@ -430,7 +430,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn request_interrupt(&mut self) -> bool {
-        if !self.busy || self.active_turn_id.is_none() {
+        if !self.busy || (self.active_turn_id.is_none() && !self.bottom_pane.is_task_running()) {
             return false;
         }
         self.bottom_pane.begin_interrupt();

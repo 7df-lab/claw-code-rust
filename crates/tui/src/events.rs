@@ -20,7 +20,7 @@ use devo_protocol::RequestUserInputQuestion;
 use devo_protocol::SessionHistoryItem;
 use devo_protocol::SessionRuntimeStatus;
 use devo_protocol::ThreadGoal;
-use devo_protocol::canonical::item::ContextOccupancy;
+use devo_protocol::native::item::ContextOccupancy;
 use devo_protocol::parse_command::ParsedCommand;
 use devo_protocol::protocol::ExecCommandSource;
 use devo_protocol::protocol::FileChange;
@@ -177,12 +177,12 @@ pub(crate) enum WorkerEvent {
     },
     /// The active session identifier is now known.
     SessionActivated { session_id: SessionId },
-    /// Canonical session queue snapshot (`queue/updated` / list / push).
+    /// Native session queue snapshot (`queue/updated` / list / push).
     QueueUpdated {
-        change: devo_protocol::canonical::queue::QueueChange,
-        queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+        change: devo_protocol::native::queue::QueueChange,
+        queue_item_id: devo_protocol::native::ids::QueueItemId,
         started_turn_id: Option<TurnId>,
-        entries: Vec<devo_protocol::canonical::queue::QueueEntry>,
+        entries: Vec<devo_protocol::native::queue::QueueEntry>,
     },
     /// A steer (/btw) was accepted by the server.
     SteerAccepted { turn_id: TurnId },
@@ -508,18 +508,18 @@ pub(crate) enum WorkerEvent {
     },
     /// MCP server runtime statuses from `mcp/list`.
     McpServersListed {
-        servers: Vec<devo_protocol::canonical::rpc_admin::McpServerInfo>,
+        servers: Vec<devo_protocol::native::rpc_admin::McpServerInfo>,
     },
     /// Tools for one MCP server from `mcp/tools`.
     McpToolsListed {
         name: String,
-        tools: Vec<devo_protocol::canonical::rpc_admin::McpToolEntry>,
+        tools: Vec<devo_protocol::native::rpc_admin::McpToolEntry>,
     },
     /// MCP enable/disable applied via `mcp/set_enabled`.
     McpServerEnabled {
         name: String,
         enabled: bool,
-        servers: Vec<devo_protocol::canonical::rpc_admin::McpServerInfo>,
+        servers: Vec<devo_protocol::native::rpc_admin::McpServerInfo>,
     },
     /// MCP enable/disable failed.
     McpServerEnableFailed { name: String, message: String },

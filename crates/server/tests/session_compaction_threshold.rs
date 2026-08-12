@@ -1,4 +1,5 @@
-//! Global compaction threshold via `session/compaction/update` and config.toml.
+//! Global compaction threshold via the canonical session settings patch and
+//! config.toml.
 
 use std::path::Path;
 use std::pin::Pin;
@@ -102,6 +103,7 @@ async fn initialize_connection(runtime: &Arc<ServerRuntime>) -> Result<u64> {
                 "params": {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                     "clientInfo": {
                         "name": "compaction-threshold-test",
                         "title": "Compaction Threshold Test",
@@ -149,22 +151,23 @@ async fn compaction_update(
     connection_id: u64,
     session_id: SessionId,
     effective_context_window: u64,
-) -> Result<devo_server::SessionCompactionUpdateResult> {
+) -> Result<devo_protocol::native::rpc_session::SessionMetadataUpdateResult> {
     let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 3,
-                "method": "session/compaction/update",
+                "method": "session/metadata/update",
                 "params": {
                     "sessionId": session_id,
-                    "effectiveContextWindow": effective_context_window
+                    "expectedVersion": 0,
+                    "settings": { "effectiveContextWindow": effective_context_window }
                 }
             }),
         )
         .await
-        .context("session/compaction/update response")?;
-    let response: SuccessResponse<devo_server::SessionCompactionUpdateResult> =
+        .context("session/metadata/update response")?;
+    let response: SuccessResponse<devo_protocol::native::rpc_session::SessionMetadataUpdateResult> =
         serde_json::from_value(response)?;
     Ok(response.result)
 }
@@ -190,8 +193,10 @@ async fn compaction_update_writes_global_config_and_applies_to_session() -> Resu
         /*effective_context_window*/ 250_000,
     )
     .await?;
-    assert_eq!(updated.effective_context_window, 250_000);
-    assert!(updated.context_window_tokens >= 250_000);
+    assert_eq!(
+        updated.session.settings.effective_context_window,
+        Some(250_000)
+    );
 
     let config_text = std::fs::read_to_string(data_root.path().join("config.toml"))?;
     let document: toml::Value = toml::from_str(&config_text)?;

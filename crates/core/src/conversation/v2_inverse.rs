@@ -14,17 +14,17 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use devo_protocol::canonical::error::AgentError;
-use devo_protocol::canonical::ids::{
+use devo_protocol::native::error::AgentError;
+use devo_protocol::native::ids::{
     ItemId as CanonicalItemId, SessionId as CanonicalSessionId, TurnId as CanonicalTurnId,
 };
-use devo_protocol::canonical::item::{
+use devo_protocol::native::item::{
     ApprovalDecisionKind, ApprovalScope, ApprovalTarget, InternalEntry, Item, ItemEnvelope,
     UserInput, UserMessageEntry,
 };
-use devo_protocol::canonical::model::PermissionProfile;
-use devo_protocol::canonical::session::{Session, SessionParent};
-use devo_protocol::canonical::turn::{Turn, TurnKind, TurnStatus};
+use devo_protocol::native::model::PermissionProfile;
+use devo_protocol::native::session::{Session, SessionParent};
+use devo_protocol::native::turn::{Turn, TurnKind, TurnStatus};
 use uuid::Uuid;
 
 use crate::conversation::rollout_v2::{
@@ -508,7 +508,7 @@ impl V2InverseProjector {
                             decision: legacy_decision_string(decision.decision).into(),
                             scope: legacy_scope_string(decision.scope).into(),
                             decision_source: (decision.decision_source
-                                != devo_protocol::canonical::item::ApprovalDecisionSource::User)
+                                != devo_protocol::native::item::ApprovalDecisionSource::User)
                                 .then_some(decision.decision_source),
                         }),
                     )?;
@@ -645,6 +645,20 @@ impl V2InverseProjector {
                     timestamp,
                     record: record.clone(),
                 }),
+            )]),
+            InternalRecordV2::SessionSettings {
+                field,
+                value,
+                epoch,
+                ..
+            } => Ok(vec![RolloutLine::SessionSettings(
+                crate::conversation::records::SessionSettingsLine {
+                    timestamp,
+                    session_id: legacy_session_id(session_id)?,
+                    field: *field,
+                    value: value.clone(),
+                    epoch: *epoch,
+                },
             )]),
             // There is no legacy session-rollout representation for Goal
             // snapshots; old builds continue to use the read-only

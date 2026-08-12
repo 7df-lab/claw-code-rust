@@ -106,7 +106,7 @@ async fn turn_start_append_failure_does_not_launch_model_turn_or_leave_session_a
             connection_id,
             serde_json::json!({
                 "id": 3,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": turn_start_params(session.session_id)
             }),
         )
@@ -135,7 +135,7 @@ async fn turn_start_append_failure_does_not_launch_model_turn_or_leave_session_a
             connection_id,
             serde_json::json!({
                 "id": 4,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": turn_start_params(session.session_id)
             }),
         )
@@ -148,7 +148,7 @@ async fn turn_start_append_failure_does_not_launch_model_turn_or_leave_session_a
         .recv()
         .await
         .context("provider stream call after successful turn/start")?;
-    interrupt_turn(
+    interrupt_session(
         &runtime,
         connection_id,
         session.session_id,
@@ -172,7 +172,7 @@ async fn message_edit_previous_accepts_skip_restore_and_replaces_prompt_branch()
             connection_id,
             serde_json::json!({
                 "id": 6,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": turn_start_params(session.session_id)
             }),
         )
@@ -188,7 +188,7 @@ async fn message_edit_previous_accepts_skip_restore_and_replaces_prompt_branch()
         request_messages_json(&original_request)?.contains("hello"),
         "original request should contain submitted prompt"
     );
-    interrupt_turn(
+    interrupt_session(
         &runtime,
         connection_id,
         session.session_id,
@@ -199,28 +199,32 @@ async fn message_edit_previous_accepts_skip_restore_and_replaces_prompt_branch()
     )
     .await?;
 
+    let (item_id, expected_revision) =
+        previous_user_item(&runtime, connection_id, session.session_id).await?;
+
     let edit_response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 7,
-                "method": "_devo/message/editPrevious",
+                "method": "session/message/edit",
                 "params": {
-                    "session_id": session.session_id,
-                    "expected_target_message_id": null,
-                    "edited_content_parts": [{ "type": "text", "text": "edited message" }],
-                    "edited_mentions": [],
-                    "workspace_restore_policy": "skip"
+                    "sessionId": session.session_id,
+                    "itemId": item_id,
+                    "expectedRevision": expected_revision,
+                    "content": [{ "type": "text", "text": "edited message" }],
+                    "workspaceRestore": "skip",
+                    "idempotencyKey": "edit-skip-restore"
                 }
             }),
         )
         .await
-        .context("message/editPrevious response")?;
-    let edit_response: devo_server::SuccessResponse<devo_server::MessageEditPreviousResult> =
-        serde_json::from_value(edit_response)?;
+        .context("session/message/edit response")?;
+    let edit_response: devo_protocol::native::rpc_session::SessionMessageEditResult =
+        serde_json::from_value(edit_response["result"].clone())?;
     let replacement_turn_id = edit_response
-        .result
         .replacement_turn_id
+        .clone()
         .context("replacement turn id")?;
     let replacement_request = stream_calls_rx
         .recv()
@@ -240,14 +244,14 @@ async fn message_edit_previous_accepts_skip_restore_and_replaces_prompt_branch()
     // v2 write path: edit markers travel as internal lines.
     assert!(rollout.contains(r#""type":"messageEdit""#));
     assert!(rollout.contains(r#""type":"turnSuperseded""#));
-    assert!(rollout.contains(&edit_response.result.replacement_message_id.to_string()));
-    assert!(rollout.contains(&replacement_turn_id.to_string()));
+    assert!(rollout.contains(&edit_response.item.id.to_string()));
+    assert!(rollout.contains(replacement_turn_id.as_str()));
 
-    interrupt_turn(
+    interrupt_session(
         &runtime,
         connection_id,
         session.session_id,
-        replacement_turn_id,
+        TurnId::try_from(replacement_turn_id.as_str()).context("legacy replacement turn id")?,
     )
     .await?;
 
@@ -269,7 +273,7 @@ async fn message_edit_previous_default_safe_restore_records_and_broadcasts() -> 
             connection_id,
             serde_json::json!({
                 "id": 6,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": turn_start_params(session.session_id)
             }),
         )
@@ -281,7 +285,7 @@ async fn message_edit_previous_default_safe_restore_records_and_broadcasts() -> 
         .recv()
         .await
         .context("original provider request")?;
-    interrupt_turn(
+    interrupt_session(
         &runtime,
         connection_id,
         session.session_id,
@@ -293,27 +297,31 @@ async fn message_edit_previous_default_safe_restore_records_and_broadcasts() -> 
     .await?;
     drain_notifications(&mut notifications_rx).await;
 
+    let (item_id, expected_revision) =
+        previous_user_item(&runtime, connection_id, session.session_id).await?;
+
     let edit_response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 7,
-                "method": "_devo/message/editPrevious",
+                "method": "session/message/edit",
                 "params": {
-                    "session_id": session.session_id,
-                    "expected_target_message_id": null,
-                    "edited_content_parts": [{ "type": "text", "text": "edited message" }],
-                    "edited_mentions": []
+                    "sessionId": session.session_id,
+                    "itemId": item_id,
+                    "expectedRevision": expected_revision,
+                    "content": [{ "type": "text", "text": "edited message" }],
+                    "idempotencyKey": "edit-safe-restore"
                 }
             }),
         )
         .await
-        .context("message/editPrevious response")?;
-    let edit_response: devo_server::SuccessResponse<devo_server::MessageEditPreviousResult> =
-        serde_json::from_value(edit_response)?;
+        .context("session/message/edit response")?;
+    let edit_response: devo_protocol::native::rpc_session::SessionMessageEditResult =
+        serde_json::from_value(edit_response["result"].clone())?;
     let replacement_turn_id = edit_response
-        .result
         .replacement_turn_id
+        .clone()
         .context("replacement turn id")?;
     let replacement_request = stream_calls_rx
         .recv()
@@ -349,93 +357,46 @@ async fn message_edit_previous_default_safe_restore_records_and_broadcasts() -> 
         "expected workspace_restore_completed notification in {methods:?}"
     );
 
-    interrupt_turn(
+    interrupt_session(
         &runtime,
         connection_id,
         session.session_id,
-        replacement_turn_id,
+        TurnId::try_from(replacement_turn_id.as_str()).context("legacy replacement turn id")?,
     )
     .await?;
 
     Ok(())
 }
 
-#[tokio::test]
-async fn message_edit_previous_dispatches_to_edit_handler() -> Result<()> {
-    let data_root = TempDir::new()?;
-    let (stream_calls_tx, _stream_calls_rx) = mpsc::unbounded_channel();
-    let runtime = build_runtime(data_root.path(), stream_calls_tx)?;
-    let (connection_id, _notifications_rx) = initialize_connection(&runtime).await?;
-    let session = start_session(&runtime, connection_id, data_root.path()).await?;
-
-    let edit_response = runtime
+async fn previous_user_item(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    session_id: SessionId,
+) -> Result<(String, u32)> {
+    let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
-                "id": 6,
-                "method": "_devo/message/editPrevious",
-                "params": {
-                    "session_id": session.session_id,
-                    "expected_target_message_id": null,
-                    "edited_content_parts": [{ "type": "text", "text": "edited message" }],
-                    "edited_mentions": []
-                }
+                "id": 100,
+                "method": "session/items/list",
+                "params": { "sessionId": session_id }
             }),
         )
         .await
-        .context("message/editPrevious response")?;
-
-    assert_eq!(
-        edit_response["error"]["code"],
-        serde_json::json!("OlderMessageRequiresFork")
-    );
-    assert!(
-        !edit_response["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("unknown method")
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn message_edit_previous_rejects_malformed_edited_content_parts() -> Result<()> {
-    let data_root = TempDir::new()?;
-    let (stream_calls_tx, _stream_calls_rx) = mpsc::unbounded_channel();
-    let runtime = build_runtime(data_root.path(), stream_calls_tx)?;
-    let (connection_id, _notifications_rx) = initialize_connection(&runtime).await?;
-    let session = start_session(&runtime, connection_id, data_root.path()).await?;
-
-    let edit_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 6,
-                "method": "_devo/message/editPrevious",
-                "params": {
-                    "session_id": session.session_id,
-                    "expected_target_message_id": null,
-                    "edited_content_parts": [{ "type": "not_a_supported_part" }],
-                    "edited_mentions": []
-                }
-            }),
-        )
-        .await
-        .context("message/editPrevious response")?;
-
-    assert_eq!(
-        edit_response["error"]["code"],
-        serde_json::json!("InvalidContentParts")
-    );
-    assert!(
-        edit_response["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("invalid message/editPrevious edited content")
-    );
-
-    Ok(())
+        .context("session/items/list response")?;
+    let page: devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope> =
+        serde_json::from_value(response["result"].clone())?;
+    let item = page
+        .data
+        .iter()
+        .find(|item| {
+            matches!(
+                &item.item,
+                devo_protocol::native::item::Item::UserMessage { .. }
+            )
+        })
+        .context("previous user message item")?;
+    Ok((item.id.as_str().to_string(), item.revision))
 }
 
 async fn drain_notifications(notifications_rx: &mut mpsc::Receiver<serde_json::Value>) {
@@ -533,6 +494,7 @@ async fn initialize_connection(
                 "params": {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                     "clientInfo": {
                         "name": "turn-start-persistence-test",
                         "title": "turn-start-persistence-test",
@@ -578,33 +540,32 @@ async fn start_session(
     Ok(response.result.session)
 }
 
-async fn interrupt_turn(
+async fn interrupt_session(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
     session_id: SessionId,
-    turn_id: TurnId,
+    _turn_id: TurnId,
 ) -> Result<()> {
     let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 5,
-                "method": "_devo/turn/interrupt",
+                "method": "session/interrupt",
                 "params": {
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "reason": "test cleanup"
+                    "scope": {
+                        "scope": "session",
+                        "sessionId": session_id
+                    }
                 }
             }),
         )
         .await
-        .context("turn/interrupt response")?;
-    let response: devo_server::SuccessResponse<devo_server::TurnInterruptResult> =
-        serde_json::from_value(response)?;
-    assert_eq!(
-        response.result.status,
-        devo_protocol::TurnStatus::Interrupted
-    );
+        .context("session/interrupt response")?;
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionInterruptResult,
+    > = serde_json::from_value(response)?;
+    assert!(response.result.interrupted);
     Ok(())
 }
 

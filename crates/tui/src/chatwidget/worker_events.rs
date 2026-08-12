@@ -446,6 +446,7 @@ impl ChatWidget {
                 source,
                 mut command_actions,
             } => {
+                let is_user_shell = matches!(&source, ExecCommandSource::UserShell);
                 crate::read_display::normalize_read_actions(
                     &mut command_actions,
                     &self.session.cwd,
@@ -459,6 +460,10 @@ impl ChatWidget {
                     source,
                     input,
                 );
+                if is_user_shell && self.active_turn_id.is_none() {
+                    self.busy = true;
+                    self.bottom_pane.set_task_running(true);
+                }
             }
             WorkerEvent::ToolCallUpdated {
                 tool_use_id,
@@ -756,6 +761,7 @@ impl ChatWidget {
                 });
             }
             WorkerEvent::ShellCommandFinished { exit_code } => {
+                let standalone_shell = self.active_turn_id.is_none();
                 let interrupted = exit_code.is_none();
                 let accent_color = self.active_accent_color();
                 let cell = if interrupted {
@@ -776,6 +782,10 @@ impl ChatWidget {
                 self.set_status_message("Shell command completed");
                 self.current_turn_has_user_shell_command = false;
                 self.current_turn_mode = InputMode::Build;
+                if standalone_shell {
+                    self.busy = false;
+                    self.bottom_pane.set_task_running(false);
+                }
             }
             WorkerEvent::PlanUpdated { explanation, steps } => {
                 self.on_plan_updated(explanation, steps);
@@ -1549,7 +1559,7 @@ impl ChatWidget {
             WorkerEvent::QueueUpdated {
                 change, entries, ..
             } => {
-                self.apply_canonical_queue_snapshot(change, entries);
+                self.apply_native_queue_snapshot(change, entries);
                 self.frame_requester.schedule_frame();
             }
             WorkerEvent::SteerAccepted { .. } => {
@@ -1558,10 +1568,10 @@ impl ChatWidget {
         }
     }
 
-    fn apply_canonical_queue_snapshot(
+    fn apply_native_queue_snapshot(
         &mut self,
-        change: devo_protocol::canonical::queue::QueueChange,
-        entries: Vec<devo_protocol::canonical::queue::QueueEntry>,
+        change: devo_protocol::native::queue::QueueChange,
+        entries: Vec<devo_protocol::native::queue::QueueEntry>,
     ) {
         use crate::bottom_pane::PendingQueueItem;
         use crate::queue_ops::queue_entry_text;
@@ -1610,7 +1620,7 @@ impl ChatWidget {
                 .remove(&old.queue_item_id)
                 .unwrap_or(InputMode::Build);
             match change {
-                devo_protocol::canonical::queue::QueueChange::Drained => {
+                devo_protocol::native::queue::QueueChange::Drained => {
                     if self.queued_count > new_items.len() {
                         self.commit_active_streams(DotStatus::Completed);
                     }
@@ -1624,8 +1634,8 @@ impl ChatWidget {
                         mode,
                     ));
                 }
-                devo_protocol::canonical::queue::QueueChange::Removed
-                | devo_protocol::canonical::queue::QueueChange::Promoted => {}
+                devo_protocol::native::queue::QueueChange::Removed
+                | devo_protocol::native::queue::QueueChange::Promoted => {}
                 _ => {}
             }
         }

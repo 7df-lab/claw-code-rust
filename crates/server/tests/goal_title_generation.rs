@@ -24,6 +24,7 @@ use devo_protocol::SessionId;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
 use devo_protocol::Usage;
+use devo_protocol::native::rpc_session::GoalIfExists;
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
 use devo_server::ClientTransportKind;
@@ -84,16 +85,17 @@ async fn goal_set_objective_generates_session_title_for_new_session() -> Result<
             connection_id,
             serde_json::json!({
                 "id": 3,
-                "method": "_devo/goal/set",
+                "method": "session/goal/set",
                 "params": {
                     "sessionId": session_id,
                     "objective": "investigate goal title generation",
-                    "status": "active"
+                    "ifExists": GoalIfExists::Reject,
+                    "idempotencyKey": "goal-title-generation"
                 }
             }),
         )
         .await
-        .context("goal/set response")?;
+        .context("session/goal/set response")?;
 
     wait_for_title_update(&mut notifications_rx, "Generated goal title").await?;
 
@@ -108,7 +110,7 @@ async fn goal_set_objective_generates_session_title_for_new_session() -> Result<
         )
         .await
         .context("session/list response")?;
-    let sessions = decode_acp_session_list_response(list_response)?;
+    let sessions = decode_native_session_list_response(list_response)?;
     assert_eq!(sessions[0].title.as_deref(), Some("Generated goal title"));
 
     let title_requests = provider.title_requests.lock().expect("lock title requests");
@@ -137,11 +139,12 @@ async fn goal_create_rejects_unknown_session() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 5,
-                "method": "_devo/goal/create",
+                "method": "session/goal/set",
                 "params": {
                     "sessionId": unknown_session_id,
                     "objective": "unknown session goal",
-                    "replaceExisting": false
+                    "ifExists": "reject",
+                    "idempotencyKey": "unknown-session-create"
                 }
             }),
         )
@@ -175,11 +178,12 @@ async fn goal_set_rejects_unknown_session() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 6,
-                "method": "_devo/goal/set",
+                "method": "session/goal/set",
                 "params": {
                     "sessionId": unknown_session_id,
                     "objective": "unknown session goal",
-                    "status": "active"
+                    "ifExists": "reject",
+                    "idempotencyKey": "unknown-session-set"
                 }
             }),
         )
@@ -252,6 +256,7 @@ async fn initialize_connection(
                 "params": {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                     "clientInfo": {
                         "name": "goal-title-test",
                         "title": "goal-title-test",
@@ -334,34 +339,13 @@ fn title_request_contains(request: &ModelRequest, needle: &str) -> bool {
     })
 }
 
-fn decode_acp_session_list_response(
+fn decode_native_session_list_response(
     response: serde_json::Value,
-) -> Result<Vec<devo_server::SessionMetadata>> {
-    let response_value = response.clone();
-    let response: devo_server::AcpSuccessResponse<devo_server::AcpListSessionsResult> =
-        serde_json::from_value(response)
-            .with_context(|| format!("decode ACP session/list response: {response_value}"))?;
-    response
-        .result
-        .sessions
-        .into_iter()
-        .map(|session| {
-            session
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.get(devo_server::DEVO_SESSION_META))
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .context("decode Devo session metadata from ACP session/list response")?
-                .with_context(|| {
-                    format!(
-                        "ACP session/list response missing Devo session metadata for {}",
-                        session.session_id
-                    )
-                })
-        })
-        .collect()
+) -> Result<Vec<devo_protocol::native::session::Session>> {
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionListResult,
+    > = serde_json::from_value(response)?;
+    Ok(response.result.data)
 }
 
 fn assert_session_not_found(response: serde_json::Value) -> Result<()> {
@@ -383,16 +367,17 @@ async fn assert_goal_status_empty(
             connection_id,
             serde_json::json!({
                 "id": 7,
-                "method": "_devo/goal/status",
+                "method": "session/goal/read",
                 "params": {
                     "sessionId": session_id
                 }
             }),
         )
         .await
-        .context("goal/status response")?;
-    let response: devo_server::SuccessResponse<devo_protocol::GoalStatusResult> =
-        serde_json::from_value(response)?;
+        .context("session/goal/read response")?;
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionGoalReadResult,
+    > = serde_json::from_value(response)?;
     assert_eq!(response.result.goal, None);
     Ok(())
 }

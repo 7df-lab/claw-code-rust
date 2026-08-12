@@ -1520,15 +1520,15 @@ fn queued_prompt_keeps_submitted_mode_when_promoted_to_history() {
 
     widget.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     paste_and_submit(&mut widget, "queued plan");
-    let queue_item_id = devo_protocol::canonical::ids::QueueItemId::from_string("qit_plan".into());
+    let queue_item_id = devo_protocol::native::ids::QueueItemId::from_string("qit_plan".into());
     widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
-        change: devo_protocol::canonical::queue::QueueChange::Added,
+        change: devo_protocol::native::queue::QueueChange::Added,
         queue_item_id: queue_item_id.clone(),
         started_turn_id: None,
-        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+        entries: vec![devo_protocol::native::queue::QueueEntry {
             queue_item_id: queue_item_id.clone(),
             position: 1,
-            input: vec![devo_protocol::canonical::item::UserInput::Text {
+            input: vec![devo_protocol::native::item::UserInput::Text {
                 text: "queued plan".to_string(),
             }],
             preview: "queued plan".to_string(),
@@ -1536,7 +1536,7 @@ fn queued_prompt_keeps_submitted_mode_when_promoted_to_history() {
         }],
     });
     widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
-        change: devo_protocol::canonical::queue::QueueChange::Drained,
+        change: devo_protocol::native::queue::QueueChange::Drained,
         queue_item_id,
         started_turn_id: Some(TurnId::new()),
         entries: Vec::new(),
@@ -1605,16 +1605,15 @@ fn queued_prompt_promotes_after_active_assistant_stream() {
     });
 
     paste_and_submit(&mut widget, "queued prompt");
-    let queue_item_id =
-        devo_protocol::canonical::ids::QueueItemId::from_string("qit_prompt".into());
+    let queue_item_id = devo_protocol::native::ids::QueueItemId::from_string("qit_prompt".into());
     widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
-        change: devo_protocol::canonical::queue::QueueChange::Added,
+        change: devo_protocol::native::queue::QueueChange::Added,
         queue_item_id: queue_item_id.clone(),
         started_turn_id: None,
-        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+        entries: vec![devo_protocol::native::queue::QueueEntry {
             queue_item_id: queue_item_id.clone(),
             position: 1,
-            input: vec![devo_protocol::canonical::item::UserInput::Text {
+            input: vec![devo_protocol::native::item::UserInput::Text {
                 text: "queued prompt".to_string(),
             }],
             preview: "queued prompt".to_string(),
@@ -1626,7 +1625,7 @@ fn queued_prompt_promotes_after_active_assistant_stream() {
         "queued entry should appear in the pending queue UI"
     );
     widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
-        change: devo_protocol::canonical::queue::QueueChange::Drained,
+        change: devo_protocol::native::queue::QueueChange::Drained,
         queue_item_id,
         started_turn_id: Some(TurnId::new()),
         entries: Vec::new(),
@@ -1679,11 +1678,11 @@ fn drain_commands(rx: &mut mpsc::UnboundedReceiver<AppEvent>) -> Vec<AppCommand>
     commands
 }
 
-fn test_queue_entry(id: &str, text: &str) -> devo_protocol::canonical::queue::QueueEntry {
-    devo_protocol::canonical::queue::QueueEntry {
-        queue_item_id: devo_protocol::canonical::ids::QueueItemId::from_string(id.to_string()),
+fn test_queue_entry(id: &str, text: &str) -> devo_protocol::native::queue::QueueEntry {
+    devo_protocol::native::queue::QueueEntry {
+        queue_item_id: devo_protocol::native::ids::QueueItemId::from_string(id.to_string()),
         position: 1,
-        input: vec![devo_protocol::canonical::item::UserInput::Text {
+        input: vec![devo_protocol::native::item::UserInput::Text {
             text: text.to_string(),
         }],
         preview: text.to_string(),
@@ -1703,13 +1702,13 @@ fn start_busy_turn(widget: &mut ChatWidget) {
 
 fn push_queue_snapshot(
     widget: &mut ChatWidget,
-    change: devo_protocol::canonical::queue::QueueChange,
+    change: devo_protocol::native::queue::QueueChange,
     queue_item_id: &str,
-    entries: Vec<devo_protocol::canonical::queue::QueueEntry>,
+    entries: Vec<devo_protocol::native::queue::QueueEntry>,
 ) {
     widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
         change,
-        queue_item_id: devo_protocol::canonical::ids::QueueItemId::from_string(
+        queue_item_id: devo_protocol::native::ids::QueueItemId::from_string(
             queue_item_id.to_string(),
         ),
         started_turn_id: None,
@@ -1728,7 +1727,7 @@ fn queue_edit_resubmit_updates_item_in_place() {
     start_busy_turn(&mut widget);
     push_queue_snapshot(
         &mut widget,
-        devo_protocol::canonical::queue::QueueChange::Added,
+        devo_protocol::native::queue::QueueChange::Added,
         "qit_edit",
         vec![test_queue_entry("qit_edit", "original text")],
     );
@@ -1786,7 +1785,7 @@ fn queue_edit_falls_back_to_push_when_item_vanishes() {
     start_busy_turn(&mut widget);
     push_queue_snapshot(
         &mut widget,
-        devo_protocol::canonical::queue::QueueChange::Added,
+        devo_protocol::native::queue::QueueChange::Added,
         "qit_edit",
         vec![test_queue_entry("qit_edit", "original text")],
     );
@@ -1797,7 +1796,7 @@ fn queue_edit_falls_back_to_push_when_item_vanishes() {
     // The item is removed (or drained) while its text sits in the composer.
     push_queue_snapshot(
         &mut widget,
-        devo_protocol::canonical::queue::QueueChange::Removed,
+        devo_protocol::native::queue::QueueChange::Removed,
         "qit_edit",
         Vec::new(),
     );
@@ -8157,15 +8156,15 @@ fn new_session_prepared_clears_pending_queue() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, cwd.clone());
 
-    let queue_item_id = devo_protocol::canonical::ids::QueueItemId::from_string("qit_stale".into());
+    let queue_item_id = devo_protocol::native::ids::QueueItemId::from_string("qit_stale".into());
     widget.handle_worker_event(crate::events::WorkerEvent::QueueUpdated {
-        change: devo_protocol::canonical::queue::QueueChange::Added,
+        change: devo_protocol::native::queue::QueueChange::Added,
         queue_item_id: queue_item_id.clone(),
         started_turn_id: None,
-        entries: vec![devo_protocol::canonical::queue::QueueEntry {
+        entries: vec![devo_protocol::native::queue::QueueEntry {
             queue_item_id,
             position: 1,
-            input: vec![devo_protocol::canonical::item::UserInput::Text {
+            input: vec![devo_protocol::native::item::UserInput::Text {
                 text: "stale queued".to_string(),
             }],
             preview: "stale queued".to_string(),

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Instant;
 
 use devo_sandbox::SandboxPermissionOverlay;
+use devo_util_process::SandboxProcessOptions;
 use devo_util_process::SpawnedProcess;
 pub use devo_util_process::TerminalSize;
 use devo_util_process::combine_output_receivers;
@@ -154,6 +155,14 @@ pub struct UnifiedExecProcess {
     tty: bool,
 }
 
+/// Sandbox settings for a unified-exec process.
+pub struct SandboxExecutionOptions {
+    /// Named sandbox profile applied before the child process starts.
+    pub sandbox_profile: Option<String>,
+    /// Per-invocation permissions merged into the named profile.
+    pub sandbox_overlay: Option<SandboxPermissionOverlay>,
+}
+
 impl UnifiedExecProcess {
     pub async fn spawn(
         process_id: i32,
@@ -182,8 +191,10 @@ impl UnifiedExecProcess {
             shell,
             login,
             tty,
-            sandbox_profile,
-            None,
+            SandboxExecutionOptions {
+                sandbox_profile,
+                sandbox_overlay: None,
+            },
         )
         .await
     }
@@ -195,9 +206,12 @@ impl UnifiedExecProcess {
         shell: Option<&str>,
         login: bool,
         tty: bool,
-        sandbox_profile: Option<String>,
-        sandbox_overlay: Option<SandboxPermissionOverlay>,
+        sandbox: SandboxExecutionOptions,
     ) -> Result<(Self, broadcast::Receiver<Vec<u8>>), String> {
+        let SandboxExecutionOptions {
+            sandbox_profile,
+            sandbox_overlay,
+        } = sandbox;
         let shell_spec = resolve_shell(shell, login);
         let command = command_for_shell(cmd, &shell_spec);
         let mut args = shell_spec.args.clone();
@@ -226,8 +240,10 @@ impl UnifiedExecProcess {
                 &env,
                 /*arg0*/ &None,
                 &[],
-                sandbox_profile,
-                sandbox_overlay,
+                SandboxProcessOptions {
+                    sandbox_profile,
+                    sandbox_overlay,
+                },
             )
             .await
             .map_err(|error| format!("failed to spawn command: {error}"))?

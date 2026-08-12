@@ -18,9 +18,9 @@ use ratatui::widgets::Widget;
 
 use crate::key_hint;
 use crate::render::renderable::Renderable;
-use devo_protocol::canonical::item::ContextCategoryId;
-use devo_protocol::canonical::item::ContextCategoryUsage;
-use devo_protocol::canonical::item::ContextOccupancy;
+use devo_protocol::native::item::ContextCategoryId;
+use devo_protocol::native::item::ContextCategoryUsage;
+use devo_protocol::native::item::ContextOccupancy;
 
 use super::CancellationEvent;
 use super::bottom_pane_view::BottomPaneView;

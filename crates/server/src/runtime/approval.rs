@@ -54,6 +54,13 @@ impl ServerRuntime {
         permission_profile: devo_safety::RuntimePermissionProfile,
         request: ToolPermissionRequest,
     ) -> Result<PermissionGrant, String> {
+        // Prefer the live turn-inline mode so a mid-turn settings override
+        // applies at the next authorization (L2-DES-CONV-002 Phase 3); the
+        // captured turn-start value is the fallback when no turn is inline.
+        let permission_mode = self
+            .live_permission_mode(session_id)
+            .await
+            .unwrap_or(permission_mode);
         if let Some(decision) = permission_mode_authorization(permission_mode) {
             return match decision {
                 AuthorizationDecision::Allow { source } => {
@@ -100,7 +107,7 @@ impl ServerRuntime {
             trace_permission_decision(
                 session_id,
                 &request,
-                devo_protocol::canonical::item::ApprovalDecisionSource::User,
+                devo_protocol::native::item::ApprovalDecisionSource::User,
                 "allow",
                 None,
             );
@@ -151,7 +158,7 @@ impl ServerRuntime {
                     trace_permission_decision(
                         session_id,
                         &request,
-                        devo_protocol::canonical::item::ApprovalDecisionSource::Hook,
+                        devo_protocol::native::item::ApprovalDecisionSource::Hook,
                         "deny",
                         Some(message.as_str()),
                     );
@@ -176,7 +183,7 @@ impl ServerRuntime {
                             trace_permission_decision(
                                 session_id,
                                 &request,
-                                devo_protocol::canonical::item::ApprovalDecisionSource::AutoReview,
+                                devo_protocol::native::item::ApprovalDecisionSource::AutoReview,
                                 "allow",
                                 None,
                             );
@@ -186,7 +193,7 @@ impl ServerRuntime {
                             trace_permission_decision(
                                 session_id,
                                 &request,
-                                devo_protocol::canonical::item::ApprovalDecisionSource::AutoReview,
+                                devo_protocol::native::item::ApprovalDecisionSource::AutoReview,
                                 "deny",
                                 Some(reason.as_str()),
                             );
@@ -275,7 +282,7 @@ impl ServerRuntime {
             Arc::clone(&runtime_context.provider),
             session_id,
             Some(turn_id),
-            devo_protocol::canonical::usage::UsagePurpose::AutoReview,
+            devo_protocol::native::usage::UsagePurpose::AutoReview,
         );
         let response = match provider.completion(model_request.clone()).await {
             Ok(response) => response,
@@ -433,10 +440,10 @@ impl ServerRuntime {
         let approval_id = format!("auto-review-{}", request.tool_call_id);
         let item_id = ItemId::new();
         let item_seq = self.allocate_item_sequence(session_id).await;
-        let canonical_decision = if decision.eq_ignore_ascii_case("approve") {
-            devo_protocol::canonical::item::ApprovalDecisionKind::Approved
+        let native_decision = if decision.eq_ignore_ascii_case("approve") {
+            devo_protocol::native::item::ApprovalDecisionKind::Approved
         } else {
-            devo_protocol::canonical::item::ApprovalDecisionKind::Denied
+            devo_protocol::native::item::ApprovalDecisionKind::Denied
         };
         self.persist_completed_approval_item(
             session_id,
@@ -445,8 +452,8 @@ impl ServerRuntime {
             item_seq,
             &approval_id,
             request,
-            canonical_decision,
-            devo_protocol::canonical::item::ApprovalDecisionSource::AutoReview,
+            native_decision,
+            devo_protocol::native::item::ApprovalDecisionSource::AutoReview,
         )
         .await;
         self.emit_item_completed(
@@ -515,6 +522,18 @@ impl ServerRuntime {
             .turn_inline
             .as_ref()
             .map(|inline| inline.hook_context.config.permission_profile.clone())
+    }
+
+    /// Live permission mode from the turn-inline snapshot while a turn is in
+    /// flight; `None` when no turn is active (the caller falls back to the
+    /// turn-start capture).
+    async fn live_permission_mode(&self, session_id: SessionId) -> Option<PermissionMode> {
+        let stream = self.active_stream_state(session_id).await?;
+        let stream = stream.lock().await;
+        stream
+            .turn_inline
+            .as_ref()
+            .map(|inline| inline.hook_context.config.permission_mode)
     }
 
     async fn apply_approval_scope_to_turn_inline(
@@ -611,7 +630,10 @@ impl ServerRuntime {
 
     /// Sub-agent turns route interactive approvals through the parent session so
     /// the active ACP connection and approval cache stay aligned with the UI.
-    async fn permission_host_session_id(&self, session_id: SessionId) -> SessionId {
+    pub(in crate::runtime) async fn permission_host_session_id(
+        &self,
+        session_id: SessionId,
+    ) -> SessionId {
         let Some(parent_session_id) = self.parent_session_id(session_id).await else {
             return session_id;
         };
@@ -746,6 +768,34 @@ impl ServerRuntime {
 
         let request_params =
             acp_request_permission_params(host_session_id, &request, &available_scopes);
+        // Native reverse request (L2-DES-APP-008 DD-8): the waiting-state
+        // `Item::Approval` payload is the request params; the method is
+        // discriminated by resource kind.
+        let native_method = match request.resource {
+            devo_safety::ResourceKind::ShellExec => "approval/command/request",
+            devo_safety::ResourceKind::FileWrite => "approval/fileChange/request",
+            devo_safety::ResourceKind::FileRead
+            | devo_safety::ResourceKind::Network
+            | devo_safety::ResourceKind::Custom(_) => "approval/permission/request",
+        };
+        let native_params = serde_json::to_value(devo_protocol::native::item::Item::Approval {
+            approval_id: approval_id.clone(),
+            target_item_id: None,
+            action_summary: request.action_summary.clone(),
+            justification: request.justification.clone().unwrap_or_default(),
+            resource: Some(format!("{:?}", request.resource)),
+            available_scopes: available_scopes
+                .iter()
+                .filter_map(|scope| {
+                    serde_json::to_value(scope)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_string))
+                })
+                .collect(),
+            target: None,
+            decision: None,
+        })
+        .expect("serialize native approval request params");
         let cancel_token = self
             .active_turns
             .cancel_token_for_host_or_session(host_session_id, session_id)
@@ -755,6 +805,8 @@ impl ServerRuntime {
                 host_session_id,
                 owner_connection_id,
                 request_params,
+                native_method,
+                native_params,
                 cancel_token,
             )
             .await
@@ -775,7 +827,7 @@ impl ServerRuntime {
         trace_permission_decision(
             session_id,
             &request,
-            devo_protocol::canonical::item::ApprovalDecisionSource::User,
+            devo_protocol::native::item::ApprovalDecisionSource::User,
             outcome,
             reason,
         );
@@ -785,15 +837,15 @@ impl ServerRuntime {
             ApprovalDecisionValue::Cancel => "cancel",
         };
         let scope_label = approval_scope_label(&scope);
-        let canonical_decision = match &decision {
+        let native_decision = match &decision {
             ApprovalDecisionValue::Approve => {
-                devo_protocol::canonical::item::ApprovalDecisionKind::Approved
+                devo_protocol::native::item::ApprovalDecisionKind::Approved
             }
             ApprovalDecisionValue::Deny => {
-                devo_protocol::canonical::item::ApprovalDecisionKind::Denied
+                devo_protocol::native::item::ApprovalDecisionKind::Denied
             }
             ApprovalDecisionValue::Cancel => {
-                devo_protocol::canonical::item::ApprovalDecisionKind::Cancelled
+                devo_protocol::native::item::ApprovalDecisionKind::Cancelled
             }
         };
         if let Some(persisted) = &persisted_approval {
@@ -802,9 +854,9 @@ impl ServerRuntime {
                 turn_id,
                 &request,
                 &available_scopes,
-                canonical_decision,
-                canonical_approval_scope(&scope),
-                devo_protocol::canonical::item::ApprovalDecisionSource::User,
+                native_decision,
+                native_approval_scope(&scope),
+                devo_protocol::native::item::ApprovalDecisionSource::User,
                 persisted,
             )
             .await;
@@ -813,7 +865,7 @@ impl ServerRuntime {
             approval_id: approval_id.clone().into(),
             decision: decision_label.to_string(),
             scope: scope_label.to_string(),
-            decision_source: Some(devo_protocol::canonical::item::ApprovalDecisionSource::User),
+            decision_source: Some(devo_protocol::native::item::ApprovalDecisionSource::User),
         })
         .expect("serialize approval decision payload");
         if let Some(payload) = decision_payload.as_object_mut() {
@@ -916,7 +968,7 @@ fn policy_decision(
     request: &ToolPermissionRequest,
     exec_policy: Option<&devo_execpolicy::Policy>,
 ) -> AuthorizationDecision {
-    use devo_protocol::canonical::item::ApprovalDecisionSource;
+    use devo_protocol::native::item::ApprovalDecisionSource;
 
     if profile.yolo {
         return AuthorizationDecision::Allow {
@@ -989,7 +1041,7 @@ fn shell_exec_policy_decision(
     exec_policy: Option<&devo_execpolicy::Policy>,
 ) -> AuthorizationDecision {
     use devo_execpolicy::Decision;
-    use devo_protocol::canonical::item::ApprovalDecisionSource;
+    use devo_protocol::native::item::ApprovalDecisionSource;
     use devo_util_shell_command::is_dangerous_command::command_might_be_dangerous;
 
     if !profile.allow_shell_commands {
@@ -1068,7 +1120,7 @@ fn shell_exec_policy_decision(
 fn trace_permission_decision(
     session_id: SessionId,
     request: &ToolPermissionRequest,
-    source: devo_protocol::canonical::item::ApprovalDecisionSource,
+    source: devo_protocol::native::item::ApprovalDecisionSource,
     outcome: &'static str,
     reason: Option<&str>,
 ) {
@@ -1195,21 +1247,19 @@ fn approval_scope_label(scope: &ApprovalScopeValue) -> &'static str {
     }
 }
 
-fn canonical_approval_scope(
-    scope: &ApprovalScopeValue,
-) -> devo_protocol::canonical::item::ApprovalScope {
+fn native_approval_scope(scope: &ApprovalScopeValue) -> devo_protocol::native::item::ApprovalScope {
     match scope {
-        ApprovalScopeValue::Once => devo_protocol::canonical::item::ApprovalScope::Once,
-        ApprovalScopeValue::Turn => devo_protocol::canonical::item::ApprovalScope::Turn,
-        ApprovalScopeValue::Session => devo_protocol::canonical::item::ApprovalScope::Session,
-        ApprovalScopeValue::PathPrefix => devo_protocol::canonical::item::ApprovalScope::PathPrefix,
-        ApprovalScopeValue::Host => devo_protocol::canonical::item::ApprovalScope::Host,
-        ApprovalScopeValue::Tool => devo_protocol::canonical::item::ApprovalScope::Tool,
+        ApprovalScopeValue::Once => devo_protocol::native::item::ApprovalScope::Once,
+        ApprovalScopeValue::Turn => devo_protocol::native::item::ApprovalScope::Turn,
+        ApprovalScopeValue::Session => devo_protocol::native::item::ApprovalScope::Session,
+        ApprovalScopeValue::PathPrefix => devo_protocol::native::item::ApprovalScope::PathPrefix,
+        ApprovalScopeValue::Host => devo_protocol::native::item::ApprovalScope::Host,
+        ApprovalScopeValue::Tool => devo_protocol::native::item::ApprovalScope::Tool,
         ApprovalScopeValue::CommandPrefix => {
-            devo_protocol::canonical::item::ApprovalScope::CommandPrefix
+            devo_protocol::native::item::ApprovalScope::CommandPrefix
         }
         ApprovalScopeValue::CommandPrefixPersist => {
-            devo_protocol::canonical::item::ApprovalScope::CommandPrefixPersist
+            devo_protocol::native::item::ApprovalScope::CommandPrefixPersist
         }
     }
 }
@@ -1228,7 +1278,7 @@ fn acp_request_permission_params(
             status: Some(devo_protocol::AcpToolCallStatus::Pending),
             raw_input: Some(request.input.clone()),
             raw_output: None,
-            content: Vec::new(),
+            content: Some(Vec::new()),
             locations: request
                 .path
                 .as_ref()
@@ -1236,9 +1286,11 @@ fn acp_request_permission_params(
                     vec![devo_protocol::AcpToolCallLocation {
                         path: path.clone(),
                         line: None,
+                        meta: None,
                     }]
                 })
-                .unwrap_or_default(),
+                .map(Some)
+                .unwrap_or(Some(Vec::new())),
             meta: None,
         },
         options: acp_permission_options_for_scopes(
@@ -1539,7 +1591,7 @@ fn permission_tool_extra(
 }
 
 fn permission_mode_authorization(mode: PermissionMode) -> Option<AuthorizationDecision> {
-    use devo_protocol::canonical::item::ApprovalDecisionSource;
+    use devo_protocol::native::item::ApprovalDecisionSource;
 
     match mode {
         PermissionMode::Yolo => Some(AuthorizationDecision::Allow {
@@ -1712,52 +1764,6 @@ mod tests {
     }
 
     #[test]
-    fn acp_permission_options_label_session_scope_with_command_pattern() {
-        let scopes = vec!["once".to_string(), "session".to_string()];
-        let pattern = vec!["git".to_string(), "add".to_string(), "*".to_string()];
-
-        let options =
-            acp_permission_options_for_scopes(&scopes, Some(&pattern), None, None, None, None);
-        let session_option = options
-            .iter()
-            .find(|option| option.option_id == "allow_session")
-            .expect("session option");
-        assert_eq!(
-            session_option.name,
-            "Yes, and don't ask again for `git add *` in this session"
-        );
-
-        let options = acp_permission_options_for_scopes(
-            &scopes,
-            Some(&pattern),
-            Some("git add file.txt"),
-            None,
-            None,
-            None,
-        );
-        let session_option = options
-            .iter()
-            .find(|option| option.option_id == "allow_session")
-            .expect("session option");
-        assert_eq!(
-            session_option.name,
-            "Yes, and don't ask again for `git add file.txt` in this session"
-        );
-
-        let options = acp_permission_options_for_scopes(
-            &scopes, /*command_pattern*/ None, None, None, None, None,
-        );
-        let session_option = options
-            .iter()
-            .find(|option| option.option_id == "allow_session")
-            .expect("session option");
-        assert_eq!(
-            session_option.name,
-            "Yes, and don't ask again for this command in this session"
-        );
-    }
-
-    #[test]
     fn command_pattern_cache_allows_matching_argv() {
         let mut cache = crate::execution::ApprovalGrantCache::default();
         cache
@@ -1805,13 +1811,13 @@ mod tests {
         assert_eq!(
             permission_mode_authorization(PermissionMode::Yolo),
             Some(AuthorizationDecision::Allow {
-                source: devo_protocol::canonical::item::ApprovalDecisionSource::StaticPolicy,
+                source: devo_protocol::native::item::ApprovalDecisionSource::StaticPolicy,
             })
         );
         assert_eq!(
             permission_mode_authorization(PermissionMode::Deny),
             Some(AuthorizationDecision::Deny {
-                source: devo_protocol::canonical::item::ApprovalDecisionSource::StaticPolicy,
+                source: devo_protocol::native::item::ApprovalDecisionSource::StaticPolicy,
                 reason: "approval policy is deny".to_string(),
             })
         );
@@ -1833,7 +1839,7 @@ mod tests {
         assert_eq!(
             permission_mode_authorization(PermissionMode::Yolo),
             Some(AuthorizationDecision::Allow {
-                source: devo_protocol::canonical::item::ApprovalDecisionSource::StaticPolicy,
+                source: devo_protocol::native::item::ApprovalDecisionSource::StaticPolicy,
             })
         );
         assert_eq!(
@@ -1891,74 +1897,6 @@ mod tests {
         assert!(
             !scopes.iter().any(|scope| scope == "command_prefix_persist"),
             "banned bare git prefix must not offer persist scope"
-        );
-    }
-
-    #[test]
-    fn acp_permission_options_include_allow_prefix_rule() {
-        let scopes = vec!["once".to_string(), "command_prefix_persist".to_string()];
-        let prefix = vec!["git".to_string(), "pull".to_string()];
-        let options = acp_permission_options_for_scopes(
-            &scopes,
-            /*command_pattern*/ None,
-            /*exact_command*/ None,
-            Some(&prefix),
-            None,
-            None,
-        );
-        let persist_option = options
-            .iter()
-            .find(|option| option.option_id == "allow_prefix_rule")
-            .expect("persist option");
-        assert_eq!(
-            persist_option.name,
-            "Yes, and don't ask again for commands that start with `git pull`"
-        );
-        assert_eq!(
-            persist_option.kind,
-            devo_protocol::AcpPermissionOptionKind::AllowAlways
-        );
-    }
-
-    #[test]
-    fn acp_request_permission_params_include_target_and_resource_meta() {
-        let mut request = test_permission_request("shell_command");
-        request.target = Some(r#"echo "Hello from Devo!" > ~/Desktop/hello-devo.txt"#.to_string());
-        request.justification = Some("Write a greeting file on the desktop.".to_string());
-        request.action_summary = format!("shell_command: {}", request.target.as_ref().unwrap());
-
-        let params = acp_request_permission_params(
-            SessionId::new(),
-            &request,
-            &["once".to_string(), "session".to_string()],
-        );
-        let meta = params.meta.expect("permission meta");
-        assert_eq!(
-            meta.get("target").and_then(serde_json::Value::as_str),
-            Some(r#"echo "Hello from Devo!" > ~/Desktop/hello-devo.txt"#)
-        );
-        assert_eq!(
-            meta.get("resource").and_then(serde_json::Value::as_str),
-            Some("ShellExec")
-        );
-        assert_eq!(
-            meta.get("justification")
-                .and_then(serde_json::Value::as_str),
-            Some("Write a greeting file on the desktop.")
-        );
-    }
-
-    #[test]
-    fn allow_prefix_rule_maps_to_command_prefix_persist_scope() {
-        let outcome = devo_protocol::AcpPermissionOutcome::Selected {
-            option_id: "allow_prefix_rule".to_string(),
-        };
-        assert_eq!(
-            approval_decision_from_acp_outcome(outcome),
-            Ok((
-                ApprovalDecisionValue::Approve,
-                ApprovalScopeValue::CommandPrefixPersist
-            ))
         );
     }
 

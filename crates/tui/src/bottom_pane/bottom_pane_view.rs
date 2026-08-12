@@ -47,7 +47,7 @@ pub(crate) trait BottomPaneView: Renderable {
     /// Refresh an open `/status` panel when occupancy or session totals change.
     fn update_status_panel(
         &mut self,
-        _occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+        _occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
         _session: super::SessionTokenTotals,
     ) -> bool {
         false

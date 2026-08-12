@@ -11,8 +11,8 @@ use crate::mcp_picker::merge_mcp_picker_servers;
 use devo_core::AppConfigLoader;
 use devo_core::FileSystemAppConfigLoader;
 use devo_core::McpConfig;
-use devo_protocol::canonical::rpc_admin::McpServerInfo;
-use devo_protocol::canonical::rpc_admin::McpToolEntry;
+use devo_protocol::native::rpc_admin::McpServerInfo;
+use devo_protocol::native::rpc_admin::McpToolEntry;
 use devo_util_paths::find_devo_home;
 
 use super::ChatWidget;

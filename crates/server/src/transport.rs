@@ -24,6 +24,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::AcpErrorCode;
 use crate::ClientTransportKind;
+use crate::ProtocolSet;
+use crate::ServerProtocol;
 use crate::ServerRuntime;
 use crate::acp_error_response;
 use crate::runtime::INBOUND_CONCURRENCY_LIMIT;
@@ -33,6 +35,7 @@ use crate::runtime::OutboundFrame;
 use crate::runtime::enqueue_outbound;
 use crate::runtime::log_outbound_frame;
 use crate::runtime::outbound_frame_to_value;
+use crate::singleton::SERVER_CONTROL_ENABLE_PROTOCOLS_METHOD;
 use crate::singleton::SERVER_CONTROL_SHUTDOWN_METHOD;
 use crate::singleton::SERVER_CONTROL_STATUS_METHOD;
 
@@ -313,7 +316,8 @@ pub async fn run_listeners(runtime: Arc<ServerRuntime>, listen: &[String]) -> Re
 ///
 /// The internal proxy task authenticates clients with `token`, handles one-shot
 /// control RPCs (`status` / `shutdown`), then treats the connection as a
-/// `ClientTransportKind::StdioProxy` ACP session (see `handle_internal_proxy_connection`).
+/// protocol-uninitialized `ClientTransportKind::StdioProxy` connection (see
+/// `handle_internal_proxy_connection`).
 pub async fn run_listeners_with_internal_proxy(
     runtime: Arc<ServerRuntime>,
     listen: &[String],
@@ -444,12 +448,19 @@ async fn handle_internal_proxy_connection(
             Some(Ok(Message::Text(text))) => {
                 let value: serde_json::Value = serde_json::from_str(&text)?;
                 if let Some(request) = parse_internal_proxy_control_request(&value) {
-                    let response = internal_proxy_control_response(&request);
+                    let enabled_protocols = match &request.action {
+                        InternalProxyControlAction::EnableProtocols(requested) => {
+                            runtime.enable_protocols(requested).await
+                        }
+                        InternalProxyControlAction::Status
+                        | InternalProxyControlAction::Shutdown => runtime.enabled_protocols().await,
+                    };
+                    let response = internal_proxy_control_response(&request, &enabled_protocols);
                     writer
                         .send(Message::Text(response.to_string().into()))
                         .await
                         .context("send internal proxy control response")?;
-                    if request.action == InternalProxyControlAction::Shutdown {
+                    if matches!(request.action, InternalProxyControlAction::Shutdown) {
                         control.request_shutdown();
                     }
                     return Ok(());
@@ -515,17 +526,19 @@ async fn handle_internal_proxy_connection(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum InternalProxyControlAction {
     Status,
     Shutdown,
+    EnableProtocols(ProtocolSet),
 }
 
 impl InternalProxyControlAction {
-    fn response_status(self) -> &'static str {
+    fn response_status(&self) -> &'static str {
         match self {
             InternalProxyControlAction::Status => "running",
             InternalProxyControlAction::Shutdown => "shutting down",
+            InternalProxyControlAction::EnableProtocols(_) => "running",
         }
     }
 }
@@ -543,6 +556,13 @@ fn parse_internal_proxy_control_request(
     let action = match method {
         SERVER_CONTROL_STATUS_METHOD => InternalProxyControlAction::Status,
         SERVER_CONTROL_SHUTDOWN_METHOD => InternalProxyControlAction::Shutdown,
+        SERVER_CONTROL_ENABLE_PROTOCOLS_METHOD => {
+            let protocols = serde_json::from_value::<Vec<ServerProtocol>>(
+                value.pointer("/params/protocols")?.clone(),
+            )
+            .ok()?;
+            InternalProxyControlAction::EnableProtocols(ProtocolSet::new(protocols).ok()?)
+        }
         _ => return None,
     };
     Some(InternalProxyControlRequest {
@@ -551,12 +571,16 @@ fn parse_internal_proxy_control_request(
     })
 }
 
-fn internal_proxy_control_response(request: &InternalProxyControlRequest) -> serde_json::Value {
+fn internal_proxy_control_response(
+    request: &InternalProxyControlRequest,
+    enabled_protocols: &ProtocolSet,
+) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": request.id.clone(),
         "result": {
             "status": request.action.response_status(),
+            "enabledProtocols": enabled_protocols.names(),
         },
     })
 }
@@ -863,6 +887,8 @@ mod tests {
     use super::resolve_listen_targets;
     use super::validate_incoming_client_message;
     use crate::AcpErrorCode;
+    use crate::ProtocolSet;
+    use crate::ServerProtocol;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use std::time::Duration;
@@ -940,17 +966,40 @@ mod tests {
     }
 
     #[test]
+    fn internal_proxy_control_request_parses_protocol_enablement() {
+        assert_eq!(
+            parse_internal_proxy_control_request(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": crate::singleton::SERVER_CONTROL_ENABLE_PROTOCOLS_METHOD,
+                "params": { "protocols": ["acp"] },
+            }))
+            .expect("enable protocols request"),
+            InternalProxyControlRequest {
+                id: serde_json::json!(3),
+                action: InternalProxyControlAction::EnableProtocols(ProtocolSet::only(
+                    ServerProtocol::Acp,
+                )),
+            }
+        );
+    }
+
+    #[test]
     fn internal_proxy_control_response_reports_action_status() {
         assert_eq!(
-            internal_proxy_control_response(&InternalProxyControlRequest {
-                id: serde_json::json!(2),
-                action: InternalProxyControlAction::Shutdown,
-            }),
+            internal_proxy_control_response(
+                &InternalProxyControlRequest {
+                    id: serde_json::json!(2),
+                    action: InternalProxyControlAction::Shutdown,
+                },
+                &ProtocolSet::only(ServerProtocol::Native),
+            ),
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 2,
                 "result": {
                     "status": "shutting down",
+                    "enabledProtocols": ["native"],
                 },
             })
         );

@@ -46,6 +46,7 @@ export type AcpTransportListener = (event: AcpTransportEvent) => void
 
 export interface AcpTransport {
 	request(method: string, params?: unknown, directory?: string): Promise<unknown>
+	notify(method: string, params?: unknown, directory?: string): Promise<void>
 	respond(id: JsonRpcId, result: unknown): Promise<void>
 	subscribe(listener: AcpTransportListener): () => void
 	connected(): boolean
@@ -167,10 +168,7 @@ export function routeAcpLine(line: string): AcpIncomingMessage {
 
 const DIRECTORY_SCOPED_METHODS = new Set([
 	"session/list",
-	"model/config",
-	"model/config/set",
-	"skills/list",
-	"skills/changed",
+	"skill/list",
 	"reference/search/start",
 	"command/exec",
 ])
@@ -303,6 +301,26 @@ export class StdioAcpClient implements AcpTransport {
 			throw reason
 		}
 		return response
+	}
+
+	async notify(method: string, params: unknown = {}, directory?: string): Promise<void> {
+		this.start()
+		const child = this.requireChild()
+		const scopedParams = scopeRequestParams(method, params, directory)
+		const payload = { jsonrpc: "2.0", method, params: scopedParams }
+		try {
+			await this.writeJson(child, payload)
+			this.recordTraffic({
+				direction: "desktop-to-server",
+				kind: "notification",
+				method,
+				payload,
+			})
+		} catch (error) {
+			const reason = toError(error)
+			this.close(reason)
+			throw reason
+		}
 	}
 
 	async respond(id: JsonRpcId, result: unknown): Promise<void> {

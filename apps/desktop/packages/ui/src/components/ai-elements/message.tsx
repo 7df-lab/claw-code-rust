@@ -302,7 +302,8 @@ function TranscriptMarkdownHeading({
 
 type TranscriptMarkdownRuleProps = ComponentProps<"hr"> & { node?: unknown }
 
-function TranscriptMarkdownRule({ node: _node, ..._props }: TranscriptMarkdownRuleProps) {
+function TranscriptMarkdownRule(props: TranscriptMarkdownRuleProps) {
+	void props
 	return null
 }
 

@@ -55,6 +55,7 @@ export function useAgentActions() {
 				model?: { providerID: string; modelID: string }
 				agent?: string
 				variant?: string
+				collaborationMode?: string
 				files?: FileAttachment[]
 			},
 		) => {
@@ -65,6 +66,7 @@ export function useAgentActions() {
 				agent: options?.agent,
 				model: options?.model,
 				variant: options?.variant,
+				collaborationMode: options?.collaborationMode,
 				hasFiles: !!(options?.files && options.files.length > 0),
 			})
 
@@ -143,6 +145,7 @@ export function useAgentActions() {
 						: undefined,
 					agent: options?.agent,
 					variant: options?.variant,
+					collaborationMode: options?.collaborationMode,
 				})
 				log.debug("sendPrompt: promptAsync returned", {
 					sessionId,

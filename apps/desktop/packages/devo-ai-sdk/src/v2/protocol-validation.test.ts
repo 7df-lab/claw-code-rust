@@ -71,58 +71,6 @@ describe("desktop protocol runtime validation", () => {
 		).toThrow(ProtocolValidationError)
 	})
 
-	test("validates incoming ACP permission requests and outgoing responses", () => {
-		const requestPayload = {
-			sessionId: "s1",
-			toolCall: { toolCallId: "tool1", title: "Run tests" },
-			options: [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
-		}
-		const responsePayload = {
-			outcome: { outcome: "selected", optionId: "allow-once" },
-		}
-
-		expect(
-			assertValidProtocolPayload({
-				direction: "incomingRequest",
-				method: "session/request_permission",
-				payload: requestPayload,
-			}),
-		).toBe(requestPayload)
-		expect(
-			assertValidProtocolPayload({
-				direction: "outgoingResponse",
-				method: "session/request_permission",
-				payload: responsePayload,
-			}),
-		).toBe(responsePayload)
-		expect(() =>
-			assertValidProtocolPayload({
-				direction: "outgoingResponse",
-				method: "session/request_permission",
-				payload: { outcome: { outcome: "selected" } },
-			}),
-		).toThrow(ProtocolValidationError)
-	})
-
-	test("validates non-ACP goal request params from generated Rust schema", () => {
-		const payload = { sessionId: "s1" }
-
-		expect(
-			assertValidProtocolPayload({
-				direction: "outgoingRequest",
-				method: "goal/status",
-				payload,
-			}),
-		).toBe(payload)
-		expect(() =>
-			assertValidProtocolPayload({
-				direction: "outgoingRequest",
-				method: "goal/status",
-				payload: {},
-			}),
-		).toThrow(ProtocolValidationError)
-	})
-
 	test("validates workspace changes read requests and results", () => {
 		const requestPayload = {
 			session_id: "s1",
@@ -167,14 +115,14 @@ describe("desktop protocol runtime validation", () => {
 		expect(
 			assertValidProtocolPayload({
 				direction: "outgoingRequest",
-				method: "_devo/workspace/changes/read",
+				method: "workspace/changes/read",
 				payload: requestPayload,
 			}),
 		).toBe(requestPayload)
 		expect(
 			assertValidProtocolPayload({
 				direction: "incomingResult",
-				method: "_devo/workspace/changes/read",
+				method: "workspace/changes/read",
 				payload: resultPayload,
 			}),
 		).toBe(resultPayload)

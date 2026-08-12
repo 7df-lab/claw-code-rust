@@ -104,39 +104,27 @@ describe("ACP desktop SDK session cwd discovery", () => {
 		])
 	})
 
-	test("passes history limit through session/load meta and reloads larger windows", async () => {
-		const transport = new FakeTransport((method, params, _directory, tx) => {
+	test("replays the full session and applies history limits locally", async () => {
+		const transport = new FakeTransport((method, _params, _directory, tx) => {
 			if (method === "initialize") return initializeResult
 			if (method === "session/list") return { sessions: [storedSession] }
 			if (method === "session/load") {
-				const limit = (params as { _meta?: Record<string, number> })._meta?.["devo/historyLimit"]
-				if (limit === 1) {
-					tx?.emitSessionUpdate({
-						sessionId: "stored-session",
-						update: {
-							sessionUpdate: "user_message_chunk",
-							messageId: "history-1",
-							content: { type: "text", text: "new" },
-						},
-					} satisfies AcpSessionNotification)
-				} else if (limit === 2) {
-					tx?.emitSessionUpdate({
-						sessionId: "stored-session",
-						update: {
-							sessionUpdate: "user_message_chunk",
-							messageId: "history-0",
-							content: { type: "text", text: "old" },
-						},
-					} satisfies AcpSessionNotification)
-					tx?.emitSessionUpdate({
-						sessionId: "stored-session",
-						update: {
-							sessionUpdate: "user_message_chunk",
-							messageId: "history-1",
-							content: { type: "text", text: "new" },
-						},
-					} satisfies AcpSessionNotification)
-				}
+				tx?.emitSessionUpdate({
+					sessionId: "stored-session",
+					update: {
+						sessionUpdate: "user_message_chunk",
+						messageId: "history-0",
+						content: { type: "text", text: "old" },
+					},
+				} satisfies AcpSessionNotification)
+				tx?.emitSessionUpdate({
+					sessionId: "stored-session",
+					update: {
+						sessionUpdate: "user_message_chunk",
+						messageId: "history-1",
+						content: { type: "text", text: "new" },
+					},
+				} satisfies AcpSessionNotification)
 				return {}
 			}
 			throw new Error(`unexpected request ${method}`)
@@ -159,30 +147,21 @@ describe("ACP desktop SDK session cwd discovery", () => {
 					cwd: "/stored/repo",
 					additionalDirectories: [],
 					mcpServers: [],
-					_meta: { "devo/historyLimit": 1 },
-				},
-			},
-			{
-				method: "session/load",
-				directory: undefined,
-				params: {
-					sessionId: "stored-session",
-					cwd: "/stored/repo",
-					additionalDirectories: [],
-					mcpServers: [],
-					_meta: { "devo/historyLimit": 2 },
 				},
 			},
 		])
 	})
 
-	test("keeps server-expanded limited history windows intact", async () => {
+	test("keeps a complete replay intact before applying a local history window", async () => {
 		const transport = new FakeTransport((method, params, _directory, tx) => {
 			if (method === "initialize") return initializeResult
 			if (method === "session/list") return { sessions: [storedSession] }
 			if (method === "session/load") {
-				expect((params as { _meta?: Record<string, number> })._meta).toEqual({
-					"devo/historyLimit": 1,
+				expect(params).toEqual({
+					sessionId: "stored-session",
+					cwd: "/stored/repo",
+					additionalDirectories: [],
+					mcpServers: [],
 				})
 				tx?.emitSessionUpdate({
 					sessionId: "stored-session",
@@ -494,7 +473,7 @@ describe("ACP desktop SDK session cwd discovery", () => {
 			{
 				id: "tool-read-a",
 				parentID: "history-0",
-				parts: [{ type: "tool", time: undefined, stateTime: { start: 3, end: 3 } }],
+				parts: [{ type: "tool", time: undefined, stateTime: { start: 2, end: 3 } }],
 			},
 		])
 	})

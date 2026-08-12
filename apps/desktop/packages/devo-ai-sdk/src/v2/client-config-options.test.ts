@@ -50,6 +50,14 @@ const initializeResult = {
 	authMethods: [],
 }
 
+const modelPreferences = {
+	model: "test-openai",
+	availableModels: [
+		{ value: "test-openai", label: "Test OpenAI", description: "OpenAI: test-model" },
+		{ value: "alt-openai", label: "Alt OpenAI", description: "OpenAI: alt-model" },
+	],
+}
+
 const configOptions = [
 	{
 		type: "select",
@@ -73,6 +81,24 @@ const providerVendor = {
 	enabled: true,
 } satisfies ProviderVendor
 
+const canonicalProviderVendor = {
+	name: "openai",
+	baseUrl: "https://api.openai.com/v1",
+	credential: "openai_api_key",
+	wireApis: ["openai_chat_completions"],
+	enabled: true,
+}
+
+const canonicalModelBinding = {
+	bindingId: "openai-gpt-4o",
+	modelSlug: "gpt-4o",
+	provider: "openai",
+	requestModel: "gpt-4o",
+	displayName: "GPT-4o",
+	invocationMethod: "openai_chat_completions",
+	enabled: true,
+}
+
 const providerValidateParams = {
 	provider_vendor: providerVendor,
 	model_binding: {
@@ -94,12 +120,12 @@ const providerUpsertParams = {
 } satisfies ProviderVendorUpsertParams
 
 describe("ACP desktop SDK config option cache", () => {
-	test("loads cold-start config options from model/config when no session cache exists", async () => {
+	test("loads cold-start config options from model/preferences/read when no session cache exists", async () => {
 		const transport = new FakeTransport((method, params) => {
 			if (method === "initialize") return initializeResult
-			if (method === "model/config") {
+			if (method === "model/preferences/read") {
 				expect(params).toEqual({ cwd: "/repo" })
-				return { configOptions }
+				return { preferences: modelPreferences }
 			}
 			throw new Error(`unexpected request ${method}`)
 		})
@@ -112,7 +138,7 @@ describe("ACP desktop SDK config option cache", () => {
 		expect(config.data).toEqual({ model: "session/test-openai" })
 		expect(transport.requests.map((request) => request.method)).toEqual([
 			"initialize",
-			"model/config",
+			"model/preferences/read",
 		])
 	})
 
@@ -120,7 +146,9 @@ describe("ACP desktop SDK config option cache", () => {
 		const transport = new FakeTransport((method) => {
 			if (method === "initialize") return initializeResult
 			if (method === "session/new") return { sessionId: "s1", configOptions }
-			if (method === "model/config") throw new Error("model/config should not be called")
+			if (method === "model/preferences/read") {
+				throw new Error("model/preferences/read should not be called")
+			}
 			throw new Error(`unexpected request ${method}`)
 		})
 		const client = createDevoClient({ directory: "/repo", transport })
@@ -140,21 +168,14 @@ describe("ACP desktop SDK config option cache", () => {
 	})
 
 	test("persists cold-start model config options through the runtime API", async () => {
-		const updatedConfigOptions = [
-			{
-				...configOptions[0],
-				currentValue: "alt-openai",
-			},
-		] satisfies AcpSessionConfigOption[]
 		const transport = new FakeTransport((method, params) => {
 			if (method === "initialize") return initializeResult
-			if (method === "model/config/set") {
+			if (method === "model/preferences/write") {
 				expect(params).toEqual({
 					cwd: "/repo",
-					configId: "model",
-					value: "alt-openai",
+					patch: { model: "alt-openai" },
 				})
-				return { configOptions: updatedConfigOptions }
+				return { preferences: { ...modelPreferences, model: "alt-openai" } }
 			}
 			throw new Error(`unexpected request ${method}`)
 		})
@@ -166,7 +187,7 @@ describe("ACP desktop SDK config option cache", () => {
 		expect((await client.config.get()).data).toEqual({ model: "session/alt-openai" })
 		expect(transport.requests.map((request) => request.method)).toEqual([
 			"initialize",
-			"model/config/set",
+			"model/preferences/write",
 		])
 	})
 
@@ -174,7 +195,7 @@ describe("ACP desktop SDK config option cache", () => {
 		const transport = new FakeTransport((method, params) => {
 			if (method === "provider/list") {
 				expect(params).toEqual({})
-				return { provider_vendors: [providerVendor] }
+				return { providers: [canonicalProviderVendor] }
 			}
 			throw new Error(`unexpected request ${method}`)
 		})
@@ -189,8 +210,12 @@ describe("ACP desktop SDK config option cache", () => {
 	test("validates provider candidates through the server provider API", async () => {
 		const transport = new FakeTransport((method, params) => {
 			if (method === "provider/validate") {
-				expect(params).toEqual(providerValidateParams)
-				return { reply_preview: "OK" }
+				expect(params).toEqual({
+					providerVendor: canonicalProviderVendor,
+					modelBinding: canonicalModelBinding,
+					apiKey: "secret",
+				})
+				return { replyPreview: "OK" }
 			}
 			throw new Error(`unexpected request ${method}`)
 		})
@@ -203,32 +228,32 @@ describe("ACP desktop SDK config option cache", () => {
 	})
 
 	test("upserts provider vendors and clears cached model config", async () => {
-		let modelConfigCalls = 0
-		const updatedConfigOptions = [
-			{
-				type: "select",
-				id: "model",
-				name: "Model",
-				category: "model",
-				currentValue: "openai-gpt-4o",
-				options: [
-					{ value: "openai-gpt-4o", name: "GPT-4o", description: "OpenAI: gpt-4o" },
-				],
-			},
-		] satisfies AcpSessionConfigOption[]
+		let modelPreferencesReadCalls = 0
+		const updatedPreferences = {
+			model: "openai-gpt-4o",
+			availableModels: [
+				{ value: "openai-gpt-4o", label: "GPT-4o", description: "OpenAI: gpt-4o" },
+			],
+		}
 		const transport = new FakeTransport((method, params) => {
 			if (method === "initialize") return initializeResult
-			if (method === "model/config") {
-				modelConfigCalls += 1
+			if (method === "model/preferences/read") {
+				modelPreferencesReadCalls += 1
 				return {
-					configOptions: modelConfigCalls === 1 ? configOptions : updatedConfigOptions,
+					preferences:
+						modelPreferencesReadCalls === 1 ? modelPreferences : updatedPreferences,
 				}
 			}
 			if (method === "provider/upsert") {
-				expect(params).toEqual(providerUpsertParams)
+				expect(params).toEqual({
+					providerVendor: canonicalProviderVendor,
+					modelBinding: canonicalModelBinding,
+					defaultModelBinding: "openai-gpt-4o",
+					apiKey: "secret",
+				})
 				return {
-					provider_vendor: providerVendor,
-					model_binding: providerUpsertParams.model_binding,
+					providerVendor: canonicalProviderVendor,
+					modelBinding: canonicalModelBinding,
 				}
 			}
 			throw new Error(`unexpected request ${method}`)
@@ -241,9 +266,9 @@ describe("ACP desktop SDK config option cache", () => {
 		expect((await client.config.get()).data).toEqual({ model: "session/openai-gpt-4o" })
 		expect(transport.requests.map((request) => request.method)).toEqual([
 			"initialize",
-			"model/config",
+			"model/preferences/read",
 			"provider/upsert",
-			"model/config",
+			"model/preferences/read",
 		])
 	})
 })

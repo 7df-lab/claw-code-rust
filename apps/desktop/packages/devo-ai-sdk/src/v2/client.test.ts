@@ -5,7 +5,6 @@ import type {
 	AcpSessionConfigOption,
 	AcpSessionInfo,
 	AcpSessionNotification,
-	RequestUserInputRespondParams,
 } from "./generated"
 
 class FakeTransport implements DevoAcpTransport {
@@ -149,6 +148,28 @@ async function nextPayloadOfType(
 }
 
 describe("ACP desktop SDK session mapping", () => {
+	test("aborts a session through the Devo session interrupt extension", async () => {
+		const transport = new FakeTransport((method) => {
+			if (method === "initialize") return initializeResult
+			if (method === "session/interrupt") return { interrupted: true }
+			throw new Error(`unexpected request ${method}`)
+		})
+		const client = createDevoClient({ directory: "/repo", transport })
+
+		await client.session.abort({ sessionID: "s1" })
+
+		expect(transport.requests.map((request) => request.method)).toEqual([
+			"session/interrupt",
+		])
+		expect(transport.requests.at(-1)).toEqual({
+			method: "session/interrupt",
+			directory: "/repo",
+			params: {
+				scope: { scope: "session", sessionId: "s1" },
+			},
+		})
+	})
+
 	test("loads ACP history and returns grouped messages with accumulated text parts", async () => {
 		Date.now = () => 1_772_000_000_000
 		const transport = new FakeTransport((method, _params, _directory, tx) => {
@@ -1072,66 +1093,42 @@ describe("ACP desktop SDK session mapping", () => {
 		})
 	})
 
-	test("maps ACP permission requests to permission events and replies", async () => {
-		const transport = new FakeTransport((method) => {
-			if (method === "initialize") return initializeResult
-			if (method === "session/list") return { sessions: [sessionInfo] }
-			throw new Error(`unexpected request ${method}`)
-		})
-		const client = createDevoClient({ directory: "/repo", transport })
-		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
-		const permissionRequest = {
-			sessionId: "s1",
-			toolCall: {
-				toolCallId: "tool1",
-				title: "Run command",
-				kind: "execute",
-				rawInput: { command: "pnpm test" },
-			},
-			options: [
-				{ optionId: "allow-once", name: "Allow once", kind: "allow_once" },
-				{ optionId: "reject-once", name: "Reject", kind: "reject_once" },
-			],
-		} satisfies AcpRequestPermissionParams
-
-		await client.session.list()
-		transport.emitRequest(7, "session/request_permission", permissionRequest)
-		const event = await stream.next()
-		await client.permission.reply({ requestID: "acp-permission-7", reply: "once" })
-
-		expect(event.value.payload).toEqual({
-			type: "permission.asked",
-			properties: {
-				id: "acp-permission-7",
-				requestID: "acp-permission-7",
-				sessionID: "s1",
-				permission: "Run command",
-				metadata: {
-					tool: "execute",
-					command: "pnpm test",
-				},
-			},
-		})
-		expect(transport.responses).toEqual([
-			{
-				id: 7,
-				result: { outcome: { outcome: "selected", optionId: "allow-once" } },
-			},
-		])
-	})
-
 	test("reads workspace changes through the runtime workspace API", async () => {
 		const transport = new FakeTransport((method, params, directory) => {
-			if (method === "_devo/workspace/changes/read") {
+			if (method === "workspace/changes/read") {
 				expect(directory).toBe("/repo")
 				expect(params).toEqual({
-					session_id: "s1",
+					sessionId: "s1",
 					scopes: ["turn"],
-					diff_detail: "full",
-					turn_id: "t1",
-					max_diff_bytes: 2_000_000,
+					diffDetail: "full",
+					turnId: "t1",
+					maxDiffBytes: 2_000_000,
 				})
-				return { views: [workspaceChangeView] }
+				// Canonical camelCase wire shape; the client converts views back
+				// to the legacy generated shape for the renderer.
+				return {
+					views: [
+						{
+							scope: workspaceChangeView.scope,
+							status: workspaceChangeView.status,
+							workspaceRoot: workspaceChangeView.workspace_root,
+							base: {
+								kind: "turn_checkpoint",
+								turnId: workspaceChangeView.base.turn_id,
+								checkpointId: workspaceChangeView.base.checkpoint_id,
+								backend: workspaceChangeView.base.backend,
+							},
+							coverage: workspaceChangeView.coverage,
+							attribution: workspaceChangeView.attribution,
+							changeSetStatus: workspaceChangeView.change_set_status,
+							files: workspaceChangeView.files,
+							stats: workspaceChangeView.stats,
+							unifiedDiff: workspaceChangeView.unified_diff,
+							warnings: workspaceChangeView.warnings,
+							generatedAt: workspaceChangeView.generated_at,
+						},
+					],
+				}
 			}
 			throw new Error(`unexpected request ${method}`)
 		})
@@ -1233,81 +1230,52 @@ describe("ACP desktop SDK session mapping", () => {
 		})
 	})
 
-	test("maps original request_user_input events to questions and replies through runtime API", async () => {
+	test("maps ACP permission requests to permission events and replies", async () => {
 		const transport = new FakeTransport((method) => {
 			if (method === "initialize") return initializeResult
 			if (method === "session/list") return { sessions: [sessionInfo] }
-			if (method === "_devo/request_user_input/respond") return { request_id: "rq1" }
 			throw new Error(`unexpected request ${method}`)
 		})
 		const client = createDevoClient({ directory: "/repo", transport })
 		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+		const permissionRequest = {
+			sessionId: "s1",
+			toolCall: {
+				toolCallId: "tool1",
+				title: "Run command",
+				kind: "execute",
+				rawInput: { command: "pnpm test" },
+			},
+			options: [
+				{ optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+				{ optionId: "reject-once", name: "Reject", kind: "reject_once" },
+			],
+		} satisfies AcpRequestPermissionParams
 
 		await client.session.list()
-		transport.emitSessionUpdate({
-			sessionId: "s1",
-			update: { sessionUpdate: "session_info_update" },
-			_meta: {
-				"devo/originalEvent": {
-					kind: "request_user_input",
-					request: {
-						request_id: "rq1",
-						session_id: "s1",
-						turn_id: "t1",
-						item_id: null,
-					},
-					questions: [
-						{
-							id: "scope",
-							header: "Scope",
-							question: "Which scope?",
-							isOther: true,
-							isSecret: false,
-							options: [{ label: "Repo", description: "Current repository" }],
-						},
-					],
-				},
-			},
-		} satisfies AcpSessionNotification)
+		transport.emitRequest(7, "session/request_permission", permissionRequest)
+		const event = await stream.next()
+		await client.permission.reply({ requestID: "acp-permission-7", reply: "once" })
 
-		const first = await stream.next()
-		const second = await stream.next()
-		await client.question.reply({ requestID: "rq1", answers: [["Repo"]] })
-		const expectedRespondParams = {
-			session_id: "s1",
-			turn_id: "t1",
-			request_id: "rq1",
-			response: {
-				answers: {
-					scope: { answers: ["Repo"] },
-				},
-			},
-		} satisfies RequestUserInputRespondParams
-
-		expect(first.value.payload.type).toBe("session.updated")
-		expect(second.value.payload).toEqual({
-			type: "question.asked",
+		expect(event.value.payload).toEqual({
+			type: "permission.asked",
 			properties: {
-				id: "rq1",
-				requestID: "rq1",
+				id: "acp-permission-7",
+				requestID: "acp-permission-7",
 				sessionID: "s1",
-				questions: [
-					{
-						id: "scope",
-						header: "Scope",
-						question: "Which scope?",
-						options: [{ label: "Repo", description: "Current repository" }],
-						isOther: true,
-						isSecret: false,
-					},
-				],
+				permission: "Run command",
+				metadata: {
+					tool: "execute",
+					command: "pnpm test",
+				},
 			},
 		})
-		expect(transport.requests.at(-1)).toEqual({
-			method: "_devo/request_user_input/respond",
-			directory: "/repo",
-			params: expectedRespondParams,
-		})
+		expect(transport.responses).toEqual([
+			{
+				id: 7,
+				result: { outcome: { outcome: "selected", optionId: "allow-once" } },
+			},
+		])
 	})
 
 	test("updates session title from ACP session info updates", async () => {
@@ -1516,31 +1484,31 @@ describe("ACP desktop SDK session mapping", () => {
 		})
 	})
 
-	test("uses ACP extension method for title updates and emits deletion events", async () => {
+	test("uses canonical session/metadata/update for title updates and emits deletion events", async () => {
 		const transport = new FakeTransport((method, params) => {
 			if (method === "initialize") return initializeResult
 			if (method === "session/list") return { sessions: [sessionInfo] }
-			if (method === "_devo/session/title/update") {
+			if (method === "session/metadata/update") {
+				// Canonical Session (camelCase) result; the client rebuilds the
+				// legacy devo/session metadata for session state folding.
 				return {
 					session: {
-						session_id: (params as { session_id: string }).session_id,
+						id: (params as { sessionId: string }).sessionId,
 						cwd: "/repo",
-						created_at: "2026-06-24T01:00:00.000Z",
-						updated_at: "2026-06-24T01:00:00.000Z",
-						last_activity_at: "2026-06-24T00:00:00.000Z",
+						createdAt: "2026-06-24T01:00:00.000Z",
+						lastActivityAt: "2026-06-24T01:00:00.000Z",
 						title: "New title",
-						title_state: { Final: "UserRename" },
 						ephemeral: false,
-						model: null,
-						reasoning_effort: null,
-						total_input_tokens: 0,
-						total_output_tokens: 0,
-						total_tokens: 0,
-						total_cache_creation_tokens: 0,
-						total_cache_read_tokens: 0,
-						prompt_token_estimate: 0,
-						last_query_total_tokens: 0,
 						status: "idle",
+						usage: {
+							total: {
+								totalTokens: 0,
+								inputTokens: 0,
+								outputTokens: 0,
+								cacheCreationInputTokens: 0,
+								cacheReadInputTokens: 0,
+							},
+						},
 					},
 				}
 			}
@@ -1555,9 +1523,9 @@ describe("ACP desktop SDK session mapping", () => {
 		await client.session.delete({ sessionID: "s1" })
 
 		expect(transport.requests.at(-2)).toEqual({
-			method: "_devo/session/title/update",
+			method: "session/metadata/update",
 			directory: "/repo",
-			params: { session_id: "s1", title: "New title" },
+			params: { sessionId: "s1", expectedVersion: 0, title: "New title" },
 		})
 		expect(await nextPayload(stream, "renamed")).toEqual({
 			type: "session.updated",
@@ -1570,7 +1538,7 @@ describe("ACP desktop SDK session mapping", () => {
 					time: {
 						created: Date.parse("2026-06-24T01:00:00.000Z"),
 						updated: Date.parse("2026-06-24T01:00:00.000Z"),
-						lastActivity: Date.parse("2026-06-24T00:00:00.000Z"),
+						lastActivity: Date.parse("2026-06-24T01:00:00.000Z"),
 					},
 					totalInputTokens: 0,
 					totalOutputTokens: 0,
@@ -1588,7 +1556,7 @@ describe("ACP desktop SDK session mapping", () => {
 					time: {
 						created: Date.parse("2026-06-24T01:00:00.000Z"),
 						updated: Date.parse("2026-06-24T01:00:00.000Z"),
-						lastActivity: Date.parse("2026-06-24T00:00:00.000Z"),
+						lastActivity: Date.parse("2026-06-24T01:00:00.000Z"),
 					},
 					totalInputTokens: 0,
 					totalOutputTokens: 0,

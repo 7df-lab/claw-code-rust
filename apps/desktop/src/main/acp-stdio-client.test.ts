@@ -28,15 +28,15 @@ describe("routeAcpLine", () => {
 		const requestMessage = {
 			jsonrpc: "2.0",
 			id: 9,
-			method: "session/request_permission",
-			params: { sessionId: "s1", options: [{ optionId: "reject", kind: "reject_once" }] },
+			method: "userInput/request",
+			params: { requestId: "request-1", questions: [] },
 		}
 		const request = routeAcpLine(JSON.stringify(requestMessage))
 		expect(request).toEqual({
 			type: "request",
 			id: 9,
-			method: "session/request_permission",
-			params: { sessionId: "s1", options: [{ optionId: "reject", kind: "reject_once" }] },
+			method: "userInput/request",
+			params: { requestId: "request-1", questions: [] },
 			message: requestMessage,
 		})
 	})
@@ -362,8 +362,8 @@ describe("StdioAcpClient", () => {
 			JSON.stringify({
 				jsonrpc: "2.0",
 				id: "server-1",
-				method: "session/request_permission",
-				params: { sessionId: "s1" },
+				method: "userInput/request",
+				params: { requestId: "request-1", questions: [] },
 			}),
 		)
 		handleLine(
@@ -381,12 +381,12 @@ describe("StdioAcpClient", () => {
 				direction: "server-to-desktop",
 				kind: "request",
 				id: "server-1",
-				method: "session/request_permission",
+				method: "userInput/request",
 				payload: {
 					jsonrpc: "2.0",
 					id: "server-1",
-					method: "session/request_permission",
-					params: { sessionId: "s1" },
+					method: "userInput/request",
+					params: { requestId: "request-1", questions: [] },
 				},
 			},
 			{

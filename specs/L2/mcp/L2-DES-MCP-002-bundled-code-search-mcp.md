@@ -16,7 +16,7 @@ Semantic code retrieval is provided by the bundled stdio MCP binary
 - Tool name (MCP): `code_search`
 - Model-facing name when enabled: `mcp__code_search__code_search`
 - Default: config entry present with `enabled = false`, `startup_policy = lazy`
-- Transport: `stdio` with `command = ["devo-code-search-mcp"]`
+- Transport: stdio with `command = "devo-code-search-mcp"`
 - Workspace root: stdio process cwd (Devo launches with session workspace as
   fallback cwd when the server record omits `cwd`)
 - Binary is shipped next to `devo` in CLI archives, install scripts, and desktop

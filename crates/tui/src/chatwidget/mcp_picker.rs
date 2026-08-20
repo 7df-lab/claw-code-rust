@@ -100,7 +100,7 @@ fn load_mcp_config_for_picker(cwd: Option<&std::path::Path>) -> (McpConfig, Path
     let config_path = config_home.join("config.toml");
     let config = FileSystemAppConfigLoader::new(config_home)
         .load(cwd)
-        .map(|app| app.mcp)
+        .map(|app| app.mcp_runtime)
         .unwrap_or_default();
     (config, config_path)
 }

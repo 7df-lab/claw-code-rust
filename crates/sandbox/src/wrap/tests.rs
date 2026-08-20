@@ -1,6 +1,7 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+#[cfg(any(target_os = "macos", all(feature = "enforce", unix)))]
 fn temp_workspace(tag: &str, toml_body: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -46,6 +47,7 @@ fn none_and_off_profiles_never_wrap() {
 }
 
 #[test]
+#[cfg(all(feature = "enforce", unix))]
 fn undefined_custom_profile_is_an_error() {
     let workspace = temp_workspace("missing", "");
     let error = wrap_command_for_profile(

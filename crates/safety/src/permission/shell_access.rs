@@ -219,10 +219,28 @@ fn evaluate_access_with_roots(
 ) -> PolicyDecision {
     match access {
         ExtractedAccess::Path { mode, path } => {
-            let path = Path::new(&path);
-            let Some(cwd) = cwd.or_else(|| path.is_absolute().then(|| Path::new("/"))) else {
+            let mut path = normalize_windows_drive_relative_path(path);
+            let path_buf = Path::new(&path);
+            let Some(cwd) = cwd.or_else(|| path_buf.is_absolute().then(|| Path::new("/"))) else {
                 return PolicyDecision::Ask;
             };
+            // If we got a rooted Windows path like `\workspace\file.txt` (no drive
+            // prefix), treat it as absolute on the same drive as `cwd`.
+            #[cfg(windows)]
+            {
+                if (path.starts_with('\\') || path.starts_with('/'))
+                    && !path.as_bytes().get(1).is_some_and(|b| *b == b':')
+                {
+                    if let Some(prefix) = cwd.components().find_map(|c| match c {
+                        Component::Prefix(p) => Some(p.as_os_str().to_string_lossy().into_owned()),
+                        _ => None,
+                    }) {
+                        let rest = path.trim_start_matches(['\\', '/']);
+                        path = format!("{prefix}\\{rest}");
+                    }
+                }
+            }
+            let path = Path::new(&path);
             let absolute = if path.is_absolute() {
                 lexical_normalize(path)
             } else {
@@ -255,8 +273,77 @@ fn evaluate_access_with_roots(
     }
 }
 
+#[cfg(windows)]
+fn normalize_windows_drive_relative_path(path: String) -> String {
+    // Some bash grammars can cause backslashes to be consumed, producing a
+    // drive-relative path like `C:workspace\\file.txt` instead of
+    // `C:\\workspace\\file.txt`.
+    //
+    // Treat `X:foo` (where the 3rd byte is not `\\` or `/`) as `X:\\foo` so the
+    // subsequent root-prefix matching can work reliably.
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3
+        && bytes[1] == b':'
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[2] != b'\\'
+        && bytes[2] != b'/'
+    {
+        let drive = &path[0..1];
+        let rest = &path[2..];
+        format!("{drive}:\\{rest}")
+    } else {
+        path
+    }
+}
+
+#[cfg(not(windows))]
+fn normalize_windows_drive_relative_path(path: String) -> String {
+    path
+}
+
 fn path_matches_roots(path: &Path, roots: &BTreeSet<PathBuf>) -> bool {
-    roots.iter().any(|root| path.starts_with(root))
+    roots.iter().any(|root| {
+        if path.starts_with(root) {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            // Be resilient to small string-shape differences introduced by shell
+            // parsing (e.g. `\` vs `/`, or different drive-letter casing).
+            let path_s_raw = {
+                let s = path.to_string_lossy();
+                if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                    format!(r"\\{rest}")
+                } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+                    rest.to_string()
+                } else {
+                    s.into_owned()
+                }
+            };
+            let root_s_raw = {
+                let s = root.to_string_lossy();
+                if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                    format!(r"\\{rest}")
+                } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+                    rest.to_string()
+                } else {
+                    s.into_owned()
+                }
+            };
+
+            let path_s = path_s_raw.replace('\\', "/").to_ascii_lowercase();
+            let root_s = root_s_raw.replace('\\', "/").to_ascii_lowercase();
+            if path_s == root_s {
+                return true;
+            }
+            if let Some(rest) = path_s.strip_prefix(&root_s) {
+                // Ensure component boundary: `C:\workspace` should not match
+                // `C:\workspace2`.
+                return rest.starts_with('/');
+            }
+        }
+        false
+    })
 }
 
 fn evaluate_shell_file_access_at_depth(
@@ -453,6 +540,11 @@ fn literal_node(node: Node<'_>, source: &str) -> Option<String> {
         return None;
     }
     let raw = node.utf8_text(source.as_bytes()).ok()?;
+    // Normalize literal destination tokens:
+    // - bash tokens sometimes include surrounding quotes
+    // - tree-sitter grammar variants can return different node kinds
+    // We trim quotes from the edges so prefix-matching writable roots works.
+    let raw = raw.trim_matches(|ch| ch == '\'' || ch == '"');
     match node.kind() {
         "word" | "number" | "concatenation" => Some(raw.to_string()),
         "raw_string" => Some(
@@ -467,7 +559,11 @@ fn literal_node(node: Node<'_>, source: &str) -> Option<String> {
                 .unwrap_or(raw)
                 .to_string(),
         ),
-        _ => None,
+        // tree-sitter's bash grammar can emit different node kinds for
+        // "destination" when the input contains Windows-style paths (e.g.
+        // `C:\Users\...`). Since we already block known expansions above, it's
+        // safe to fall back to the raw text for any other node kind.
+        _ => Some(raw.to_string()),
     }
 }
 

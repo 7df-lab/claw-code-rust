@@ -481,6 +481,9 @@ fn fixture_content(name: &str, lines: &[RolloutLine]) -> String {
     expected.push('\n');
     match fs::read_to_string(&path) {
         Ok(existing) => {
+            // Fixtures are stored in the repo and may be checked out with
+            // Windows CRLF line endings. Normalize before comparison.
+            let existing = existing.replace("\r\n", "\n");
             assert_eq!(
                 existing, expected,
                 "fixture {name} drifted from its builder; the legacy schema must not change"

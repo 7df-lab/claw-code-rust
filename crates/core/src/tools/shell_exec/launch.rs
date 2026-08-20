@@ -46,7 +46,9 @@ pub(crate) struct SandboxLaunchPlan {
     windows_launch: Option<devo_windows_sandbox::WindowsSandboxLaunch>,
     #[cfg(unix)]
     child_apply_plan: Option<devo_sandbox::ResolvedEnforcementPlan>,
+    #[cfg_attr(not(unix), allow(dead_code))]
     sandbox_profile: Option<String>,
+    #[cfg_attr(not(unix), allow(dead_code))]
     workdir: PathBuf,
 }
 
@@ -96,7 +98,7 @@ impl SandboxLaunchPlan {
         shell: &ShellSpec,
         command: &str,
         mode: devo_sandbox::WrapMode,
-        attach_child_apply: bool,
+        _attach_child_apply: bool,
     ) -> Result<Self, String> {
         // Platform wrap decision (details in module docs):
         // - macOS → sandbox-exec / Seatbelt
@@ -190,7 +192,7 @@ impl SandboxLaunchPlan {
     /// Build a tokio pipe [`Command`] from this plan (shell + command args).
     pub(crate) fn build_tokio_command(&self, shell: &ShellSpec, command: &str) -> Command {
         // Prefer OS wrapper (`sandbox-exec` / `bwrap` / Windows launcher); else bare shell.
-        let mut child = match &self.wrap {
+        let child = match &self.wrap {
             devo_sandbox::SandboxWrap::Wrapped(wrapped) => {
                 let mut child = Command::new(&wrapped.program);
                 child

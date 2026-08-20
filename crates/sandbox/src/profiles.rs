@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::SandboxPermissionOverlay;
 #[cfg(all(feature = "enforce", unix))]
 use crate::deny::{
     apply_deny_globs_to_capability_set, apply_deny_paths_to_capability_set, effective_deny_paths,
@@ -320,7 +319,14 @@ impl ProfileName {
             if !p.exists() {
                 continue;
             }
-            if let Err(e) = caps.allow_file_mut(p, AccessMode::ReadWrite) {
+            if p.is_dir() {
+                // Some systems (e.g. Fedora) expose `/dev/fd` as a directory
+                // symlink to `/proc/self/fd`. Treat it like other device
+                // directories so bwrap gets a well-formed sandbox command.
+                if let Err(e) = caps.allow_path(dev, AccessMode::ReadWrite) {
+                    tracing::warn!(path = dev, error = %e, "Could not allow device directory");
+                }
+            } else if let Err(e) = caps.allow_file_mut(p, AccessMode::ReadWrite) {
                 tracing::warn!(path = dev, error = %e, "Could not allow device file");
             }
         }

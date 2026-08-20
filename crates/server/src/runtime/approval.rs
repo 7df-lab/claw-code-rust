@@ -2015,10 +2015,38 @@ mod tests {
             root.clone(),
         );
         let mut request = test_permission_request("shell_command");
-        request.target = Some(format!("cat > {}/file.txt", root.display()));
+        // On Windows, backslashes inside an untrusted bash command string can
+        // interfere with the shell parser. Use forward slashes to keep the
+        // redirect destination a stable literal path for static analysis.
+        let file_path = root
+            .join("file.txt")
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        request.target = Some(format!("cat > '{file_path}'"));
         request.input = serde_json::json!({ "command": request.target });
         request.cwd = root;
 
+        let command = request
+            .target
+            .as_deref()
+            .expect("test builds a command string");
+        let tree = devo_util_shell_command::bash::try_parse_shell(command)
+            .expect("devo_util shell parser should parse the command");
+        assert!(
+            !tree.root_node().has_error(),
+            "shell parser root node has_error for command={command:?}"
+        );
+        let policy_decision =
+            devo_safety::evaluate_shell_command_for_profile(&profile, command, &request.cwd);
+        assert!(
+            matches!(
+                policy_decision,
+                devo_safety::permission::PolicyDecision::NoMatch
+                    | devo_safety::permission::PolicyDecision::Allow
+            ),
+            "unexpected policy_decision={policy_decision:?}"
+        );
         assert!(matches!(
             test_policy_decision(&profile, &request),
             AuthorizationDecision::Allow { .. }

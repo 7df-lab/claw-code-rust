@@ -341,7 +341,7 @@ impl ServerRuntime {
             .lock()
             .expect("app config store mutex should not be poisoned")
             .effective_config()
-            .mcp
+            .mcp_runtime
             .servers
             .iter()
             .map(mcp_source)

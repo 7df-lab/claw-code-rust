@@ -433,6 +433,7 @@ mod tests {
     async fn git_rollback_deletes_only_new_untracked_paths_with_manifest() -> Result<()> {
         let data_root = tempdir()?;
         let repo = tempdir()?;
+        let normalize_line_endings = |s: String| s.replace("\r\n", "\n");
         run_git(repo.path(), &["init"]);
         run_git(
             repo.path(),
@@ -479,7 +480,7 @@ mod tests {
         fs::remove_file(repo.path().join("drift.txt"))?;
         git::restore_git_checkpoint(repo.path(), &captured.record)?;
         assert_eq!(
-            fs::read_to_string(repo.path().join("tracked.txt"))?,
+            normalize_line_endings(fs::read_to_string(repo.path().join("tracked.txt"))?),
             "before\n"
         );
         assert!(repo.path().join("preexisting.txt").exists());
@@ -492,11 +493,11 @@ mod tests {
         fs::write(repo.path().join("legacy-new.txt"), "must survive\n")?;
         git::restore_git_checkpoint(repo.path(), &legacy_checkpoint)?;
         assert_eq!(
-            fs::read_to_string(repo.path().join("tracked.txt"))?,
+            normalize_line_endings(fs::read_to_string(repo.path().join("tracked.txt"))?),
             "before\n"
         );
         assert_eq!(
-            fs::read_to_string(repo.path().join("legacy-new.txt"))?,
+            normalize_line_endings(fs::read_to_string(repo.path().join("legacy-new.txt"))?),
             "must survive\n"
         );
         assert_eq!(

@@ -37,15 +37,10 @@ pub struct StreamableHttpOAuthDiscovery {
 pub async fn determine_streamable_http_auth_status(
     server_name: &str,
     url: &str,
-    bearer_token_env_var: Option<&str>,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     store_mode: OAuthCredentialsStoreMode,
 ) -> Result<McpAuthStatus> {
-    if bearer_token_env_var.is_some() {
-        return Ok(McpAuthStatus::BearerToken);
-    }
-
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
     if default_headers.contains_key(AUTHORIZATION) {
         return Ok(McpAuthStatus::BearerToken);
@@ -248,27 +243,10 @@ mod tests {
         let status = determine_streamable_http_auth_status(
             "server",
             "not-a-url",
-            /*bearer_token_env_var*/ None,
             Some(HashMap::from([(
                 "Authorization".to_string(),
                 "Bearer token".to_string(),
             )])),
-            /*env_http_headers*/ None,
-            OAuthCredentialsStoreMode::Keyring,
-        )
-        .await
-        .expect("status should compute");
-
-        assert_eq!(status, McpAuthStatus::BearerToken);
-    }
-
-    #[tokio::test]
-    async fn determine_auth_status_uses_bearer_token_when_env_var_is_configured() {
-        let status = determine_streamable_http_auth_status(
-            "server",
-            "not-a-url",
-            Some("DEVO_RMCP_CLIENT_AUTH_STATUS_TEST_TOKEN"),
-            /*http_headers*/ None,
             /*env_http_headers*/ None,
             OAuthCredentialsStoreMode::Keyring,
         )

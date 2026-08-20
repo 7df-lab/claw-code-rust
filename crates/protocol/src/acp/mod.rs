@@ -120,6 +120,15 @@ mod tests {
     use crate::SessionId;
     use crate::ToolCallPayload;
     use crate::TurnId;
+
+    fn test_workspace_path(relative: &str) -> PathBuf {
+        if cfg!(windows) {
+            std::env::temp_dir().join(relative)
+        } else {
+            PathBuf::from(format!("/{}", relative))
+        }
+    }
+
     fn turn_item_meta(turn_id: &TurnId, item_id: &ItemId) -> AcpMeta {
         AcpMeta::from_iter([
             (
@@ -769,7 +778,7 @@ mod tests {
         let session_id = SessionId::new();
         let turn_id = TurnId::new();
         let item_id = ItemId::new();
-        let path = PathBuf::from("/workspace/src/lib.rs");
+        let path = test_workspace_path("workspace/src/lib.rs");
         let raw_input = serde_json::json!({
             "path": serde_json::to_value(&path).expect("serialize path"),
         });
@@ -828,7 +837,7 @@ mod tests {
 
     #[test]
     fn file_change_update_emits_text_content_when_old_new_text_is_unavailable() {
-        let path = PathBuf::from("/workspace/src/lib.rs");
+        let path = test_workspace_path("workspace/src/lib.rs");
         let unified_diff = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
         let change = FileChangePayload {
             tool_call_id: "call-1".to_string(),
@@ -856,7 +865,7 @@ mod tests {
 
     #[test]
     fn file_change_update_emits_acp_diff_when_old_new_text_is_available() {
-        let path = PathBuf::from("/workspace/src/lib.rs");
+        let path = test_workspace_path("workspace/src/lib.rs");
         let change = FileChangePayload {
             tool_call_id: "call-1".to_string(),
             tool_name: Some("write".to_string()),

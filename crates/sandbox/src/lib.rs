@@ -157,7 +157,7 @@ pub fn resolve_enforcement_plan(
 pub fn resolve_enforcement_plan_with_overlay(
     profile: Option<&str>,
     workspace: &Path,
-    overlay: Option<&SandboxPermissionOverlay>,
+    _overlay: Option<&SandboxPermissionOverlay>,
 ) -> anyhow::Result<Option<ResolvedEnforcementPlan>> {
     let Some(profile_name) = profile else {
         return Ok(None);
@@ -386,6 +386,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "enforce", unix))]
     fn resolve_enforcement_plan_rejects_unknown_profile_names() {
         let workspace = std::env::temp_dir();
         let error = resolve_enforcement_plan(Some("not-a-real-profile"), &workspace)

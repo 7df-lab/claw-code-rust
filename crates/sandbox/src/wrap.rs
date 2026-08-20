@@ -278,6 +278,7 @@ fn bwrap_available() -> bool {
     })
 }
 
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 struct WrapContext<'a> {
     profile_name: &'a ProfileName,
     config: &'a SandboxConfig,

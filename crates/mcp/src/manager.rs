@@ -540,7 +540,10 @@ fn non_empty_map(map: &BTreeMap<String, String>) -> Option<HashMap<String, Strin
 }
 
 fn bearer_token(auth: Option<&McpAuthConfig>) -> Option<String> {
-    auth.map(|McpAuthConfig::BearerToken { token }| token.clone())
+    match auth {
+        Some(McpAuthConfig::BearerToken { token }) => Some(token.clone()),
+        None => None,
+    }
 }
 
 #[cfg(test)]

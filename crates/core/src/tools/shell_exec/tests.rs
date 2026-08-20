@@ -2,7 +2,9 @@ use super::*;
 use crate::ToolContent;
 use pretty_assertions::assert_eq;
 use std::hint::black_box;
-use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::time::Duration;
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -365,7 +367,7 @@ fn macos_pipe_and_pty_launch_plans_wrap_via_sandbox_exec() {
 fn windows_inactive_profile_prepare_pipe_builds_direct_command() {
     let workdir = std::env::current_dir().unwrap_or_default();
     let shell = resolve_shell(None, false);
-    let plan = SandboxLaunchPlan::prepare_pipe(None, &workdir, &shell, "echo hi")
+    let plan = SandboxLaunchPlan::prepare_pipe(None, None, &workdir, &shell, "echo hi")
         .expect("inactive profile should prepare");
     assert!(matches!(plan.wrap(), devo_sandbox::SandboxWrap::None));
     let _cmd = plan.build_tokio_command(&shell, "echo hi");
@@ -376,7 +378,7 @@ fn windows_inactive_profile_prepare_pipe_builds_direct_command() {
 fn windows_inactive_profile_prepare_pty_builds_builder() {
     let workdir = std::env::current_dir().unwrap_or_default();
     let shell = resolve_shell(None, false);
-    let plan = SandboxLaunchPlan::prepare_pty(None, &workdir, &shell, "echo hi")
+    let plan = SandboxLaunchPlan::prepare_pty(None, None, &workdir, &shell, "echo hi")
         .expect("inactive profile should prepare");
     assert!(matches!(plan.wrap(), devo_sandbox::SandboxWrap::None));
     let _builder = plan.build_pty_command_builder(&shell, "echo hi");

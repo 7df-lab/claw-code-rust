@@ -1547,7 +1547,7 @@ mod tests {
             {
                 let store = AppConfigStore::load(temp.path().to_path_buf(), None)
                     .expect("reload app config store");
-                store.effective_config().mcp.clone()
+                store.effective_config().mcp_runtime.clone()
             },
             Default::default(),
         ));
@@ -3615,6 +3615,7 @@ mod tests {
 
         let data_root = TempDir::new()?;
         let repo = TempDir::new()?;
+        let normalize_line_endings = |s: String| s.replace("\r\n", "\n");
         for args in [
             vec!["init"],
             vec!["config", "user.email", "rollback@example.com"],
@@ -3781,7 +3782,7 @@ mod tests {
             }
         );
         assert_eq!(
-            std::fs::read_to_string(repo.path().join("tracked.txt"))?,
+            normalize_line_endings(std::fs::read_to_string(repo.path().join("tracked.txt"))?),
             "before second\n"
         );
         assert!(!repo.path().join("new.txt").exists());

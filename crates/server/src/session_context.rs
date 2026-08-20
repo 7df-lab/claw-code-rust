@@ -180,11 +180,11 @@ impl SessionRuntimeContext {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let workspace_mcp = config
-            .mcp
+            .mcp_runtime
             .clone()
             .with_code_search_workspace_cwd(workspace_cwd.clone());
         let inherited_mcp = inherited_config
-            .mcp
+            .mcp_runtime
             .clone()
             .with_code_search_workspace_cwd(workspace_cwd);
         let mcp_runtime_equivalent = workspace_mcp.is_operationally_equivalent_to(&inherited_mcp);
@@ -310,7 +310,7 @@ impl SessionRuntimeContext {
         cwd: PathBuf,
         additional_directories: Vec<PathBuf>,
     ) -> SessionState {
-        let (permission_preset, sandbox_from_project) = {
+        let (permission_preset, sandbox_from_project, sandbox_from_global) = {
             let config_store = self
                 .config_store
                 .lock()
@@ -331,12 +331,18 @@ impl SessionRuntimeContext {
                 }
             };
             let sandbox_from_project = project.and_then(|project| project.sandbox_profile.clone());
-            (preset, sandbox_from_project)
+            let sandbox_from_global = config_store
+                .effective_config()
+                .permission
+                .sandbox_profile
+                .clone();
+            (preset, sandbox_from_project, sandbox_from_global)
         };
         let permission_profile =
             devo_safety::RuntimePermissionProfile::from_preset(permission_preset, cwd.clone())
                 .with_additional_roots(additional_directories);
         let sandbox_profile = sandbox_from_project
+            .or(sandbox_from_global)
             .unwrap_or_else(|| permission_profile.implied_sandbox_profile().to_string());
         let available_skills_instructions = {
             let mut skill_catalog = self

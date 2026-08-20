@@ -1195,7 +1195,9 @@ fn handle_app_command(
                             .map_err(anyhow::Error::from)
                     }) {
                     Ok(app_config) => {
-                        let body = crate::mcp_servers::render_mcp_servers_markdown(&app_config.mcp);
+                        let body = crate::mcp_servers::render_mcp_servers_markdown(
+                            &app_config.mcp_runtime,
+                        );
                         chat_widget
                             .add_padded_markdown_history(MCP_SERVERS_TRANSCRIPT_TITLE, &body);
                         chat_widget.set_status_message("MCP servers loaded");

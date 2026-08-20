@@ -12,6 +12,13 @@ pub struct PermissionConfig {
     /// Behavior when no rule or prior decision resolves a tool call.
     #[serde(rename = "default_mode")]
     pub prompt_policy: PromptPolicy,
+    /// Default sandbox profile used when starting new sessions.
+    ///
+    /// This corresponds to the global `[permission].sandbox_profile` TOML key.
+    /// When set, it overrides the sandbox profile implied by the
+    /// permission preset (`off` disables the OS sandbox).
+    #[serde(default)]
+    pub sandbox_profile: Option<String>,
 }
 
 /// A single permission-policy rule.

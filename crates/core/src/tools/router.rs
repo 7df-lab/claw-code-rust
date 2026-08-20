@@ -2245,6 +2245,13 @@ mod tests {
     /// Verifies: sandbox permission inputs are classified into explicit tiers.
     #[test]
     fn explicit_sandbox_permissions_are_classified() {
+        let input_path = std::env::temp_dir().join("input");
+        let output_path = std::env::temp_dir().join("output");
+        let legacy_path = std::env::temp_dir().join("legacy");
+        let input_path_s = input_path.to_string_lossy().to_string();
+        let output_path_s = output_path.to_string_lossy().to_string();
+        let legacy_path_s = legacy_path.to_string_lossy().to_string();
+
         assert_eq!(
             sandbox_permission_request_from_input(&serde_json::json!({
             "sandbox_permissions": "require_escalated"
@@ -2258,28 +2265,28 @@ mod tests {
                 "additional_permissions": {
                     "network": {"enabled": true},
                     "file_system": {
-                        "read": ["/tmp/input"],
-                        "write": ["/tmp/output"]
+                        "read": [&input_path_s],
+                        "write": [&output_path_s]
                     }
                 }
             }))
             .expect("additional permissions request"),
             SandboxPermissionRequest::AdditionalPermissions(AdditionalSandboxPermissions {
                 network: NetworkPermission::Enabled,
-                read_paths: vec![std::path::PathBuf::from("/tmp/input")],
-                write_paths: vec![std::path::PathBuf::from("/tmp/output")],
+                read_paths: vec![input_path],
+                write_paths: vec![output_path],
             })
         );
         assert_eq!(
             sandbox_permission_request_from_input(&serde_json::json!({
                 "additional_permissions": {
-                    "file_system": {"read": ["/tmp/legacy"]}
+                    "file_system": {"read": [&legacy_path_s]}
                 }
             }))
             .expect("legacy additional permissions request"),
             SandboxPermissionRequest::AdditionalPermissions(AdditionalSandboxPermissions {
                 network: NetworkPermission::Unchanged,
-                read_paths: vec![std::path::PathBuf::from("/tmp/legacy")],
+                read_paths: vec![legacy_path],
                 write_paths: vec![],
             })
         );
@@ -2324,15 +2331,20 @@ mod tests {
     /// Verifies: permission-cache keys use normalized tiers and path sets.
     #[test]
     fn sandbox_permission_cache_key_normalizes_additional_permissions() {
+        let a_path = std::env::temp_dir().join("a");
+        let b_path = std::env::temp_dir().join("b");
+        let a_path_s = a_path.to_string_lossy().to_string();
+        let b_path_s = b_path.to_string_lossy().to_string();
+
         let first = sandbox_permission_cache_key_from_input(&serde_json::json!({
             "sandbox_permissions": "with_additional_permissions",
             "additional_permissions": {
-                "file_system": {"read": ["/tmp/b", "/tmp/a"]}
+                "file_system": {"read": [&b_path_s, &a_path_s]}
             }
         }));
         let second = sandbox_permission_cache_key_from_input(&serde_json::json!({
             "additional_permissions": {
-                "file_system": {"read": ["/tmp/a", "/tmp/b"]}
+                "file_system": {"read": [&a_path_s, &b_path_s]}
             }
         }));
         assert_eq!(first, second);

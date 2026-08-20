@@ -607,13 +607,16 @@ mod tests {
 
     #[test]
     fn bwrap_reexec_mounts_existing_paths_read_only() {
-        let cmd = bwrap_reexec_command_with_state(&["/tmp"], &[], /*inside_bwrap*/ false)
-            .expect("build bwrap command")
-            .expect("bwrap command outside bwrap");
+        let tmp = std::env::temp_dir();
+        let tmp_s = tmp.to_string_lossy();
+        let cmd =
+            bwrap_reexec_command_with_state(&[tmp_s.as_ref()], &[], /*inside_bwrap*/ false)
+                .expect("build bwrap command")
+                .expect("bwrap command outside bwrap");
         let args = argv_strings(&cmd);
         assert!(
             args.windows(3)
-                .any(|window| window == ["--ro-bind", "/tmp", "/tmp"])
+                .any(|window| window == ["--ro-bind", tmp_s.as_ref(), tmp_s.as_ref()])
         );
     }
 

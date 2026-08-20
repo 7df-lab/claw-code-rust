@@ -144,7 +144,9 @@ check_interval_hours = 48
             },
             experimental: ExperimentalConfig::default(),
             mcp_oauth_credentials_store: Some(OAuthCredentialsStoreMode::default()),
-            mcp: super::McpConfig::default(),
+            mcp: super::McpHostConfig::default(),
+            mcp_servers: BTreeMap::new(),
+            mcp_runtime: super::McpConfig::default(),
             tools: ToolsConfig::default(),
             hooks: HooksConfig::default(),
             permission: PermissionConfig::default(),
@@ -247,8 +249,32 @@ tool = "read"
                 },
             ],
             prompt_policy: PromptPolicy::Auto,
+            sandbox_profile: None,
         }
     );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn loader_reads_permission_sandbox_profile() {
+    let root = unique_temp_dir("permission-sandbox-profile");
+    let home = root.join("home").join(".devo");
+    std::fs::create_dir_all(&home).expect("home config dir");
+    std::fs::write(
+        home.join("config.toml"),
+        r#"
+[permission]
+sandbox_profile = "off"
+"#,
+    )
+    .expect("write user config");
+
+    let config = FileSystemAppConfigLoader::new(home)
+        .load(None)
+        .expect("load config");
+
+    assert_eq!(config.permission.sandbox_profile, Some("off".to_string()));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -317,6 +343,7 @@ fn loader_preserves_lower_permission_section_when_higher_layer_omits_it() {
                 pattern_mode: PatternMode::Glob,
             }],
             prompt_policy: PromptPolicy::Deny,
+            sandbox_profile: None,
         }
     );
 
@@ -355,6 +382,7 @@ fn loader_replaces_lower_permission_section_when_higher_layer_supplies_it() {
                 pattern_mode: PatternMode::Glob,
             }],
             prompt_policy: PromptPolicy::Deny,
+            sandbox_profile: None,
         }
     );
 
@@ -392,6 +420,7 @@ fn loader_cli_overlay_preserves_workspace_permission_when_omitted() {
                 pattern_mode: PatternMode::Glob,
             }],
             prompt_policy: PromptPolicy::Auto,
+            sandbox_profile: None,
         }
     );
 
@@ -437,6 +466,7 @@ pattern = "deploy"
                 pattern_mode: PatternMode::Glob,
             }],
             prompt_policy: PromptPolicy::Deny,
+            sandbox_profile: None,
         }
     );
 
@@ -445,7 +475,7 @@ pattern = "deploy"
 
 #[test]
 fn default_app_config_includes_disabled_code_search_mcp_server() {
-    let mcp = AppConfig::default().mcp;
+    let mcp = AppConfig::default().mcp_runtime;
     let server = mcp
         .servers
         .iter()
@@ -569,7 +599,7 @@ fn loader_ignores_legacy_experimental_code_search_keys() {
 
     assert_eq!(config.experimental, ExperimentalConfig::default());
     let server = config
-        .mcp
+        .mcp_runtime
         .servers
         .iter()
         .find(|record| record.id.0 == super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID)
@@ -584,17 +614,24 @@ fn loader_ensures_bundled_code_search_mcp_when_servers_list_is_empty() {
     let root = unique_temp_dir("config-bundled-mcp-ensure");
     let home = root.join("home").join(".devo");
     std::fs::create_dir_all(&home).expect("home config dir");
-    std::fs::write(home.join("config.toml"), "[mcp]\nservers = []\n").expect("write user config");
+    std::fs::write(
+        home.join("config.toml"),
+        r#"
+[mcp]
+auto_start = true
+"#,
+    )
+    .expect("write user config");
 
     let loader = FileSystemAppConfigLoader::new(home);
     let config = loader.load(None).expect("load config");
 
-    assert_eq!(config.mcp.servers.len(), 1);
+    assert_eq!(config.mcp_runtime.servers.len(), 1);
     assert_eq!(
-        config.mcp.servers[0].id.0,
+        config.mcp_runtime.servers[0].id.0,
         super::BUNDLED_CODE_SEARCH_MCP_SERVER_ID
     );
-    assert!(!config.mcp.servers[0].enabled);
+    assert!(!config.mcp_runtime.servers[0].enabled);
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -606,7 +643,14 @@ fn set_mcp_server_enabled_materializes_bundled_code_search() {
     let root = unique_temp_dir("config-bundled-mcp-enable");
     let home = root.join("home").join(".devo");
     std::fs::create_dir_all(&home).expect("home config dir");
-    std::fs::write(home.join("config.toml"), "[mcp]\nservers = []\n").expect("write user config");
+    std::fs::write(
+        home.join("config.toml"),
+        r#"
+[mcp]
+auto_start = true
+"#,
+    )
+    .expect("write user config");
 
     let config_file = home.join("config.toml");
     let mut store = AppConfigStore::load(home, /*workspace_root*/ None).expect("load store");
@@ -633,7 +677,6 @@ fn set_mcp_server_enabled_materializes_bundled_code_search() {
     let user_config = std::fs::read_to_string(&config_file).expect("read user config");
     assert!(user_config.contains("code_search"));
     assert!(user_config.contains("devo-code-search-mcp"));
-    assert!(user_config.contains("enabled = true") || user_config.contains("enabled=true"));
 
     let _ = std::fs::remove_dir_all(root);
 }

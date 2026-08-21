@@ -238,9 +238,11 @@ async fn acp_session_delete_cancels_running_session_before_removal() -> Result<(
     let (started_tx, started_rx) = oneshot::channel();
     let provider: Arc<dyn ModelProviderSDK> = Arc::new(BlockingProvider::new(started_tx));
     let runtime = build_runtime_with_provider(data_root.path(), provider)?;
-    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
-    let session = start_legacy_session(&runtime, connection_id, data_root.path()).await?;
-    start_turn(&runtime, connection_id, 30, session.session_id).await?;
+    let (acp_connection_id, mut notifications_rx) = initialize_acp_connection(&runtime).await?;
+    let (native_connection_id, _native_notifications_rx) =
+        initialize_native_connection(&runtime).await?;
+    let session = create_acp_session(&runtime, acp_connection_id, 29, data_root.path()).await?;
+    start_turn(&runtime, native_connection_id, 30, session.session_id).await?;
 
     timeout(Duration::from_secs(5), started_rx)
         .await
@@ -254,7 +256,7 @@ async fn acp_session_delete_cancels_running_session_before_removal() -> Result<(
     assert_eq!(
         timeout(
             Duration::from_secs(5),
-            delete_acp_session(&runtime, connection_id, 31, &session.session_id)
+            delete_acp_session(&runtime, acp_connection_id, 31, &session.session_id)
         )
         .await
         .context("session/delete timed out while turn was running")??,
@@ -264,7 +266,7 @@ async fn acp_session_delete_cancels_running_session_before_removal() -> Result<(
         .await
         .context("running delete should interrupt the active turn")?;
     assert_eq!(
-        list_acp_sessions(&runtime, connection_id, 32, data_root.path()).await?,
+        list_acp_sessions(&runtime, acp_connection_id, 32, data_root.path()).await?,
         AcpListSessionsResult {
             sessions: Vec::new(),
             next_cursor: None,
@@ -282,31 +284,33 @@ async fn acp_session_delete_cancels_running_session_before_removal() -> Result<(
 async fn acp_session_delete_cascades_to_forked_children() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
-    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
-    let root = start_legacy_session(&runtime, connection_id, data_root.path()).await?;
+    let (acp_connection_id, mut notifications_rx) = initialize_acp_connection(&runtime).await?;
+    let (native_connection_id, _native_notifications_rx) =
+        initialize_native_connection(&runtime).await?;
+    let root = create_acp_session(&runtime, acp_connection_id, 7, data_root.path()).await?;
     start_and_complete_turn(
         &runtime,
-        connection_id,
+        native_connection_id,
         &mut notifications_rx,
         root.session_id,
     )
     .await?;
-    let child = fork_session(&runtime, connection_id, root.session_id).await?;
+    let child_session_id = fork_session(&runtime, native_connection_id, root.session_id).await?;
 
     assert_eq!(
-        list_acp_sessions(&runtime, connection_id, 11, data_root.path())
+        list_acp_sessions(&runtime, acp_connection_id, 11, data_root.path())
             .await?
             .sessions
             .len(),
         2
     );
     assert!(session_rollout_exists(data_root.path(), root.session_id)?);
-    assert!(session_rollout_exists(data_root.path(), child.session_id)?);
+    assert!(session_rollout_exists(data_root.path(), child_session_id)?);
 
-    delete_acp_session(&runtime, connection_id, 12, &root.session_id).await?;
+    delete_acp_session(&runtime, acp_connection_id, 12, &root.session_id).await?;
 
     assert_eq!(
-        list_acp_sessions(&runtime, connection_id, 13, data_root.path()).await?,
+        list_acp_sessions(&runtime, acp_connection_id, 13, data_root.path()).await?,
         AcpListSessionsResult {
             sessions: Vec::new(),
             next_cursor: None,
@@ -314,7 +318,7 @@ async fn acp_session_delete_cascades_to_forked_children() -> Result<()> {
         }
     );
     assert!(!session_rollout_exists(data_root.path(), root.session_id)?);
-    assert!(!session_rollout_exists(data_root.path(), child.session_id)?);
+    assert!(!session_rollout_exists(data_root.path(), child_session_id)?);
     Ok(())
 }
 
@@ -322,14 +326,15 @@ async fn acp_session_delete_cascades_to_forked_children() -> Result<()> {
 async fn acp_session_delete_broadcasts_deleted_session_ids() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
-    let (owner_connection_id, _owner_notifications_rx) = initialize_connection(&runtime).await?;
+    let (owner_connection_id, _owner_notifications_rx) =
+        initialize_acp_connection(&runtime).await?;
     let (observer_connection_id, mut observer_notifications_rx) =
-        initialize_connection(&runtime).await?;
-    subscribe_to_all_events(&runtime, observer_connection_id, 20).await?;
-
+        initialize_native_connection(&runtime).await?;
     let cwd = data_root.path().join("repo");
     std::fs::create_dir_all(&cwd)?;
     let new_session = create_acp_session(&runtime, owner_connection_id, 21, &cwd).await?;
+    subscribe_to_session_events(&runtime, observer_connection_id, 20, new_session.session_id)
+        .await?;
 
     assert_eq!(
         delete_acp_session(&runtime, owner_connection_id, 22, &new_session.session_id).await?,
@@ -340,7 +345,7 @@ async fn acp_session_delete_broadcasts_deleted_session_ids() -> Result<()> {
         .await
         .context("observer should receive session/deleted broadcast")?;
     assert_eq!(
-        notification["params"]["_meta"]["devo/originalEvent"]["deleted_session_ids"],
+        notification["params"]["deleted_session_ids"],
         serde_json::json!([new_session.session_id])
     );
     Ok(())
@@ -430,7 +435,7 @@ fn build_runtime_with_provider(
     ))
 }
 
-async fn initialize_connection(
+async fn initialize_acp_connection(
     runtime: &Arc<ServerRuntime>,
 ) -> Result<(u64, mpsc::Receiver<serde_json::Value>)> {
     let (notifications_tx, notifications_rx) = devo_server::test_outbound_channel(4096);
@@ -468,6 +473,35 @@ async fn initialize_connection(
     Ok((connection_id, notifications_rx))
 }
 
+async fn initialize_native_connection(
+    runtime: &Arc<ServerRuntime>,
+) -> Result<(u64, mpsc::Receiver<serde_json::Value>)> {
+    let (notifications_tx, notifications_rx) = devo_server::test_outbound_channel(4096);
+    let connection_id = runtime
+        .register_connection(ClientTransportKind::Stdio, notifications_tx)
+        .await;
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": 1,
+                    "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } }
+                }
+            }),
+        )
+        .await
+        .context("Native initialize response")?;
+    anyhow::ensure!(
+        response.get("result").is_some(),
+        "Native initialize failed: {response}"
+    );
+    Ok((connection_id, notifications_rx))
+}
+
 async fn create_acp_session(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
@@ -501,33 +535,6 @@ async fn create_acp_session(
     .context("decode Devo session metadata")
 }
 
-async fn start_legacy_session(
-    runtime: &Arc<ServerRuntime>,
-    connection_id: u64,
-    cwd: &Path,
-) -> Result<SessionMetadata> {
-    let response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 7,
-                "method": "session/start",
-                "params": {
-                    "cwd": cwd.to_string_lossy().into_owned(),
-                    "ephemeral": false,
-                    "title": "Root session",
-                    "model": "test-model",
-                    "model_binding_id": null
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let response: devo_server::SuccessResponse<devo_server::SessionStartResult> =
-        serde_json::from_value(response)?;
-    Ok(response.result.session)
-}
-
 async fn start_and_complete_turn(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
@@ -551,22 +558,17 @@ async fn start_turn(
             connection_id,
             serde_json::json!({
                 "id": request_id,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "seed fork history" }],
-                    "model": null,
-                    "model_binding_id": null,
-                    "thinking": null,
-                    "sandbox": null,
-                    "approval_policy": null,
-                    "cwd": null
+                    "idempotencyKey": format!("turn-{request_id}")
                 }
             }),
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(response)?;
     Ok(())
 }
@@ -575,50 +577,51 @@ async fn fork_session(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
     session_id: SessionId,
-) -> Result<SessionMetadata> {
+) -> Result<SessionId> {
     let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 9,
-                "method": "_devo/session/fork",
+                "method": "session/fork",
                 "params": {
-                    "session_id": session_id,
-                    "title": "Forked child",
-                    "cwd": null,
-                    "user_turn_index": 0
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/fork response")?;
-    let response: devo_server::SuccessResponse<devo_server::SessionForkResult> =
-        serde_json::from_value(response)?;
-    Ok(response.result.session)
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionForkResult,
+    > = serde_json::from_value(response)?;
+    SessionId::try_from(response.result.session.id.as_str())
+        .context("canonical fork returned a non-addressable session id")
 }
 
-async fn subscribe_to_all_events(
+async fn subscribe_to_session_events(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
     request_id: u64,
+    session_id: SessionId,
 ) -> Result<()> {
     let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": request_id,
-                "method": "events/subscribe",
+                "method": "subscription/create",
                 "params": {
-                    "session_id": null,
-                    "event_types": null,
-                    "include_child_agents": true
+                    "selectors": [{
+                        "kind": "session",
+                        "sessionId": session_id
+                    }],
+                    "includeSnapshot": false
                 }
             }),
         )
         .await
-        .context("events/subscribe response")?;
-    let _: devo_server::SuccessResponse<devo_server::EventsSubscribeResult> =
-        serde_json::from_value(response)?;
+        .context("subscription/create response")?;
+    anyhow::ensure!(response["result"]["subscriptionId"].is_string());
     Ok(())
 }
 

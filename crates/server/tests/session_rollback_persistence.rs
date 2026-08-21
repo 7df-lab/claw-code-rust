@@ -112,29 +112,46 @@ async fn session_rollback_persists_cut_and_keeps_future_turns_durable() -> Resul
     )
     .await?;
 
-    let rollback_response = runtime
+    let preview_response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 5,
-                "method": "_devo/session/rollback",
+                "method": "session/rollback/preview",
                 "params": {
-                    "session_id": session_id,
-                    "user_turn_index": 1,
-                    "mode": "before_user_turn"
+                    "sessionId": session_id,
+                    "userTurnIndex": 1,
+                    "mode": "beforeUserTurn"
                 }
             }),
         )
         .await
-        .context("session/rollback response")?;
-    let rollback = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionRollbackResult>,
-    >(rollback_response)?
+        .context("session/rollback/preview response")?;
+    let plan = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::RestorePlan>,
+    >(preview_response)?
     .result;
-    assert_eq!(
-        rollback.latest_turn.as_ref().map(|turn| turn.sequence),
-        Some(1)
-    );
+    let commit_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 6,
+                "method": "session/rollback/commit",
+                "params": {
+                    "restorePlanId": plan.restore_plan_id,
+                    "expectedWorkspaceVersion": plan.workspace_version
+                }
+            }),
+        )
+        .await
+        .context("session/rollback/commit response")?;
+    let commit = serde_json::from_value::<
+        devo_server::SuccessResponse<
+            devo_protocol::native::rpc_session::SessionRollbackCommitResult,
+        >,
+    >(commit_response)?
+    .result;
+    assert_eq!(commit.restored_turn_count, 1);
 
     start_and_complete_turn(
         &runtime,
@@ -159,7 +176,7 @@ async fn session_rollback_persists_cut_and_keeps_future_turns_durable() -> Resul
             rebuilt_connection_id,
             serde_json::json!({
                 "id": 6,
-                "method": "_devo/session/resume",
+                "method": "session/resume",
                 "params": {
                     "session_id": session_id
                 }
@@ -260,6 +277,7 @@ async fn initialize_connection(
                 "params": {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                     "clientInfo": {
                         "name": "session-rollback-persistence-test",
                         "title": "session-rollback-persistence-test",
@@ -317,7 +335,7 @@ async fn start_and_complete_turn(
             connection_id,
             serde_json::json!({
                 "id": 3,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [{ "type": "text", "text": text }],

@@ -2,7 +2,9 @@ use super::*;
 use crate::ToolContent;
 use pretty_assertions::assert_eq;
 use std::hint::black_box;
-use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::time::Duration;
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -22,6 +24,7 @@ async fn execute_shell_command_non_tty_sends_progress() {
             yield_time_ms: 100,
             max_output_tokens: 100,
             sandbox_profile: None,
+            sandbox_permission_overlay: None,
         },
         Some(tx),
         CancellationToken::new(),
@@ -50,6 +53,7 @@ async fn execute_shell_command_progress_none_does_not_crash() {
             yield_time_ms: 100,
             max_output_tokens: 100,
             sandbox_profile: None,
+            sandbox_permission_overlay: None,
         },
         None,
         CancellationToken::new(),
@@ -81,6 +85,7 @@ async fn execute_shell_command_cancels_non_tty_process() {
             yield_time_ms: 100,
             max_output_tokens: 100,
             sandbox_profile: None,
+            sandbox_permission_overlay: None,
         },
         None,
         cancel_token,
@@ -131,6 +136,7 @@ async fn execute_shell_command_cancels_tty_process() {
             yield_time_ms: 100,
             max_output_tokens: 100,
             sandbox_profile: None,
+            sandbox_permission_overlay: None,
         },
         None,
         cancel_token,
@@ -185,6 +191,7 @@ async fn aborting_tty_command_kills_pty_child() {
             yield_time_ms: 100,
             max_output_tokens: 100,
             sandbox_profile: None,
+            sandbox_permission_overlay: None,
         },
         None,
         task_cancel_token,
@@ -222,6 +229,7 @@ async fn execute_shell_command_success_metadata_is_mixed() {
             yield_time_ms: 100,
             max_output_tokens: 100,
             sandbox_profile: None,
+            sandbox_permission_overlay: None,
         },
         None,
         CancellationToken::new(),
@@ -267,6 +275,7 @@ async fn execute_shell_command_error_output_is_text_only() {
             yield_time_ms: 100,
             max_output_tokens: 100,
             sandbox_profile: None,
+            sandbox_permission_overlay: None,
         },
         None,
         CancellationToken::new(),
@@ -296,6 +305,7 @@ async fn execute_shell_command_pipe_times_out() {
             yield_time_ms: 50,
             max_output_tokens: 100,
             sandbox_profile: None,
+            sandbox_permission_overlay: None,
         },
         None,
         CancellationToken::new(),
@@ -330,11 +340,11 @@ fn macos_pipe_and_pty_launch_plans_wrap_via_sandbox_exec() {
     for (label, plan) in [
         (
             "pipe",
-            SandboxLaunchPlan::prepare_pipe(Some("wrapdeny"), &workspace, &shell, "echo hi"),
+            SandboxLaunchPlan::prepare_pipe(Some("wrapdeny"), None, &workspace, &shell, "echo hi"),
         ),
         (
             "pty",
-            SandboxLaunchPlan::prepare_pty(Some("wrapdeny"), &workspace, &shell, "echo hi"),
+            SandboxLaunchPlan::prepare_pty(Some("wrapdeny"), None, &workspace, &shell, "echo hi"),
         ),
     ] {
         let plan = plan.unwrap_or_else(|error| panic!("{label} prepare failed: {error}"));
@@ -357,7 +367,7 @@ fn macos_pipe_and_pty_launch_plans_wrap_via_sandbox_exec() {
 fn windows_inactive_profile_prepare_pipe_builds_direct_command() {
     let workdir = std::env::current_dir().unwrap_or_default();
     let shell = resolve_shell(None, false);
-    let plan = SandboxLaunchPlan::prepare_pipe(None, &workdir, &shell, "echo hi")
+    let plan = SandboxLaunchPlan::prepare_pipe(None, None, &workdir, &shell, "echo hi")
         .expect("inactive profile should prepare");
     assert!(matches!(plan.wrap(), devo_sandbox::SandboxWrap::None));
     let _cmd = plan.build_tokio_command(&shell, "echo hi");
@@ -368,7 +378,7 @@ fn windows_inactive_profile_prepare_pipe_builds_direct_command() {
 fn windows_inactive_profile_prepare_pty_builds_builder() {
     let workdir = std::env::current_dir().unwrap_or_default();
     let shell = resolve_shell(None, false);
-    let plan = SandboxLaunchPlan::prepare_pty(None, &workdir, &shell, "echo hi")
+    let plan = SandboxLaunchPlan::prepare_pty(None, None, &workdir, &shell, "echo hi")
         .expect("inactive profile should prepare");
     assert!(matches!(plan.wrap(), devo_sandbox::SandboxWrap::None));
     let _builder = plan.build_pty_command_builder(&shell, "echo hi");

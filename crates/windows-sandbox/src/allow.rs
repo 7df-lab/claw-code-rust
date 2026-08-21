@@ -16,16 +16,35 @@ pub(crate) fn compute_allow_paths_for_permissions(
     command_cwd: &Path,
     env_map: &HashMap<String, String>,
 ) -> AllowDenyPaths {
+    #[cfg(windows)]
+    fn path_exists_lenient(p: &Path) -> bool {
+        if p.exists() {
+            return true;
+        }
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}")).exists();
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest).exists();
+        }
+        false
+    }
+    #[cfg(not(windows))]
+    fn path_exists_lenient(p: &Path) -> bool {
+        p.exists()
+    }
+
     let mut allow: HashSet<PathBuf> = HashSet::new();
     let mut deny: HashSet<PathBuf> = HashSet::new();
 
     let mut add_allow_path = |p: PathBuf| {
-        if p.exists() {
+        if path_exists_lenient(&p) {
             allow.insert(p);
         }
     };
     let mut add_deny_path = |p: PathBuf| {
-        if p.exists() {
+        if path_exists_lenient(&p) {
             deny.insert(p);
         }
     };

@@ -21,10 +21,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use std::fmt;
-use std::path::PathBuf;
 use ts_rs::TS;
 
-use crate::AcpSessionConfigOption;
 use crate::HostedToolDefinition;
 use crate::ReasoningCapability;
 use crate::ReasoningEffort;
@@ -575,16 +573,6 @@ pub enum ModelError {
     NoVisibleModels,
 }
 
-// ── model/catalog API ───────────────────────────────────────────────
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema, TS)]
-pub struct ModelCatalogParams {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct ModelCatalogResult {
-    pub models: Vec<ModelCatalogEntry>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ModelCatalogEntry {
     pub slug: String,
@@ -612,42 +600,6 @@ impl From<&Model> for ModelCatalogEntry {
             max_tokens: m.max_tokens,
         }
     }
-}
-
-// ── model/config API ────────────────────────────────────────────────
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema, TS)]
-pub struct ModelConfigParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelConfigResult {
-    pub config_options: Vec<AcpSessionConfigOption>,
-}
-
-// ── model/saved API ─────────────────────────────────────────────────
-
-/// Lists models that have been configured with credentials in `config.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema, TS)]
-pub struct ModelSavedParams {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct ModelSavedResult {
-    pub models: Vec<ModelSavedEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct ModelSavedEntry {
-    pub slug: String,
-    pub display_name: String,
-    pub channel: Option<String>,
-    pub description: Option<String>,
-    pub provider_id: String,
-    pub wire_api: ProviderWireApi,
-    pub context_window: u32,
 }
 
 #[cfg(test)]

@@ -10,11 +10,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use devo_protocol::canonical::ids::{ItemId, SessionId, TurnId};
-use devo_protocol::canonical::item::{InternalEntry, ItemEnvelope};
-use devo_protocol::canonical::session::Session;
-use devo_protocol::canonical::turn::Turn;
-use devo_protocol::canonical::usage::UsageRecord;
+use devo_protocol::native::ids::{ItemId, SessionId, TurnId};
+use devo_protocol::native::item::{InternalEntry, ItemEnvelope};
+use devo_protocol::native::session::Session;
+use devo_protocol::native::turn::Turn;
+use devo_protocol::native::usage::UsageRecord;
 
 use crate::{
     MessageEditRecordedRecord, SessionContext, TurnContext, TurnSupersededRecord,
@@ -69,7 +69,7 @@ pub struct TurnPersistenceExtras {
     pub latest_query_usage: Option<crate::TurnUsage>,
     /// Context-window occupancy after the latest model query in this turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+    pub context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
     /// The terminal provider/model stop reason, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<crate::StopReason>,
@@ -147,7 +147,7 @@ pub enum RolloutLineV2 {
         summary_item_id: ItemId,
         preserved_item_ids: Vec<ItemId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+        context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
     },
     /// An append-only rollback marker: the retained turns/items after the
     /// in-memory history was rebuilt.
@@ -219,6 +219,21 @@ pub enum InternalRecordV2 {
     /// One append-only model-call accounting entry. Unlike turn summary usage,
     /// this preserves failed attempts and non-turn overhead calls.
     UsageRecord { record: UsageRecord },
+    /// One field-level session settings change (L2-DES-CONV-002 DD-4). The
+    /// last line per field wins during replay; line position provides the
+    /// total order, and `epoch` annotates the settings-write sequence for
+    /// cross-path writes and traces.
+    SessionSettings {
+        /// The schema version for persisted settings lines.
+        schema_version: u32,
+        /// The settings field that changed.
+        field: crate::conversation::records::SessionSettingsField,
+        /// The new value in the field's natural JSON shape.
+        value: serde_json::Value,
+        /// Per-session settings-write sequence, assigned by the per-file
+        /// projector at write time.
+        epoch: u64,
+    },
 }
 
 /// A rollout line parsed from disk in either supported format.
@@ -304,8 +319,8 @@ mod tests {
 
     use super::*;
     use crate::conversation::{SessionTitleState, SessionTitleUpdatedLine};
-    use devo_protocol::canonical::ids::ItemId as CanonicalItemId;
-    use devo_protocol::canonical::item::{Item, ItemState, UserInput, UserMessageEntry};
+    use devo_protocol::native::ids::ItemId as CanonicalItemId;
+    use devo_protocol::native::item::{Item, ItemState, UserInput, UserMessageEntry};
 
     fn fixed_ts() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap()

@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use devo_core::tools::AgentToolCoordinator;
 use devo_core::tools::unified_exec::process::TerminalSize;
 use devo_core::tools::unified_exec::process::UnifiedExecProcess;
 use devo_core::tools::unified_exec::store::ProcessStore;
@@ -38,7 +40,38 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub(super) struct CommandExecManager {
     sessions: Arc<Mutex<HashMap<CommandExecKey, CommandExecSession>>>,
     store: Arc<ProcessStore>,
+    /// Bounded per-process output tails for canonical `task/read`
+    /// (`output_tail`); recorded alongside the live event stream.
+    tails: Arc<Mutex<HashMap<CommandExecKey, Vec<u8>>>>,
+    /// Terminal snapshots retained after a process exits (the live entry is
+    /// removed on exit), so `task/read`/`task/list` stay meaningful for
+    /// finished tasks. Insertion-bounded; oldest entries are dropped.
+    completed: Arc<Mutex<VecDeque<CompletedTaskRecord>>>,
 }
+
+/// Terminal snapshot of an exited facade process task.
+#[derive(Clone)]
+pub(super) struct CompletedTaskRecord {
+    pub(super) session_id: Option<SessionId>,
+    pub(super) process_id: String,
+    pub(super) exit_code: Option<i32>,
+    pub(super) tail: Vec<u8>,
+}
+
+/// Live-or-terminal snapshot of one facade process task.
+#[derive(Clone)]
+pub(super) struct TaskProcessSnapshot {
+    pub(super) process_id: String,
+    pub(super) session_id: Option<SessionId>,
+    pub(super) is_running: bool,
+    pub(super) exit_code: Option<i32>,
+    pub(super) tail: Vec<u8>,
+}
+
+/// Byte cap for one retained output tail.
+const TASK_OUTPUT_TAIL_LIMIT: usize = 16 * 1024;
+/// How many exited task records are retained for reads.
+const COMPLETED_TASK_RECORD_LIMIT: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CommandExecKey {
@@ -59,7 +92,122 @@ impl CommandExecManager {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             store: Arc::new(ProcessStore::new()),
+            tails: Arc::new(Mutex::new(HashMap::new())),
+            completed: Arc::new(Mutex::new(VecDeque::new())),
         }
+    }
+
+    /// Appends output to the process tail, bounded to
+    /// `TASK_OUTPUT_TAIL_LIMIT` (front-truncated).
+    async fn record_tail(&self, key: &CommandExecKey, bytes: &[u8]) {
+        let mut tails = self.tails.lock().await;
+        let tail = tails.entry(key.clone()).or_default();
+        tail.extend_from_slice(bytes);
+        if tail.len() > TASK_OUTPUT_TAIL_LIMIT {
+            let overflow = tail.len() - TASK_OUTPUT_TAIL_LIMIT;
+            tail.drain(..overflow);
+        }
+    }
+
+    /// Reads one facade process task by process id (any owning connection):
+    /// the live entry first, then the retained terminal record.
+    pub(super) async fn task_snapshot(&self, process_id: &str) -> Option<TaskProcessSnapshot> {
+        {
+            let sessions = self.sessions.lock().await;
+            for (key, session) in sessions.iter() {
+                if key.process_id == process_id {
+                    let process = self.store.get(session.store_process_id).await;
+                    let (is_running, exit_code) = process
+                        .as_ref()
+                        .map(|process| {
+                            // `is_running` only tracks explicit termination;
+                            // a natural exit is terminal once an exit code
+                            // exists.
+                            let exit_code = process.exit_code();
+                            (exit_code.is_none() && process.is_running(), exit_code)
+                        })
+                        .unwrap_or((false, None));
+                    let tail = self
+                        .tails
+                        .lock()
+                        .await
+                        .get(key)
+                        .cloned()
+                        .unwrap_or_default();
+                    return Some(TaskProcessSnapshot {
+                        process_id: key.process_id.clone(),
+                        session_id: key.session_id,
+                        is_running,
+                        exit_code,
+                        tail,
+                    });
+                }
+            }
+        }
+        let completed = self.completed.lock().await;
+        completed
+            .iter()
+            .find(|record| record.process_id == process_id)
+            .map(|record| TaskProcessSnapshot {
+                process_id: record.process_id.clone(),
+                session_id: record.session_id,
+                is_running: false,
+                exit_code: record.exit_code,
+                tail: record.tail.clone(),
+            })
+    }
+
+    /// Lists live and recently-exited facade process tasks of one session.
+    pub(super) async fn task_snapshots_for_session(
+        &self,
+        session_id: SessionId,
+    ) -> Vec<TaskProcessSnapshot> {
+        let mut snapshots = Vec::new();
+        let keys: Vec<(CommandExecKey, i32)> = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .iter()
+                .filter(|(key, _)| key.session_id == Some(session_id))
+                .map(|(key, session)| (key.clone(), session.store_process_id))
+                .collect()
+        };
+        for (key, store_process_id) in keys {
+            let process = self.store.get(store_process_id).await;
+            let (is_running, exit_code) = process
+                .as_ref()
+                .map(|process| {
+                    let exit_code = process.exit_code();
+                    (exit_code.is_none() && process.is_running(), exit_code)
+                })
+                .unwrap_or((false, None));
+            let tail = self
+                .tails
+                .lock()
+                .await
+                .get(&key)
+                .cloned()
+                .unwrap_or_default();
+            snapshots.push(TaskProcessSnapshot {
+                process_id: key.process_id.clone(),
+                session_id: key.session_id,
+                is_running,
+                exit_code,
+                tail,
+            });
+        }
+        let completed = self.completed.lock().await;
+        for record in completed.iter() {
+            if record.session_id == Some(session_id) {
+                snapshots.push(TaskProcessSnapshot {
+                    process_id: record.process_id.clone(),
+                    session_id: record.session_id,
+                    is_running: false,
+                    exit_code: record.exit_code,
+                    tail: record.tail.clone(),
+                });
+            }
+        }
+        snapshots
     }
 
     async fn start(
@@ -200,6 +348,36 @@ impl CommandExecManager {
         Ok(CommandExecTerminateResult {})
     }
 
+    /// Terminates every live process owned by one Native session. The
+    /// connection id is part of the ownership boundary because sessionless
+    /// command processes may share the same process id on different clients.
+    pub(super) async fn terminate_session(
+        &self,
+        connection_id: u64,
+        session_id: SessionId,
+    ) -> usize {
+        let process_ids = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .iter()
+                .filter(|(key, _)| {
+                    key.connection_id == connection_id && key.session_id == Some(session_id)
+                })
+                .map(|(_, session)| session.store_process_id)
+                .collect::<Vec<_>>()
+        };
+        let mut terminated = 0;
+        for process_id in process_ids {
+            if let Some(process) = self.store.get(process_id).await
+                && process.is_running()
+            {
+                process.terminate();
+                terminated += 1;
+            }
+        }
+        terminated
+    }
+
     async fn get_process(
         &self,
         connection_id: u64,
@@ -245,12 +423,13 @@ impl CommandExecManager {
                     output = output_rx.recv() => {
                         match output {
                             Ok(bytes) => {
+                                manager.record_tail(&key, &bytes).await;
                                 let event = ServerEvent::CommandExecOutputDelta(
                                     CommandExecOutputDeltaPayload {
                                         session_id: key.session_id,
                                         process_id: key.process_id.clone(),
                                         stream: CommandExecOutputStream::Pty,
-                                        delta_base64: STANDARD.encode(bytes),
+                                        delta_base64: STANDARD.encode(&bytes),
                                     },
                                 );
                                 runtime
@@ -274,11 +453,12 @@ impl CommandExecManager {
             }
 
             while let Ok(bytes) = output_rx.try_recv() {
+                manager.record_tail(&key, &bytes).await;
                 let event = ServerEvent::CommandExecOutputDelta(CommandExecOutputDeltaPayload {
                     session_id: key.session_id,
                     process_id: key.process_id.clone(),
                     stream: CommandExecOutputStream::Pty,
-                    delta_base64: STANDARD.encode(bytes),
+                    delta_base64: STANDARD.encode(&bytes),
                 });
                 runtime
                     .emit_to_connection(key.connection_id, event.method_name(), event)
@@ -293,11 +473,36 @@ impl CommandExecManager {
             runtime
                 .emit_to_connection(key.connection_id, event.method_name(), event)
                 .await;
+            // Retain a bounded terminal snapshot so canonical task/read and
+            // task/list stay meaningful after the live entry is removed.
+            let tail = manager
+                .tails
+                .lock()
+                .await
+                .get(&key)
+                .cloned()
+                .unwrap_or_default();
+            {
+                let mut completed = manager.completed.lock().await;
+                completed.retain(|record| {
+                    !(record.session_id == key.session_id && record.process_id == key.process_id)
+                });
+                completed.push_back(CompletedTaskRecord {
+                    session_id: key.session_id,
+                    process_id: key.process_id.clone(),
+                    exit_code: process.exit_code(),
+                    tail,
+                });
+                while completed.len() > COMPLETED_TASK_RECORD_LIMIT {
+                    completed.pop_front();
+                }
+            }
             manager.remove_key(&key).await;
         });
     }
 
     async fn remove_key(&self, key: &CommandExecKey) {
+        self.tails.lock().await.remove(key);
         if let Some(session) = self.sessions.lock().await.remove(key) {
             self.store.remove(session.store_process_id).await;
         }
@@ -311,6 +516,10 @@ impl CommandExecManager {
                 .filter(|key| key.connection_id == connection_id)
                 .cloned()
                 .collect::<Vec<_>>();
+            let mut tails = self.tails.lock().await;
+            for key in &keys {
+                tails.remove(key);
+            }
             keys.into_iter()
                 .filter_map(|key| sessions.remove(&key))
                 .collect::<Vec<_>>()
@@ -322,6 +531,8 @@ impl CommandExecManager {
 
     pub(super) async fn terminate_all(&self) {
         self.sessions.lock().await.clear();
+        self.tails.lock().await.clear();
+        self.completed.lock().await.clear();
         self.store.terminate_all().await;
     }
 }
@@ -343,6 +554,402 @@ impl ServerRuntime {
                 );
             }
         };
+        self.handle_command_exec_translated(connection_id, request_id, params)
+            .await
+    }
+
+    /// Native `task/start` (L2-DES-APP-008 DD-7, unified task model).
+    /// `kind: "process"` translates onto the command/exec machinery with the
+    /// item id doubling as the process id; `kind: "agent"` is a child session
+    /// projected as a task item.
+    pub(crate) async fn handle_native_task_start(
+        self: &Arc<Self>,
+        connection_id: u64,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_turn::TaskStartParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical task/start params: {error}"),
+                    );
+                }
+            };
+        let (session_id, input, idempotency_key, agent_policies) = match params {
+            devo_protocol::native::rpc_turn::TaskStartParams::Process {
+                session_id,
+                command,
+                cwd,
+                idempotency_key,
+            } => {
+                let Ok(legacy_session_id) = SessionId::try_from(session_id.as_str()) else {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::SessionNotFound,
+                        "session id is not addressable by this server",
+                    );
+                };
+                if let Some(item_id) = self
+                    .task_start_idempotency
+                    .lock()
+                    .await
+                    .get(&(legacy_session_id, idempotency_key.clone()))
+                    .cloned()
+                {
+                    return success_response(
+                        request_id,
+                        devo_protocol::native::rpc_turn::TaskStartResult {
+                            item_id: devo_protocol::native::ids::ItemId::from_string(item_id),
+                        },
+                    );
+                }
+                let item_id = devo_protocol::native::ids::ItemId::new();
+                let response = self
+                    .handle_command_exec_translated(
+                        connection_id,
+                        request_id.clone(),
+                        CommandExecParams {
+                            session_id: Some(legacy_session_id),
+                            process_id: item_id.as_str().to_string(),
+                            cwd,
+                            program: devo_protocol::CommandExecProgram::OneShot { command },
+                            size: None,
+                        },
+                    )
+                    .await;
+                if response.get("error").is_some() {
+                    return response;
+                }
+                self.task_start_idempotency.lock().await.insert(
+                    (legacy_session_id, idempotency_key),
+                    item_id.as_str().to_string(),
+                );
+                return success_response(
+                    request_id,
+                    devo_protocol::native::rpc_turn::TaskStartResult { item_id },
+                );
+            }
+            devo_protocol::native::rpc_turn::TaskStartParams::Agent {
+                session_id,
+                input,
+                fork_turns,
+                max_turns,
+                tool_policy,
+                ephemeral,
+                idempotency_key,
+            } => {
+                let message = input
+                    .iter()
+                    .filter_map(|item| match item {
+                        devo_protocol::native::item::UserInput::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if message.is_empty() {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        "task/start kind=agent requires at least one text input",
+                    );
+                }
+                (
+                    session_id,
+                    message,
+                    idempotency_key,
+                    Some((fork_turns, max_turns, tool_policy, ephemeral)),
+                )
+            }
+        };
+        let Ok(legacy_session_id) = SessionId::try_from(session_id.as_str()) else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session id is not addressable by this server",
+            );
+        };
+        if let Some(item_id) = self
+            .task_start_idempotency
+            .lock()
+            .await
+            .get(&(legacy_session_id, idempotency_key.clone()))
+            .cloned()
+        {
+            return success_response(
+                request_id,
+                devo_protocol::native::rpc_turn::TaskStartResult {
+                    item_id: devo_protocol::native::ids::ItemId::from_string(item_id),
+                },
+            );
+        }
+        let (fork_turns, max_turns, tool_policy, ephemeral) =
+            agent_policies.expect("agent branch always carries policies");
+        let result = match Arc::clone(self)
+            .spawn_agent(devo_protocol::SpawnAgentParams {
+                session_id: legacy_session_id,
+                message: input,
+                fork_turns,
+                max_turns,
+                tool_policy: tool_policy.unwrap_or(devo_protocol::AgentToolPolicy::Inherit),
+                ephemeral,
+            })
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => return self.tool_error_response(request_id, error),
+        };
+        let item_id = devo_protocol::native::ids::ItemId::from_string(format!(
+            "item_{}",
+            result.child_session_id
+        ));
+        self.task_start_idempotency.lock().await.insert(
+            (legacy_session_id, idempotency_key),
+            item_id.as_str().to_string(),
+        );
+        success_response(
+            request_id,
+            devo_protocol::native::rpc_turn::TaskStartResult { item_id },
+        )
+    }
+
+    /// Native `task/interrupt` (DD-7): the item id doubles as the process
+    /// id in the current facade; the owning session is recovered from the
+    /// task/start idempotency map (the terminate path keys processes by
+    /// `(connection, session, process)`).
+    pub(crate) async fn handle_native_task_interrupt(
+        &self,
+        connection_id: u64,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_turn::TaskInterruptParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical task/interrupt params: {error}"),
+                    );
+                }
+            };
+        let owning_session = self.task_owning_session(params.item_id.as_str()).await;
+        self.handle_command_exec_terminate(
+            connection_id,
+            request_id,
+            serde_json::json!({
+                "session_id": owning_session,
+                "process_id": params.item_id.as_str(),
+            }),
+        )
+        .await
+    }
+
+    /// Native `task/write_stdin` (DD-7 facade): base64-encoded write into
+    /// the process pty.
+    pub(crate) async fn handle_native_task_write_stdin(
+        &self,
+        connection_id: u64,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_turn::TaskWriteStdinParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical task/write_stdin params: {error}"),
+                    );
+                }
+            };
+        let owning_session = self.task_owning_session(params.item_id.as_str()).await;
+        self.handle_command_exec_write(
+            connection_id,
+            request_id,
+            serde_json::json!({
+                "session_id": owning_session,
+                "process_id": params.item_id.as_str(),
+                "delta_base64": STANDARD.encode(params.data.as_bytes()),
+                "close_stdin": false,
+            }),
+        )
+        .await
+    }
+
+    /// Native `task/resize` (DD-7 facade).
+    pub(crate) async fn handle_native_task_resize(
+        &self,
+        connection_id: u64,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_turn::TaskResizeParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical task/resize params: {error}"),
+                    );
+                }
+            };
+        let owning_session = self.task_owning_session(params.item_id.as_str()).await;
+        self.handle_command_exec_resize(
+            connection_id,
+            request_id,
+            serde_json::json!({
+                "session_id": owning_session,
+                "process_id": params.item_id.as_str(),
+                "size": {
+                    "rows": params.rows,
+                    "cols": params.cols,
+                },
+            }),
+        )
+        .await
+    }
+
+    /// Recovers the owning session of a facade task from the task/start
+    /// idempotency map (exec processes are keyed by
+    /// `(connection, session, process)`).
+    async fn task_owning_session(&self, item_id: &str) -> Option<SessionId> {
+        self.task_start_idempotency
+            .lock()
+            .await
+            .iter()
+            .find(|((_, _), stored_item_id)| stored_item_id.as_str() == item_id)
+            .map(|((session_id, _), _)| *session_id)
+    }
+
+    /// Native `task/read` (DD-7): one background task's item snapshot.
+    /// Agent items resolve through the agent facade; process items carry the
+    /// captured output tail.
+    pub(crate) async fn handle_native_task_read(
+        self: &Arc<Self>,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_turn::TaskReadParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical task/read params: {error}"),
+                    );
+                }
+            };
+        if let Some((parent_session_id, child_session_id)) =
+            self.agent_item_target(params.item_id.as_str()).await
+        {
+            let info = match self
+                .agent_info(parent_session_id, &child_session_id.to_string())
+                .await
+            {
+                Ok(info) => info,
+                Err(error) => return self.tool_error_response(request_id, error),
+            };
+            return success_response(
+                request_id,
+                devo_protocol::native::rpc_turn::TaskReadResult {
+                    item: crate::runtime::agents::handlers::subagent_item_from_agent_info(&info),
+                    output_tail: None,
+                },
+            );
+        }
+        if let Some(snapshot) = self
+            .command_exec_manager
+            .task_snapshot(params.item_id.as_str())
+            .await
+        {
+            let output_tail = (!snapshot.tail.is_empty())
+                .then(|| String::from_utf8_lossy(&snapshot.tail).into_owned());
+            return success_response(
+                request_id,
+                devo_protocol::native::rpc_turn::TaskReadResult {
+                    item: background_task_item_from_snapshot(&snapshot),
+                    output_tail,
+                },
+            );
+        }
+        self.error_response(
+            request_id,
+            ProtocolErrorCode::SessionNotFound,
+            "task is not addressable by this server",
+        )
+    }
+
+    /// Native `task/list` (DD-7): all background tasks of the session —
+    /// process tasks from the exec manager and agent tasks from the agent
+    /// registry — as item envelopes.
+    pub(crate) async fn handle_native_task_list(
+        self: &Arc<Self>,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_turn::TaskListParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical task/list params: {error}"),
+                    );
+                }
+            };
+        let Ok(legacy_session_id) = SessionId::try_from(params.session_id.as_str()) else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session id is not addressable by this server",
+            );
+        };
+        let agents = match Arc::clone(self)
+            .list_agents(devo_protocol::AgentListParams {
+                session_id: legacy_session_id,
+                path_prefix: None,
+            })
+            .await
+        {
+            Ok(agents) => agents,
+            Err(error) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InternalError,
+                    format!("failed to list agent tasks: {error}"),
+                );
+            }
+        };
+        let mut tasks: Vec<devo_protocol::native::item::ItemEnvelope> = agents
+            .iter()
+            .map(crate::runtime::agents::handlers::subagent_item_from_agent_info)
+            .collect();
+        let snapshots = self
+            .command_exec_manager
+            .task_snapshots_for_session(legacy_session_id)
+            .await;
+        tasks.extend(snapshots.iter().map(background_task_item_from_snapshot));
+        success_response(
+            request_id,
+            devo_protocol::native::rpc_turn::TaskListResult { tasks },
+        )
+    }
+
+    async fn handle_command_exec_translated(
+        self: &Arc<Self>,
+        connection_id: u64,
+        request_id: serde_json::Value,
+        params: CommandExecParams,
+    ) -> serde_json::Value {
         let cwd = match self
             .command_exec_cwd(params.session_id, params.cwd.clone())
             .await
@@ -574,4 +1181,46 @@ fn success_response<T: serde::Serialize>(
         result,
     })
     .expect("serialize command/exec response")
+}
+
+/// Projects one facade process-task snapshot into a canonical
+/// `BackgroundTask` item envelope (DD-7 facade). `turn_id` is a
+/// session-derived placeholder until tasks become first-class items, the
+/// same concession the agent facade documents. A nonzero exit code is a
+/// completed shell task, not a protocol-level failure, so the state only
+/// distinguishes running from terminal and `exit_code` carries the detail.
+fn background_task_item_from_snapshot(
+    snapshot: &TaskProcessSnapshot,
+) -> devo_protocol::native::item::ItemEnvelope {
+    use devo_protocol::native::ids::{ItemId, SessionId as NativeSessionId, TurnId};
+    use devo_protocol::native::item::{
+        BackgroundTaskKind, Item, ItemEnvelope, ItemState, SpawnedWorkState,
+    };
+    use uuid::Uuid;
+
+    let legacy_session_id = snapshot.session_id.unwrap_or_default();
+    let (state, item_state) = if snapshot.is_running {
+        (SpawnedWorkState::Running, ItemState::Running)
+    } else {
+        (SpawnedWorkState::Completed, ItemState::Completed)
+    };
+    let now = chrono::Utc::now();
+    ItemEnvelope {
+        id: ItemId::from_string(snapshot.process_id.clone()),
+        session_id: NativeSessionId::from_legacy_uuid(Uuid::from(legacy_session_id)),
+        turn_id: TurnId::from_legacy_uuid(Uuid::from(legacy_session_id)),
+        seq: 0,
+        revision: 1,
+        created_at: now,
+        updated_at: now,
+        state: item_state,
+        item: Item::BackgroundTask {
+            origin_call_id: None,
+            task_kind: BackgroundTaskKind::Shell,
+            state,
+            execution_handle: Some(snapshot.process_id.clone()),
+            cwd: None,
+            exit_code: snapshot.exit_code,
+        },
+    }
 }

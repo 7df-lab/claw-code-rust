@@ -90,9 +90,9 @@ impl ServerRuntime {
         // bind atomically (01 §4.3).
         self.broadcast_queue_updated(
             session_id,
-            devo_protocol::canonical::queue::QueueChange::Drained,
+            devo_protocol::native::queue::QueueChange::Drained,
             queued.queued_item_id,
-            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(
+            Some(devo_protocol::native::ids::TurnId::from_legacy_uuid(
                 uuid::Uuid::from(turn.turn_id),
             )),
         )
@@ -148,9 +148,9 @@ impl ServerRuntime {
         .await;
         self.broadcast_queue_updated(
             session_id,
-            devo_protocol::canonical::queue::QueueChange::Drained,
+            devo_protocol::native::queue::QueueChange::Drained,
             queued.queued_item_id.clone(),
-            Some(devo_protocol::canonical::ids::TurnId::from_legacy_uuid(
+            Some(devo_protocol::native::ids::TurnId::from_legacy_uuid(
                 uuid::Uuid::from(turn.turn_id),
             )),
         )
@@ -192,7 +192,7 @@ impl ServerRuntime {
             );
         }
         Some(QueuedTurnInput {
-            queued_item_id: devo_protocol::canonical::ids::QueueItemId::from_legacy_uuid(
+            queued_item_id: devo_protocol::native::ids::QueueItemId::from_legacy_uuid(
                 uuid::Uuid::from(popped.queued_input_id),
             ),
             display_input: popped.display_input,

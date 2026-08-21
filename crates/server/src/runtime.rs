@@ -45,13 +45,10 @@ use devo_safety::PermissionMode;
 
 use crate::ApprovalDecisionValue;
 use crate::ApprovalScopeValue;
-use crate::ClientMethod;
 use crate::ClientTransportKind;
 use crate::ConnectionState;
 use crate::ErrorResponse;
 use crate::EventContext;
-use crate::EventsSubscribeParams;
-use crate::EventsSubscribeResult;
 use crate::InitializeResult;
 use crate::ItemDeltaKind;
 use crate::ItemEnvelope;
@@ -59,40 +56,26 @@ use crate::ItemEventPayload;
 use crate::ItemKind;
 use crate::ProtocolError;
 use crate::ProtocolErrorCode;
+use crate::ProtocolExposurePolicy;
+use crate::ProtocolSet;
 use crate::RequestUserInputArgs;
 use crate::RequestUserInputPayload;
-use crate::RequestUserInputRespondParams;
 use crate::RequestUserInputResponse;
 use crate::ServerEvent;
+use crate::ServerProtocol;
 use crate::ServerRequestResolvedPayload;
-use crate::SessionCompactParams;
 use crate::SessionCompactionFailedPayload;
-use crate::SessionCompactionUpdateParams;
-use crate::SessionCompactionUpdateResult;
 use crate::SessionEffectiveContextWindowUpdatedPayload;
 use crate::SessionEventPayload;
 use crate::SessionForkParams;
 use crate::SessionForkResult;
 use crate::SessionMetadata;
-use crate::SessionMetadataUpdateParams;
-use crate::SessionMetadataUpdateResult;
-use crate::SessionPermissionsUpdateParams;
-use crate::SessionPermissionsUpdateResult;
 use crate::SessionResumeParams;
 use crate::SessionResumeResult;
-use crate::SessionRollbackMode;
-use crate::SessionRollbackParams;
-use crate::SessionRollbackResult;
 use crate::SessionRuntimeStatus;
-use crate::SessionSandboxProfileUpdateParams;
-use crate::SessionSandboxProfileUpdateResult;
 use crate::SessionStartParams;
 use crate::SessionStartResult;
 use crate::SessionStatusChangedPayload;
-use crate::SessionTitleUpdateParams;
-use crate::SessionTitleUpdateResult;
-use crate::ShellCommandParams;
-use crate::ShellCommandResult;
 use crate::SuccessResponse;
 use crate::TurnEventPayload;
 use crate::TurnInterruptParams;
@@ -172,7 +155,6 @@ pub(crate) use connection::ConnectionRuntime;
 pub(crate) use connection::INBOUND_CONCURRENCY_LIMIT;
 pub use connection::IncomingResponse;
 pub use connection::PostResponseActions;
-pub(crate) use connection::SubscriptionFilter;
 pub(crate) use items::render_input_items;
 pub(crate) use outbound::OUTBOUND_CHANNEL_CAPACITY;
 pub use outbound::OutboundFrame;
@@ -188,6 +170,7 @@ pub(crate) use session_actor::SessionActorState;
 
 pub struct ServerRuntime {
     metadata: InitializeResult,
+    protocol_exposure: ProtocolExposurePolicy,
     deps: ServerRuntimeDependencies,
     rollout_store: RolloutStore,
     goal_durable_store: GoalDurableStore,
@@ -229,6 +212,23 @@ pub struct ServerRuntime {
     command_exec_manager: command_exec::CommandExecManager,
     /// Turn-scoped workspace baselines captured at actual execution start.
     active_workspace_baselines: Mutex<HashMap<TurnId, ActiveWorkspaceBaseline>>,
+    /// In-process idempotency for canonical `turn/start`
+    /// (`(session, idempotencyKey) -> turn`). Retry-safe within the process;
+    /// cross-restart dedup is a documented follow-up (L2-DES-APP-008 Phase B).
+    turn_start_idempotency: Mutex<HashMap<(SessionId, String), devo_protocol::native::turn::Turn>>,
+    /// In-process idempotency for canonical `session/new`
+    /// (`idempotencyKey -> session`). Same process-scope caveat as
+    /// `turn_start_idempotency`.
+    session_new_idempotency: Mutex<HashMap<String, SessionId>>,
+    /// In-process idempotency for canonical `session/goal/set`
+    /// (`(session, idempotencyKey) -> goal`).
+    goal_set_idempotency: Mutex<HashMap<(SessionId, String), devo_protocol::native::goal::Goal>>,
+    /// In-process idempotency for canonical `session/goal/update` (ratified
+    /// #3 in-place edit; same keying as goal/set).
+    goal_update_idempotency: Mutex<HashMap<(SessionId, String), devo_protocol::native::goal::Goal>>,
+    /// In-process idempotency for canonical `task/start` (`(session,
+    /// idempotencyKey) -> item id as process id`).
+    task_start_idempotency: Mutex<HashMap<(SessionId, String), String>>,
     /// Short-lived, connection-bound P4d rollback plans.
     restore_plans: Mutex<handlers::rollback_plan::RestorePlanStore>,
     /// Sessions with an in-flight model title-generation task.
@@ -316,6 +316,17 @@ pub(super) fn subagent_usage_owner_pending_metadata(
 
 impl ServerRuntime {
     pub fn new(server_home: PathBuf, deps: ServerRuntimeDependencies) -> Arc<Self> {
+        // Embedded callers historically exposed both surfaces. The server
+        // process always calls `with_protocols` with its explicit startup
+        // policy, whose CLI default is Native-only.
+        Self::with_protocols(server_home, deps, ProtocolSet::all())
+    }
+
+    pub fn with_protocols(
+        server_home: PathBuf,
+        deps: ServerRuntimeDependencies,
+        protocols: ProtocolSet,
+    ) -> Arc<Self> {
         let rollout_store = RolloutStore::new(server_home.clone(), Some(Arc::clone(&deps.db)));
         let goal_durable_store = GoalDurableStore::with_primary(
             server_home.clone(),
@@ -359,6 +370,7 @@ impl ServerRuntime {
                 platform_os: std::env::consts::OS.into(),
                 server_home,
             },
+            protocol_exposure: ProtocolExposurePolicy::new(protocols),
             deps,
             rollout_store,
             goal_durable_store,
@@ -383,6 +395,11 @@ impl ServerRuntime {
             reference_searches: Mutex::new(HashMap::new()),
             command_exec_manager: command_exec::CommandExecManager::new(),
             active_workspace_baselines: Mutex::new(HashMap::new()),
+            turn_start_idempotency: Mutex::new(HashMap::new()),
+            session_new_idempotency: Mutex::new(HashMap::new()),
+            goal_set_idempotency: Mutex::new(HashMap::new()),
+            goal_update_idempotency: Mutex::new(HashMap::new()),
+            task_start_idempotency: Mutex::new(HashMap::new()),
             restore_plans: Mutex::new(HashMap::new()),
             title_generation_in_flight: Mutex::new(HashSet::new()),
             self_weak: self_weak.clone(),
@@ -395,6 +412,18 @@ impl ServerRuntime {
             ),
             sandbox_network_proxy,
         })
+    }
+
+    pub async fn enabled_protocols(&self) -> ProtocolSet {
+        self.protocol_exposure.enabled().await
+    }
+
+    pub async fn protocol_enabled(&self, protocol: ServerProtocol) -> bool {
+        self.protocol_exposure.allows(protocol).await
+    }
+
+    pub async fn enable_protocols(&self, protocols: &ProtocolSet) -> ProtocolSet {
+        self.protocol_exposure.enable(protocols).await
     }
 
     pub fn sandbox_network_proxy(
@@ -438,15 +467,6 @@ fn safety_profile_from_protocol(
     };
     devo_safety::RuntimePermissionProfile::from_preset(preset, cwd)
         .with_additional_roots(additional_directories)
-}
-
-fn protocol_reviewer_from_safety(
-    reviewer: devo_safety::ApprovalsReviewer,
-) -> devo_protocol::ApprovalsReviewer {
-    match reviewer {
-        devo_safety::ApprovalsReviewer::User => devo_protocol::ApprovalsReviewer::User,
-        devo_safety::ApprovalsReviewer::AutoReview => devo_protocol::ApprovalsReviewer::AutoReview,
-    }
 }
 
 pub(crate) fn protocol_preset_from_safety(

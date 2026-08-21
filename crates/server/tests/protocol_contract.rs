@@ -5,16 +5,13 @@ use devo_core::{
     ItemId, SessionId, SessionRecord, SessionTitleFinalSource, SessionTitleState, TurnId,
     TurnRecord, TurnStatus,
 };
-use devo_protocol::{
-    AcpClientCapabilities, AcpInitializeParams, SkillChangedParams, SkillListParams,
-    SkillListResult,
-};
+use devo_protocol::{AcpClientCapabilities, AcpInitializeParams};
 use devo_server::{
     ActiveTurnSteeringState, ApprovalDecisionValue, ApprovalRequestPayload, ApprovalResponseParams,
-    ApprovalScopeValue, ClientRequest, DefaultProjection, EventContext, EventsSubscribeParams,
-    InputItem, ItemDeltaKind, ItemDeltaPayload, PendingServerRequestContext, ProtocolError,
-    ProtocolErrorCode, ServerEvent, ServerRequestKind, SessionMetadata, SessionProjector,
-    SessionRuntimeStatus, SessionTitleUpdateParams, SteerInputRecord, TurnKind, TurnProjector,
+    ApprovalScopeValue, ClientRequest, DefaultProjection, EventContext, InputItem, ItemDeltaKind,
+    ItemDeltaPayload, PendingServerRequestContext, ProtocolError, ProtocolErrorCode, ServerEvent,
+    ServerRequestKind, SessionMetadata, SessionProjector, SessionRuntimeStatus, SteerInputRecord,
+    TurnKind, TurnProjector,
 };
 use pretty_assertions::assert_eq;
 
@@ -33,68 +30,6 @@ fn acp_initialize_params_accept_documented_minimal_shape() {
             meta: None,
         }
     );
-}
-
-#[test]
-fn skill_list_params_roundtrip() {
-    let params = SkillListParams {
-        cwd: None,
-        force_reload: false,
-    };
-    let json = serde_json::to_string(&params).expect("serialize");
-    let restored: SkillListParams = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(params, restored);
-}
-
-#[test]
-fn skill_changed_params_roundtrip() {
-    let params = SkillChangedParams {
-        cwd: None,
-        force_reload: false,
-    };
-    let json = serde_json::to_string(&params).expect("serialize");
-    let restored: SkillChangedParams = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(params, restored);
-}
-
-#[test]
-fn skill_list_result_serializes_expected_shape() {
-    let result = SkillListResult {
-        skills: vec![
-            devo_protocol::SkillRecord {
-                id: "rust-docs".into(),
-                name: "Rust Documentation".into(),
-                description: "Official Rust docs skill".into(),
-                short_description: None,
-                interface: None,
-                dependencies: None,
-                path: std::path::PathBuf::from("/skills/rust/SKILL.md"),
-                enabled: true,
-                source: devo_protocol::SkillSource::User,
-                scope: devo_protocol::SkillScope::User,
-                plugin_id: None,
-            },
-            devo_protocol::SkillRecord {
-                id: "python-guide".into(),
-                name: "Python Guide".into(),
-                description: "Python programming skill".into(),
-                short_description: None,
-                interface: None,
-                dependencies: None,
-                path: std::path::PathBuf::from("/skills/python/SKILL.md"),
-                enabled: false,
-                source: devo_protocol::SkillSource::Workspace {
-                    cwd: std::path::PathBuf::from("/workspace"),
-                },
-                scope: devo_protocol::SkillScope::Repo,
-                plugin_id: None,
-            },
-        ],
-    };
-
-    let json = serde_json::to_string(&result).expect("serialize");
-    assert!(json.contains("\"skills\""));
-    assert!(json.contains("\"rust-docs\""));
 }
 
 #[test]
@@ -173,19 +108,6 @@ fn server_request_payload_roundtrip() {
 
     let json = serde_json::to_string(&payload).expect("serialize");
     let restored: ApprovalRequestPayload = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(payload, restored);
-}
-
-#[test]
-fn subscribe_params_allow_optional_filters() {
-    let payload = EventsSubscribeParams {
-        session_id: None,
-        event_types: Some(vec!["turn/completed".into()]),
-        include_child_agents: false,
-    };
-
-    let json = serde_json::to_string(&payload).expect("serialize");
-    let restored: EventsSubscribeParams = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(payload, restored);
 }
 
@@ -307,6 +229,7 @@ fn event_enum_carries_delta_kind() {
             delta: "hi".into(),
             stream_index: None,
             channel: None,
+            chunk_index: None,
         },
     };
 
@@ -325,18 +248,6 @@ fn request_envelope_keeps_method_and_id() {
     let json = serde_json::to_string(&request).expect("serialize");
     assert!(json.contains("\"method\":\"session/start\""));
     assert!(json.contains("\"id\":1"));
-}
-
-#[test]
-fn session_title_update_params_roundtrip() {
-    let params = SessionTitleUpdateParams {
-        session_id: SessionId::new(),
-        title: "Renamed session".into(),
-    };
-
-    let json = serde_json::to_string(&params).expect("serialize");
-    let restored: SessionTitleUpdateParams = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(params, restored);
 }
 
 #[test]
@@ -415,12 +326,18 @@ fn session_compaction_events_serialize_expected_kinds() {
         permission_preset: None,
     };
 
-    let started = ServerEvent::SessionCompactionStarted(devo_server::SessionEventPayload {
-        session: metadata.clone(),
-    });
-    let completed = ServerEvent::SessionCompactionCompleted(devo_server::SessionEventPayload {
-        session: metadata,
-    });
+    let started =
+        ServerEvent::SessionCompactionStarted(devo_server::SessionCompactionStartedPayload {
+            session: metadata.clone(),
+            turn_id: TurnId::new(),
+            trigger: devo_protocol::native::item::CompactionTrigger::Manual,
+        });
+    let completed =
+        ServerEvent::SessionCompactionCompleted(devo_server::SessionCompactionCompletedPayload {
+            session: metadata,
+            turn_id: TurnId::new(),
+            item_id: None,
+        });
     let failed =
         ServerEvent::SessionCompactionFailed(devo_server::SessionCompactionFailedPayload {
             session_id: SessionId::new(),
@@ -441,5 +358,227 @@ fn session_compaction_events_serialize_expected_kinds() {
         serde_json::to_string(&failed)
             .expect("serialize")
             .contains("session_compaction_failed")
+    );
+}
+
+/// Trace: L2-DES-APP-009
+/// Verifies: emit-site-enriched compaction lifecycle events project to
+/// canonical context/compactionStarted and context/compactionCompleted
+/// (item-linked), while a completion without a persisted item stays legacy.
+#[test]
+fn compaction_lifecycle_events_project_to_native_notifications() {
+    let metadata = SessionMetadata {
+        session_id: SessionId::new(),
+        cwd: ".".into(),
+        additional_directories: Vec::new(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        last_activity_at: Utc::now(),
+        title: Some("Compacting session".into()),
+        title_state: SessionTitleState::Unset,
+        parent_session_id: None,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+        ephemeral: false,
+        model: Some("claude-sonnet".into()),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_creation_tokens: 0,
+        total_cache_read_tokens: 0,
+        prompt_token_estimate: 0,
+        last_query_usage: None,
+        last_query_total_tokens: 0,
+        last_context_occupancy: None,
+        status: SessionRuntimeStatus::Idle,
+        collaboration_mode: Default::default(),
+        effective_context_window: None,
+        permission_preset: None,
+    };
+
+    let turn_id = TurnId::new();
+    let (method, value) =
+        devo_protocol::native::wire_projector::typed_item_notification_from_server_event(
+            &ServerEvent::SessionCompactionStarted(devo_server::SessionCompactionStartedPayload {
+                session: metadata.clone(),
+                turn_id,
+                trigger: devo_protocol::native::item::CompactionTrigger::Manual,
+            }),
+        )
+        .expect("compaction started projects");
+    assert_eq!(method, "context/compactionStarted");
+    assert_eq!(value["trigger"].as_str(), Some("manual"));
+    assert_eq!(value["turnId"].as_str(), Some(turn_id.to_string().as_str()));
+
+    let item_id = ItemId::new();
+    let (method, value) =
+        devo_protocol::native::wire_projector::typed_item_notification_from_server_event(
+            &ServerEvent::SessionCompactionCompleted(
+                devo_server::SessionCompactionCompletedPayload {
+                    session: metadata.clone(),
+                    turn_id,
+                    item_id: Some(item_id),
+                },
+            ),
+        )
+        .expect("compaction completed with item projects");
+    assert_eq!(method, "context/compactionCompleted");
+    assert_eq!(value["itemId"].as_str(), Some(item_id.to_string().as_str()));
+
+    assert!(
+        devo_protocol::native::wire_projector::typed_item_notification_from_server_event(
+            &ServerEvent::SessionCompactionCompleted(
+                devo_server::SessionCompactionCompletedPayload {
+                    session: metadata,
+                    turn_id,
+                    item_id: None,
+                },
+            ),
+        )
+        .is_none(),
+        "completion without a persisted item must stay on the legacy path"
+    );
+}
+
+/// Trace: L2-DES-APP-008, L2-DES-CONV-002
+/// Verifies: the canonical session/metadata/update contract shape (patch
+/// payload with SessionSettings + expectedVersion) round-trips on the wire.
+#[test]
+fn native_session_metadata_update_params_roundtrip() {
+    use devo_protocol::native::model::PermissionProfile;
+    use devo_protocol::native::rpc_session::SessionMetadataUpdateParams;
+    use devo_protocol::native::session::SessionSettings;
+
+    let params: SessionMetadataUpdateParams = serde_json::from_value(serde_json::json!({
+        "sessionId": "00000000-0000-0000-0000-000000000001",
+        "expectedVersion": 3,
+        "settings": {
+            "permissionProfile": "fullAccess",
+            "sandboxProfile": "workspace",
+            "reasoningEffort": "high"
+        }
+    }))
+    .expect("deserialize canonical params");
+    assert_eq!(params.expected_version, 3);
+    let settings = params.settings.clone().expect("settings present");
+    assert_eq!(
+        settings.permission_profile,
+        Some(PermissionProfile::FullAccess)
+    );
+    assert_eq!(settings.sandbox_profile.as_deref(), Some("workspace"));
+    assert_eq!(settings.reasoning_effort, Some("high".to_string()));
+    let roundtripped: SessionMetadataUpdateParams =
+        serde_json::from_value(serde_json::to_value(&params).expect("serialize canonical params"))
+            .expect("re-deserialize canonical params");
+    assert_eq!(roundtripped, params);
+
+    // A minimal settings object defaults the unset fields.
+    let minimal: SessionSettings = serde_json::from_value(serde_json::json!({
+        "permissionProfile": "default"
+    }))
+    .expect("minimal settings");
+    assert_eq!(minimal.permission_profile, PermissionProfile::Default);
+    assert_eq!(minimal.sandbox_profile, None);
+    assert_eq!(minimal.reasoning_effort, None);
+    assert_eq!(minimal.mode, None);
+    assert_eq!(minimal.effective_context_window, None);
+}
+
+/// Trace: L2-DES-CONV-002, L2-DES-APP-008
+/// Verifies: the settings patch is partial (only present fields change) and
+/// `expectedVersion: 0` is the documented no-precondition escape.
+#[test]
+fn native_session_settings_patch_is_partial() {
+    use devo_protocol::native::rpc_session::SessionSettingsPatch;
+
+    let patch: SessionSettingsPatch =
+        serde_json::from_value(serde_json::json!({ "sandboxProfile": "strict" }))
+            .expect("partial patch deserializes");
+    assert_eq!(patch.permission_profile, None);
+    assert_eq!(patch.sandbox_profile.as_deref(), Some("strict"));
+    assert_eq!(patch.reasoning_effort, None);
+    assert_eq!(patch.mode, None);
+    assert_eq!(patch.effective_context_window, None);
+    assert_eq!(
+        serde_json::to_value(&patch).expect("serialize"),
+        serde_json::json!({ "sandboxProfile": "strict" }),
+        "absent fields stay absent on the wire"
+    );
+}
+
+/// Trace: L2-DES-APP-008
+/// Verifies: the canonical task domain wire shapes (task/start kind-tagged
+/// params, task verb params) serialize as specified by DD-7.
+#[test]
+fn native_task_start_params_kind_tagged_wire_shape() {
+    use devo_protocol::native::ids::SessionId;
+    use devo_protocol::native::rpc_turn::TaskStartParams;
+
+    let process = TaskStartParams::Process {
+        session_id: SessionId::from_string("00000000-0000-0000-0000-000000000001".into()),
+        command: "ls".into(),
+        cwd: None,
+        idempotency_key: "k-1".into(),
+    };
+    let value = serde_json::to_value(&process).expect("serialize process params");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "kind": "process",
+            "sessionId": "00000000-0000-0000-0000-000000000001",
+            "command": "ls",
+            "idempotencyKey": "k-1"
+        })
+    );
+    let roundtripped: TaskStartParams =
+        serde_json::from_value(value).expect("deserialize process params");
+    assert_eq!(roundtripped, process);
+
+    let agent: TaskStartParams = serde_json::from_value(serde_json::json!({
+        "kind": "agent",
+        "sessionId": "00000000-0000-0000-0000-000000000001",
+        "input": [{ "type": "text", "text": "hi" }],
+        "idempotencyKey": "k-2"
+    }))
+    .expect("deserialize agent params");
+    assert!(matches!(agent, TaskStartParams::Agent { .. }));
+}
+
+/// Trace: L2-DES-APP-008
+/// Verifies: the canonical goal domain wire shapes (goal/set with ifExists,
+/// goal transition params) round-trip.
+#[test]
+fn native_goal_params_wire_shapes() {
+    use devo_protocol::native::rpc_session::{
+        GoalIfExists, SessionGoalSetParams, SessionGoalTransitionParams,
+    };
+
+    let set = SessionGoalSetParams {
+        session_id: devo_protocol::native::ids::SessionId::from_string(
+            "00000000-0000-0000-0000-000000000001".into(),
+        ),
+        objective: "ship it".into(),
+        token_budget: Some(1000),
+        if_exists: GoalIfExists::Replace,
+        idempotency_key: "g-1".into(),
+    };
+    let value = serde_json::to_value(&set).expect("serialize goal/set params");
+    assert_eq!(value["ifExists"], serde_json::json!("replace"));
+    let roundtripped: SessionGoalSetParams =
+        serde_json::from_value(value).expect("deserialize goal/set params");
+    assert_eq!(roundtripped, set);
+
+    let transition: SessionGoalTransitionParams = serde_json::from_value(serde_json::json!({
+        "sessionId": "00000000-0000-0000-0000-000000000001",
+        "expectedGoalId": "goal_00000000-0000-0000-0000-000000000002"
+    }))
+    .expect("deserialize transition params");
+    assert_eq!(
+        transition.expected_goal_id.as_str(),
+        "goal_00000000-0000-0000-0000-000000000002"
     );
 }

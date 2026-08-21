@@ -99,6 +99,12 @@ In raw mode, the application receives key events directly. This is required for 
 
 Because raw mode changes terminal behavior globally for the process, it must be restored reliably. A broken exit path can leave the user’s terminal in a bad state.
 
+#### Native text selection and Ctrl+C
+
+The TUI deliberately leaves mouse capture disabled, so text selection, scrollback, and copy-on-select remain owned by the terminal emulator. If the terminal is configured to copy on selection, dragging across text copies it immediately. When a selection is active, the terminal must also bind Ctrl+C to copy and consume the key before it reaches devo.
+
+When the terminal sends Ctrl+C to devo because there is no active selection, devo interrupts active work immediately. While idle, the first Ctrl+C shows a confirmation and a second press within two seconds exits. Terminals that do not provide copy-on-select or consume Ctrl+C for an active selection cannot be made to do so by the TUI because terminal-native selected text is not exposed to applications.
+
 #### Alternate screen
 
 The alternate screen is a separate terminal screen buffer. Full-screen terminal applications usually draw into the alternate screen so the user’s shell scrollback is restored when the app exits.
@@ -386,7 +392,7 @@ Token delta → MarkdownStreamCollector → StreamCore → queued HistoryCell �
 |--------|---------|
 | `markdown_stream.rs` | `MarkdownStreamCollector`: buffers raw markdown source and commits only at newline boundaries. Exposes `committed_source_len` to track progress. |
 | `markdown.rs` | `append_markdown`: renders markdown source into ratatui `Line`s, resolving local file-link paths relative to the session working directory. |
-| `markdown_render.rs` | Full markdown-to-`Text` renderer using `pulldown-cmark`. Handles headings, lists, code blocks (with syntax highlighting via `syntect`), inline code, bold/italic emphasis, links, blockquotes, and citations. |
+| `markdown_render.rs` | Full markdown-to-`Text` renderer using `pulldown-cmark` (with `ENABLE_MATH`). Handles headings, lists, code blocks (with syntax highlighting via `syntect`), inline code, inline/display math, bold/italic emphasis, links, blockquotes, and citations. Display math renders as a LaTeX-highlighted block that is never text-wrapped; unclosed `$$` stays raw during streaming and is rebuilt when the block completes. Note: pulldown-cmark 0.13 still treats `\$` as a math delimiter rather than an escaped dollar. |
 
 ### Rendering Utilities — `render/`
 

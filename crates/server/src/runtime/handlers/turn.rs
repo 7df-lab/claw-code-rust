@@ -31,6 +31,13 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
+        // Dual-shape boundary (L2-DES-APP-008 DD-4): the canonical shape is
+        // detected by its required `idempotencyKey`.
+        if params.get("idempotencyKey").is_some() {
+            return self
+                .handle_native_turn_start(connection_id, request_id, params)
+                .await;
+        }
         let params: TurnStartParams = match serde_json::from_value(params) {
             Ok(params) => params,
             Err(error) => {
@@ -48,6 +55,132 @@ impl ServerRuntime {
             TurnStartQueuePolicy::Queue,
         )
         .await
+    }
+
+    /// Native `turn/start` (L2-DES-APP-008 Phase B): lean params (input +
+    /// idempotency key; per-turn model/settings moved to settings updates),
+    /// busy sessions reject with `TURN_ALREADY_RUNNING` (clients use
+    /// `session/queue/push`), and the result carries the canonical turn
+    /// snapshot. Idempotent replays return the originally started turn.
+    async fn handle_native_turn_start(
+        self: &Arc<Self>,
+        connection_id: Option<u64>,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_turn::TurnStartParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical turn/start params: {error}"),
+                    );
+                }
+            };
+        let Ok(legacy_session_id) = SessionId::try_from(params.session_id.as_str()) else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session id is not addressable by this server",
+            );
+        };
+        // Input conversion: canonical `UserInput` → internal `InputItem`.
+        let mut input = Vec::with_capacity(params.input.len());
+        for item in &params.input {
+            use devo_protocol::native::item::UserInput;
+            let converted = match item {
+                UserInput::Text { text } => devo_protocol::InputItem::Text { text: text.clone() },
+                UserInput::LocalImage { path, .. } => {
+                    devo_protocol::InputItem::LocalImage { path: path.clone() }
+                }
+                UserInput::Mention { uri } => devo_protocol::InputItem::Mention {
+                    path: uri.clone(),
+                    name: None,
+                },
+                UserInput::Skill { name } => devo_protocol::InputItem::Skill {
+                    name: name.clone(),
+                    path: std::path::PathBuf::new(),
+                },
+                UserInput::Image { .. } | UserInput::Audio { .. } => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        "image and audio inputs are not served by canonical turn/start yet",
+                    );
+                }
+            };
+            input.push(converted);
+        }
+        // Idempotent replay: return the originally started turn snapshot.
+        let idempotency_key = (legacy_session_id, params.idempotency_key.clone());
+        if let Some(turn) = self
+            .turn_start_idempotency
+            .lock()
+            .await
+            .get(&idempotency_key)
+            .cloned()
+        {
+            return serde_json::to_value(SuccessResponse {
+                id: request_id,
+                result: devo_protocol::native::rpc_turn::TurnStartResult { turn },
+            })
+            .expect("serialize canonical turn/start response");
+        }
+
+        let legacy_params = TurnStartParams {
+            session_id: legacy_session_id,
+            input,
+            model: None,
+            model_binding_id: None,
+            reasoning_effort_selection: None,
+            sandbox: None,
+            approval_policy: None,
+            cwd: None,
+            collaboration_mode: Default::default(),
+            execution_mode: Default::default(),
+        };
+        let response = self
+            .handle_turn_start_with_queue_policy(
+                connection_id,
+                request_id.clone(),
+                legacy_params,
+                TurnStartQueuePolicy::RejectActive,
+            )
+            .await;
+        let Ok(success) =
+            serde_json::from_value::<SuccessResponse<TurnStartResult>>(response.clone())
+        else {
+            return response;
+        };
+        let TurnStartResult::Started { turn_id, .. } = success.result else {
+            // A turn raced in between the reservation check and admission;
+            // canonical busy semantics reject instead of queueing.
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::TurnAlreadyRunning,
+                "session already has an active prompt turn",
+            );
+        };
+        let Some(metadata) = self
+            .session_turn_reservation_snapshot(legacy_session_id)
+            .await
+            .and_then(|reservation| reservation.active_turn)
+            .filter(|turn| turn.turn_id == turn_id)
+        else {
+            return response;
+        };
+        let turn = devo_protocol::native::wire_projector::native_turn_from_metadata(&metadata);
+        self.turn_start_idempotency
+            .lock()
+            .await
+            .insert(idempotency_key, turn.clone());
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: devo_protocol::native::rpc_turn::TurnStartResult { turn },
+        })
+        .expect("serialize canonical turn/start response")
     }
 
     pub(crate) async fn handle_turn_start_with_queue_policy(
@@ -434,215 +567,5 @@ impl ServerRuntime {
             },
         })
         .expect("serialize turn/start response")
-    }
-
-    pub(crate) async fn handle_turn_shell_command_for_connection(
-        self: &Arc<Self>,
-        connection_id: Option<u64>,
-        request_id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> serde_json::Value {
-        let params: ShellCommandParams = match serde_json::from_value(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    format!("invalid turn/shell_command params: {error}"),
-                );
-            }
-        };
-        let command = params.command.trim().to_string();
-        if command.is_empty() {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::EmptyInput,
-                "shell command is empty",
-            );
-        }
-        let Some(session_handle) = self.session(params.session_id).await else {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::SessionNotFound,
-                "session does not exist",
-            );
-        };
-        let _state_change_guard = session_handle.lock_state_change().await;
-
-        let requested_runtime_context = match params.cwd.as_ref() {
-            Some(cwd) => match self.deps.context_for_workspace(cwd).await {
-                Ok(runtime_context) => Some(runtime_context),
-                Err(error) => {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InternalError,
-                        format!("failed to initialize session workspace: {error}"),
-                    );
-                }
-            },
-            None => None,
-        };
-        let Some(reservation) = self
-            .session_turn_reservation_snapshot(params.session_id)
-            .await
-        else {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::SessionNotFound,
-                "session does not exist",
-            );
-        };
-        if reservation.active_turn.is_some() {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::TurnAlreadyRunning,
-                "cannot run shell command while a turn is active",
-            );
-        }
-        let now = Utc::now();
-        let mut cwd_change = None;
-        let cwd = params
-            .cwd
-            .clone()
-            .unwrap_or_else(|| reservation.summary.cwd.clone());
-        if let Some(cwd) = params.cwd.clone() {
-            let old_cwd = reservation.summary.cwd.clone();
-            if old_cwd != cwd {
-                cwd_change = Some((old_cwd, cwd.clone()));
-                if let Some(runtime_context) = requested_runtime_context.as_ref() {
-                    session_handle
-                        .update_session_workspace(cwd.clone(), Arc::clone(runtime_context))
-                        .await;
-                }
-            }
-        }
-        let model = reservation.summary.model.clone().unwrap_or_default();
-        let turn = TurnMetadata {
-            turn_id: TurnId::new(),
-            session_id: params.session_id,
-            sequence: reservation
-                .latest_turn
-                .as_ref()
-                .map_or(1, |turn| turn.sequence + 1),
-            status: TurnStatus::Running,
-            kind: devo_core::TurnKind::Other("shell_command".to_string()),
-            model: model.clone(),
-            model_binding_id: reservation.summary.model_binding_id.clone(),
-            reasoning_effort_selection: reservation.summary.reasoning_effort_selection.clone(),
-            reasoning_effort: reservation.summary.reasoning_effort,
-            request_model: model,
-            request_thinking: reservation.summary.reasoning_effort_selection.clone(),
-            started_at: now,
-            completed_at: None,
-            usage: None,
-            stop_reason: None,
-            failure_reason: None,
-        };
-        session_handle
-            .begin_active_turn(
-                turn.clone(),
-                reservation.runtime_context.resolve_turn_config(
-                    session_model_selection(&reservation.summary),
-                    reservation.summary.reasoning_effort_selection.clone(),
-                ),
-            )
-            .await;
-        if let Some((old_cwd, new_cwd)) = cwd_change {
-            self.run_session_hook(
-                params.session_id,
-                devo_core::HookEvent::CwdChanged,
-                serde_json::Map::from_iter([
-                    (
-                        "old_cwd".to_string(),
-                        serde_json::Value::String(old_cwd.display().to_string()),
-                    ),
-                    (
-                        "new_cwd".to_string(),
-                        serde_json::Value::String(new_cwd.display().to_string()),
-                    ),
-                ]),
-            )
-            .await;
-        }
-
-        if let Some(persistence) = session_handle.turn_persistence_snapshot().await
-            && persistence.record.is_some()
-            && let Err(error) = self
-                .persist_turn_line_deduped(params.session_id, &turn)
-                .await
-        {
-            self.clear_active_turn_reservation(&session_handle, turn.turn_id)
-                .await;
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::InternalError,
-                format!("failed to persist shell command turn start: {error}"),
-            );
-        }
-
-        self.broadcast_event(ServerEvent::SessionStatusChanged(
-            SessionStatusChangedPayload {
-                session_id: params.session_id,
-                status: SessionRuntimeStatus::ActiveTurn,
-            },
-        ))
-        .await;
-        self.broadcast_event(ServerEvent::TurnStarted(TurnEventPayload {
-            session_id: params.session_id,
-            turn: turn.clone(),
-        }))
-        .await;
-
-        let runtime = Arc::clone(self);
-        let command_for_task = command.clone();
-        let turn_for_task = turn.clone();
-        self.spawn_active_turn_task(params.session_id, turn.clone(), connection_id, async move {
-            runtime
-                .execute_shell_command_turn(params.session_id, turn_for_task, command_for_task, cwd)
-                .await;
-        })
-        .await;
-
-        serde_json::to_value(SuccessResponse {
-            id: request_id,
-            result: ShellCommandResult {
-                turn_id: turn.turn_id,
-                status: turn.status,
-                accepted_at: now,
-            },
-        })
-        .expect("serialize turn/shell_command response")
-    }
-
-    pub(crate) async fn handle_events_subscribe(
-        &self,
-        connection_id: u64,
-        request_id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> serde_json::Value {
-        let params: EventsSubscribeParams = match serde_json::from_value(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    format!("invalid events/subscribe params: {error}"),
-                );
-            }
-        };
-        if let Some(connection) = self.connections.lock().await.get_mut(&connection_id) {
-            connection.subscriptions.push(SubscriptionFilter {
-                session_id: params.session_id,
-                event_types: params.event_types.unwrap_or_default().into_iter().collect(),
-                include_child_agents: params.include_child_agents,
-            });
-        }
-        serde_json::to_value(SuccessResponse {
-            id: request_id,
-            result: EventsSubscribeResult {
-                subscription_id: format!("sub-{connection_id}-1").into(),
-            },
-        })
-        .expect("serialize events/subscribe response")
     }
 }

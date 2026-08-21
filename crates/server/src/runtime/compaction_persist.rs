@@ -22,7 +22,7 @@ use devo_core::TurnId;
 use devo_core::TurnItem;
 use devo_core::TurnKind;
 use devo_protocol::approx_tokens_from_byte_count;
-use devo_protocol::canonical::item::ContextOccupancy;
+use devo_protocol::native::item::ContextOccupancy;
 
 use super::ServerRuntime;
 use crate::execution::PersistedTurnItem;

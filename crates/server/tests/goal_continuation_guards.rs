@@ -26,6 +26,7 @@ use devo_protocol::ResponseMetadata;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
 use devo_protocol::Usage;
+use devo_protocol::native::rpc_session::GoalIfExists;
 use devo_provider::ModelProviderSDK;
 use futures::Stream;
 use futures::stream;
@@ -39,8 +40,9 @@ use support::CapturingProvider;
 use support::build_runtime;
 use support::build_runtime_with_registry;
 use support::collect_until_turn_completed;
+use support::create_goal;
 use support::initialize_connection;
-use support::pause_goal_and_interrupt_turn;
+use support::pause_goal_and_interrupt_session;
 use support::start_session;
 use support::wait_for_approval_request;
 use support::wait_for_notification;
@@ -59,7 +61,7 @@ async fn goal_set_does_not_start_continuation_in_plan_mode() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 40,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [{ "type": "text", "text": "plan first" }],
@@ -76,21 +78,16 @@ async fn goal_set_does_not_start_continuation_in_plan_mode() -> Result<()> {
     collect_until_turn_completed(&mut notifications_rx).await?;
     assert_eq!(provider.requests.lock().expect("lock requests").len(), 1);
 
-    let _ = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 41,
-                "method": "_devo/goal/set",
-                "params": {
-                    "sessionId": session_id,
-                    "objective": "do not continue in plan mode",
-                    "status": "active"
-                }
-            }),
-        )
-        .await
-        .context("goal/set response")?;
+    create_goal(
+        &runtime,
+        connection_id,
+        session_id,
+        "do not continue in plan mode",
+        None,
+        GoalIfExists::Reject,
+        "goal-plan-mode",
+    )
+    .await?;
     tokio::time::sleep(Duration::from_millis(/*millis*/ 50)).await;
     assert_eq!(provider.requests.lock().expect("lock requests").len(), 1);
     Ok(())
@@ -222,7 +219,7 @@ async fn goal_set_does_not_start_continuation_while_approval_is_pending() -> Res
             connection_id,
             serde_json::json!({
                 "id": 50,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [{ "type": "text", "text": "ask for approval" }],
@@ -240,25 +237,20 @@ async fn goal_set_does_not_start_continuation_while_approval_is_pending() -> Res
     wait_for_approval_request(&mut notifications_rx).await?;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
 
-    let _ = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 51,
-                "method": "_devo/goal/set",
-                "params": {
-                    "sessionId": session_id,
-                    "objective": "wait for approval first",
-                    "status": "active"
-                }
-            }),
-        )
-        .await
-        .context("goal/set response")?;
+    create_goal(
+        &runtime,
+        connection_id,
+        session_id,
+        "wait for approval first",
+        None,
+        GoalIfExists::Reject,
+        "goal-approval-pending",
+    )
+    .await?;
     tokio::time::sleep(Duration::from_millis(/*millis*/ 50)).await;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
 
-    pause_goal_and_interrupt_turn(
+    pause_goal_and_interrupt_session(
         &runtime,
         connection_id,
         session_id,
@@ -294,7 +286,7 @@ async fn goal_set_does_not_start_continuation_while_user_input_is_pending() -> R
             connection_id,
             serde_json::json!({
                 "id": 60,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [{ "type": "text", "text": "ask the user" }],
@@ -313,25 +305,20 @@ async fn goal_set_does_not_start_continuation_while_user_input_is_pending() -> R
     wait_for_notification(&mut notifications_rx, "item/tool/requestUserInput").await?;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
 
-    let _ = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 61,
-                "method": "_devo/goal/set",
-                "params": {
-                    "sessionId": session_id,
-                    "objective": "wait for user input first",
-                    "status": "active"
-                }
-            }),
-        )
-        .await
-        .context("goal/set response")?;
+    create_goal(
+        &runtime,
+        connection_id,
+        session_id,
+        "wait for user input first",
+        None,
+        GoalIfExists::Reject,
+        "goal-user-input-pending",
+    )
+    .await?;
     tokio::time::sleep(Duration::from_millis(/*millis*/ 50)).await;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
 
-    pause_goal_and_interrupt_turn(
+    pause_goal_and_interrupt_session(
         &runtime,
         connection_id,
         session_id,

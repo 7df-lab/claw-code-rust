@@ -4,12 +4,7 @@ use devo_core::Model;
 use devo_core::ModelCatalog;
 use devo_core::ProviderHttpConfig;
 use devo_core::ProviderValidateParams;
-use devo_core::ProviderValidateResult;
 use devo_core::ProviderVendorConfig;
-use devo_core::ProviderVendorListParams;
-use devo_core::ProviderVendorListResult;
-use devo_core::ProviderVendorUpsertParams;
-use devo_core::ProviderVendorUpsertResult;
 use devo_core::UserAuthConfigFile;
 use devo_core::read_user_auth_config;
 use devo_core::test_model_connection;
@@ -29,51 +24,46 @@ use crate::provider_config::normalize_openai_base_url;
 use super::ServerRuntime;
 
 impl ServerRuntime {
-    pub(super) async fn handle_provider_vendor_list(
+    /// Native `provider/list` (ratified #11), backed by the shared config
+    /// store and projected into the canonical camelCase result.
+    pub(super) async fn handle_native_provider_list(
         &self,
         request_id: serde_json::Value,
-        params: serde_json::Value,
     ) -> serde_json::Value {
-        if !params.is_null()
-            && let Err(error) = serde_json::from_value::<ProviderVendorListParams>(params)
-        {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::InvalidParams,
-                format!("invalid provider/list params: {error}"),
-            );
-        }
-
         let store = self
             .deps
             .config_store
             .lock()
             .expect("app config store mutex should not be poisoned");
-        let provider_vendors = store.provider_vendors();
-
+        let providers = store
+            .provider_vendors()
+            .into_iter()
+            .map(devo_protocol::native::rpc_admin::ProviderVendorInfo::from)
+            .collect();
         serde_json::to_value(SuccessResponse {
             id: request_id,
-            result: ProviderVendorListResult { provider_vendors },
+            result: devo_protocol::native::rpc_admin::ProviderListResult { providers },
         })
-        .expect("serialize provider/list response")
+        .expect("serialize canonical provider/list response")
     }
 
-    pub(super) async fn handle_provider_vendor_upsert(
+    /// Native `provider/upsert` (ratified #11).
+    pub(super) async fn handle_native_provider_upsert(
         &self,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        let params: ProviderVendorUpsertParams = match serde_json::from_value(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    format!("invalid provider/upsert params: {error}"),
-                );
-            }
-        };
-
+        let params: devo_protocol::native::rpc_admin::ProviderUpsertParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical provider/upsert params: {error}"),
+                    );
+                }
+            };
         let Some(provider_id) = normalized_provider_id(&params.provider_vendor.name) else {
             return self.error_response(
                 request_id,
@@ -81,7 +71,6 @@ impl ServerRuntime {
                 "provider name cannot be empty",
             );
         };
-
         let config_file = {
             let store = self
                 .deps
@@ -110,15 +99,13 @@ impl ServerRuntime {
             .config_store
             .lock()
             .expect("app config store mutex should not be poisoned");
-        let model_binding = params.model_binding;
-        let default_model_binding = params.default_model_binding;
-        let api_key = params.api_key;
+        let model_binding = params.model_binding.map(Into::into);
         let provider_vendor = match store.upsert_provider_vendor(
             provider_id,
-            params.provider_vendor,
+            params.provider_vendor.into(),
             model_binding.clone(),
-            default_model_binding,
-            api_key,
+            params.default_model_binding,
+            params.api_key,
         ) {
             Ok(provider_vendor) => provider_vendor,
             Err(error) => {
@@ -134,30 +121,36 @@ impl ServerRuntime {
 
         serde_json::to_value(SuccessResponse {
             id: request_id,
-            result: ProviderVendorUpsertResult {
-                provider_vendor,
-                model_binding,
+            result: devo_protocol::native::rpc_admin::ProviderUpsertResult {
+                provider_vendor: provider_vendor.into(),
+                model_binding: model_binding.map(Into::into),
             },
         })
-        .expect("serialize provider/upsert response")
+        .expect("serialize canonical provider/upsert response")
     }
 
-    pub(super) async fn handle_provider_validate(
+    /// Native `provider/validate` (ratified #11).
+    pub(super) async fn handle_native_provider_validate(
         &self,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        let params: ProviderValidateParams = match serde_json::from_value(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    format!("invalid provider/validate params: {error}"),
-                );
-            }
+        let params: devo_protocol::native::rpc_admin::ProviderValidateParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical provider/validate params: {error}"),
+                    );
+                }
+            };
+        let params = ProviderValidateParams {
+            provider_vendor: params.provider_vendor.into(),
+            model_binding: params.model_binding.into(),
+            api_key: params.api_key,
         };
-
         let provider_http = {
             let store = self
                 .deps
@@ -172,9 +165,9 @@ impl ServerRuntime {
         {
             Ok(reply_preview) => serde_json::to_value(SuccessResponse {
                 id: request_id,
-                result: ProviderValidateResult { reply_preview },
+                result: devo_protocol::native::rpc_admin::ProviderValidateResult { reply_preview },
             })
-            .expect("serialize provider/validate response"),
+            .expect("serialize canonical provider/validate response"),
             Err(error) => self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,

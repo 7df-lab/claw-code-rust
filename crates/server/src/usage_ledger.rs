@@ -5,9 +5,9 @@ use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
 use devo_protocol::StreamEvent;
 use devo_protocol::Usage;
-use devo_protocol::canonical::ids;
-use devo_protocol::canonical::model::ModelBinding;
-use devo_protocol::canonical::usage::{
+use devo_protocol::native::ids;
+use devo_protocol::native::model::ModelBinding;
+use devo_protocol::native::usage::{
     CallContext, TokenUsage, UsageCallOutcome, UsagePurpose, UsageRecord,
 };
 use std::pin::Pin;

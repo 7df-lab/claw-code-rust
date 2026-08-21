@@ -489,8 +489,8 @@ export function getBaseClient(): DevoClient | null {
 }
 
 /**
- * Clear cached ACP model/config options on every active SDK client.
- * Provider updates mutate server config, so model/config must be reloaded.
+ * Clear cached ACP model preferences on every active SDK client.
+ * Provider updates mutate server config, so model/preferences/read must be reloaded.
  */
 export function invalidateConfigOptionCaches(): void {
 	const clients = new Set<DevoClient>()

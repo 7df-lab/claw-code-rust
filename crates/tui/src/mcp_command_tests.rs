@@ -68,7 +68,7 @@ fn mcp_server_selected_opens_bottom_pane_detail() {
     let (mut widget, mut app_event_rx) = widget_with_model(model);
 
     widget.handle_worker_event(crate::events::WorkerEvent::McpServersListed {
-        servers: vec![devo_protocol::canonical::rpc_admin::McpServerInfo {
+        servers: vec![devo_protocol::native::rpc_admin::McpServerInfo {
             name: "time".to_string(),
             status: "ready".to_string(),
             tool_count: 2,

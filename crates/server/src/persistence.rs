@@ -35,6 +35,8 @@ use devo_core::SessionId;
 use devo_core::SessionMetaLine;
 use devo_core::SessionRecord;
 use devo_core::SessionRollbackLine;
+use devo_core::SessionSettingsField;
+use devo_core::SessionSettingsLine;
 use devo_core::SessionTitleFinalSource;
 use devo_core::SessionTitleState;
 use devo_core::SessionTitleUpdatedLine;
@@ -63,8 +65,8 @@ use devo_core::legacy_projector::LegacyProjector;
 use devo_core::parse_rollout_line;
 use devo_core::rollout_v2::RolloutLineV2;
 use devo_core::{EVENT_SCHEMA_VERSION, events_from_v2_line, source_fact_id};
-use devo_protocol::canonical::event::{EventEnvelope, EventMeta};
-use devo_protocol::canonical::ids::EventId;
+use devo_protocol::native::event::{EventEnvelope, EventMeta};
+use devo_protocol::native::ids::EventId;
 
 use crate::db::{Database, NewEventLogRow};
 use crate::execution::PersistedTurnItem;
@@ -195,6 +197,30 @@ impl RolloutStore {
                 timestamp: Utc::now(),
                 session: record.clone(),
             })),
+        )
+    }
+
+    /// Appends one field-level session settings line without requiring the
+    /// actor-owned session record (L2-DES-CONV-002 Phase 2 persist-first
+    /// path: the handler must not wait on the actor mailbox to persist).
+    pub(crate) fn append_session_settings_at(
+        &self,
+        rollout_path: &Path,
+        session_id: SessionId,
+        field: SessionSettingsField,
+        value: serde_json::Value,
+    ) -> Result<()> {
+        self.append_line(
+            rollout_path,
+            &RolloutLine::SessionSettings(SessionSettingsLine {
+                timestamp: Utc::now(),
+                session_id,
+                field,
+                value,
+                // Placeholder: the per-file projector assigns the
+                // authoritative epoch at write time.
+                epoch: 0,
+            }),
         )
     }
 
@@ -697,7 +723,7 @@ impl RolloutStore {
     pub(crate) fn append_canonical_item(
         &self,
         record: &SessionRecord,
-        item: devo_protocol::canonical::item::ItemEnvelope,
+        item: devo_protocol::native::item::ItemEnvelope,
     ) -> Result<()> {
         let line = RolloutLineV2::Item {
             v: 2,
@@ -718,7 +744,7 @@ impl RolloutStore {
             vec![RolloutLineV2::Internal {
                 v: 2,
                 timestamp: Utc::now(),
-                session_id: devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::from(
+                session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(Uuid::from(
                     session_id,
                 )),
                 turn_id: None,
@@ -735,14 +761,14 @@ impl RolloutStore {
         &self,
         rollout_path: &Path,
         session_id: SessionId,
-        record: devo_protocol::canonical::usage::UsageRecord,
+        record: devo_protocol::native::usage::UsageRecord,
     ) -> Result<()> {
         self.append_v2_lines(
             rollout_path,
             vec![RolloutLineV2::Internal {
                 v: 2,
                 timestamp: record.recorded_at,
-                session_id: devo_protocol::canonical::ids::SessionId::from_legacy_uuid(Uuid::from(
+                session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(Uuid::from(
                     session_id,
                 )),
                 turn_id: record.turn_id.clone(),
@@ -1030,7 +1056,7 @@ struct ReplayState {
     latest_turn: Option<TurnRecord>,
     latest_turn_metadata: Option<TurnMetadata>,
     latest_query_usage: Option<devo_protocol::TurnUsage>,
-    latest_context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+    latest_context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
     turn_records_by_id: HashMap<TurnId, TurnRecord>,
     loaded_item_count: u64,
     next_item_seq: u64,
@@ -1057,6 +1083,39 @@ struct ReplayState {
     superseded_turn_ids: HashSet<TurnId>,
     summarized_turn_ids: HashSet<TurnId>,
     last_activity_at: Option<chrono::DateTime<Utc>>,
+    /// Field-level session settings accumulated during replay (L2-DES-CONV-002
+    /// Phase 1). The last line per field wins; a `PermissionPreset` line
+    /// clears the explicit `SandboxProfile` override (the preset re-implies
+    /// the sandbox), matching the approved patch-interaction rule.
+    session_settings: HashMap<SessionSettingsField, serde_json::Value>,
+}
+
+/// Applies an optional-string settings field line onto a record field,
+/// logging divergence from the whole-record `SessionMeta` value.
+fn apply_optional_string_setting(
+    target: &mut Option<String>,
+    value: serde_json::Value,
+    session_id: SessionId,
+    field_name: &str,
+) {
+    let parsed = match serde_json::from_value::<Option<String>>(value) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            tracing::warn!(session_id = %session_id, field = field_name, %error, "ignoring damaged settings line");
+            return;
+        }
+    };
+    let Some(new_value) = parsed else {
+        return;
+    };
+    if target.as_ref().is_some_and(|current| *current != new_value) {
+        tracing::warn!(
+            session_id = %session_id,
+            field = field_name,
+            "settings field line disagrees with SessionMeta value; field line wins"
+        );
+    }
+    *target = Some(new_value);
 }
 
 /// Auto-compact / status pressure restored on resume.
@@ -1065,7 +1124,7 @@ struct ReplayState {
 /// re-trigger compaction after the context was already reduced. Falls back to
 /// latest-query display total, then the reconstituted prompt estimate.
 fn resume_context_pressure_tokens(
-    occupancy: Option<&devo_protocol::canonical::item::ContextOccupancy>,
+    occupancy: Option<&devo_protocol::native::item::ContextOccupancy>,
     latest_query_usage: Option<&devo_protocol::TurnUsage>,
     prompt_token_estimate: usize,
 ) -> (usize, usize) {
@@ -1262,8 +1321,102 @@ impl ReplayState {
             RolloutLine::SessionRollback(line) => {
                 self.apply_session_rollback(*line)?;
             }
+            RolloutLine::SessionSettings(line) => {
+                // Approved patch-interaction rule: a preset change re-implies
+                // the sandbox, so it clears any explicit override seen so far.
+                if line.field == SessionSettingsField::PermissionPreset {
+                    self.session_settings
+                        .remove(&SessionSettingsField::SandboxProfile);
+                }
+                self.session_settings.insert(line.field, line.value);
+            }
         }
         Ok(())
+    }
+
+    /// Applies accumulated field-level settings onto the replayed session
+    /// record, ahead of the derivations in `into_runtime_session`. Field lines
+    /// win over the whole-record `SessionMeta` values; a disagreement between
+    /// the two is logged because it indicates a missed dual-write.
+    fn apply_session_settings(&mut self, record: &mut SessionRecord) {
+        let fields = std::mem::take(&mut self.session_settings);
+        for (field, value) in fields {
+            match field {
+                SessionSettingsField::PermissionPreset => {
+                    match serde_json::from_value::<devo_protocol::PermissionPreset>(value) {
+                        Ok(preset) => {
+                            if record.permission_preset.is_some_and(|p| p != preset) {
+                                tracing::warn!(
+                                    session_id = %record.id,
+                                    "settings field line disagrees with SessionMeta permission_preset; field line wins"
+                                );
+                            }
+                            record.permission_preset = Some(preset);
+                        }
+                        Err(error) => {
+                            tracing::warn!(session_id = %record.id, %error, "ignoring damaged permissionPreset settings line");
+                        }
+                    }
+                }
+                SessionSettingsField::Model => {
+                    apply_optional_string_setting(&mut record.model, value, record.id, "model");
+                }
+                SessionSettingsField::ModelBindingId => {
+                    apply_optional_string_setting(
+                        &mut record.model_binding_id,
+                        value,
+                        record.id,
+                        "model_binding_id",
+                    );
+                }
+                SessionSettingsField::ReasoningEffortSelection => {
+                    apply_optional_string_setting(
+                        &mut record.reasoning_effort_selection,
+                        value,
+                        record.id,
+                        "reasoning_effort_selection",
+                    );
+                }
+                SessionSettingsField::CollaborationMode => {
+                    match serde_json::from_value::<devo_protocol::CollaborationMode>(value) {
+                        Ok(mode) => {
+                            if record.collaboration_mode.is_some_and(|m| m != mode) {
+                                tracing::warn!(
+                                    session_id = %record.id,
+                                    "settings field line disagrees with SessionMeta collaboration_mode; field line wins"
+                                );
+                            }
+                            record.collaboration_mode = Some(mode);
+                        }
+                        Err(error) => {
+                            tracing::warn!(session_id = %record.id, %error, "ignoring damaged collaborationMode settings line");
+                        }
+                    }
+                }
+                // Applied to `core_session.config` after the preset
+                // derivation, not to the record (the record has no sandbox
+                // profile name field).
+                SessionSettingsField::SandboxProfile => {
+                    self.session_settings.insert(field, value);
+                }
+            }
+        }
+    }
+
+    /// Returns the explicit sandbox profile override accumulated from settings
+    /// field lines, if any survived preset re-derivation.
+    fn sandbox_profile_override(&self) -> Option<String> {
+        self.session_settings
+            .get(&SessionSettingsField::SandboxProfile)
+            .and_then(
+                |value| match serde_json::from_value::<String>(value.clone()) {
+                    Ok(name) => Some(name),
+                    Err(error) => {
+                        tracing::warn!(%error, "ignoring damaged sandboxProfile settings line");
+                        None
+                    }
+                },
+            )
     }
 
     async fn into_runtime_session(
@@ -1275,12 +1428,19 @@ impl ReplayState {
             self.enqueue_terminal_history_items(&last_turn);
         }
 
-        let mut record = self.session.context("missing SessionMetaLine in rollout")?;
+        let mut record = self
+            .session
+            .take()
+            .context("missing SessionMetaLine in rollout")?;
         let last_activity_at = self
             .last_activity_at
             .or(record.last_activity_at)
             .unwrap_or(record.updated_at);
         record.last_activity_at = Some(last_activity_at);
+        // Field-level settings lines win over the whole-record SessionMeta
+        // values (L2-DES-CONV-002 Phase 1); apply before the derivations below.
+        self.apply_session_settings(&mut record);
+        let sandbox_profile_override = self.sandbox_profile_override();
         let runtime_context = deps.context_for_workspace(&record.cwd).await?;
         let mut core_session = runtime_context.new_session_state(
             record.id,
@@ -1363,6 +1523,11 @@ impl ReplayState {
             core_session.config.permission_mode = profile.permission_mode();
             core_session.config.permission_profile = profile;
             core_session.config.sandbox_profile = sandbox;
+        }
+        // An explicit sandbox override from settings field lines wins over the
+        // preset-implied sandbox (approved patch-interaction rule).
+        if let Some(sandbox) = sandbox_profile_override {
+            core_session.config.sandbox_profile = Some(sandbox);
         }
         core_session.turn_count = self.turns_seen as usize;
         core_session.total_input_tokens = self.total_input_tokens;
@@ -2328,7 +2493,7 @@ pub(crate) fn build_turn_record(
     session_context: Option<devo_core::SessionContext>,
     turn_context: Option<devo_core::TurnContext>,
     latest_query_usage: Option<devo_core::TurnUsage>,
-    context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+    context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
 ) -> TurnRecord {
     TurnRecord {
         id: turn.turn_id,
@@ -2554,15 +2719,14 @@ mod tests {
         let session_id = SessionId::new();
         let turn_id = TurnId::new();
         let mut replay = ReplayState::default();
-        let turn_occupancy = devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
+        let turn_occupancy = devo_protocol::native::item::ContextOccupancy::from_category_tokens(
             /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
             /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 40_000,
         );
-        let compact_occupancy =
-            devo_protocol::canonical::item::ContextOccupancy::from_category_tokens(
-                /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
-                /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 8_000,
-            );
+        let compact_occupancy = devo_protocol::native::item::ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 100_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 8_000,
+        );
 
         replay
             .apply_line(RolloutLine::Turn(Box::new(TurnLine {
@@ -2621,7 +2785,7 @@ mod tests {
         use pretty_assertions::assert_eq;
 
         use devo_protocol::TurnUsage;
-        use devo_protocol::canonical::item::ContextOccupancy;
+        use devo_protocol::native::item::ContextOccupancy;
 
         let occupancy = ContextOccupancy::from_category_tokens(
             /*context_window_tokens*/ 250_000, /*base*/ 10_000, /*skills*/ 0,
@@ -4088,7 +4252,7 @@ mod tests {
                 matches!(
                     line,
                     devo_core::RolloutLineV2::Item { item, .. }
-                        if matches!(item.item, devo_protocol::canonical::item::Item::Approval { .. })
+                        if matches!(item.item, devo_protocol::native::item::Item::Approval { .. })
                 )
             })
             .collect();
@@ -4107,21 +4271,21 @@ mod tests {
         assert_eq!((request.revision, decision.revision), (1, 2));
         assert_eq!(
             decision.state,
-            devo_protocol::canonical::item::ItemState::Completed
+            devo_protocol::native::item::ItemState::Completed
         );
         assert!(
-            matches!(&decision.item, devo_protocol::canonical::item::Item::Approval { decision: Some(d), .. }
-                if d.decision == devo_protocol::canonical::item::ApprovalDecisionKind::Approved
-                    && d.scope == devo_protocol::canonical::item::ApprovalScope::Once)
+            matches!(&decision.item, devo_protocol::native::item::Item::Approval { decision: Some(d), .. }
+                if d.decision == devo_protocol::native::item::ApprovalDecisionKind::Approved
+                    && d.scope == devo_protocol::native::item::ApprovalScope::Once)
         );
     }
 
     #[test]
     fn canonical_only_interaction_and_file_change_items_round_trip() {
-        use devo_protocol::canonical::ids::{
+        use devo_protocol::native::ids::{
             ItemId as CanonicalItemId, SessionId as CanonicalSessionId, TurnId as CanonicalTurnId,
         };
-        use devo_protocol::canonical::item::{
+        use devo_protocol::native::item::{
             FileChangeEntry, FileChangeKind, Item, ItemEnvelope, ItemState,
         };
         use tempfile::TempDir;
@@ -4514,7 +4678,7 @@ mod tests {
         // sessions stream; turn and item facts land on the session stream.
         assert_eq!(db.event_log_len().expect("count"), 4);
         let session_stream = devo_core::session_stream_id(
-            &devo_protocol::canonical::ids::SessionId::from_string(record.id.to_string()),
+            &devo_protocol::native::ids::SessionId::from_string(record.id.to_string()),
         );
         let rows = db
             .event_log_rows(&session_stream, 0)
@@ -4535,7 +4699,7 @@ mod tests {
 
         // The stored envelope payload parses as a typed EventEnvelope whose
         // meta.seq is hydrated from the row at replay time.
-        let envelope: devo_protocol::canonical::event::EventEnvelope =
+        let envelope: devo_protocol::native::event::EventEnvelope =
             serde_json::from_str(&rows[2].payload).expect("envelope payload parses");
         assert_eq!(envelope.meta.seq, None);
         assert!(envelope.meta.persisted);
@@ -4571,5 +4735,214 @@ mod tests {
         let inserted = db.insert_event_log_rows(&rows).expect("re-insert");
         assert_eq!(inserted, 0);
         assert_eq!(db.event_log_len().expect("count"), 4);
+    }
+
+    // ── Field-level session settings log (L2-DES-CONV-002 Phase 1) ──
+
+    fn settings_test_record() -> (tempfile::TempDir, super::RolloutStore, SessionRecord) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let rollout_store = super::RolloutStore::new(dir.path().to_path_buf(), None);
+        let record = rollout_store.create_session_record(
+            SessionId::new(),
+            Utc::now(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        (dir, rollout_store, record)
+    }
+
+    fn settings_line(
+        record: &SessionRecord,
+        field: devo_core::SessionSettingsField,
+        value: serde_json::Value,
+    ) -> RolloutLine {
+        RolloutLine::SessionSettings(devo_core::SessionSettingsLine {
+            timestamp: Utc::now(),
+            session_id: record.id,
+            field,
+            value,
+            epoch: 0,
+        })
+    }
+
+    /// Trace: L2-DES-CONV-002
+    /// Verifies: a field-level settings line wins over the whole-record
+    /// SessionMeta value during replay (DD-4).
+    #[test]
+    fn session_settings_field_line_wins_over_session_meta_preset() {
+        let (_dir, _store, mut record) = settings_test_record();
+        record.permission_preset = Some(devo_protocol::PermissionPreset::Default);
+        let mut replay = ReplayState::default();
+        replay
+            .apply_line(RolloutLine::SessionMeta(Box::new(SessionMetaLine {
+                timestamp: Utc::now(),
+                session: record.clone(),
+            })))
+            .expect("apply session meta");
+        replay
+            .apply_line(settings_line(
+                &record,
+                devo_core::SessionSettingsField::PermissionPreset,
+                serde_json::to_value(devo_protocol::PermissionPreset::FullAccess)
+                    .expect("serialize preset"),
+            ))
+            .expect("apply settings line");
+
+        let mut replayed = replay.session.take().expect("session record");
+        replay.apply_session_settings(&mut replayed);
+        assert_eq!(
+            replayed.permission_preset,
+            Some(devo_protocol::PermissionPreset::FullAccess)
+        );
+    }
+
+    /// Trace: L2-DES-CONV-002
+    /// Verifies: a PermissionPreset line clears the explicit SandboxProfile
+    /// override accumulated so far (approved patch-interaction rule).
+    #[test]
+    fn session_settings_preset_line_clears_explicit_sandbox_override() {
+        let (_dir, _store, record) = settings_test_record();
+        let mut replay = ReplayState::default();
+        replay
+            .apply_line(settings_line(
+                &record,
+                devo_core::SessionSettingsField::SandboxProfile,
+                serde_json::Value::String("strict".into()),
+            ))
+            .expect("apply sandbox line");
+        replay
+            .apply_line(settings_line(
+                &record,
+                devo_core::SessionSettingsField::PermissionPreset,
+                serde_json::to_value(devo_protocol::PermissionPreset::Default)
+                    .expect("serialize preset"),
+            ))
+            .expect("apply preset line");
+
+        assert_eq!(replay.sandbox_profile_override(), None);
+    }
+
+    /// Trace: L2-DES-CONV-002
+    /// Verifies: an explicit SandboxProfile line written after the preset line
+    /// survives replay as the effective override.
+    #[test]
+    fn session_settings_explicit_sandbox_survives_when_written_after_preset() {
+        let (_dir, _store, record) = settings_test_record();
+        let mut replay = ReplayState::default();
+        replay
+            .apply_line(settings_line(
+                &record,
+                devo_core::SessionSettingsField::PermissionPreset,
+                serde_json::to_value(devo_protocol::PermissionPreset::Default)
+                    .expect("serialize preset"),
+            ))
+            .expect("apply preset line");
+        replay
+            .apply_line(settings_line(
+                &record,
+                devo_core::SessionSettingsField::SandboxProfile,
+                serde_json::Value::String("strict".into()),
+            ))
+            .expect("apply sandbox line");
+
+        assert_eq!(
+            replay.sandbox_profile_override(),
+            Some("strict".to_string())
+        );
+    }
+
+    /// Trace: L2-DES-CONV-002
+    /// Verifies: model-family field lines override the corresponding record
+    /// fields during replay.
+    #[test]
+    fn session_settings_model_fields_override_record() {
+        let (_dir, _store, mut record) = settings_test_record();
+        record.model = Some("old-model".into());
+        let mut replay = ReplayState::default();
+        replay
+            .apply_line(RolloutLine::SessionMeta(Box::new(SessionMetaLine {
+                timestamp: Utc::now(),
+                session: record.clone(),
+            })))
+            .expect("apply session meta");
+        replay
+            .apply_line(settings_line(
+                &record,
+                devo_core::SessionSettingsField::Model,
+                serde_json::to_value(Some("new-model".to_string())).expect("serialize model"),
+            ))
+            .expect("apply model line");
+        replay
+            .apply_line(settings_line(
+                &record,
+                devo_core::SessionSettingsField::ReasoningEffortSelection,
+                serde_json::to_value(Some("high".to_string())).expect("serialize effort"),
+            ))
+            .expect("apply effort line");
+
+        let mut replayed = replay.session.take().expect("session record");
+        replay.apply_session_settings(&mut replayed);
+        assert_eq!(replayed.model, Some("new-model".to_string()));
+        assert_eq!(
+            replayed.reasoning_effort_selection,
+            Some("high".to_string())
+        );
+    }
+
+    /// Trace: L2-DES-CONV-002
+    /// Verifies: a settings line written through RolloutStore lands on disk as
+    /// a v2 Internal SessionSettings record and inverse-projects back to the
+    /// same legacy line (write path + both projectors).
+    #[test]
+    fn session_settings_line_roundtrips_through_store_and_projectors() {
+        let (_dir, store, record) = settings_test_record();
+        store.append_session_meta(&record).expect("append meta");
+        store
+            .append_session_settings_at(
+                &record.rollout_path,
+                record.id,
+                devo_core::SessionSettingsField::SandboxProfile,
+                serde_json::Value::String("workspace".into()),
+            )
+            .expect("append settings line");
+
+        let raw_lines = std::fs::read_to_string(&record.rollout_path)
+            .expect("read rollout")
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(raw_lines.len(), 2);
+        let ParsedRolloutLine::V2(v2) =
+            parse_rollout_line(raw_lines.last().expect("settings raw line")).expect("parse")
+        else {
+            panic!("settings line must parse as v2");
+        };
+        let devo_core::rollout_v2::RolloutLineV2::Internal { entry, .. } = &*v2 else {
+            panic!("settings line must be a v2 Internal record");
+        };
+        assert_eq!(
+            entry,
+            &devo_core::InternalRecordV2::SessionSettings {
+                schema_version: 1,
+                field: devo_core::SessionSettingsField::SandboxProfile,
+                value: serde_json::Value::String("workspace".into()),
+                epoch: 1,
+            }
+        );
+
+        let inverse = devo_core::V2InverseProjector::new();
+        let legacy_lines = inverse.project_line(&v2).expect("inverse project");
+        let [RolloutLine::SessionSettings(line)] = legacy_lines.as_slice() else {
+            panic!("inverse must yield exactly one SessionSettings legacy line");
+        };
+        assert_eq!(line.session_id, record.id);
+        assert_eq!(line.field, devo_core::SessionSettingsField::SandboxProfile);
+        assert_eq!(line.value, serde_json::Value::String("workspace".into()));
     }
 }

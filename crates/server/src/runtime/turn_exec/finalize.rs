@@ -351,8 +351,8 @@ impl ServerRuntime {
         for item in &leftover {
             self.broadcast_queue_updated(
                 session_id,
-                devo_protocol::canonical::queue::QueueChange::Added,
-                devo_protocol::canonical::ids::QueueItemId::from_legacy_uuid(uuid::Uuid::from(
+                devo_protocol::native::queue::QueueChange::Added,
+                devo_protocol::native::ids::QueueItemId::from_legacy_uuid(uuid::Uuid::from(
                     item.id,
                 )),
                 None,

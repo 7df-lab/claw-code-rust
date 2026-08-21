@@ -8,7 +8,7 @@ use devo_core::McpConfig;
 use devo_core::McpServerRecord;
 use devo_core::McpTransportConfig;
 use devo_core::sanitize_model_name;
-use devo_protocol::canonical::rpc_admin::McpServerInfo;
+use devo_protocol::native::rpc_admin::McpServerInfo;
 
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
@@ -321,7 +321,7 @@ pub(crate) fn mcp_flat_tool_name(server_id: &str, tool_name: &str) -> String {
 /// Build the searchable tools list for one MCP server.
 pub(crate) fn mcp_tools_list_params(
     server_name: &str,
-    tools: &[devo_protocol::canonical::rpc_admin::McpToolEntry],
+    tools: &[devo_protocol::native::rpc_admin::McpToolEntry],
 ) -> SelectionViewParams {
     let server_name_for_cancel = server_name.to_string();
     let items = if tools.is_empty() {
@@ -543,7 +543,7 @@ mod tests {
         );
         let params = mcp_tools_list_params(
             "time",
-            &[devo_protocol::canonical::rpc_admin::McpToolEntry {
+            &[devo_protocol::native::rpc_admin::McpToolEntry {
                 name: "get_current_time".to_string(),
                 description: "Return the current time".to_string(),
             }],

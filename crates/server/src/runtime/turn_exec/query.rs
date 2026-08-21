@@ -98,6 +98,36 @@ impl ServerRuntime {
         let permission_mode = state.core.config.permission_mode;
         let permission_profile = state.core.config.permission_profile.clone();
         let hook_context = Self::hook_context_from_actor_state(state, session_id);
+        // Share the turn's live sandbox handle with tool execution so a
+        // mid-turn settings override applies at the next spawn (Phase 3).
+        let sandbox_profile_live = if let Some(stream) = self.active_stream_state(session_id).await
+        {
+            let stream = stream.lock().await;
+            stream
+                .turn_inline
+                .as_ref()
+                .map(|inline| Arc::clone(&inline.sandbox_profile_live))
+        } else {
+            None
+        };
+        // Same for the live turn-settings channel (Phase 4): seed it with the
+        // turn-start config so a mid-turn model/effort overlay has a base to
+        // modify; an overlay that already landed (generation > 0) wins.
+        let live_turn_settings = if let Some(stream) = self.active_stream_state(session_id).await {
+            let stream = stream.lock().await;
+            stream
+                .turn_inline
+                .as_ref()
+                .map(|inline| Arc::clone(&inline.live_turn_settings))
+        } else {
+            None
+        };
+        if let Some(live) = &live_turn_settings {
+            let mut live = live.lock().expect("live settings mutex poisoned");
+            if live.generation == 0 && live.turn_config.is_none() {
+                live.turn_config = Some(turn_config.clone());
+            }
+        }
         let turn_cancel_token = self
             .active_turns
             .cancel_token(session_id)
@@ -132,6 +162,7 @@ impl ServerRuntime {
                 network_proxy: provider_http.proxy_url,
                 network_no_proxy: provider_http.no_proxy,
                 sandbox_profile: state.core.config.sandbox_profile.clone(),
+                sandbox_profile_live,
             },
             ToolExecutionOptions {
                 cancel_token: turn_cancel_token,
@@ -166,13 +197,13 @@ impl ServerRuntime {
                 runtime_context.provider_for_route(turn_config.provider_route.clone()),
                 session_id,
                 Some(turn_id),
-                devo_protocol::canonical::usage::UsagePurpose::TurnQuery,
+                devo_protocol::native::usage::UsagePurpose::TurnQuery,
             );
             let compaction_provider = self.usage_ledger.instrumented_provider(
                 runtime_context.provider_for_route(turn_config.provider_route.clone()),
                 session_id,
                 Some(turn_id),
-                devo_protocol::canonical::usage::UsagePurpose::Compaction,
+                devo_protocol::native::usage::UsagePurpose::Compaction,
             );
             let mut query_future = std::pin::pin!(query(
                 &mut state.core,
@@ -184,6 +215,7 @@ impl ServerRuntime {
                 QueryOptions {
                     cancel_token: Some(query_cancel_token.clone()),
                     compaction_provider: Some(compaction_provider),
+                    live_settings: live_turn_settings.clone(),
                 },
             ));
             tokio::select! {

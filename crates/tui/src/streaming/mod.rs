@@ -14,15 +14,17 @@ use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
+#[cfg(test)]
 use ratatui::text::Line;
 
+use crate::markdown_render::RenderedMarkdownLine;
 use crate::markdown_stream::MarkdownStreamCollector;
 pub(crate) mod chunking;
 pub(crate) mod commit_tick;
 pub(crate) mod controller;
 
 struct QueuedLine {
-    line: Line<'static>,
+    line: RenderedMarkdownLine,
     enqueued_at: Instant,
 }
 
@@ -52,7 +54,7 @@ impl StreamState {
         self.has_seen_delta = false;
     }
     /// Drains one queued line from the front of the queue.
-    pub(crate) fn step(&mut self) -> Vec<Line<'static>> {
+    pub(crate) fn step(&mut self) -> Vec<RenderedMarkdownLine> {
         self.queued_lines
             .pop_front()
             .map(|queued| queued.line)
@@ -63,7 +65,7 @@ impl StreamState {
     ///
     /// Callers that pass very large values still get bounded behavior because this method clamps to
     /// the currently available queue length.
-    pub(crate) fn drain_n(&mut self, max_lines: usize) -> Vec<Line<'static>> {
+    pub(crate) fn drain_n(&mut self, max_lines: usize) -> Vec<RenderedMarkdownLine> {
         let end = max_lines.min(self.queued_lines.len());
         self.queued_lines
             .drain(..end)
@@ -83,7 +85,7 @@ impl StreamState {
         self.queued_lines.len()
     }
     /// Returns a snapshot of queued committed lines in queue order.
-    pub(crate) fn queued_lines(&self) -> Vec<Line<'static>> {
+    pub(crate) fn queued_lines(&self) -> Vec<RenderedMarkdownLine> {
         self.queued_lines
             .iter()
             .map(|queued| queued.line.clone())
@@ -96,7 +98,7 @@ impl StreamState {
             .map(|queued| now.saturating_duration_since(queued.enqueued_at))
     }
     /// Appends committed lines to the queue with a shared enqueue timestamp.
-    pub(crate) fn enqueue(&mut self, lines: Vec<Line<'static>>) {
+    pub(crate) fn enqueue(&mut self, lines: Vec<RenderedMarkdownLine>) {
         let now = Instant::now();
         self.queued_lines
             .extend(lines.into_iter().map(|line| QueuedLine {
@@ -121,10 +123,19 @@ mod tests {
     #[test]
     fn drain_n_clamps_to_available_lines() {
         let mut state = StreamState::new(/*width*/ None, &test_cwd());
-        state.enqueue(vec![Line::from("one")]);
+        state.enqueue(vec![RenderedMarkdownLine {
+            line: Line::from("one"),
+            no_wrap: false,
+        }]);
 
         let drained = state.drain_n(/*max_lines*/ 8);
-        assert_eq!(drained, vec![Line::from("one")]);
+        assert_eq!(
+            drained,
+            vec![RenderedMarkdownLine {
+                line: Line::from("one"),
+                no_wrap: false,
+            }]
+        );
         assert!(state.is_idle());
     }
 }

@@ -26,7 +26,6 @@ use crate::AcpSessionUpdate;
 use crate::AcpStopReason;
 use crate::CollaborationMode;
 use crate::InputItem;
-use crate::SessionCompactParams;
 use crate::SuccessResponse;
 use crate::TurnExecutionMode;
 use crate::TurnStartParams;
@@ -138,19 +137,17 @@ impl ServerRuntime {
             ));
         }
 
-        let legacy_response = self
-            .handle_session_compact(
+        let response = self
+            .handle_native_session_compact_start(
                 request_id.clone(),
-                serde_json::to_value(SessionCompactParams { session_id })
-                    .expect("serialize session compact params"),
+                serde_json::json!({ "sessionId": session_id }),
             )
             .await;
-        let Ok(_response) =
-            serde_json::from_value::<SuccessResponse<TurnStartResult>>(legacy_response.clone())
-        else {
+        let Ok(_response) = serde_json::from_value::<
+            SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult>,
+        >(response.clone()) else {
             return AcpSlashCommandPromptResult::Response(legacy_error_to_acp(
-                request_id,
-                legacy_response,
+                request_id, response,
             ));
         };
         self.send_acp_agent_message(connection_id, session_id, "Session compaction started.")

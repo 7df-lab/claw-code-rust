@@ -31,7 +31,9 @@ Rules:
 
 - The hub replaces the composer while open.
 - Nested pickers stack above the hub; Esc returns to the hub, then closes the hub.
-- Compaction threshold apply uses `session/compaction/update` (`effectiveContextWindow`) and must take effect without restarting the process.
+- Compaction threshold apply uses `session/metadata/update`
+  (`settings.effectiveContextWindow`) and must take effect without restarting
+  the process.
 
 ## State And Error Behavior
 

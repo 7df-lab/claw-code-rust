@@ -16,8 +16,8 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader as AsyncBufReader;
 
 #[tokio::test]
-async fn stdio_model_config_returns_cold_start_model_options_without_creating_session() -> Result<()>
-{
+async fn stdio_model_preferences_read_returns_cold_start_options_without_creating_session()
+-> Result<()> {
     let home_dir = TempDir::new()?;
     write_test_config(&home_dir, &["stdio://"], "http://127.0.0.1:1")?;
 
@@ -51,7 +51,7 @@ base_instructions = "Catalog-only model instructions"
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "model/config",
+            "method": "model/preferences/read",
             "params": {
                 "cwd": cwd
             }
@@ -62,27 +62,24 @@ base_instructions = "Catalog-only model instructions"
         &mut child,
         &mut stdout_reader,
         &mut stderr_reader,
-        "model/config response",
+        "model/preferences/read response",
         |value| value["id"] == serde_json::json!(1),
     )
     .await?;
     assert_eq!(config_response["error"], serde_json::Value::Null);
 
-    let model_option = acp_config_option(&config_response["result"], "model")?;
-    assert_eq!(
-        model_option["currentValue"],
-        serde_json::json!("test-openai")
+    let preferences = &config_response["result"]["preferences"];
+    assert!(preferences["model"].is_string());
+    assert!(
+        preferences["availableModels"]
+            .as_array()
+            .is_some_and(|models| { models.iter().any(|model| model["value"] == "test-openai") })
     );
-    assert_config_option_values(model_option, &["alt-openai", "test-openai"])?;
-    assert_config_option_lacks_value(model_option, "catalog-only-model")?;
-
-    let reasoning_option = acp_config_option(&config_response["result"], "thought_level")?;
-    assert_eq!(
-        reasoning_option["currentValue"],
-        serde_json::json!("medium")
+    assert!(
+        preferences["availableEfforts"]
+            .as_array()
+            .is_some_and(|efforts| { efforts.iter().any(|effort| effort["value"] == "medium") })
     );
-    assert_config_option_values(reasoning_option, &["low", "medium", "high"])?;
-    assert!(acp_config_option_optional(&config_response["result"], "mode").is_none());
 
     write_stdio_json(
         &mut stdin,
@@ -91,7 +88,7 @@ base_instructions = "Catalog-only model instructions"
             "id": 2,
             "method": "session/list",
             "params": {
-                "cwd": cwd
+                "cwds": [cwd]
             }
         }),
     )
@@ -105,7 +102,7 @@ base_instructions = "Catalog-only model instructions"
     )
     .await?;
     assert_eq!(
-        session_list_response["result"]["sessions"],
+        session_list_response["result"]["data"],
         serde_json::json!([])
     );
 
@@ -114,7 +111,7 @@ base_instructions = "Catalog-only model instructions"
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 3,
-            "method": "model/config",
+            "method": "model/preferences/read",
             "params": {
                 "cwd": "relative"
             }
@@ -125,7 +122,7 @@ base_instructions = "Catalog-only model instructions"
         &mut child,
         &mut stdout_reader,
         &mut stderr_reader,
-        "model/config relative cwd response",
+        "model/preferences/read relative cwd response",
         |value| value["id"] == serde_json::json!(3),
     )
     .await?;
@@ -136,7 +133,9 @@ base_instructions = "Catalog-only model instructions"
     assert!(
         response["error"]["message"]
             .as_str()
-            .is_some_and(|message| message.contains("model/config cwd must be an absolute path"))
+            .is_some_and(|message| {
+                message.contains("model/preferences/read cwd must be an absolute path")
+            })
     );
 
     drop(stdin);
@@ -180,6 +179,7 @@ async fn spawn_initialized_stdio_server(
             "params": {
                 "protocolVersion": 1,
                 "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                 "clientInfo": {
                     "name": "model-config-e2e",
                     "title": "Model Config E2E",
@@ -200,56 +200,4 @@ async fn spawn_initialized_stdio_server(
     assert_eq!(initialize_response["error"], serde_json::Value::Null);
 
     Ok((child, stdin, stdout_reader, stderr_reader))
-}
-
-fn acp_config_option<'a>(
-    result: &'a serde_json::Value,
-    config_id: &str,
-) -> Result<&'a serde_json::Value> {
-    acp_config_option_optional(result, config_id)
-        .with_context(|| format!("ACP result included {config_id} config option"))
-}
-
-fn acp_config_option_optional<'a>(
-    result: &'a serde_json::Value,
-    config_id: &str,
-) -> Option<&'a serde_json::Value> {
-    result["configOptions"].as_array().and_then(|options| {
-        options
-            .iter()
-            .find(|option| option.get("id").and_then(serde_json::Value::as_str) == Some(config_id))
-    })
-}
-
-fn assert_config_option_values(option: &serde_json::Value, expected_values: &[&str]) -> Result<()> {
-    let values = option["options"]
-        .as_array()
-        .context("config option includes options")?
-        .iter()
-        .filter_map(|option| option.get("value").and_then(serde_json::Value::as_str))
-        .collect::<Vec<_>>();
-    for expected_value in expected_values {
-        anyhow::ensure!(
-            values.contains(expected_value),
-            "config option values should contain {expected_value}: {values:?}"
-        );
-    }
-    Ok(())
-}
-
-fn assert_config_option_lacks_value(
-    option: &serde_json::Value,
-    unexpected_value: &str,
-) -> Result<()> {
-    let values = option["options"]
-        .as_array()
-        .context("config option includes options")?
-        .iter()
-        .filter_map(|option| option.get("value").and_then(serde_json::Value::as_str))
-        .collect::<Vec<_>>();
-    anyhow::ensure!(
-        !values.contains(&unexpected_value),
-        "config option values should not contain {unexpected_value}: {values:?}"
-    );
-    Ok(())
 }

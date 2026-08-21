@@ -24,6 +24,9 @@ use crate::LogRotation;
 use crate::LoggingConfig;
 use crate::LoggingFileConfig;
 use crate::McpConfig;
+use crate::McpHostConfig;
+use crate::McpServerId;
+use crate::McpServerRecordToml;
 use crate::ModelBindingConfig;
 use crate::OAuthCredentialsStoreMode;
 use crate::PermissionConfig;
@@ -68,9 +71,15 @@ pub struct AppConfig {
     /// auto (default): Use the OS-specific keyring service if available, otherwise use a file.
     #[serde(default)]
     pub mcp_oauth_credentials_store: Option<OAuthCredentialsStoreMode>,
-    /// MCP server discovery and runtime configuration.
+    /// MCP host settings stored under `[mcp]`.
     #[serde(default)]
-    pub mcp: McpConfig,
+    pub mcp: McpHostConfig,
+    /// MCP server records stored under `[mcp_servers.<server_id>]`.
+    #[serde(default)]
+    pub mcp_servers: BTreeMap<McpServerId, McpServerRecordToml>,
+    /// Normalized MCP runtime configuration built from `mcp` + `mcp_servers`.
+    #[serde(skip, default)]
+    pub mcp_runtime: McpConfig,
     /// Tool-specific runtime configuration.
     #[serde(default, skip_serializing_if = "ToolsConfig::is_empty")]
     pub tools: ToolsConfig,
@@ -181,7 +190,9 @@ impl Default for AppConfig {
             skills: SkillsConfig::default(),
             experimental: ExperimentalConfig::default(),
             mcp_oauth_credentials_store: Some(OAuthCredentialsStoreMode::default()),
-            mcp: McpConfig::default(),
+            mcp: McpHostConfig::default(),
+            mcp_servers: BTreeMap::new(),
+            mcp_runtime: McpConfig::default(),
             tools: ToolsConfig::default(),
             hooks: HooksConfig::default(),
             permission: PermissionConfig::default(),
@@ -733,7 +744,23 @@ impl AppConfigLoader for FileSystemAppConfigLoader {
                     message: source.to_string(),
                 })?;
         config.provider = provider_config;
-        config.mcp.ensure_bundled_servers();
+
+        // Build normalized MCP runtime config from the persisted TOML shape.
+        let servers = config
+            .mcp_servers
+            .iter()
+            .map(|(id, record)| {
+                record
+                    .clone()
+                    .into_runtime(id.clone())
+                    .map_err(|message| AppConfigError::Validation { message })
+            })
+            .collect::<Result<Vec<_>, AppConfigError>>()?;
+        config.mcp_runtime = McpConfig {
+            servers,
+            auto_start: config.mcp.auto_start,
+        };
+        config.mcp_runtime.ensure_bundled_servers();
         validate_app_config(&config)?;
         Ok(config)
     }

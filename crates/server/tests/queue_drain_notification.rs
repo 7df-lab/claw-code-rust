@@ -37,7 +37,6 @@ use devo_core::tools::tool_handler::ToolHandler;
 use devo_core::tools::tool_spec::ToolExecutionMode;
 use devo_core::tools::tool_spec::ToolOutputMode;
 use devo_core::tools::tool_spec::ToolSpec;
-use devo_protocol::AcpNewSessionResult;
 use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
 use devo_protocol::RequestContent;
@@ -48,7 +47,6 @@ use devo_protocol::StreamEvent;
 use devo_protocol::Usage;
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
-use devo_server::AcpSuccessResponse;
 use devo_server::ClientTransportKind;
 use devo_server::ServerRuntime;
 use devo_server::ServerRuntimeDependencies;
@@ -224,6 +222,7 @@ async fn initialize_connection(
                 "params": {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                     "clientInfo": { "name": "test", "title": "test", "version": "1.0.0" }
                 }
             }),
@@ -347,17 +346,16 @@ async fn queued_input_drains_into_followup_turn_and_broadcasts_empty_queue() -> 
                 "method": "session/new",
                 "params": {
                     "cwd": workspace_root,
-                    "additionalDirectories": [],
-                    "mcpServers": []
+                    "idempotencyKey": "queue-drain-session"
                 }
             }),
         )
         .await
         .context("session/new response")?;
-    let session_result: AcpSuccessResponse<AcpNewSessionResult> =
+    let session_result: SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult> =
         serde_json::from_value(session_response.clone())
             .with_context(|| format!("session/new response: {session_response}"))?;
-    let session_id = session_result.result.session_id;
+    let session_id = devo_protocol::SessionId::try_from(session_result.result.session.id.as_str())?;
 
     // Subscribe exactly like the TUI does so `event_selectors` is populated
     // and `queue/updated` broadcasts target this connection.
@@ -385,7 +383,7 @@ async fn queued_input_drains_into_followup_turn_and_broadcasts_empty_queue() -> 
             connection_id,
             json!({
                 "id": 4,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [{ "type": "text", "text": "Start with the tool." }],
@@ -423,10 +421,10 @@ async fn queued_input_drains_into_followup_turn_and_broadcasts_empty_queue() -> 
         )
         .await
         .context("session/queue/push response")?;
-    let push_result: SuccessResponse<devo_protocol::canonical::rpc_turn::SessionQueuePushResult> =
+    let push_result: SuccessResponse<devo_protocol::native::rpc_turn::SessionQueuePushResult> =
         serde_json::from_value(push_response.clone())
             .with_context(|| format!("push_response: {push_response}"))?;
-    let devo_protocol::canonical::rpc_turn::SessionQueuePushResult::Queued { entry } =
+    let devo_protocol::native::rpc_turn::SessionQueuePushResult::Queued { entry } =
         push_result.result
     else {
         panic!("busy push must queue");

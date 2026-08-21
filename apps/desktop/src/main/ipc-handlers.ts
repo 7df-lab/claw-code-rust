@@ -49,6 +49,7 @@ import {
 	getAcpTrafficLogState,
 	getServerUrl,
 	isAcpConnected,
+	notifyAcp,
 	requestAcp,
 	respondAcp,
 	restartServer,
@@ -207,6 +208,15 @@ export function registerIpcHandlers(): void {
 			"acp:request",
 			async (_, request: { method: string; params?: unknown; directory?: string }) =>
 				await requestAcp(request.method, request.params, request.directory),
+		),
+	)
+
+	ipcMain.handle(
+		"acp:notify",
+		withLogging(
+			"acp:notify",
+			async (_, notification: { method: string; params?: unknown; directory?: string }) =>
+				await notifyAcp(notification.method, notification.params, notification.directory),
 		),
 	)
 

@@ -216,7 +216,7 @@ impl ServerRuntime {
                 runtime_context.provider_for_route(turn_config.provider_route.clone()),
                 session_id,
                 None,
-                devo_protocol::canonical::usage::UsagePurpose::TitleGeneration,
+                devo_protocol::native::usage::UsagePurpose::TitleGeneration,
             );
             let model_request = build_title_generation_request(
                 catalog_request_model,

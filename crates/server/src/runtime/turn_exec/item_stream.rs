@@ -57,6 +57,8 @@ pub(super) struct ProposedPlanStreamItem {
     item_id: Option<ItemId>,
     item_seq: Option<u64>,
     text: String,
+    /// Native delta chunk counter for this item (L2-DES-APP-009 DD-2).
+    delta_seq: u64,
 }
 
 impl ProposedPlanStreamItem {
@@ -93,6 +95,8 @@ impl ProposedPlanStreamItem {
         }
         self.start(runtime, session_id, turn_id).await;
         self.text.push_str(&delta);
+        let chunk_index = self.delta_seq;
+        self.delta_seq = self.delta_seq.saturating_add(1);
         runtime
             .broadcast_event(ServerEvent::ItemDelta {
                 delta_kind: ItemDeltaKind::PlanDelta,
@@ -107,6 +111,7 @@ impl ProposedPlanStreamItem {
                     delta,
                     stream_index: None,
                     channel: None,
+                    chunk_index: Some(chunk_index),
                 },
             })
             .await;
@@ -164,11 +169,14 @@ pub(super) async fn push_assistant_text_delta(
                 .await;
             *assistant_item_id = Some(item_id);
             *assistant_item_seq = Some(item_seq);
+            // A new item restarts the canonical delta chunk counter (DD-2).
+            *assistant_delta_seq = 0;
             (item_id, item_seq)
         }
         _ => return,
     };
     assistant_text.push_str(&text);
+    let chunk_index = *assistant_delta_seq;
     *assistant_delta_seq = (*assistant_delta_seq).saturating_add(1);
     let event = ServerEvent::ItemDelta {
         delta_kind: ItemDeltaKind::AgentMessageDelta,
@@ -183,6 +191,7 @@ pub(super) async fn push_assistant_text_delta(
             delta: text,
             stream_index: None,
             channel: None,
+            chunk_index: Some(chunk_index),
         },
     };
     // Fast path: avoid per-token registry scans and wait_agent buffer contention.

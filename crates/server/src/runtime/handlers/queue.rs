@@ -11,21 +11,20 @@ use devo_core::{
     CollaborationMode, InputItem, PendingInputId, PendingInputItem, PendingInputKind,
     TurnExecutionMode,
 };
-use devo_protocol::canonical::event::ServerNotification;
-use devo_protocol::canonical::ids::{
-    ItemId as CanonicalItemId, QueueItemId, SessionId as CanonicalSessionId,
-    TurnId as CanonicalTurnId,
+use devo_protocol::native::event::ServerNotification;
+use devo_protocol::native::ids::{
+    ItemId as NativeItemId, QueueItemId, SessionId as NativeSessionId, TurnId as NativeTurnId,
 };
-use devo_protocol::canonical::item::UserInput;
-use devo_protocol::canonical::model::ModelBinding;
-use devo_protocol::canonical::queue::{QueueChange, QueueEntry};
-use devo_protocol::canonical::rpc_turn::{
+use devo_protocol::native::item::UserInput;
+use devo_protocol::native::model::ModelBinding;
+use devo_protocol::native::queue::{QueueChange, QueueEntry};
+use devo_protocol::native::rpc_turn::{
     SessionQueueListResult, SessionQueuePushParams, SessionQueuePushResult,
     SessionQueueRemoveResult, SessionQueueSteerParams, SessionQueueSteerResult,
     SessionQueueUpdateParams, SessionQueueUpdateResult,
 };
-use devo_protocol::canonical::turn::{
-    Turn as CanonicalTurn, TurnKind as CanonicalTurnKind, TurnStatus as CanonicalTurnStatus,
+use devo_protocol::native::turn::{
+    Turn as NativeTurn, TurnKind as NativeTurnKind, TurnStatus as NativeTurnStatus,
 };
 use uuid::Uuid;
 
@@ -98,7 +97,7 @@ impl ServerRuntime {
         match response["result"]["disposition"].as_str() {
             Some("started") => {
                 let turn = self
-                    .active_canonical_turn(legacy_session_id)
+                    .active_native_turn(legacy_session_id)
                     .await
                     .expect("a turn just started");
                 serde_json::to_value(SuccessResponse {
@@ -194,7 +193,7 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        let params: devo_protocol::canonical::rpc_turn::SessionQueueListParams =
+        let params: devo_protocol::native::rpc_turn::SessionQueueListParams =
             match serde_json::from_value(params) {
                 Ok(params) => params,
                 Err(error) => {
@@ -222,7 +221,7 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
-        let entries = canonical_queue_entries(
+        let entries = native_queue_entries(
             &reservation
                 .pending_turn_queue
                 .lock()
@@ -353,7 +352,7 @@ impl ServerRuntime {
                 let target = (position.saturating_sub(1) as usize).min(queue.len());
                 queue.insert(target, item);
             }
-            canonical_queue_entries(&queue)
+            native_queue_entries(&queue)
                 .into_iter()
                 .find(|entry| entry.queue_item_id == params.queue_item_id)
                 .expect("entry just updated")
@@ -419,7 +418,7 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        let params: devo_protocol::canonical::rpc_turn::SessionQueueRemoveParams =
+        let params: devo_protocol::native::rpc_turn::SessionQueueRemoveParams =
             match serde_json::from_value(params) {
                 Ok(params) => params,
                 Err(error) => {
@@ -679,7 +678,7 @@ impl ServerRuntime {
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: SessionQueueSteerResult {
-                item_id: CanonicalItemId::from_legacy_uuid(Uuid::from(item_id)),
+                item_id: NativeItemId::from_legacy_uuid(Uuid::from(item_id)),
             },
         })
         .expect("serialize session/queue/steer response")
@@ -692,14 +691,14 @@ impl ServerRuntime {
         session_id: SessionId,
         change: QueueChange,
         queue_item_id: QueueItemId,
-        started_turn_id: Option<CanonicalTurnId>,
+        started_turn_id: Option<NativeTurnId>,
     ) {
         let session_id_string = session_id.to_string();
         let entries = self
             .session_turn_reservation_snapshot(session_id)
             .await
             .map(|reservation| {
-                canonical_queue_entries(
+                native_queue_entries(
                     &reservation
                         .pending_turn_queue
                         .lock()
@@ -708,7 +707,7 @@ impl ServerRuntime {
             })
             .unwrap_or_default();
         let notification = ServerNotification::QueueUpdated {
-            session_id: CanonicalSessionId::from_string(session_id_string.clone()),
+            session_id: NativeSessionId::from_string(session_id_string.clone()),
             change,
             queue_item_id,
             started_turn_id,
@@ -724,7 +723,7 @@ impl ServerRuntime {
             let subscribed = connection.event_selectors.iter().any(|selector| {
                 matches!(
                     selector,
-                    devo_protocol::canonical::event::StreamSelector::Session { session_id }
+                    devo_protocol::native::event::StreamSelector::Session { session_id }
                         if session_id.as_str() == session_id_string
                 )
             });
@@ -779,10 +778,10 @@ impl ServerRuntime {
     }
 
     /// The running turn as a canonical `Turn` (for queue/push Started).
-    async fn active_canonical_turn(&self, session_id: SessionId) -> Option<CanonicalTurn> {
+    async fn active_native_turn(&self, session_id: SessionId) -> Option<NativeTurn> {
         let reservation = self.session_turn_reservation_snapshot(session_id).await?;
         let turn = reservation.active_turn.as_ref()?;
-        Some(canonical_turn_from_metadata(turn))
+        Some(native_turn_from_metadata(turn))
     }
 }
 
@@ -796,7 +795,7 @@ pub(crate) fn legacy_input_items(input: &[UserInput]) -> Result<Vec<InputItem>, 
             UserInput::Text { text } => InputItem::Text { text: text.clone() },
             UserInput::Skill { name } => InputItem::Skill {
                 name: name.clone(),
-                // Canonical skill input carries no path; an empty path keeps
+                // Native skill input carries no path; an empty path keeps
                 // resolution name-based (a non-empty path would switch
                 // `find_skill` to exact path matching and never match).
                 path: std::path::PathBuf::new(),
@@ -817,7 +816,7 @@ pub(crate) fn legacy_input_items(input: &[UserInput]) -> Result<Vec<InputItem>, 
 
 /// Maps one legacy `InputItem` back to the canonical `UserInput` part
 /// (queue/list; fixes the text-only placeholder from the P4b snapshot).
-pub(crate) fn canonical_user_input_from_input_item(item: &InputItem) -> UserInput {
+pub(crate) fn native_user_input_from_input_item(item: &InputItem) -> UserInput {
     match item {
         InputItem::Text { text } => UserInput::Text { text: text.clone() },
         InputItem::Skill { name, .. } => UserInput::Skill { name: name.clone() },
@@ -832,7 +831,7 @@ pub(crate) fn canonical_user_input_from_input_item(item: &InputItem) -> UserInpu
 /// Builds the canonical queue view from the session's in-memory turn queue.
 /// `queueItemId` is the stable pending-input id; `position` is 1-based in
 /// current queue order; `preview` is the first 80 chars of the display text.
-pub(crate) fn canonical_queue_entries(queue: &VecDeque<PendingInputItem>) -> Vec<QueueEntry> {
+pub(crate) fn native_queue_entries(queue: &VecDeque<PendingInputItem>) -> Vec<QueueEntry> {
     queue
         .iter()
         .enumerate()
@@ -841,7 +840,7 @@ pub(crate) fn canonical_queue_entries(queue: &VecDeque<PendingInputItem>) -> Vec
                 PendingInputKind::UserText { text } => vec![UserInput::Text { text: text.clone() }],
                 PendingInputKind::UserInput { input, .. } => input
                     .iter()
-                    .map(canonical_user_input_from_input_item)
+                    .map(native_user_input_from_input_item)
                     .collect(),
                 _ => Vec::new(),
             };
@@ -869,24 +868,24 @@ pub(crate) fn canonical_queue_entries(queue: &VecDeque<PendingInputItem>) -> Vec
 
 /// Converts runtime turn metadata into the canonical `Turn` snapshot used
 /// by `session/queue/push`'s `Started` outcome.
-pub(crate) fn canonical_turn_from_metadata(turn: &crate::turn::TurnMetadata) -> CanonicalTurn {
+pub(crate) fn native_turn_from_metadata(turn: &crate::turn::TurnMetadata) -> NativeTurn {
     let kind = match &turn.kind {
         devo_core::TurnKind::Regular
         | devo_core::TurnKind::Review
-        | devo_core::TurnKind::Other(_) => CanonicalTurnKind::Regular,
-        devo_core::TurnKind::ManualCompaction => CanonicalTurnKind::Compaction,
+        | devo_core::TurnKind::Other(_) => NativeTurnKind::Regular,
+        devo_core::TurnKind::ManualCompaction => NativeTurnKind::Compaction,
     };
     let status = match turn.status {
         TurnStatus::Pending | TurnStatus::Running | TurnStatus::WaitingApproval => {
-            CanonicalTurnStatus::InProgress
+            NativeTurnStatus::InProgress
         }
-        TurnStatus::Completed => CanonicalTurnStatus::Completed,
-        TurnStatus::Interrupted => CanonicalTurnStatus::Interrupted,
-        TurnStatus::Failed => CanonicalTurnStatus::Failed,
+        TurnStatus::Completed => NativeTurnStatus::Completed,
+        TurnStatus::Interrupted => NativeTurnStatus::Interrupted,
+        TurnStatus::Failed => NativeTurnStatus::Failed,
     };
-    CanonicalTurn {
-        id: CanonicalTurnId::from_legacy_uuid(Uuid::from(turn.turn_id)),
-        session_id: CanonicalSessionId::from_legacy_uuid(Uuid::from(turn.session_id)),
+    NativeTurn {
+        id: NativeTurnId::from_legacy_uuid(Uuid::from(turn.turn_id)),
+        session_id: NativeSessionId::from_legacy_uuid(Uuid::from(turn.session_id)),
         sequence: turn.sequence,
         kind,
         status,
@@ -905,6 +904,7 @@ pub(crate) fn canonical_turn_from_metadata(turn: &crate::turn::TurnMetadata) -> 
                 .as_deref()
                 .and_then(|selection| selection.parse().ok()),
         },
+        collaboration_mode: None,
         started_at: turn.started_at,
         completed_at: turn.completed_at,
         error: None,

@@ -1,3 +1,4 @@
+use crate::markdown_render::RenderedMarkdown;
 use ratatui::text::Line;
 use std::path::Path;
 
@@ -11,12 +12,18 @@ pub(crate) fn append_markdown(
     cwd: Option<&Path>,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let rendered = crate::markdown_render::render_markdown_text_with_width_and_cwd(
-        markdown_source,
-        width,
-        cwd,
-    );
-    crate::render::line_utils::push_owned_lines(&rendered.lines, lines);
+    let rendered = render_markdown_with_metadata(markdown_source, width, cwd);
+    for rendered_line in rendered.lines {
+        lines.push(rendered_line.line);
+    }
+}
+
+pub(crate) fn render_markdown_with_metadata(
+    markdown_source: &str,
+    width: Option<usize>,
+    cwd: Option<&Path>,
+) -> RenderedMarkdown {
+    crate::markdown_render::render_markdown_with_width_and_cwd(markdown_source, width, cwd)
 }
 
 #[cfg(test)]

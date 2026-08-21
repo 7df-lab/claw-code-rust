@@ -1,12 +1,12 @@
 ---
 artifact_id: L2-DES-APP-005
-revision: 2
+revision: 3
 status: Draft
 active_baseline: no
 supersedes:
 superseded_by:
 owner: Assistant
-last_updated: 2026-06-08
+last_updated: 2026-08-19
 ---
 
 # L2-DES-APP-005 - Config TOML And Auth JSON Schema
@@ -56,7 +56,7 @@ Keyed TOML tables are preferred for mergeable records because workspace-scoped c
 - `[providers.<provider_id>]`
 - `[model.<slug>]`
 - `[model_bindings.<binding_id>]`
-- `[mcp.servers.<server_id>]`
+- `[mcp_servers.<server_id>]`
 - `[skills.roots.<root_id>]`
 
 Arrays may be used only for ordered scalar settings where record-level override is not needed.
@@ -82,7 +82,8 @@ Top-level sections:
 [model.<slug>]
 [model_bindings.<binding_id>]
 [tools.web_search]
-[mcp.servers.<server_id>]
+[mcp]
+[mcp_servers.<server_id>]
 [skills]
 [skills.roots.<root_id>]
 [experimental]
@@ -156,10 +157,10 @@ kind = "exa"
 credential = "exa_api_key"
 max_results = 5
 
-[mcp.servers.github]
-enabled = true
-display_name = "GitHub"
-transport = "stdio"
+[mcp]
+auto_start = true
+
+[mcp_servers.github]
 command = "github-mcp-server"
 args = ["stdio"]
 startup_policy = "lazy"
@@ -167,7 +168,7 @@ trust_policy = "user"
 allowed_capabilities = ["tools", "resources"]
 roots_policy = "workspace"
 
-[mcp.servers.github.env]
+[mcp_servers.github.env]
 GITHUB_TOKEN = { credential = "github_token" }
 
 [skills]
@@ -352,11 +353,12 @@ credential = "openrouter_api_key"
 MCP process environment entries and HTTP auth entries also reference `auth.json` credentials by id:
 
 ```toml
-[mcp.servers.github.env]
+[mcp_servers.github.env]
 GITHUB_TOKEN = { credential = "github_token" }
 
-[mcp.servers.linear]
-auth = { credential = "linear_api_key", scheme = "bearer" }
+[mcp_servers.linear]
+url = "https://mcp.linear.app"
+auth_ref = "linear_api_key"
 ```
 
 `auth.json` has the following shape:
@@ -456,54 +458,101 @@ Rules:
 - `default_reasoning_effort` must be one of the supported model's logical effort values when present.
 - The `/model` command's first list is populated from enabled effective model bindings. It may show the binding's model and provider together, but it must ask for reasoning effort as a separate step when the model supports reasoning.
 
+## MCP Host Settings
+
+`[mcp]` stores host-level MCP settings that are not per-server:
+
+- `auto_start`: boolean (default `true`). Whether enabled servers should be auto-started during bootstrap.
+
 ## MCP Servers
 
-`[mcp.servers.<server_id>]` stores configured MCP server connections.
+`[mcp_servers.<server_id>]` stores configured MCP server connections. The TOML table key is the stable server id.
 
-Common fields:
+Transport is inferred from which fields are present — there is no `transport` or `kind` discriminator field:
 
-- `enabled`: boolean.
-- `display_name`: user-facing server name.
-- `transport`: `stdio` or `http`.
-- `startup_policy`: `eager`, `lazy`, or `manual`.
-- `trust_policy`: `user`, `workspace`, or `untrusted`.
-- `allowed_capabilities`: optional list containing `tools`, `resources`, `resource_templates`, `prompts`, `sampling`, or `elicitation`.
-- `roots_policy`: `none`, `workspace`, or `configured`.
+- `command` present, `url` absent → stdio transport.
+- `url` present, `command` absent → HTTP transport. The optional `type` field selects `http` (alias `streamable_http`, the default) or the deprecated `sse`.
+- Both `command` and `url` present, or neither present, is a validation error.
 
-Stdio fields:
+### Stdio fields
 
-- `command`
-- `args`
-- `cwd`
-- `[mcp.servers.<server_id>.env]`
+- `command` (string, required): executable name or path.
+- `args` (string array, optional): arguments passed to the command.
+- `cwd` (string, optional): working directory for the child process.
+- `env` (string map, optional): literal environment variables for the child process. Values that reference `auth.json` use `{ credential = "credential_id" }`.
+- `env_vars` (string array, optional): environment variable names forwarded from the host process.
 
-HTTP fields:
+### HTTP / SSE fields
 
-- `base_url`
-- `auth`
+- `url` (string, required): MCP server endpoint URL.
+- `type` (string, optional): `http`, `streamable_http`, or `sse`. Defaults to `http` (streamable HTTP) when omitted.
+- `http_headers` (string map, optional): literal HTTP headers sent to the server.
+- `env_http_headers` (string map, optional): header name → environment variable name. The header value is read from the named host environment variable at connection time.
+- `auth_ref` (string, optional): `auth.json` credential id for HTTP authorization. Preferred over plaintext tokens.
 
-Example HTTP credential reference:
+### Common optional fields (omit on write when default)
+
+- `enabled` (boolean, default `true`).
+- `display_name` (string, default = server id).
+- `startup_policy`: `eager`, `lazy`, or `manual` (default `lazy`).
+- `trust_policy`: `user`, `workspace`, or `untrusted` (default `user`).
+- `allowed_capabilities` (string array, optional): allowlist containing `tools`, `resources`, `resource_templates`, `prompts`, `sampling`, or `elicitation`. Omit for unrestricted.
+- `roots_policy`: `none`, `workspace`, or a custom string array (default `none`).
+- `output_limits.max_tool_output_bytes` (integer, optional, default 1 MiB).
+- `output_limits.max_resource_bytes` (integer, optional, default 10 MiB).
+
+Writes must not emit fields or sub-tables whose values equal the defaults. Empty maps (`env`, `http_headers`, `env_http_headers`), empty arrays (`args`, `allowed_capabilities`, `env_vars`), and default `output_limits` must be omitted.
+
+### Examples
+
+Stdio server:
 
 ```toml
-[mcp.servers.linear]
-enabled = true
-display_name = "Linear"
-transport = "http"
-base_url = "https://mcp.linear.app"
-auth = { credential = "linear_api_key", scheme = "bearer" }
-startup_policy = "lazy"
-trust_policy = "user"
-allowed_capabilities = ["tools", "resources"]
-roots_policy = "none"
+[mcp_servers.radare2]
+command = "/usr/bin/r2pm"
+args = ["-r", "r2mcp"]
 ```
 
-Rules:
+Stdio server with environment credential:
+
+```toml
+[mcp_servers.github]
+command = "github-mcp-server"
+args = ["stdio"]
+startup_policy = "lazy"
+allowed_capabilities = ["tools", "resources"]
+roots_policy = "workspace"
+
+[mcp_servers.github.env]
+GITHUB_TOKEN = { credential = "github_token" }
+```
+
+Streamable HTTP with literal bearer token header:
+
+```toml
+[mcp_servers.linear]
+url = "https://mcp.linear.app"
+
+[mcp_servers.linear.http_headers]
+Authorization = "Bearer token_value"
+```
+
+Deprecated SSE transport:
+
+```toml
+[mcp_servers.ida_mcp]
+url = "http://127.0.0.1:13337/sse"
+type = "sse"
+```
+
+### Rules
 
 - Enabled stdio servers require `command`.
-- Enabled HTTP servers require `base_url`.
-- Secret-bearing process environment variables and HTTP auth values must reference `auth.json` credential ids.
-- The runtime may inject an `auth.json` credential into a child process environment only for the configured server operation that requires it. That runtime injection does not make OS environment variables a credential persistence mechanism.
+- Enabled HTTP/SSE servers require `url`.
+- Secret-bearing process environment variables and HTTP auth values must reference `auth.json` credential ids or host environment variables. Plaintext tokens must not be written into `config.toml`.
+- The runtime may inject an `auth.json` credential into a child process environment only for the configured server operation that requires it.
 - Workspace-scoped MCP servers must be visible to the user before first use because they may start local processes or send workspace data to external services.
+- `[mcp_servers.<server_id>]` follows the keyed record merge semantics: workspace overlays user field-by-field by server id.
 
 ## Skills
 
@@ -549,15 +598,11 @@ Devo ensures the following server is present after config load when missing by
 id (user records with the same id are never overwritten):
 
 ```toml
-[[mcp.servers]]
-id = "code_search"
-display_name = "Code Search"
+[mcp_servers.code_search]
+command = "devo-code-search-mcp"
 enabled = false
+display_name = "Code Search"
 startup_policy = "lazy"
-
-[mcp.servers.transport]
-kind = "stdio"
-command = ["devo-code-search-mcp"]
 ```
 
 ## Tools
@@ -701,3 +746,4 @@ When a setup flow writes both `config.toml` and `auth.json`, the program should 
 | 1 | 2026-05-25 | Assistant | Refinement | Linked persisted `permission_policy` defaults to application safety requirements. |
 | 1 | 2026-05-26 | Human | Refinement | Added explicit model binding `display_name` examples and clarified display-name fallback and identifier rules. |
 | 2 | 2026-06-08 | Human | Refinement | Added global provider HTTP proxy configuration and per-provider raw custom header configuration. |
+| 3 | 2026-08-19 | Human | Schema change | Replaced `[[mcp.servers]]` array-of-tables and nested `[mcp.servers.transport]` with keyed `[mcp_servers.<server_id>]` tables. Transport is inferred from fields (`command` → stdio, `url` → HTTP/SSE). Writes omit default-valued fields. Merge is field-by-field by server id. No backward-compatible reader for the old array shape. |

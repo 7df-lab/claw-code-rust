@@ -152,13 +152,16 @@ impl SearchIndex {
         limit: usize,
         filters: &SearchFilters,
     ) -> Vec<(usize, f32)> {
-        let candidate_ids = filters
-            .is_empty()
-            .then(|| {
-                self.semantic
-                    .candidate_ids(query_embedding, limit, self.embeddings.row_count())
-            })
-            .flatten();
+        let candidate_ids = filters.is_empty().then(|| {
+            // Some ANN/search implementations may return an empty candidate set
+            // even when an exact hit exists (for example due to ef_search /
+            // dimension edge cases). Treat empty candidates as "scan exactly" so
+            // ANN cannot silently drop the only valid semantic hit.
+            self.semantic
+                .candidate_ids(query_embedding, limit, self.embeddings.row_count())
+                .and_then(|ids| (!ids.is_empty()).then_some(ids))
+        });
+        let candidate_ids = candidate_ids.flatten();
         let mut scores = match candidate_ids {
             Some(ids) => ids
                 .into_iter()

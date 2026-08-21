@@ -274,16 +274,38 @@ impl ToolRuntime {
             }
         };
 
-        let mut sandbox_profile = self.context.sandbox_profile.clone();
+        let mut sandbox_profile = match &self.context.sandbox_profile_live {
+            Some(live) => live
+                .lock()
+                .expect("sandbox profile live mutex poisoned")
+                .clone(),
+            None => self.context.sandbox_profile.clone(),
+        };
         let mut already_bypassed_sandbox = sandbox_profile_is_inactive(sandbox_profile.as_deref());
         // `already_approved`: only user/session/auto-review approvals unlock
         // a silent unsandbox retry after SANDBOX_DENIED (UnlessTrusted). Policy
         // Allow without asking stays false so denial surfaces for require_escalated.
         let mut already_approved = false;
-        if let Some(request) = self.permission_request_for_call(call, tool_name) {
+        let permission_request = match self.permission_request_for_call(call, tool_name) {
+            Ok(request) => request,
+            Err(reason) => {
+                let message = format!("invalid sandbox permission request: {reason}");
+                super::hook_events::post_tool_use_failure(
+                    self.context.hooks.as_ref(),
+                    call,
+                    tool_name,
+                    &message,
+                )
+                .await;
+                return ToolCallResult::error(&call.id, &message);
+            }
+        };
+        let mut sandbox_permission_overlay = None;
+        if let Some(request) = permission_request {
             match self.permission.check(request).await {
                 Ok(grant) => {
                     already_approved = grant.already_approved;
+                    sandbox_permission_overlay = grant.sandbox_permission_overlay.clone();
                     if grant.bypass_sandbox {
                         // `unsandboxed_execution_allowed`: deny-read policies
                         // must stay sandboxed even after escalation approval.
@@ -336,6 +358,7 @@ impl ToolRuntime {
             network_proxy: self.context.network_proxy.clone(),
             network_no_proxy: self.context.network_no_proxy.clone(),
             sandbox_profile,
+            sandbox_permission_overlay: sandbox_permission_overlay.clone(),
         };
 
         let (progress_sender, progress_task) = match on_progress {
@@ -376,11 +399,12 @@ impl ToolRuntime {
                 if !devo_sandbox::unsandboxed_execution_allowed(
                     sandbox_profile.as_deref(),
                     &self.context.cwd,
-                ) {
+                ) || sandbox_permission_overlay.is_some()
+                {
                     info!(
                         tool = %tool_name,
                         id = %call.id,
-                        "skipping unsandbox retry after SANDBOX_DENIED because profile has deny-read paths"
+                        "skipping unsandbox retry after SANDBOX_DENIED because the request must remain sandboxed"
                     );
                     Ok(output)
                 } else {
@@ -503,13 +527,15 @@ impl ToolRuntime {
         &self,
         call: &ToolCall,
         tool_name: &str,
-    ) -> Option<ToolPermissionRequest> {
-        let spec = self.registry.spec(tool_name)?;
+    ) -> Result<Option<ToolPermissionRequest>, String> {
+        let Some(spec) = self.registry.spec(tool_name) else {
+            return Ok(None);
+        };
         let resource = resource_kind_for_tool(tool_name, &spec.capability_tags);
         let needs_permission = spec.execution_mode == crate::tool_spec::ToolExecutionMode::Mutating
             || resource_requires_permission(&resource);
         if !needs_permission {
-            return None;
+            return Ok(None);
         }
 
         let path = path_for_tool_input(tool_name, &call.input, &self.context.cwd);
@@ -520,7 +546,7 @@ impl ToolRuntime {
             command_str_for_tool_input(tool_name, &call.input).and_then(safe_shell_argv);
         let command_pattern = command_str_for_tool_input(tool_name, &call.input)
             .and_then(|command| generalize_command_pattern(command, &self.context.cwd));
-        Some(ToolPermissionRequest {
+        Ok(Some(ToolPermissionRequest {
             tool_call_id: call.id.clone(),
             tool_name: tool_name.to_string(),
             input: call.input.clone(),
@@ -540,8 +566,8 @@ impl ToolRuntime {
             command_prefix,
             command_argv,
             command_pattern,
-            requests_escalation: requests_explicit_escalation(&call.input),
-        })
+            sandbox_permissions: sandbox_permission_request_from_input(&call.input)?,
+        }))
     }
 }
 
@@ -559,6 +585,33 @@ fn canonical_tool_name<'a>(registry: &ToolRegistry, tool_name: &'a str) -> &'a s
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxPermissionRequest {
+    Default,
+    AdditionalPermissions(AdditionalSandboxPermissions),
+    FullEscalation,
+}
+
+impl SandboxPermissionRequest {
+    pub fn requests_escalation(&self) -> bool {
+        !matches!(self, Self::Default)
+    }
+
+    pub fn bypasses_sandbox(&self) -> bool {
+        matches!(self, Self::FullEscalation)
+    }
+
+    pub fn overlay(&self) -> Option<AdditionalSandboxPermissions> {
+        match self {
+            Self::AdditionalPermissions(permissions) => Some(permissions.clone()),
+            Self::Default | Self::FullEscalation => None,
+        }
+    }
+}
+
+pub type AdditionalSandboxPermissions = devo_tools::SandboxPermissionOverlay;
+pub type NetworkPermission = devo_tools::SandboxNetworkPermission;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PermissionGrant {
     /// When true, this invocation must run with sandbox profile off/None.
@@ -567,14 +620,17 @@ pub struct PermissionGrant {
     /// covered this call — `already_approved`. Policy Allow without
     /// asking leaves this false.
     pub already_approved: bool,
+    /// Additional capabilities to merge into the active sandbox profile.
+    pub sandbox_permission_overlay: Option<AdditionalSandboxPermissions>,
 }
 
 impl PermissionGrant {
     /// Grant from an interactive (or session-cache / auto-review) approval.
-    pub fn from_approval(bypass_sandbox: bool) -> Self {
+    pub fn from_approval(request: &SandboxPermissionRequest) -> Self {
         Self {
-            bypass_sandbox,
+            bypass_sandbox: request.bypasses_sandbox(),
             already_approved: true,
+            sandbox_permission_overlay: request.overlay(),
         }
     }
 }
@@ -619,6 +675,12 @@ pub struct ToolRuntimeContext {
     pub network_no_proxy: Option<String>,
     /// Active sandbox profile name for child processes spawned by tools.
     pub sandbox_profile: Option<String>,
+    /// Live sandbox profile handle shared with the session's settings
+    /// override channel (L2-DES-CONV-002 Phase 3). When present, each tool
+    /// call reads the profile from this handle instead of the turn-start
+    /// snapshot in `sandbox_profile`, so a mid-turn settings change takes
+    /// effect at the next spawn.
+    pub sandbox_profile_live: Option<Arc<std::sync::Mutex<Option<String>>>>,
 }
 
 impl Default for ToolRuntimeContext {
@@ -637,6 +699,7 @@ impl Default for ToolRuntimeContext {
             network_proxy: None,
             network_no_proxy: None,
             sandbox_profile: None,
+            sandbox_profile_live: None,
         }
     }
 }
@@ -735,7 +798,7 @@ pub struct ToolPermissionRequest {
     /// Generalized command pattern (e.g. `git add *`) offered as the
     /// session-scoped approval grant for shell tools.
     pub command_pattern: Option<Vec<String>>,
-    pub requests_escalation: bool,
+    pub sandbox_permissions: SandboxPermissionRequest,
 }
 
 fn resource_kind_for_tool(tool_name: &str, tags: &[ToolCapabilityTag]) -> ResourceKind {
@@ -905,11 +968,154 @@ pub fn sandbox_permissions_from_input(input: &serde_json::Value) -> String {
         .to_string()
 }
 
-fn requests_explicit_escalation(input: &serde_json::Value) -> bool {
-    matches!(
-        sandbox_permissions_from_input(input).as_str(),
-        "require_escalated" | "with_additional_permissions"
-    ) || input.get("additional_permissions").is_some()
+pub fn sandbox_permission_cache_key_from_input(input: &serde_json::Value) -> String {
+    match sandbox_permission_request_from_input(input) {
+        Ok(SandboxPermissionRequest::Default) => "default".to_string(),
+        Ok(SandboxPermissionRequest::FullEscalation) => "full_escalation".to_string(),
+        Ok(SandboxPermissionRequest::AdditionalPermissions(permissions)) => serde_json::json!({
+            "tier": "additional_permissions",
+            "network": matches!(permissions.network, NetworkPermission::Enabled),
+            "read_paths": permissions.read_paths,
+            "write_paths": permissions.write_paths,
+        })
+        .to_string(),
+        Err(_) => serde_json::json!({
+            "invalid": input.get("sandbox_permissions"),
+            "additional_permissions": input.get("additional_permissions"),
+        })
+        .to_string(),
+    }
+}
+
+pub fn sandbox_permission_request_from_input(
+    input: &serde_json::Value,
+) -> Result<SandboxPermissionRequest, String> {
+    let mode = sandbox_permissions_from_input(input);
+    let additional = input.get("additional_permissions");
+
+    if mode == "require_escalated" {
+        if additional.is_some() {
+            return Err(
+                "require_escalated cannot be combined with additional_permissions".to_string(),
+            );
+        }
+        return Ok(SandboxPermissionRequest::FullEscalation);
+    }
+
+    let has_additional = additional.is_some();
+    if !matches!(
+        mode.as_str(),
+        "" | "use_default" | "with_additional_permissions"
+    ) {
+        return Err(format!("unsupported sandbox_permissions value: {mode}"));
+    }
+    if mode == "with_additional_permissions" && !has_additional {
+        return Err(
+            "with_additional_permissions requires a non-empty additional_permissions object"
+                .to_string(),
+        );
+    }
+    let Some(additional) = additional else {
+        return Ok(SandboxPermissionRequest::Default);
+    };
+    let permissions = parse_additional_sandbox_permissions(additional)?;
+    if permissions.network == NetworkPermission::Unchanged
+        && permissions.read_paths.is_empty()
+        && permissions.write_paths.is_empty()
+    {
+        return Err("additional_permissions must request at least one capability".to_string());
+    }
+    Ok(SandboxPermissionRequest::AdditionalPermissions(permissions))
+}
+
+fn parse_additional_sandbox_permissions(
+    value: &serde_json::Value,
+) -> Result<AdditionalSandboxPermissions, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "additional_permissions must be an object".to_string())?;
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "network" | "file_system"))
+    {
+        return Err("additional_permissions contains an unknown field".to_string());
+    }
+    let network = match object.get("network") {
+        None => NetworkPermission::Unchanged,
+        Some(network) => {
+            let network = network
+                .as_object()
+                .ok_or_else(|| "additional_permissions.network must be an object".to_string())?;
+            if network.keys().any(|key| key != "enabled") {
+                return Err("additional_permissions.network contains an unknown field".to_string());
+            }
+            match network.get("enabled") {
+                Some(value) if value.as_bool() == Some(true) => NetworkPermission::Enabled,
+                Some(value) if value.as_bool() == Some(false) => NetworkPermission::Unchanged,
+                Some(_) => {
+                    return Err(
+                        "additional_permissions.network.enabled must be a boolean".to_string()
+                    );
+                }
+                None => NetworkPermission::Unchanged,
+            }
+        }
+    };
+    let file_system =
+        match object.get("file_system") {
+            None => None,
+            Some(file_system) => Some(file_system.as_object().ok_or_else(|| {
+                "additional_permissions.file_system must be an object".to_string()
+            })?),
+        };
+    if let Some(file_system) = file_system
+        && file_system
+            .keys()
+            .any(|key| !matches!(key.as_str(), "read" | "write"))
+    {
+        return Err("additional_permissions.file_system contains an unknown field".to_string());
+    }
+    let read_paths = parse_absolute_permission_paths(
+        file_system.and_then(|fs| fs.get("read")),
+        "additional_permissions.file_system.read",
+    )?;
+    let write_paths = parse_absolute_permission_paths(
+        file_system.and_then(|fs| fs.get("write")),
+        "additional_permissions.file_system.write",
+    )?;
+    Ok(AdditionalSandboxPermissions {
+        network,
+        read_paths,
+        write_paths,
+    })
+}
+
+fn parse_absolute_permission_paths(
+    value: Option<&serde_json::Value>,
+    field: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let paths = value
+        .as_array()
+        .ok_or_else(|| format!("{field} must be an array"))?;
+    let mut paths = paths
+        .iter()
+        .map(|value| {
+            let path = value
+                .as_str()
+                .ok_or_else(|| format!("{field} entries must be strings"))?;
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                return Err(format!("{field} entries must be absolute paths"));
+            }
+            Ok(path)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 fn sandbox_profile_is_inactive(profile: Option<&str>) -> bool {
@@ -1620,6 +1826,7 @@ mod tests {
                 network_proxy: None,
                 network_no_proxy: None,
                 sandbox_profile: None,
+                sandbox_profile_live: None,
             },
         );
         let call = ToolCall {
@@ -2034,17 +2241,119 @@ mod tests {
         assert!(!command_pattern_matches(&pattern, &strs(&["git"])));
     }
 
+    /// Trace: L2-DES-SAFETY-002
+    /// Verifies: sandbox permission inputs are classified into explicit tiers.
     #[test]
-    fn explicit_sandbox_permissions_request_escalation() {
-        assert!(requests_explicit_escalation(&serde_json::json!({
+    fn explicit_sandbox_permissions_are_classified() {
+        let input_path = std::env::temp_dir().join("input");
+        let output_path = std::env::temp_dir().join("output");
+        let legacy_path = std::env::temp_dir().join("legacy");
+        let input_path_s = input_path.to_string_lossy().to_string();
+        let output_path_s = output_path.to_string_lossy().to_string();
+        let legacy_path_s = legacy_path.to_string_lossy().to_string();
+
+        assert_eq!(
+            sandbox_permission_request_from_input(&serde_json::json!({
             "sandbox_permissions": "require_escalated"
-        })));
-        assert!(requests_explicit_escalation(&serde_json::json!({
-            "additional_permissions": {"network": true}
-        })));
-        assert!(!requests_explicit_escalation(&serde_json::json!({
+            }))
+            .expect("full escalation request"),
+            SandboxPermissionRequest::FullEscalation
+        );
+        assert_eq!(
+            sandbox_permission_request_from_input(&serde_json::json!({
+                "sandbox_permissions": "with_additional_permissions",
+                "additional_permissions": {
+                    "network": {"enabled": true},
+                    "file_system": {
+                        "read": [&input_path_s],
+                        "write": [&output_path_s]
+                    }
+                }
+            }))
+            .expect("additional permissions request"),
+            SandboxPermissionRequest::AdditionalPermissions(AdditionalSandboxPermissions {
+                network: NetworkPermission::Enabled,
+                read_paths: vec![input_path],
+                write_paths: vec![output_path],
+            })
+        );
+        assert_eq!(
+            sandbox_permission_request_from_input(&serde_json::json!({
+                "additional_permissions": {
+                    "file_system": {"read": [&legacy_path_s]}
+                }
+            }))
+            .expect("legacy additional permissions request"),
+            SandboxPermissionRequest::AdditionalPermissions(AdditionalSandboxPermissions {
+                network: NetworkPermission::Unchanged,
+                read_paths: vec![legacy_path],
+                write_paths: vec![],
+            })
+        );
+        assert_eq!(
+            sandbox_permission_request_from_input(&serde_json::json!({
             "sandbox_permissions": "use_default"
-        })));
+            }))
+            .expect("default sandbox request"),
+            SandboxPermissionRequest::Default
+        );
+    }
+
+    /// Trace: L2-DES-SAFETY-002
+    /// Verifies: malformed or ambiguous sandbox requests fail closed.
+    #[test]
+    fn sandbox_permission_request_rejects_invalid_inputs() {
+        for input in [
+            serde_json::json!({
+                "sandbox_permissions": "with_additional_permissions",
+                "additional_permissions": {}
+            }),
+            serde_json::json!({
+                "additional_permissions": {
+                    "file_system": {"read": ["relative/path"]}
+                }
+            }),
+            serde_json::json!({
+                "sandbox_permissions": "require_escalated",
+                "additional_permissions": {
+                    "file_system": {"read": ["/tmp/input"]}
+                }
+            }),
+        ] {
+            assert!(
+                sandbox_permission_request_from_input(&input).is_err(),
+                "input should be rejected: {input}"
+            );
+        }
+    }
+
+    /// Trace: L2-DES-SAFETY-002
+    /// Verifies: permission-cache keys use normalized tiers and path sets.
+    #[test]
+    fn sandbox_permission_cache_key_normalizes_additional_permissions() {
+        let a_path = std::env::temp_dir().join("a");
+        let b_path = std::env::temp_dir().join("b");
+        let a_path_s = a_path.to_string_lossy().to_string();
+        let b_path_s = b_path.to_string_lossy().to_string();
+
+        let first = sandbox_permission_cache_key_from_input(&serde_json::json!({
+            "sandbox_permissions": "with_additional_permissions",
+            "additional_permissions": {
+                "file_system": {"read": [&b_path_s, &a_path_s]}
+            }
+        }));
+        let second = sandbox_permission_cache_key_from_input(&serde_json::json!({
+            "additional_permissions": {
+                "file_system": {"read": [&a_path_s, &b_path_s]}
+            }
+        }));
+        assert_eq!(first, second);
+        assert_ne!(
+            first,
+            sandbox_permission_cache_key_from_input(&serde_json::json!({
+                "sandbox_permissions": "require_escalated"
+            }))
+        );
     }
 
     #[test]
@@ -2154,7 +2463,7 @@ mod tests {
             permission_checks_for_checker.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async {
                 Ok(PermissionGrant::from_approval(
-                    /*bypass_sandbox*/ false,
+                    &SandboxPermissionRequest::Default,
                 ))
             })
         });
@@ -2347,7 +2656,7 @@ mod tests {
         let checker = PermissionChecker::new(|_| {
             Box::pin(async {
                 Ok(PermissionGrant::from_approval(
-                    /*bypass_sandbox*/ false,
+                    &SandboxPermissionRequest::Default,
                 ))
             })
         });
@@ -2401,7 +2710,7 @@ deny = ["/etc/passwd"]
             command_prefix: None,
             command_argv: None,
             command_pattern: None,
-            requests_escalation: false,
+            sandbox_permissions: SandboxPermissionRequest::Default,
         }
     }
 

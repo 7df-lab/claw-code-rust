@@ -9,7 +9,7 @@ use chrono::{TimeZone, Utc};
 use rusqlite::{Connection, params, types::Type};
 use serde_json;
 
-use devo_protocol::canonical::item::ContextOccupancy;
+use devo_protocol::native::item::ContextOccupancy;
 use devo_protocol::{
     PendingInputId, PendingInputItem, PendingInputKind, SessionId, SessionMetadata,
     SessionRuntimeStatus, SessionTitleState,

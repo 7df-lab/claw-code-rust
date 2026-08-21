@@ -38,3 +38,13 @@ This repository is a Rust-based coding agent, currently called `devo`.
   - Use `#[cfg(windows)]` and `#[cfg(unix)]` to define platform-specific test cases when behavior differs.
   - Never rely on Windows-style paths being interpreted correctly on Unix, or Unix-style paths on Windows.
   - Always use platform-native path formats in tests so they align with `std::path::Path` semantics.
+
+## Protocol and Session Settings
+
+Per L2-DES-APP-008 and L2-DES-CONV-002 (both Approved):
+
+- The Native protocol (`crates/protocol/src/native/`) is the single retained surface. New features land on Native only; legacy-shaped handlers only shrink and are deleted in Phase E. During migration, legacy handlers translate into the Native path — never maintain parallel implementations.
+- External protocols (ACP, future A2A) are pure adapters: transport + projection, zero business logic. Their wire behavior is pinned by `protocol-lock.json` and must not drift mid-migration.
+- Session settings changes go through canonical `session/metadata/update` with `SessionSettingsPatch` (partial semantics: only present fields change). Do not add per-concern settings methods.
+- Settings writes are persist-first: field-level rollout lines (`InternalRecordV2::SessionSettings`) written synchronously by the handler, which never waits on the session actor; actor notification is best-effort (`SessionHandle::notify_*`). Replay prefers field lines over whole-record `SessionMeta` values.
+- Mid-turn effect rides the turn-inline override (`TurnInlineState.live_turn_settings`, `sandbox_profile_live`). Every live setting must declare its decision point and mid-turn semantics in the DD-6 promise matrix of L2-DES-CONV-002 before implementation.

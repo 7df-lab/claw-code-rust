@@ -119,8 +119,6 @@ struct InteractiveLoopState {
     total_tokens: usize,
     total_cache_read_tokens: usize,
     pending_onboarding: Option<PendingOnboarding>,
-    // True while the resume browser is waiting for the worker's session list.
-    resume_browser_pending: bool,
     // indicate whther LLM worker is working, is started by TurnStarted,
     // it ended by TurnFailed/TurnFinished
     busy: bool,
@@ -141,7 +139,7 @@ enum LoopAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CtrlCKeyAction {
-    PromptInterruptWithEsc,
+    Interrupt,
     PromptExitConfirmation,
     Exit,
 }
@@ -256,6 +254,7 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
             },
             terminal: false,
             meta: None,
+            ..devo_protocol::AcpClientCapabilities::default()
         },
     });
 
@@ -488,6 +487,26 @@ fn handle_tui_event(
         return Ok(LoopAction::ClearAndExit);
     };
 
+    if let TuiEvent::Key(key) = &tui_event
+        && let Some(action) = ctrl_c_action_for_key(loop_state, *key, Instant::now())
+    {
+        match action {
+            CtrlCKeyAction::Interrupt => {
+                if chat_widget.request_interrupt() {
+                    worker.interrupt_active_work()?;
+                }
+            }
+            CtrlCKeyAction::PromptExitConfirmation => {
+                if loop_state.overlay.is_active() {
+                    loop_state.overlay.close(tui)?;
+                }
+                chat_widget.set_status_message("Press Ctrl-C again to exit");
+            }
+            CtrlCKeyAction::Exit => return Ok(LoopAction::ClearAndExit),
+        }
+        return Ok(LoopAction::Continue);
+    }
+
     if loop_state.overlay.is_active() {
         if let TuiEvent::Key(key_event) = tui_event
             && matches!(
@@ -538,14 +557,6 @@ fn handle_tui_event(
 
             // Update time-sensitive widget state before measuring or rendering.
             chat_widget.pre_draw_tick();
-
-            if !chat_widget.is_resume_browser_open()
-                && !loop_state.resume_browser_pending
-                && !loop_state.overlay.is_active()
-                && tui.is_alt_screen_active()
-            {
-                tui.leave_alt_screen()?;
-            }
 
             // Wrap pending scrollback using the current terminal width.
             let width = tui.terminal.size()?.width.max(1);
@@ -599,32 +610,14 @@ fn handle_tui_event(
                     "received enter-like key event"
                 );
             }
-            // Keep Ctrl-C available for terminal copy workflows while work is
-            // active. Cancellation is owned by the bottom pane's Esc flow.
-            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                match handle_ctrl_c_key(loop_state, Instant::now()) {
-                    CtrlCKeyAction::PromptInterruptWithEsc => {
-                        chat_widget.set_status_message("Press Esc twice to interrupt");
-                    }
-                    CtrlCKeyAction::PromptExitConfirmation => {
-                        chat_widget.set_status_message("Press Ctrl-C again to exit");
-                    }
-                    CtrlCKeyAction::Exit => {
-                        return Ok(LoopAction::ClearAndExit);
-                    }
-                }
-                return Ok(LoopAction::Continue);
-            }
-
             if key.code == KeyCode::Char('t')
                 && key.modifiers.contains(KeyModifiers::CONTROL)
-                && !chat_widget.is_resume_browser_open()
+                && !chat_widget.is_resume_picker_open()
             {
                 loop_state.overlay.open_transcript(tui, chat_widget)?;
                 return Ok(LoopAction::Continue);
             }
 
-            loop_state.last_ctrl_c_at = None;
             match determine_esc_backtrack_action(
                 key,
                 loop_state.esc_backtrack_primed,
@@ -669,7 +662,7 @@ fn handle_tui_event(
 fn handle_ctrl_c_key(loop_state: &mut InteractiveLoopState, now: Instant) -> CtrlCKeyAction {
     if loop_state.busy {
         loop_state.last_ctrl_c_at = None;
-        return CtrlCKeyAction::PromptInterruptWithEsc;
+        return CtrlCKeyAction::Interrupt;
     }
 
     if loop_state
@@ -681,6 +674,26 @@ fn handle_ctrl_c_key(loop_state: &mut InteractiveLoopState, now: Instant) -> Ctr
 
     loop_state.last_ctrl_c_at = Some(now);
     CtrlCKeyAction::PromptExitConfirmation
+}
+
+fn ctrl_c_action_for_key(
+    loop_state: &mut InteractiveLoopState,
+    key: crossterm::event::KeyEvent,
+    now: Instant,
+) -> Option<CtrlCKeyAction> {
+    if !matches!(
+        key.kind,
+        crossterm::event::KeyEventKind::Press | crossterm::event::KeyEventKind::Repeat
+    ) {
+        return None;
+    }
+    if matches!(key.code, KeyCode::Char('c' | 'C')) && key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        return Some(handle_ctrl_c_key(loop_state, now));
+    }
+
+    loop_state.last_ctrl_c_at = None;
+    None
 }
 
 fn determine_esc_backtrack_action(
@@ -750,7 +763,7 @@ fn handle_app_event(
 
     if matches!(&app_event, AppEvent::Interrupt) {
         if loop_state.busy && chat_widget.request_interrupt() {
-            worker.interrupt_turn()?;
+            worker.interrupt_active_work()?;
         }
         return Ok(LoopAction::Continue);
     }
@@ -846,7 +859,18 @@ fn handle_worker_event(
         }
         // Streaming deltas are handled entirely within the ChatWidget
         WorkerEvent::ToolOutputDelta { .. } => {}
+        WorkerEvent::CommandExecutionStarted { source, .. }
+            if matches!(
+                source,
+                &devo_protocol::protocol::ExecCommandSource::UserShell
+            ) =>
+        {
+            loop_state.busy = true;
+        }
         WorkerEvent::CommandExecutionStarted { .. } => {}
+        WorkerEvent::ShellCommandFinished { .. } => {
+            loop_state.busy = false;
+        }
         WorkerEvent::UsageUpdated {
             total_input_tokens: next_total_input_tokens,
             total_output_tokens: next_total_output_tokens,
@@ -948,12 +972,14 @@ fn handle_worker_event(
         | WorkerEvent::ToolCallUpdated { .. }
         | WorkerEvent::ToolResult { .. }
         | WorkerEvent::ToolResultIo { .. }
-        | WorkerEvent::ShellCommandFinished { .. }
         | WorkerEvent::PatchApplied { .. }
         | WorkerEvent::PatchAppliedIo { .. }
         | WorkerEvent::PlanUpdated { .. }
         | WorkerEvent::ProviderVendorsListed { .. }
         | WorkerEvent::SessionsListed { .. }
+        | WorkerEvent::SessionsListFailed { .. }
+        | WorkerEvent::SessionPreviewLoaded { .. }
+        | WorkerEvent::SessionPreviewFailed { .. }
         | WorkerEvent::SubagentDiscovered { .. }
         | WorkerEvent::SubagentMonitor { .. }
         | WorkerEvent::SkillsListed { .. }
@@ -969,7 +995,9 @@ fn handle_worker_event(
         | WorkerEvent::ReferenceSearchUpdated { .. }
         | WorkerEvent::NewSessionPrepared { .. }
         | WorkerEvent::SessionRenamed { .. }
+        | WorkerEvent::SessionRenameFailed { .. }
         | WorkerEvent::SessionDeleted { .. }
+        | WorkerEvent::SessionDeleteFailed { .. }
         | WorkerEvent::SessionTitleUpdated { .. }
         | WorkerEvent::ContextCompactionCompleted { .. }
         | WorkerEvent::InputHistoryLoaded { .. }
@@ -989,13 +1017,6 @@ fn handle_worker_event(
         | WorkerEvent::BtwCompleted { .. }
         | WorkerEvent::BtwFailed { .. }
         | WorkerEvent::EffectiveContextWindowUpdated { .. } => {}
-    }
-    if matches!(&worker_event, WorkerEvent::SessionsListed { .. }) {
-        loop_state.resume_browser_pending = false;
-    }
-    if loop_state.resume_browser_pending && matches!(&worker_event, WorkerEvent::TurnFailed { .. })
-    {
-        loop_state.resume_browser_pending = false;
     }
     let session_switched = matches!(&worker_event, WorkerEvent::SessionSwitched { .. });
     let turn_failed = matches!(&worker_event, WorkerEvent::TurnFailed { .. });
@@ -1162,15 +1183,7 @@ fn handle_app_command(
             chat_widget.apply_collaboration_mode(*collaboration_mode, *persist_scope);
         }
         AppCommand::RunUserShellCommand { command } => {
-            if command == "session list" {
-                tui.enter_alt_screen()?;
-                if let Err(error) = worker.list_sessions() {
-                    let _ = tui.leave_alt_screen();
-                    return Err(error);
-                }
-                loop_state.resume_browser_pending = true;
-                chat_widget.set_status_message("Loading sessions");
-            } else if command == "provider list" {
+            if command == "provider list" {
                 worker.list_provider_vendors()?;
             } else if command == "skills list" {
                 worker.list_skills()?;
@@ -1184,7 +1197,9 @@ fn handle_app_command(
                             .map_err(anyhow::Error::from)
                     }) {
                     Ok(app_config) => {
-                        let body = crate::mcp_servers::render_mcp_servers_markdown(&app_config.mcp);
+                        let body = crate::mcp_servers::render_mcp_servers_markdown(
+                            &app_config.mcp_runtime,
+                        );
                         chat_widget
                             .add_padded_markdown_history(MCP_SERVERS_TRANSCRIPT_TITLE, &body);
                         chat_widget.set_status_message("MCP servers loaded");
@@ -1267,8 +1282,17 @@ fn handle_app_command(
         AppCommand::Compact => {
             worker.compact_session()?;
         }
+        AppCommand::ListSessions => {
+            worker.list_sessions()?;
+        }
+        AppCommand::PreviewSession { session_id } => {
+            worker.preview_session(*session_id)?;
+        }
         AppCommand::RenameSession { title } => {
             worker.rename_session(title.clone())?;
+        }
+        AppCommand::RenameSessionById { session_id, title } => {
+            worker.rename_session_by_id(*session_id, title.clone())?;
         }
         AppCommand::DeleteSession { session_id } => {
             worker.delete_session(*session_id)?;
@@ -1292,9 +1316,6 @@ fn handle_app_command(
             worker.browse_input_history(*direction)?;
         }
         AppCommand::SwitchSession { session_id } => {
-            if tui.is_alt_screen_active() {
-                tui.leave_alt_screen()?;
-            }
             tracing::trace!(session_id = ?session_id, "switch session requested");
             loop_state.session_switch_pending = true;
             tui.replace_inline_session_ui()?;
@@ -1405,7 +1426,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_while_busy_prompts_for_esc_without_arming_exit() {
+    fn ctrl_c_while_busy_interrupts_without_arming_exit() {
         let mut loop_state = InteractiveLoopState {
             busy: true,
             last_ctrl_c_at: Some(Instant::now()),
@@ -1414,7 +1435,7 @@ mod tests {
 
         let action = handle_ctrl_c_key(&mut loop_state, Instant::now());
 
-        assert_eq!(CtrlCKeyAction::PromptInterruptWithEsc, action);
+        assert_eq!(CtrlCKeyAction::Interrupt, action);
         assert_eq!(None, loop_state.last_ctrl_c_at);
     }
 
@@ -1428,6 +1449,62 @@ mod tests {
 
         assert_eq!(CtrlCKeyAction::PromptExitConfirmation, first);
         assert_eq!(CtrlCKeyAction::Exit, second);
+    }
+
+    #[test]
+    fn ctrl_c_when_idle_rearms_after_confirmation_timeout() {
+        let now = Instant::now();
+        let mut loop_state = InteractiveLoopState::default();
+
+        let first = handle_ctrl_c_key(&mut loop_state, now);
+        let after_timeout = handle_ctrl_c_key(&mut loop_state, now + Duration::from_secs(3));
+
+        assert_eq!(CtrlCKeyAction::PromptExitConfirmation, first);
+        assert_eq!(CtrlCKeyAction::PromptExitConfirmation, after_timeout);
+        assert_eq!(
+            Some(now + Duration::from_secs(3)),
+            loop_state.last_ctrl_c_at
+        );
+    }
+
+    #[test]
+    fn ctrl_c_release_does_not_consume_or_clear_exit_confirmation() {
+        let now = Instant::now();
+        let mut loop_state = InteractiveLoopState {
+            last_ctrl_c_at: Some(now),
+            ..InteractiveLoopState::default()
+        };
+        let release = crossterm::event::KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: crossterm::event::KeyEventKind::Release,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+
+        let action = ctrl_c_action_for_key(&mut loop_state, release, now);
+
+        assert_eq!(None, action);
+        assert_eq!(Some(now), loop_state.last_ctrl_c_at);
+    }
+
+    #[test]
+    fn other_key_press_clears_exit_confirmation() {
+        let now = Instant::now();
+        let mut loop_state = InteractiveLoopState {
+            last_ctrl_c_at: Some(now),
+            ..InteractiveLoopState::default()
+        };
+        let other_key = crossterm::event::KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+
+        let action = ctrl_c_action_for_key(&mut loop_state, other_key, now);
+
+        assert_eq!(None, action);
+        assert_eq!(None, loop_state.last_ctrl_c_at);
     }
 
     #[test]

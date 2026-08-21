@@ -64,7 +64,7 @@ Not all blocked actions are equal. Sometimes the agent needs one additional path
 
 An LLM-based auto-reviewer can approve low-risk actions without user intervention. It must fail closed (uncertain → prompt user). It is bounded by per-turn circuit breakers.
 
-**Decision**: Auto-review is enabled when `approvals_reviewer = "auto_review"`. The reviewer returns `Approve`, `Deny`, or `Uncertain`. Uncertain and Deny outcomes fall through to the user prompt.
+**Decision**: Auto-review is enabled when `approvals_reviewer = "auto_review"`. The reviewer returns `Approve`, `Deny`, or `Uncertain`. Deny is final; uncertain, timeout, provider failure, and invalid output fall through to the user prompt. Both escalation tiers are eligible for AutoReview.
 
 ## Architecture
 
@@ -156,7 +156,7 @@ Tool Call Request
 - `Host` scope: requested host matches the cached host
 - `CommandPrefix` scope: requested command starts with cached prefix tokens
 
-**5. Auto-Reviewer**: When `approvals_reviewer = "auto_review"`, an LLM call evaluates the approval request. The reviewer receives a compact prompt with the action details, permission context, and safety rules. It must return a structured JSON decision.
+**5. Auto-Reviewer**: When `approvals_reviewer = "auto_review"`, an LLM call evaluates the approval request. The reviewer receives a compact prompt with the action details, permission context, safety rules, and the requested sandbox tier plus exact overlay paths/network access. It must return a structured JSON decision. Requests using either `with_additional_permissions` or `require_escalated` enter this stage; hard policy and hook denials remain earlier and final.
 
 The reviewer is bounded by circuit breakers:
 - Maximum 3 consecutive denials per turn before the turn is interrupted.
@@ -197,7 +197,7 @@ The agent calls a tool with `sandbox_permissions: "with_additional_permissions"`
 #### Tier 2: Full Escalation
 
 The agent calls a tool with `sandbox_permissions: "require_escalated"` and a `justification` string. The command runs outside the sandbox entirely. Full escalation:
-- Requires user approval (unless `never` policy or cached).
+- Enters the configured reviewer in `auto_review` mode; an approval produces a one-call unsandboxed grant. Uncertain, reviewer failure, or invalid reviewer output goes to the user.
 - May include a `prefix_rule` suggestion for future auto-approval.
 - The `prefix_rule` becomes an exec-policy allow rule if the user approves.
 
@@ -264,7 +264,8 @@ The auto-reviewer is an LLM-based component that evaluates approval requests whe
 ```
 
 **Safety properties**:
-- Fail-closed: timeouts, parse errors, and execution failures are treated as `uncertain` (escalate to user).
+- Fail-closed: invalid output goes directly to the user; transient provider failures and timeouts are retried once, then escalate to the user.
+- Tier 1 approvals preserve the base sandbox and are cached only with the exact normalized overlay. Tier 1 grants cannot be reused for Tier 2, and a Tier 1 sandbox denial never silently retries with sandbox disabled.
 - Circuit breaker: excessive denials cause the turn to be interrupted.
 - The reviewer prompt includes explicit safety rules (deny destructive commands, credential access, privilege escalation, ambiguous high-impact actions).
 

@@ -126,7 +126,9 @@ pub fn workspace_write_cap_sid_for_root(
 }
 
 pub fn workspace_write_root_contains_path(root: &Path, path: &Path) -> bool {
-    canonicalize_path(path).starts_with(canonicalize_path(root))
+    let path = normalize_verbatim_prefix(canonicalize_path(path));
+    let root = normalize_verbatim_prefix(canonicalize_path(root));
+    path.starts_with(root)
 }
 
 pub fn workspace_write_root_overlaps_path(root: &Path, path: &Path) -> bool {
@@ -134,7 +136,26 @@ pub fn workspace_write_root_overlaps_path(root: &Path, path: &Path) -> bool {
 }
 
 pub fn workspace_write_root_specificity(root: &Path) -> usize {
-    canonicalize_path(root).components().count()
+    normalize_verbatim_prefix(canonicalize_path(root))
+        .components()
+        .count()
+}
+
+/// Windows `\\?\` verbatim path prefix normalization.
+///
+/// `std::fs::canonicalize` (and related Windows APIs) may return paths with
+/// `\\?\` / `\\?\UNC\` prefixes. Capability matching relies on lexical
+/// `Path::starts_with` checks, so we normalize those prefixes away to keep
+/// comparisons stable.
+fn normalize_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path
 }
 
 #[cfg(test)]

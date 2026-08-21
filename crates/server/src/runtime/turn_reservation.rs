@@ -72,14 +72,6 @@ impl ServerRuntime {
     pub(super) async fn clear_active_turn_runtime_handles(&self, session_id: SessionId) {
         self.active_turns.clear_runtime_handles(session_id).await;
     }
-
-    pub(super) async fn clear_active_turn_reservation(
-        &self,
-        session_handle: &SessionHandle,
-        turn_id: TurnId,
-    ) {
-        let _ = session_handle.clear_active_turn_if_matches(turn_id).await;
-    }
 }
 
 #[cfg(test)]
@@ -175,45 +167,6 @@ mod tests {
         let response: SuccessResponse<SessionStartResult> =
             serde_json::from_value(value).expect("session start response");
         response.result.session.session_id
-    }
-
-    #[tokio::test]
-    async fn shell_command_start_failure_clears_active_turn() -> Result<()> {
-        let data_root = TempDir::new()?;
-        let runtime = build_runtime(data_root.path());
-        let session_id = start_session(&runtime, data_root.path().to_path_buf()).await;
-        let bad_rollout_path = data_root.path().join("rollout-dir");
-        std::fs::create_dir(&bad_rollout_path)?;
-        let session_handle = runtime.session(session_id).await.expect("session");
-        session_handle
-            .update_record_rollout_path(bad_rollout_path)
-            .await;
-
-        let value = runtime
-            .handle_turn_shell_command_for_connection(
-                None,
-                serde_json::json!(2),
-                serde_json::to_value(ShellCommandParams {
-                    session_id,
-                    command: "pwd".to_string(),
-                    cwd: None,
-                })
-                .expect("shell command params"),
-            )
-            .await;
-        let response: ErrorResponse = serde_json::from_value(value).expect("error response");
-        let reservation = session_handle
-            .turn_reservation_snapshot()
-            .await
-            .expect("turn reservation snapshot");
-        let summary = session_handle.summary().await.expect("summary");
-
-        assert_eq!(response.error.code, ProtocolErrorCode::InternalError);
-        assert_eq!(reservation.active_turn, None);
-        assert_eq!(summary.status, SessionRuntimeStatus::Idle);
-        assert_eq!(reservation.latest_turn, None);
-
-        Ok(())
     }
 
     #[tokio::test]

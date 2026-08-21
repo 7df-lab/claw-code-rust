@@ -2,6 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use chrono::DateTime;
+use chrono::Utc;
+
 use crate::app_command::InputHistoryDirection;
 use crate::bottom_pane::SkillMetadata;
 use devo_core::ItemId;
@@ -20,7 +23,7 @@ use devo_protocol::RequestUserInputQuestion;
 use devo_protocol::SessionHistoryItem;
 use devo_protocol::SessionRuntimeStatus;
 use devo_protocol::ThreadGoal;
-use devo_protocol::canonical::item::ContextOccupancy;
+use devo_protocol::native::item::ContextOccupancy;
 use devo_protocol::parse_command::ParsedCommand;
 use devo_protocol::protocol::ExecCommandSource;
 use devo_protocol::protocol::FileChange;
@@ -44,13 +47,33 @@ pub(crate) struct PlanStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionListEntry {
     /// Stable session identifier used when switching the active session.
-    pub session_id: SessionId,
+    pub(crate) session_id: SessionId,
     /// Human-readable session title shown to the user.
-    pub title: String,
-    /// Timestamp summary rendered beside the title for quick scanning.
-    pub updated_at: String,
+    pub(crate) title: String,
+    /// First user-visible prompt, used as a title fallback and search term.
+    pub(crate) preview: String,
+    /// Session workspace identity.
+    pub(crate) cwd: PathBuf,
+    /// Git branch captured by the canonical session snapshot.
+    pub(crate) branch: Option<String>,
+    /// Last user-visible activity timestamp.
+    pub(crate) last_activity_at: DateTime<Utc>,
+    /// Current durable JSONL transcript size.
+    pub(crate) transcript_size_bytes: Option<u64>,
     /// Whether this entry is the currently active session.
-    pub is_active: bool,
+    pub(crate) is_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionPreviewRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionPreviewMessage {
+    pub(crate) role: SessionPreviewRole,
+    pub(crate) text: String,
 }
 
 /// One direct child agent shown in the read-only sub-agent monitor.
@@ -176,16 +199,20 @@ pub(crate) enum WorkerEvent {
         turn_id: TurnId,
     },
     /// The active session identifier is now known.
-    SessionActivated { session_id: SessionId },
-    /// Canonical session queue snapshot (`queue/updated` / list / push).
+    SessionActivated {
+        session_id: SessionId,
+    },
+    /// Native session queue snapshot (`queue/updated` / list / push).
     QueueUpdated {
-        change: devo_protocol::canonical::queue::QueueChange,
-        queue_item_id: devo_protocol::canonical::ids::QueueItemId,
+        change: devo_protocol::native::queue::QueueChange,
+        queue_item_id: devo_protocol::native::ids::QueueItemId,
         started_turn_id: Option<TurnId>,
-        entries: Vec<devo_protocol::canonical::queue::QueueEntry>,
+        entries: Vec<devo_protocol::native::queue::QueueEntry>,
     },
     /// A steer (/btw) was accepted by the server.
-    SteerAccepted { turn_id: TurnId },
+    SteerAccepted {
+        turn_id: TurnId,
+    },
     /// Provider retry status for the active turn.
     ProviderRetryStatus {
         turn_id: TurnId,
@@ -197,7 +224,10 @@ pub(crate) enum WorkerEvent {
         message: String,
     },
     /// A streamed assistant or reasoning text item started.
-    TextItemStarted { item_id: ItemId, kind: TextItemKind },
+    TextItemStarted {
+        item_id: ItemId,
+        kind: TextItemKind,
+    },
     /// Incremental text for a streamed assistant or reasoning item.
     TextItemDelta {
         item_id: ItemId,
@@ -211,11 +241,19 @@ pub(crate) enum WorkerEvent {
         final_text: String,
     },
     /// A streamed Plan Mode proposal item started.
-    ProposedPlanStarted { item_id: ItemId },
+    ProposedPlanStarted {
+        item_id: ItemId,
+    },
     /// Incremental Markdown for the streamed Plan Mode proposal.
-    ProposedPlanDelta { item_id: ItemId, delta: String },
+    ProposedPlanDelta {
+        item_id: ItemId,
+        delta: String,
+    },
     /// A streamed Plan Mode proposal item completed.
-    ProposedPlanCompleted { item_id: ItemId, final_text: String },
+    ProposedPlanCompleted {
+        item_id: ItemId,
+        final_text: String,
+    },
     /// Incremental assistant text.
     TextDelta(String),
     /// Incremental reasoning text.
@@ -444,6 +482,17 @@ pub(crate) enum WorkerEvent {
         /// Structured sessions rendered into the bottom picker panel.
         sessions: Vec<SessionListEntry>,
     },
+    SessionsListFailed {
+        message: String,
+    },
+    SessionPreviewLoaded {
+        session_id: SessionId,
+        messages: Vec<SessionPreviewMessage>,
+    },
+    SessionPreviewFailed {
+        session_id: SessionId,
+        message: String,
+    },
     /// Current goal status loaded from the server.
     GoalStatusLoaded {
         /// The current goal, if the active session has one.
@@ -494,9 +543,13 @@ pub(crate) enum WorkerEvent {
         message: String,
     },
     /// A new child agent session was observed from server metadata.
-    SubagentDiscovered { agent: SubagentMonitorAgent },
+    SubagentDiscovered {
+        agent: SubagentMonitorAgent,
+    },
     /// A live child-agent event should update the read-only monitor.
-    SubagentMonitor { event: SubagentMonitorEvent },
+    SubagentMonitor {
+        event: SubagentMonitorEvent,
+    },
     /// Current known skills were listed from the server.
     SkillsListed {
         /// Structured skill metadata used by the composer `@skill` popup.
@@ -508,21 +561,24 @@ pub(crate) enum WorkerEvent {
     },
     /// MCP server runtime statuses from `mcp/list`.
     McpServersListed {
-        servers: Vec<devo_protocol::canonical::rpc_admin::McpServerInfo>,
+        servers: Vec<devo_protocol::native::rpc_admin::McpServerInfo>,
     },
     /// Tools for one MCP server from `mcp/tools`.
     McpToolsListed {
         name: String,
-        tools: Vec<devo_protocol::canonical::rpc_admin::McpToolEntry>,
+        tools: Vec<devo_protocol::native::rpc_admin::McpToolEntry>,
     },
     /// MCP enable/disable applied via `mcp/set_enabled`.
     McpServerEnabled {
         name: String,
         enabled: bool,
-        servers: Vec<devo_protocol::canonical::rpc_admin::McpServerInfo>,
+        servers: Vec<devo_protocol::native::rpc_admin::McpServerInfo>,
     },
     /// MCP enable/disable failed.
-    McpServerEnableFailed { name: String, message: String },
+    McpServerEnableFailed {
+        name: String,
+        message: String,
+    },
     /// ACP-native available commands changed for the active session.
     AcpAvailableCommandsUpdated {
         /// Commands advertised through `session/update`.
@@ -629,10 +685,18 @@ pub(crate) enum WorkerEvent {
         /// The new session title.
         title: String,
     },
+    SessionRenameFailed {
+        session_id: Option<SessionId>,
+        message: String,
+    },
     /// The current session was deleted.
     SessionDeleted {
         /// The deleted session identifier.
         session_id: String,
+    },
+    SessionDeleteFailed {
+        session_id: Option<SessionId>,
+        message: String,
     },
     /// Server confirmed a compaction-threshold hot update.
     EffectiveContextWindowUpdated {

@@ -145,7 +145,7 @@ provider request、protocol event、ACP/TUI projection
 - `crates/core/src/query/mod.rs` 的 tool result message 构造。
 - `crates/core/src/query/event.rs` 的 `QueryEvent::ToolResult`。
 - `crates/protocol/src/event.rs` 的 `ToolResultPayload`。
-- `crates/protocol/src/acp_event_to_update.rs` 的 `raw_output`、`content` 投影。
+- `crates/protocol/src/acp/event_to_update.rs` 的 `raw_output`、`content` 投影。
 - TUI 的 tool result 和 tool output delta 事件。
 
 因此当前存在的风险是：一个工具只要返回包含 API key 的文本或 JSON，该值可能继续进入：
@@ -319,4 +319,4 @@ chunk 2: 012345678901234
 - `crates/config/src/logging.rs`
 - `crates/core/src/query/mod.rs`
 - `crates/protocol/src/event.rs`
-- `crates/protocol/src/acp_event_to_update.rs`
+- `crates/protocol/src/acp/event_to_update.rs`

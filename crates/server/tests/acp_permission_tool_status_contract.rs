@@ -85,7 +85,6 @@ async fn acp_permission_flow_uses_request_response_and_tool_status_lifecycle() -
     assert_eq!(prompt.tool_calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
-
 #[tokio::test]
 async fn acp_permission_rejection_fails_tool_without_legacy_method() -> Result<()> {
     let mut prompt = start_permission_prompt(3).await?;
@@ -381,7 +380,7 @@ async fn wait_for_pending_tool_call_and_permission_request(
                 notification.update,
                 AcpSessionUpdate::ToolCall {
                     ref tool_call_id,
-                    status: AcpToolCallStatus::Pending,
+                    status: Some(AcpToolCallStatus::Pending),
                     ..
                 } if tool_call_id == "tool-1"
             ) {
@@ -519,11 +518,11 @@ async fn assert_legacy_approval_respond_removed(
     assert_eq!(response["id"], serde_json::json!(99));
     assert_eq!(
         response["error"]["code"],
-        serde_json::json!("InvalidParams")
+        serde_json::json!(devo_protocol::AcpErrorCode::MethodNotFound as i32)
     );
     assert_eq!(
         response["error"]["message"],
-        serde_json::json!("unknown method: approval/respond")
+        serde_json::json!("unknown ACP method: approval/respond")
     );
     Ok(())
 }

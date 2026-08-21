@@ -70,21 +70,27 @@ The required L1 surface is tools, resources, resource templates, status, and saf
 
 MCP configuration should follow the precedence and source-tracking rules from `L2-DES-APP-002`.
 
-The concrete TOML shape for persisted MCP server records is defined by `L2-DES-APP-005` under `[mcp.servers.<server_id>]`. Secret material used by MCP servers is stored in companion `auth.json` files and referenced from TOML by credential id.
+The concrete TOML shape for persisted MCP server records is defined by `L2-DES-APP-005` under `[mcp_servers.<server_id>]`. The table key is the stable server id. Secret material used by MCP servers is stored in companion `auth.json` files and referenced from TOML by credential id.
+
+Transport is inferred from fields: `command` present means stdio, `url` present means HTTP or SSE. There is no explicit `transport` or `kind` discriminator.
 
 Conceptual `McpServerConfig` fields:
 
-- `server_id`: stable local identifier.
-- `display_name`: user-facing server name.
-- `enabled`: whether the server may be used.
-- `transport`: stdio, streamable HTTP, or another MCP-approved transport added later.
-- `command`: command and arguments for stdio servers.
+- `server_id`: stable local identifier (the TOML table key).
+- `display_name`: user-facing server name (default = server id).
+- `enabled`: whether the server may be used (default `true`).
+- `command`: executable for stdio servers.
+- `args`: arguments for stdio servers.
 - `cwd`: optional working directory for stdio servers.
 - `env`: non-secret environment values or credential-id references that the host injects into a stdio server process at runtime.
-- `base_url`: endpoint for HTTP servers.
+- `env_vars`: environment variable names forwarded from the host process.
+- `url`: endpoint for HTTP/SSE servers.
+- `type`: `http`, `streamable_http`, or `sse` (default `http`).
+- `http_headers`: literal HTTP headers for HTTP/SSE servers.
+- `env_http_headers`: header name → environment variable name for HTTP/SSE servers.
 - `auth_ref`: `auth.json` credential id for HTTP authorization, not routine plaintext.
-- `startup_policy`: eager, lazy, or manual.
-- `trust_policy`: user, workspace, or untrusted workspace source.
+- `startup_policy`: `eager`, `lazy`, or `manual` (default `lazy`).
+- `trust_policy`: `user`, `workspace`, or `untrusted` (default `user`).
 - `allowed_capabilities`: optional allowlist for tools, resources, templates, prompts, sampling, and elicitation.
 - `roots_policy`: which workspace roots may be shared with the server.
 - `output_limits`: per-server output and diagnostic limits where configured.

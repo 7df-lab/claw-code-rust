@@ -41,7 +41,8 @@ pub fn set_sandbox_proxy_ports(ports: &[u16]) {
 /// Legacy alias for [`set_sandbox_proxy_ports`].
 ///
 /// Does not mutate the process environment; ports live in the in-process
-/// store and are passed to children via [`proxy_env_for_restricted_network`].
+/// store and are passed to children via `proxy_env_for_restricted_network`
+/// (Unix only).
 pub fn set_sandbox_proxy_ports_env(ports: &[u16]) {
     set_sandbox_proxy_ports(ports);
 }

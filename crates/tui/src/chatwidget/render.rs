@@ -44,10 +44,6 @@ pub(crate) struct ActiveAssistantRenderSnapshot {
 
 impl Renderable for ChatWidget {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        if self.render_resume_browser_if_open(area, buf) {
-            return;
-        }
-
         if let Some(onboarding) = &self.onboarding {
             onboarding.render(area, buf);
             return;
@@ -111,9 +107,6 @@ impl Renderable for ChatWidget {
         if let Some(onboarding) = &self.onboarding {
             return onboarding.desired_height(width.max(1));
         }
-        if self.resume_browser.is_some() {
-            return u16::MAX;
-        }
         let history_height =
             u16::try_from(self.active_viewport_lines(width.max(1)).len()).unwrap_or(u16::MAX);
         history_height
@@ -122,7 +115,7 @@ impl Renderable for ChatWidget {
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        if self.resume_browser.is_some() || self.is_subagent_live_list_focused() {
+        if self.is_subagent_live_list_focused() {
             return None;
         }
         if let Some(onboarding) = &self.onboarding {
@@ -135,7 +128,13 @@ impl Renderable for ChatWidget {
 
 impl ChatWidget {
     fn chat_layout_areas(&self, area: Rect) -> (Rect, Rect, Rect) {
-        let bottom_height = self.bottom_pane.desired_height(area.width).min(area.height);
+        let bottom_height = self.bottom_pane.desired_height(area.width).min(
+            if self.bottom_pane.is_resume_picker_open() {
+                area.height.saturating_sub(3).max(3)
+            } else {
+                area.height.saturating_sub(1).max(3)
+            },
+        );
         let subagent_height = self
             .subagent_live_list_desired_height()
             .min(area.height.saturating_sub(bottom_height));
@@ -159,10 +158,6 @@ impl ChatWidget {
         &self,
         area: Rect,
     ) -> Option<ActiveAssistantRenderSnapshot> {
-        if self.resume_browser.is_some() {
-            return None;
-        }
-
         let (history_area, _subagent_area, _bottom_area) = self.chat_layout_areas(area);
         let width = history_area.width.max(1);
         let full_viewport_line_count = self.active_viewport_lines(width).len();

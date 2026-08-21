@@ -602,6 +602,7 @@ async fn initialize_connection(
                 "params": {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                     "clientInfo": {
                         "name": "provider-routing-test",
                         "title": "provider-routing-test",
@@ -677,22 +678,21 @@ async fn update_session_model(
             connection_id,
             serde_json::json!({
                 "id": 3,
-                "method": "_devo/session/metadata/update",
+                "method": "session/metadata/update",
                 "params": {
-                    "session_id": session_id,
-                    "model": model,
-                    "model_binding_id": null,
-                    "thinking": null
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "model": { "provider": "", "model": model }
                 }
             }),
         )
         .await
         .context("session/metadata/update response")?;
     let response_value = response.clone();
-    let _: devo_server::SuccessResponse<devo_server::SessionMetadataUpdateResult> =
-        serde_json::from_value(response).with_context(|| {
-            format!("decode session/metadata/update response: {response_value}")
-        })?;
+    let _: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
+    > = serde_json::from_value(response)
+        .with_context(|| format!("decode session/metadata/update response: {response_value}"))?;
     Ok(())
 }
 
@@ -733,7 +733,7 @@ async fn send_turn_start(
             connection_id,
             serde_json::json!({
                 "id": id,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [{ "type": "text", "text": "use the selected provider" }],

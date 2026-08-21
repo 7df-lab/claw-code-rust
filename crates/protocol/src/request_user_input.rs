@@ -2,10 +2,7 @@ use std::collections::HashMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 use ts_rs::TS;
-
-use crate::{SessionId, TurnId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct RequestUserInputOption {
@@ -39,13 +36,4 @@ pub struct RequestUserInputAnswer {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct RequestUserInputResponse {
     pub answers: HashMap<String, RequestUserInputAnswer>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct RequestUserInputRespondParams {
-    pub session_id: SessionId,
-    pub turn_id: TurnId,
-    #[schemars(with = "String")]
-    pub request_id: SmolStr,
-    pub response: RequestUserInputResponse,
 }

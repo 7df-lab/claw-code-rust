@@ -96,6 +96,9 @@ impl ToolHandler for ShellCommandHandler {
                 yield_time_ms,
                 max_output_tokens,
                 sandbox_profile: ctx.sandbox_profile.clone(),
+                sandbox_permission_overlay: crate::tools::sandbox_overlay_for_spawn(
+                    ctx.sandbox_permission_overlay.as_ref(),
+                ),
             },
             None,
             ctx.cancel_token.clone(),

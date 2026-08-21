@@ -35,6 +35,14 @@ pub(crate) struct TurnInlineState {
     pub(crate) collaboration_mode: CollaborationMode,
     pub(crate) hook_context: HookContextSnapshot,
     pub(crate) latest_compaction_snapshot: Option<CompactionSnapshotLine>,
+    /// Live sandbox profile shared with tool execution (L2-DES-CONV-002
+    /// Phase 3): the settings override path mutates it mid-turn and the tool
+    /// router reads it per spawn. `hook_context.config.sandbox_profile` is
+    /// updated alongside so admission checks see the same value.
+    pub(crate) sandbox_profile_live: Arc<std::sync::Mutex<Option<String>>>,
+    /// Live model/effort/compaction-limit overrides shared with the core
+    /// query loop (L2-DES-CONV-002 Phase 4).
+    pub(crate) live_turn_settings: devo_core::SharedLiveTurnSettings,
 }
 
 impl TurnInlineState {
@@ -62,6 +70,10 @@ impl TurnInlineState {
                 config: state.config.clone(),
             },
             latest_compaction_snapshot: None,
+            sandbox_profile_live: Arc::new(std::sync::Mutex::new(
+                state.config.sandbox_profile.clone(),
+            )),
+            live_turn_settings: Default::default(),
         }
     }
 

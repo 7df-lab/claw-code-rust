@@ -130,6 +130,12 @@ fn review_prompt_for_request(
         .expect("writing to a String cannot fail");
     write!(&mut prompt, "\nresource: {:?}", request.resource)
         .expect("writing to a String cannot fail");
+    write!(
+        &mut prompt,
+        "\nsandbox_permissions: {:?}",
+        request.sandbox_permissions
+    )
+    .expect("writing to a String cannot fail");
     write!(&mut prompt, "\ncwd: {}", request.cwd.display())
         .expect("writing to a String cannot fail");
     write!(&mut prompt, "\naction_summary: {}", request.action_summary)
@@ -210,7 +216,7 @@ mod tests {
             command_prefix: Some(vec!["git".to_string(), "add".to_string()]),
             command_argv: None,
             command_pattern: None,
-            requests_escalation: false,
+            sandbox_permissions: devo_core::tools::SandboxPermissionRequest::Default,
         };
 
         let model_request = build_approval_review_request(
@@ -223,7 +229,7 @@ mod tests {
         };
         assert_eq!(
             text,
-            "## Tool approval request\ntool_name: shell_command\nresource: ShellExec\ncwd: repo\naction_summary: Run git add -A\njustification: stage files\ntarget: git add -A\ncommand_prefix: git add\ninput_json: {\"command\":\"git add -A\"}"
+            "## Tool approval request\ntool_name: shell_command\nresource: ShellExec\nsandbox_permissions: Default\ncwd: repo\naction_summary: Run git add -A\njustification: stage files\ntarget: git add -A\ncommand_prefix: git add\ninput_json: {\"command\":\"git add -A\"}"
         );
     }
 
@@ -245,7 +251,7 @@ mod tests {
             command_prefix: None,
             command_argv: None,
             command_pattern: None,
-            requests_escalation: false,
+            sandbox_permissions: devo_core::tools::SandboxPermissionRequest::Default,
         };
         let context = ApprovalReviewContext {
             profile_summary: Some("preset: default; writable: /workspace".to_string()),

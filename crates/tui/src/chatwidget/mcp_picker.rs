@@ -11,8 +11,8 @@ use crate::mcp_picker::merge_mcp_picker_servers;
 use devo_core::AppConfigLoader;
 use devo_core::FileSystemAppConfigLoader;
 use devo_core::McpConfig;
-use devo_protocol::canonical::rpc_admin::McpServerInfo;
-use devo_protocol::canonical::rpc_admin::McpToolEntry;
+use devo_protocol::native::rpc_admin::McpServerInfo;
+use devo_protocol::native::rpc_admin::McpToolEntry;
 use devo_util_paths::find_devo_home;
 
 use super::ChatWidget;
@@ -100,7 +100,7 @@ fn load_mcp_config_for_picker(cwd: Option<&std::path::Path>) -> (McpConfig, Path
     let config_path = config_home.join("config.toml");
     let config = FileSystemAppConfigLoader::new(config_home)
         .load(cwd)
-        .map(|app| app.mcp)
+        .map(|app| app.mcp_runtime)
         .unwrap_or_default();
     (config, config_path)
 }

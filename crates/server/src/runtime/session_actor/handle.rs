@@ -357,10 +357,6 @@ impl SessionHandle {
         reply_rx.await.unwrap_or_default()
     }
 
-    pub(crate) async fn reset_turn_approval_cache(&self) {
-        let _ = self.send(SessionCommand::ResetTurnApprovalCache).await;
-    }
-
     #[allow(dead_code)]
     pub(crate) async fn touch_last_activity(&self) {
         let _ = self.send(SessionCommand::TouchLastActivity).await;
@@ -459,25 +455,6 @@ impl SessionHandle {
         let _ = self
             .send(SessionCommand::ActivateQueuedTurn { turn, turn_config })
             .await;
-    }
-
-    pub(crate) async fn complete_shell_turn(
-        &self,
-        turn: TurnMetadata,
-        is_error: bool,
-    ) -> Option<TurnMetadata> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if !self
-            .send(SessionCommand::CompleteShellTurn {
-                turn,
-                is_error,
-                reply: reply_tx,
-            })
-            .await
-        {
-            return None;
-        }
-        reply_rx.await.ok()
     }
 
     pub(crate) async fn update_core_permission_mode(&self, permission_mode: PermissionMode) {
@@ -585,22 +562,56 @@ impl SessionHandle {
         reply_rx.await.is_ok()
     }
 
-    /// Hot-updates the session auto-compaction token limit.
-    pub(crate) async fn apply_effective_context_window(
+    /// Best-effort permission-profile notification for the persist-first
+    /// settings write path (L2-DES-CONV-002 Phase 2): the change is already
+    /// durable, so the actor must not be waited on (it may be running a turn).
+    /// Mailbox FIFO still guarantees the actor applies it before the next
+    /// `ExecuteTurn`, so the next turn always sees the new profile.
+    pub(crate) fn notify_permission_profile(&self, profile: devo_safety::RuntimePermissionProfile) {
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        let _ = self.try_send(SessionCommand::ApplyPermissionProfile {
+            profile,
+            reply: reply_tx,
+        });
+    }
+
+    /// Best-effort sandbox-profile notification; same ordering argument as
+    /// [`Self::notify_permission_profile`].
+    pub(crate) fn notify_sandbox_profile(&self, profile: String) {
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        let _ = self.try_send(SessionCommand::ApplySandboxProfile {
+            profile,
+            reply: reply_tx,
+        });
+    }
+
+    /// Best-effort effective-context-window notification; same ordering
+    /// argument as [`Self::notify_permission_profile`].
+    pub(crate) fn notify_effective_context_window(&self, limit: usize) {
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        let _ = self.try_send(SessionCommand::ApplyEffectiveContextWindow {
+            limit,
+            reply: reply_tx,
+        });
+    }
+
+    /// Best-effort metadata notification (model/effort/collaboration mode);
+    /// same ordering argument as [`Self::notify_permission_profile`].
+    pub(crate) fn notify_session_metadata(
         &self,
-        limit: usize,
-    ) -> Option<Result<(), String>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if !self
-            .send(SessionCommand::ApplyEffectiveContextWindow {
-                limit,
-                reply: reply_tx,
-            })
-            .await
-        {
-            return None;
-        }
-        reply_rx.await.ok()
+        model: Option<String>,
+        model_binding_id: Option<String>,
+        reasoning_effort_selection: Option<String>,
+        collaboration_mode: Option<devo_protocol::CollaborationMode>,
+    ) {
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        let _ = self.try_send(SessionCommand::UpdateSessionMetadata {
+            model,
+            model_binding_id,
+            reasoning_effort_selection,
+            collaboration_mode,
+            reply: reply_tx,
+        });
     }
 
     /// Applies a new sandbox profile to the session. Returns `None` when the

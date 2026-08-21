@@ -5,7 +5,6 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
 use devo_core::tools::create_default_tool_registry;
@@ -16,6 +15,7 @@ use devo_protocol::ResponseMetadata;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
 use devo_protocol::Usage;
+use devo_protocol::native::rpc_session::GoalIfExists;
 use devo_provider::ModelProviderSDK;
 use futures::Stream;
 use futures::stream;
@@ -29,7 +29,9 @@ mod support;
 
 use support::build_runtime_with_registry;
 use support::collect_until_turn_completed;
+use support::create_goal;
 use support::initialize_connection;
+use support::read_goal;
 use support::start_session;
 use support::wait_for_captured_request_count;
 
@@ -114,45 +116,24 @@ async fn update_goal_completion_finishes_current_turn_without_another_continuati
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let session_id = start_session(&runtime, connection_id, data_root.path()).await?;
 
-    runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 20,
-                "method": "_devo/goal/set",
-                "params": {
-                    "sessionId": session_id,
-                    "objective": "complete the goal with update_goal",
-                    "status": "active"
-                }
-            }),
-        )
-        .await
-        .context("goal/set response")?;
+    create_goal(
+        &runtime,
+        connection_id,
+        session_id,
+        "complete the goal with update_goal",
+        None,
+        GoalIfExists::Reject,
+        "goal-update-completion",
+    )
+    .await?;
 
     collect_until_turn_completed(&mut notifications_rx).await?;
     wait_for_captured_request_count(&provider.captured_requests, /*expected*/ 2).await?;
 
-    let status_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 21,
-                "method": "_devo/goal/status",
-                "params": {
-                    "sessionId": session_id
-                }
-            }),
-        )
-        .await
-        .context("goal/status response")?;
-    let response: devo_server::SuccessResponse<devo_protocol::GoalStatusResult> =
-        serde_json::from_value(status_response)?;
+    let response = read_goal(&runtime, connection_id, session_id).await?;
     assert_eq!(
-        response.result.goal.map(|goal| goal.status),
-        Some(devo_protocol::ThreadGoalStatus::Complete)
+        response.map(|goal| goal.status),
+        Some(devo_protocol::native::goal::GoalStatus::Completed)
     );
 
     {

@@ -327,6 +327,11 @@ pub async fn initialize_connection(
                         "name": "goal-test",
                         "title": "goal-test",
                         "version": "1.0.0"
+                    },
+                    "_meta": {
+                        "devo": {
+                            "protocol": "native"
+                        }
                     }
                 }
             }),
@@ -367,6 +372,93 @@ pub async fn start_session(
     Ok(response.result.session.session_id)
 }
 
+pub async fn create_goal(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    session_id: devo_protocol::SessionId,
+    objective: &str,
+    token_budget: Option<u64>,
+    if_exists: devo_protocol::native::rpc_session::GoalIfExists,
+    idempotency_key: &str,
+) -> Result<devo_protocol::native::goal::Goal> {
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": idempotency_key,
+                "method": "session/goal/set",
+                "params": {
+                    "sessionId": session_id,
+                    "objective": objective,
+                    "tokenBudget": token_budget,
+                    "ifExists": if_exists,
+                    "idempotencyKey": idempotency_key
+                }
+            }),
+        )
+        .await
+        .context("session/goal/set response")?;
+    let response_value = response.clone();
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionGoalSetResult,
+    > = serde_json::from_value(response)
+        .with_context(|| format!("decode session/goal/set response: {response_value}"))?;
+    Ok(response.result.goal)
+}
+
+pub async fn read_goal(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    session_id: devo_protocol::SessionId,
+) -> Result<Option<devo_protocol::native::goal::Goal>> {
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": "goal-read",
+                "method": "session/goal/read",
+                "params": { "sessionId": session_id }
+            }),
+        )
+        .await
+        .context("session/goal/read response")?;
+    let response_value = response.clone();
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionGoalReadResult,
+    > = serde_json::from_value(response)
+        .with_context(|| format!("decode session/goal/read response: {response_value}"))?;
+    Ok(response.result.goal)
+}
+
+pub async fn transition_goal(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    session_id: devo_protocol::SessionId,
+    method: &str,
+    goal_id: &devo_protocol::native::ids::GoalId,
+) -> Result<devo_protocol::native::goal::Goal> {
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": format!("goal-transition-{method}"),
+                "method": method,
+                "params": {
+                    "sessionId": session_id,
+                    "expectedGoalId": goal_id
+                }
+            }),
+        )
+        .await
+        .with_context(|| format!("{method} response"))?;
+    let response_value = response.clone();
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionGoalTransitionResult,
+    > = serde_json::from_value(response)
+        .with_context(|| format!("decode {method} response: {response_value}"))?;
+    Ok(response.result.goal)
+}
+
 pub async fn wait_for_notification(
     notifications_rx: &mut mpsc::Receiver<serde_json::Value>,
     method: &str,
@@ -392,11 +484,15 @@ pub async fn wait_for_approval_request(
 ) -> Result<serde_json::Value> {
     timeout(Duration::from_secs(/*secs*/ 5), async {
         while let Some(value) = notifications_rx.recv().await {
-            if value.get("method")
-                == Some(&serde_json::json!(
+            if matches!(
+                value.get("method").and_then(serde_json::Value::as_str),
+                Some(
                     devo_protocol::ACP_SESSION_REQUEST_PERMISSION_METHOD
-                ))
-            {
+                        | "approval/command/request"
+                        | "approval/fileChange/request"
+                        | "approval/permission/request"
+                )
+            ) {
                 return Ok(value);
             }
             let value = legacy_event_from_acp_notification(value);
@@ -464,41 +560,39 @@ pub async fn collect_until_turn_completed(
     .context("timed out waiting for turn/completed")?
 }
 
-pub async fn pause_goal_and_interrupt_turn(
+pub async fn pause_goal_and_interrupt_session(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
     session_id: devo_protocol::SessionId,
-    turn_id: devo_protocol::TurnId,
+    _turn_id: devo_protocol::TurnId,
 ) -> Result<()> {
-    let _ = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 90,
-                "method": "_devo/goal/set",
-                "params": {
-                    "sessionId": session_id,
-                    "status": "paused"
-                }
-            }),
-        )
-        .await
-        .context("goal pause response")?;
+    let goal = read_goal(runtime, connection_id, session_id)
+        .await?
+        .context("goal to pause")?;
+    transition_goal(
+        runtime,
+        connection_id,
+        session_id,
+        "session/goal/pause",
+        &goal.id,
+    )
+    .await?;
     let _ = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 91,
-                "method": "_devo/turn/interrupt",
+                "method": "session/interrupt",
                 "params": {
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "reason": "test cleanup"
+                    "scope": {
+                        "scope": "session",
+                        "sessionId": session_id
+                    }
                 }
             }),
         )
         .await
-        .context("turn/interrupt response")?;
+        .context("session/interrupt response")?;
     Ok(())
 }
 

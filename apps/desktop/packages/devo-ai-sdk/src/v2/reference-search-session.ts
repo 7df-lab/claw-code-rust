@@ -46,27 +46,27 @@ type ReferenceSearchState = {
 	error: string | null
 }
 
-function devoExtensionInnerMethod(method: string): string {
-	return method.startsWith("_devo/") ? method.slice("_devo/".length) : method
-}
-
 function parseSnapshot(payload: unknown): ReferenceSearchSnapshot | null {
 	if (!payload || typeof payload !== "object") return null
 	if ("snapshot" in payload) {
 		const snapshot = (payload as { snapshot?: unknown }).snapshot
 		return parseSnapshot(snapshot)
 	}
-	const candidate = payload as Partial<ReferenceSearchSnapshot>
-	if (typeof candidate.search_id !== "string" || typeof candidate.query !== "string") {
+	const candidate = payload as Partial<ReferenceSearchSnapshot> & Record<string, unknown>
+	const searchId = candidate.search_id ?? candidate.searchId
+	const totalFileMatchCount = candidate.total_file_match_count ?? candidate.totalFileMatchCount
+	const scannedFileCount = candidate.scanned_file_count ?? candidate.scannedFileCount
+	const fileSearchComplete = candidate.file_search_complete ?? candidate.fileSearchComplete
+	if (typeof searchId !== "string" || typeof candidate.query !== "string") {
 		return null
 	}
 	return {
-		search_id: candidate.search_id,
+		search_id: searchId,
 		query: candidate.query,
 		results: Array.isArray(candidate.results) ? (candidate.results as ReferenceSearchResult[]) : [],
-		total_file_match_count: candidate.total_file_match_count ?? 0,
-		scanned_file_count: candidate.scanned_file_count ?? 0,
-		file_search_complete: candidate.file_search_complete ?? false,
+		total_file_match_count: typeof totalFileMatchCount === "number" ? totalFileMatchCount : 0,
+		scanned_file_count: typeof scannedFileCount === "number" ? scannedFileCount : 0,
+		file_search_complete: typeof fileSearchComplete === "boolean" ? fileSearchComplete : false,
 	}
 }
 
@@ -123,14 +123,14 @@ export class ReferenceSearchSession {
 		this.error = null
 		if (!searchId) return
 		try {
-			await this.request("search/cancel", { search_id: searchId })
+			await this.request("search/cancel", { searchId })
 		} catch {
 			// Best-effort cleanup when the popup closes.
 		}
 	}
 
 	handleNotification(method: string, payload: unknown): boolean {
-		const innerMethod = devoExtensionInnerMethod(method)
+		const innerMethod = method
 		if (innerMethod === "search/failed") {
 			const failed = payload as Partial<ReferenceSearchFailedPayload>
 			if (!failed.search_id || this.searchId !== failed.search_id) return true
@@ -160,16 +160,20 @@ export class ReferenceSearchSession {
 			cwd: this.cwd,
 			query,
 		})) as { snapshot: ReferenceSearchSnapshot }
-		this.searchId = result.snapshot.search_id
-		return result.snapshot
+		const snapshot = parseSnapshot(result.snapshot)
+		if (!snapshot) throw new Error("invalid reference search start response")
+		this.searchId = snapshot.search_id
+		return snapshot
 	}
 
 	private async update(query: string): Promise<ReferenceSearchSnapshot> {
 		const result = (await this.request("search/update", {
-			search_id: this.searchId,
+			searchId: this.searchId,
 			query,
 		})) as { snapshot: ReferenceSearchSnapshot }
-		return result.snapshot
+		const snapshot = parseSnapshot(result.snapshot)
+		if (!snapshot) throw new Error("invalid reference search update response")
+		return snapshot
 	}
 
 	private applySnapshot(snapshot: ReferenceSearchSnapshot): void {

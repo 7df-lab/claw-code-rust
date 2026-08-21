@@ -5,6 +5,7 @@
 //! transcripts show the real file target (including normalized location suffixes) and can shorten
 //! absolute paths relative to a known working directory.
 
+use crate::math_render::render_math;
 use crate::render::highlight::highlight_code_to_lines;
 use crate::render::line_utils::line_to_static;
 use crate::wrapping::RtOptions;
@@ -120,6 +121,62 @@ impl IndentContext {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RenderedMarkdownLine {
+    pub(crate) line: Line<'static>,
+    pub(crate) no_wrap: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RenderedMarkdown {
+    pub(crate) lines: Vec<RenderedMarkdownLine>,
+}
+
+impl RenderedMarkdown {
+    pub(crate) fn into_text(self) -> Text<'static> {
+        Text::from(
+            self.lines
+                .into_iter()
+                .map(|line| line.line)
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+/// Apply viewport wrapping while preserving structural markdown lines that must remain intact.
+pub(crate) fn wrap_rendered_markdown(
+    rendered: &[RenderedMarkdownLine],
+    options: RtOptions<'static>,
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for (index, rendered_line) in rendered.iter().enumerate() {
+        let line_options = if index == 0 {
+            options.clone()
+        } else {
+            options
+                .clone()
+                .initial_indent(options.subsequent_indent.clone())
+        };
+
+        if rendered_line.no_wrap {
+            let prefix = if index == 0 {
+                line_options.initial_indent.clone()
+            } else {
+                line_options.subsequent_indent.clone()
+            };
+            let mut spans = prefix.spans;
+            spans.extend(rendered_line.line.spans.iter().cloned());
+            out.push(Line::from_iter(spans).style(rendered_line.line.style));
+        } else {
+            crate::render::line_utils::push_owned_lines(
+                &adaptive_wrap_line(&rendered_line.line, line_options),
+                &mut out,
+            );
+        }
+    }
+    out
+}
+
 pub fn render_markdown_text(input: &str) -> Text<'static> {
     render_markdown_text_with_width(input, /*width*/ None)
 }
@@ -140,12 +197,22 @@ pub(crate) fn render_markdown_text_with_width_and_cwd(
     width: Option<usize>,
     cwd: Option<&Path>,
 ) -> Text<'static> {
+    render_markdown_with_width_and_cwd(input, width, cwd).into_text()
+}
+
+/// Render markdown while retaining layout metadata for structural lines such as terminal math.
+pub(crate) fn render_markdown_with_width_and_cwd(
+    input: &str,
+    width: Option<usize>,
+    cwd: Option<&Path>,
+) -> RenderedMarkdown {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_MATH);
     let parser = Parser::new_ext(input, options);
     let mut w = Writer::new(parser, width, cwd);
     w.run();
-    w.text
+    RenderedMarkdown { lines: w.lines }
 }
 
 #[derive(Clone, Debug)]
@@ -183,7 +250,7 @@ where
     I: Iterator<Item = Event<'a>>,
 {
     iter: I,
-    text: Text<'static>,
+    lines: Vec<RenderedMarkdownLine>,
     styles: MarkdownStyles,
     inline_styles: Vec<Style>,
     indent_stack: Vec<IndentContext>,
@@ -204,6 +271,7 @@ where
     current_subsequent_indent: Vec<Span<'static>>,
     current_line_style: Style,
     current_line_in_code_block: bool,
+    current_line_no_wrap: bool,
 }
 
 impl<'a, I> Writer<'a, I>
@@ -213,7 +281,7 @@ where
     fn new(iter: I, wrap_width: Option<usize>, cwd: Option<&Path>) -> Self {
         Self {
             iter,
-            text: Text::default(),
+            lines: Vec::new(),
             styles: MarkdownStyles::default(),
             inline_styles: Vec::new(),
             indent_stack: Vec::new(),
@@ -234,6 +302,7 @@ where
             current_subsequent_indent: Vec::new(),
             current_line_style: Style::default(),
             current_line_in_code_block: false,
+            current_line_no_wrap: false,
         }
     }
 
@@ -255,7 +324,7 @@ where
             Event::HardBreak => self.hard_break(),
             Event::Rule => {
                 self.flush_current_line();
-                if !self.text.lines.is_empty() {
+                if !self.lines.is_empty() {
                     self.push_blank_line();
                 }
                 self.push_line(Line::from("———"));
@@ -263,6 +332,8 @@ where
             }
             Event::Html(html) => self.html(html, /*inline*/ false),
             Event::InlineHtml(html) => self.html(html, /*inline*/ true),
+            Event::InlineMath(math) => self.inline_math(math),
+            Event::DisplayMath(math) => self.display_math(math),
             Event::FootnoteReference(_) => {}
             Event::TaskListMarker(_) => {}
         }
@@ -289,7 +360,7 @@ where
         match tag {
             Tag::Paragraph => self.start_paragraph(),
             Tag::Heading { level, .. } => self.start_heading(level),
-            Tag::BlockQuote => self.start_blockquote(),
+            Tag::BlockQuote(_) => self.start_blockquote(),
             Tag::CodeBlock(kind) => {
                 let indent = match kind {
                     CodeBlockKind::Fenced(_) => None,
@@ -314,7 +385,12 @@ where
             | Tag::TableRow
             | Tag::TableCell
             | Tag::Image { .. }
-            | Tag::MetadataBlock(_) => {}
+            | Tag::MetadataBlock(_)
+            | Tag::DefinitionList
+            | Tag::DefinitionListTitle
+            | Tag::DefinitionListDefinition
+            | Tag::Superscript
+            | Tag::Subscript => {}
         }
     }
 
@@ -322,7 +398,7 @@ where
         match tag {
             TagEnd::Paragraph => self.end_paragraph(),
             TagEnd::Heading(_) => self.end_heading(),
-            TagEnd::BlockQuote => self.end_blockquote(),
+            TagEnd::BlockQuote(_) => self.end_blockquote(),
             TagEnd::CodeBlock => self.end_codeblock(),
             TagEnd::List(_) => self.end_list(),
             TagEnd::Item => {
@@ -338,7 +414,12 @@ where
             | TagEnd::TableRow
             | TagEnd::TableCell
             | TagEnd::Image
-            | TagEnd::MetadataBlock(_) => {}
+            | TagEnd::MetadataBlock(_)
+            | TagEnd::DefinitionList
+            | TagEnd::DefinitionListTitle
+            | TagEnd::DefinitionListDefinition
+            | TagEnd::Superscript
+            | TagEnd::Subscript => {}
         }
     }
 
@@ -423,10 +504,9 @@ where
                 .as_ref()
                 .map(|line| !line.spans.is_empty())
                 .unwrap_or_else(|| {
-                    self.text
-                        .lines
+                    self.lines
                         .last()
-                        .map(|line| !line.spans.is_empty())
+                        .map(|line| !line.line.spans.is_empty())
                         .unwrap_or(false)
                 });
             if has_content {
@@ -462,6 +542,73 @@ where
         }
         let span = Span::from(code.into_string()).style(self.styles.code);
         self.push_span(span);
+    }
+
+    fn inline_math(&mut self, math: CowStr<'a>) {
+        if self.suppressing_local_link_label() {
+            return;
+        }
+        self.line_ends_with_local_link_target = false;
+        if self.pending_marker_line {
+            self.push_line(Line::default());
+            self.pending_marker_line = false;
+        }
+        let rows = render_math(
+            math.as_ref(),
+            self.inline_styles
+                .last()
+                .copied()
+                .unwrap_or_default()
+                .patch(self.styles.code),
+        );
+        if rows.len() == 1 {
+            self.push_span(
+                rows.into_iter()
+                    .next()
+                    .unwrap()
+                    .line
+                    .spans
+                    .into_iter()
+                    .next()
+                    .unwrap(),
+            );
+            return;
+        }
+
+        self.flush_current_line();
+        for row in rows {
+            self.push_line_with_wrap(row.line, /*no_wrap*/ true);
+        }
+        self.needs_newline = true;
+    }
+
+    fn display_math(&mut self, math: CowStr<'a>) {
+        // pulldown wraps DisplayMath events in paragraph tags, so the paragraph
+        // start already owns the blank separator and an empty leading line.
+        // Discard that empty line instead of flushing it as a duplicate blank.
+        if let Some(line) = self.current_line_content.take() {
+            if line.spans.is_empty() {
+                self.current_initial_indent.clear();
+                self.current_subsequent_indent.clear();
+                self.current_line_in_code_block = false;
+            } else {
+                self.current_line_content = Some(line);
+                self.flush_current_line();
+            }
+        }
+        // Math rows are structural and must not be text-wrapped, mirroring code blocks.
+        self.in_code_block = true;
+        let style = self
+            .inline_styles
+            .last()
+            .copied()
+            .unwrap_or_default()
+            .patch(self.styles.code);
+        for row in render_math(math.trim(), style) {
+            self.push_line_with_wrap(row.line, /*no_wrap*/ true);
+        }
+        self.in_code_block = false;
+        self.needs_newline = true;
     }
 
     fn html(&mut self, html: CowStr<'a>, inline: bool) {
@@ -559,7 +706,7 @@ where
 
     fn start_codeblock(&mut self, lang: Option<String>, indent: Option<Span<'static>>) {
         self.flush_current_line();
-        if !self.text.lines.is_empty() {
+        if !self.lines.is_empty() {
             self.push_blank_line();
         }
         self.in_code_block = true;
@@ -663,6 +810,7 @@ where
             let style = self.current_line_style;
             // NB we don't wrap code in code blocks, in order to preserve whitespace for copy/paste.
             if !self.current_line_in_code_block
+                && !self.current_line_no_wrap
                 && let Some(width) = self.wrap_width
             {
                 let opts = RtOptions::new(width)
@@ -670,22 +818,33 @@ where
                     .subsequent_indent(self.current_subsequent_indent.clone().into());
                 for wrapped in adaptive_wrap_line(&line, opts) {
                     let owned = line_to_static(&wrapped).style(style);
-                    self.text.lines.push(owned);
+                    self.lines.push(RenderedMarkdownLine {
+                        line: owned,
+                        no_wrap: self.current_line_no_wrap,
+                    });
                 }
             } else {
                 let mut spans = self.current_initial_indent.clone();
                 let mut line = line;
                 spans.append(&mut line.spans);
-                self.text.lines.push(Line::from_iter(spans).style(style));
+                self.lines.push(RenderedMarkdownLine {
+                    line: Line::from_iter(spans).style(style),
+                    no_wrap: self.current_line_no_wrap,
+                });
             }
             self.current_initial_indent.clear();
             self.current_subsequent_indent.clear();
             self.current_line_in_code_block = false;
+            self.current_line_no_wrap = false;
             self.line_ends_with_local_link_target = false;
         }
     }
 
     fn push_line(&mut self, line: Line<'static>) {
+        self.push_line_with_wrap(line, /*no_wrap*/ false);
+    }
+
+    fn push_line_with_wrap(&mut self, line: Line<'static>, no_wrap: bool) {
         self.flush_current_line();
         let blockquote_active = self
             .indent_stack
@@ -703,6 +862,7 @@ where
         self.current_line_style = style;
         self.current_line_content = Some(line);
         self.current_line_in_code_block = self.in_code_block;
+        self.current_line_no_wrap = no_wrap;
         self.line_ends_with_local_link_target = false;
 
         self.pending_marker_line = false;
@@ -719,7 +879,10 @@ where
     fn push_blank_line(&mut self) {
         self.flush_current_line();
         if self.indent_stack.iter().all(|ctx| ctx.is_list) {
-            self.text.lines.push(Line::default());
+            self.lines.push(RenderedMarkdownLine {
+                line: Line::default(),
+                no_wrap: false,
+            });
         } else {
             self.push_line(Line::default());
             self.flush_current_line();

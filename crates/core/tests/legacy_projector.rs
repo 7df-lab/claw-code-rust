@@ -24,14 +24,14 @@ use devo_core::{
     TurnError, TurnId, TurnItem, TurnKind, TurnLine, TurnRecord, TurnStatus, TurnUsage,
     WorkspaceRestorePolicy, parse_rollout_line,
 };
-use devo_protocol::canonical::ids::ItemId as CanonicalItemId;
-use devo_protocol::canonical::item::{
+use devo_protocol::native::ids::ItemId as CanonicalItemId;
+use devo_protocol::native::item::{
     ApprovalDecisionKind, ApprovalScope, ApprovalTarget, ExecOrigin, ExecutionMode, Item,
     ItemState, ToolSource, UserInput, UserMessageEntry,
 };
-use devo_protocol::canonical::model::PermissionProfile;
-use devo_protocol::canonical::session::SessionParent;
-use devo_protocol::canonical::turn::{
+use devo_protocol::native::model::PermissionProfile;
+use devo_protocol::native::session::SessionParent;
+use devo_protocol::native::turn::{
     TurnKind as CanonicalTurnKind, TurnStatus as CanonicalTurnStatus,
 };
 use pretty_assertions::assert_eq;
@@ -481,6 +481,9 @@ fn fixture_content(name: &str, lines: &[RolloutLine]) -> String {
     expected.push('\n');
     match fs::read_to_string(&path) {
         Ok(existing) => {
+            // Fixtures are stored in the repo and may be checked out with
+            // Windows CRLF line endings. Normalize before comparison.
+            let existing = existing.replace("\r\n", "\n");
             assert_eq!(
                 existing, expected,
                 "fixture {name} drifted from its builder; the legacy schema must not change"
@@ -528,7 +531,7 @@ fn assert_v2_roundtrip(projected: &[RolloutLineV2]) {
     }
 }
 
-fn item_envelopes(lines: &[RolloutLineV2]) -> Vec<&devo_protocol::canonical::item::ItemEnvelope> {
+fn item_envelopes(lines: &[RolloutLineV2]) -> Vec<&devo_protocol::native::item::ItemEnvelope> {
     lines
         .iter()
         .filter_map(|line| match line {
@@ -700,7 +703,7 @@ fn internal_payloads_become_internal_lines_not_items() {
     assert!(item_envelopes(&projected).is_empty());
 
     use devo_core::InternalRecordV2;
-    use devo_protocol::canonical::item::InternalEntry;
+    use devo_protocol::native::item::InternalEntry;
 
     let internal_entries: Vec<_> = projected
         .iter()
@@ -744,7 +747,7 @@ fn subagent_session_and_failed_compaction_turn_project() {
     assert_eq!(
         session.parent,
         Some(SessionParent::Agent {
-            session_id: devo_protocol::canonical::ids::SessionId::from_legacy_uuid(uuid(0xc0)),
+            session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(uuid(0xc0)),
             role: Some("explorer".into()),
         })
     );

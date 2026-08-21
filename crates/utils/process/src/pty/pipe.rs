@@ -107,6 +107,7 @@ async fn spawn_process_with_stdin_mode(
     stdin_mode: PipeStdinMode,
     inherited_fds: &[i32],
     sandbox_profile: Option<String>,
+    sandbox_overlay: Option<devo_sandbox::SandboxPermissionOverlay>,
 ) -> Result<SpawnedProcess> {
     if program.is_empty() {
         anyhow::bail!("missing program for pipe spawn");
@@ -119,11 +120,12 @@ async fn spawn_process_with_stdin_mode(
     // the profile needs enforcement Landlock cannot express (deny paths,
     // network restriction); everything else runs unwrapped.
     #[cfg(unix)]
-    let sandbox_wrap = devo_sandbox::wrap_command_for_profile(
+    let sandbox_wrap = devo_sandbox::wrap_command_for_profile_with_overlay(
         sandbox_profile.as_deref(),
         cwd,
         devo_sandbox::WrapMode::PipeComposed,
         &devo_sandbox::SandboxLogger::new(),
+        sandbox_overlay.as_ref(),
     )?;
     #[cfg(not(unix))]
     let sandbox_wrap = devo_sandbox::SandboxWrap::None;
@@ -155,7 +157,11 @@ async fn spawn_process_with_stdin_mode(
     let sandbox_workspace = cwd.to_path_buf();
     #[cfg(unix)]
     let sandbox_plan = if sandbox_wrap.requires_child_apply() {
-        crate::sandbox::resolve_profile_for_spawn(sandbox_profile.as_deref(), &sandbox_workspace)?
+        crate::sandbox::resolve_profile_for_spawn_with_overlay(
+            sandbox_profile.as_deref(),
+            &sandbox_workspace,
+            sandbox_overlay.as_ref(),
+        )?
     } else {
         None
     };
@@ -171,7 +177,7 @@ async fn spawn_process_with_stdin_mode(
         });
     }
     #[cfg(not(unix))]
-    let _ = (arg0, sandbox_profile);
+    let _ = (arg0, sandbox_profile, sandbox_overlay);
     command.current_dir(cwd);
     command.env_clear();
     for (key, value) in env {
@@ -324,6 +330,7 @@ pub async fn spawn_process(
         PipeStdinMode::Piped,
         &[],
         None,
+        None,
     )
     .await
 }
@@ -347,6 +354,7 @@ pub async fn spawn_process_sandboxed(
         PipeStdinMode::Piped,
         &[],
         sandbox_profile,
+        None,
     )
     .await
 }
@@ -381,6 +389,7 @@ pub async fn spawn_process_no_stdin_with_inherited_fds(
         PipeStdinMode::Null,
         inherited_fds,
         None,
+        None,
     )
     .await
 }
@@ -397,6 +406,39 @@ pub async fn spawn_process_no_stdin_sandboxed(
     inherited_fds: &[i32],
     sandbox_profile: Option<String>,
 ) -> Result<SpawnedProcess> {
+    spawn_process_no_stdin_sandboxed_with_overlay(
+        program,
+        args,
+        cwd,
+        env,
+        arg0,
+        inherited_fds,
+        SandboxProcessOptions {
+            sandbox_profile,
+            sandbox_overlay: None,
+        },
+    )
+    .await
+}
+
+/// Optional sandbox settings for a pipe-backed process.
+pub struct SandboxProcessOptions {
+    /// Named sandbox profile applied before the child process starts.
+    pub sandbox_profile: Option<String>,
+    /// Per-invocation permissions merged into the named profile.
+    pub sandbox_overlay: Option<devo_sandbox::SandboxPermissionOverlay>,
+}
+
+/// Spawn a pipe process with a named sandbox profile and per-invocation overlay.
+pub async fn spawn_process_no_stdin_sandboxed_with_overlay(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    arg0: &Option<String>,
+    inherited_fds: &[i32],
+    options: SandboxProcessOptions,
+) -> Result<SpawnedProcess> {
     spawn_process_with_stdin_mode(
         program,
         args,
@@ -405,7 +447,8 @@ pub async fn spawn_process_no_stdin_sandboxed(
         arg0,
         PipeStdinMode::Null,
         inherited_fds,
-        sandbox_profile,
+        options.sandbox_profile,
+        options.sandbox_overlay,
     )
     .await
 }

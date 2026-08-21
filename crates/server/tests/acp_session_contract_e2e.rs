@@ -44,6 +44,8 @@ async fn stdio_acp_load_and_resume_match_session_setup_contract() -> Result<()> 
     let mut command = devo_command()?;
     let mut child = command
         .arg("server")
+        .arg("--protocols")
+        .arg("acp")
         .arg("--transport")
         .arg("stdio")
         .env("DEVO_HOME", home_dir.path().join(".devo"))
@@ -331,6 +333,8 @@ base_instructions = "Catalog-only model instructions"
     let mut command = devo_command()?;
     let mut child = command
         .arg("server")
+        .arg("--protocols")
+        .arg("acp")
         .arg("--transport")
         .arg("stdio")
         .env("DEVO_HOME", home_dir.path().join(".devo"))
@@ -599,6 +603,8 @@ async fn stdio_proxy_acp_prompt_streams_each_agent_chunk_once() -> Result<()> {
     let mut first_command = devo_command()?;
     let mut first_child = first_command
         .arg("server")
+        .arg("--protocols")
+        .arg("acp")
         .arg("--transport")
         .arg("stdio")
         .env("DEVO_HOME", &devo_home)
@@ -695,6 +701,8 @@ async fn stdio_proxy_acp_prompt_streams_each_agent_chunk_once() -> Result<()> {
     let mut proxy_command = devo_command()?;
     let mut proxy_child = proxy_command
         .arg("server")
+        .arg("--protocols")
+        .arg("acp")
         .arg("--transport")
         .arg("stdio")
         .env("DEVO_HOME", &devo_home)

@@ -37,6 +37,9 @@ const SERVER_CHILD_EXIT_TIMEOUT: Duration = Duration::from_millis(500);
 pub struct StdioServerClientConfig {
     pub program: PathBuf,
     pub args: Vec<String>,
+    /// Opt into native typed item events (L2-DES-APP-009); only consumers
+    /// that handle typed shapes may set this.
+    pub typed_items: bool,
 }
 
 pub struct StdioServerClient {
@@ -69,7 +72,7 @@ impl StdioServerClient {
         let stderr = child.stderr.take().context("capture server stderr")?;
 
         let (client_writer, write_rx) = ClientWriter::channel();
-        let core = ServerClientCore::new(
+        let mut core = ServerClientCore::new(
             client_writer,
             AcpClientCapabilities {
                 fs: AcpFileSystemCapabilities {
@@ -78,9 +81,15 @@ impl StdioServerClient {
                     meta: None,
                 },
                 terminal: false,
+                session: None,
                 meta: None,
             },
         );
+        core.set_typed_items_opt_in(config.typed_items);
+        // The stdio client (TUI/CLI) speaks the Native session surface;
+        // declare it so colliding method names route to Native handlers
+        // (L2-DES-APP-009 DD-6).
+        core.set_native_protocol_opt_in(true);
         let reader_state = core.reader_state();
         let stdin = Arc::new(Mutex::new(stdin));
         let trace = ProtocolTrace::from_env();
@@ -144,25 +153,6 @@ impl StdioServerClient {
         self.core.session_list().await
     }
 
-    pub async fn agent_list(&mut self, params: AgentListParams) -> Result<AgentListResult> {
-        self.core.agent_list(params).await
-    }
-
-    pub async fn agent_spawn(&mut self, params: SpawnAgentParams) -> Result<SpawnAgentResult> {
-        self.core.agent_spawn(params).await
-    }
-
-    pub async fn agent_close(&mut self, params: CloseAgentParams) -> Result<CloseAgentResult> {
-        self.core.agent_close(params).await
-    }
-
-    pub async fn session_title_update(
-        &mut self,
-        params: SessionTitleUpdateParams,
-    ) -> Result<SessionTitleUpdateResult> {
-        self.core.session_title_update(params).await
-    }
-
     pub async fn session_delete(
         &mut self,
         params: AcpDeleteSessionParams,
@@ -170,158 +160,77 @@ impl StdioServerClient {
         self.core.session_delete(params).await
     }
 
-    pub async fn session_metadata_update(
+    /// Native settings patch; see `client_core::session_settings_update`.
+    pub async fn session_settings_update(
         &mut self,
-        params: SessionMetadataUpdateParams,
-    ) -> Result<SessionMetadataUpdateResult> {
-        self.core.session_metadata_update(params).await
+        session_id: SessionId,
+        patch: devo_protocol::native::rpc_session::SessionSettingsPatch,
+    ) -> Result<devo_protocol::native::rpc_session::SessionMetadataUpdateResult> {
+        self.core.session_settings_update(session_id, patch).await
     }
 
-    pub async fn session_permissions_update(
+    /// Native model/metadata update; see `client_core::session_model_update`.
+    pub async fn session_model_update(
         &mut self,
-        params: SessionPermissionsUpdateParams,
-    ) -> Result<SessionPermissionsUpdateResult> {
-        self.core.session_permissions_update(params).await
+        session_id: SessionId,
+        model: Option<String>,
+        model_binding_id: Option<String>,
+        reasoning_effort_selection: Option<String>,
+        collaboration_mode: Option<devo_protocol::CollaborationMode>,
+    ) -> Result<devo_protocol::native::rpc_session::SessionMetadataUpdateResult> {
+        self.core
+            .session_model_update(
+                session_id,
+                model,
+                model_binding_id,
+                reasoning_effort_selection,
+                collaboration_mode,
+            )
+            .await
     }
 
-    pub async fn session_compaction_update(
-        &mut self,
-        params: SessionCompactionUpdateParams,
-    ) -> Result<SessionCompactionUpdateResult> {
-        self.core.session_compaction_update(params).await
-    }
-
-    pub async fn session_sandbox_profile_update(
-        &mut self,
-        params: SessionSandboxProfileUpdateParams,
-    ) -> Result<SessionSandboxProfileUpdateResult> {
-        self.core.session_sandbox_profile_update(params).await
-    }
-
-    pub async fn session_compact(
-        &mut self,
-        params: SessionCompactParams,
-    ) -> Result<TurnStartResult> {
-        self.core.session_compact(params).await
-    }
-
-    pub async fn session_cancel(&mut self, params: AcpCancelParams) -> Result<AcpEmptyResult> {
+    pub async fn session_cancel(&mut self, params: AcpCancelParams) -> Result<()> {
         self.core.session_cancel(params).await
-    }
-
-    pub async fn goal_create(&mut self, params: GoalCreateParams) -> Result<GoalCreateResult> {
-        self.core.goal_create(params).await
-    }
-
-    pub async fn goal_set(&mut self, params: GoalSetParams) -> Result<GoalSetResult> {
-        self.core.goal_set(params).await
-    }
-
-    pub async fn goal_status(&mut self, params: GoalStatusParams) -> Result<GoalStatusResult> {
-        self.core.goal_status(params).await
-    }
-
-    pub async fn goal_pause(&mut self, params: GoalSetStatusParams) -> Result<GoalSetStatusResult> {
-        self.core.goal_pause(params).await
-    }
-
-    pub async fn goal_resume(
-        &mut self,
-        params: GoalSetStatusParams,
-    ) -> Result<GoalSetStatusResult> {
-        self.core.goal_resume(params).await
-    }
-
-    pub async fn goal_complete(
-        &mut self,
-        params: GoalSetStatusParams,
-    ) -> Result<GoalSetStatusResult> {
-        self.core.goal_complete(params).await
-    }
-
-    pub async fn goal_clear(&mut self, params: GoalClearParams) -> Result<GoalClearResult> {
-        self.core.goal_clear(params).await
-    }
-
-    pub async fn session_fork(&mut self, params: SessionForkParams) -> Result<SessionForkResult> {
-        self.core.session_fork(params).await
-    }
-
-    pub async fn session_rollback(
-        &mut self,
-        params: SessionRollbackParams,
-    ) -> Result<SessionRollbackResult> {
-        self.core.session_rollback(params).await
-    }
-
-    pub async fn skills_list(&mut self, params: SkillListParams) -> Result<SkillListResult> {
-        self.core.skills_list(params).await
-    }
-
-    pub async fn skills_changed(
-        &mut self,
-        params: SkillChangedParams,
-    ) -> Result<SkillChangedResult> {
-        self.core.skills_changed(params).await
-    }
-
-    pub async fn skills_set_enabled(
-        &mut self,
-        params: SkillSetEnabledParams,
-    ) -> Result<SkillSetEnabledResult> {
-        self.core.skills_set_enabled(params).await
     }
 
     pub async fn mcp_list(
         &mut self,
-        params: devo_protocol::canonical::rpc_admin::McpListParams,
-    ) -> Result<devo_protocol::canonical::rpc_admin::McpListResult> {
+        params: devo_protocol::native::rpc_admin::McpListParams,
+    ) -> Result<devo_protocol::native::rpc_admin::McpListResult> {
         self.core.mcp_list(params).await
     }
 
     pub async fn mcp_tools(
         &mut self,
-        params: devo_protocol::canonical::rpc_admin::McpToolsParams,
-    ) -> Result<devo_protocol::canonical::rpc_admin::McpToolsResult> {
+        params: devo_protocol::native::rpc_admin::McpToolsParams,
+    ) -> Result<devo_protocol::native::rpc_admin::McpToolsResult> {
         self.core.mcp_tools(params).await
     }
 
     pub async fn mcp_set_enabled(
         &mut self,
-        params: devo_protocol::canonical::rpc_admin::McpSetEnabledParams,
-    ) -> Result<devo_protocol::canonical::rpc_admin::McpSetEnabledResult> {
+        params: devo_protocol::native::rpc_admin::McpSetEnabledParams,
+    ) -> Result<devo_protocol::native::rpc_admin::McpSetEnabledResult> {
         self.core.mcp_set_enabled(params).await
     }
 
-    pub async fn model_catalog(
+    pub async fn provider_list(
         &mut self,
-        params: ModelCatalogParams,
-    ) -> Result<ModelCatalogResult> {
-        self.core.model_catalog(params).await
+    ) -> Result<devo_protocol::native::rpc_admin::ProviderListResult> {
+        self.core.provider_list().await
     }
 
-    pub async fn model_saved(&mut self, params: ModelSavedParams) -> Result<ModelSavedResult> {
-        self.core.model_saved(params).await
-    }
-
-    pub async fn provider_vendor_list(
+    pub async fn provider_upsert(
         &mut self,
-        params: ProviderVendorListParams,
-    ) -> Result<ProviderVendorListResult> {
-        self.core.provider_vendor_list(params).await
-    }
-
-    pub async fn provider_vendor_upsert(
-        &mut self,
-        params: ProviderVendorUpsertParams,
-    ) -> Result<ProviderVendorUpsertResult> {
-        self.core.provider_vendor_upsert(params).await
+        params: devo_protocol::native::rpc_admin::ProviderUpsertParams,
+    ) -> Result<devo_protocol::native::rpc_admin::ProviderUpsertResult> {
+        self.core.provider_upsert(params).await
     }
 
     pub async fn provider_validate(
         &mut self,
-        params: ProviderValidateParams,
-    ) -> Result<ProviderValidateResult> {
+        params: devo_protocol::native::rpc_admin::ProviderValidateParams,
+    ) -> Result<devo_protocol::native::rpc_admin::ProviderValidateResult> {
         self.core.provider_validate(params).await
     }
 
@@ -329,84 +238,336 @@ impl StdioServerClient {
         self.core.command_exec(params).await
     }
 
-    pub async fn command_exec_write(
-        &mut self,
-        params: CommandExecWriteParams,
-    ) -> Result<CommandExecWriteResult> {
-        self.core.command_exec_write(params).await
-    }
-
-    pub async fn command_exec_resize(
-        &mut self,
-        params: CommandExecResizeParams,
-    ) -> Result<CommandExecResizeResult> {
-        self.core.command_exec_resize(params).await
-    }
-
-    pub async fn command_exec_terminate(
-        &mut self,
-        params: CommandExecTerminateParams,
-    ) -> Result<CommandExecTerminateResult> {
-        self.core.command_exec_terminate(params).await
-    }
-
     pub async fn turn_start(&mut self, params: TurnStartParams) -> Result<TurnStartResult> {
         self.core.turn_start(params).await
     }
 
-    pub async fn turn_shell_command(
+    /// Native `turn/start`; see `client_core::turn_start_native`.
+    pub async fn turn_start_native(
         &mut self,
-        params: ShellCommandParams,
-    ) -> Result<ShellCommandResult> {
-        self.core.turn_shell_command(params).await
+        session_id: SessionId,
+        input: Vec<devo_protocol::native::item::UserInput>,
+        idempotency_key: String,
+    ) -> Result<devo_protocol::native::rpc_turn::TurnStartResult> {
+        self.core
+            .turn_start_native(session_id, input, idempotency_key)
+            .await
     }
 
-    pub async fn turn_interrupt(
+    /// Native `session/compact/start`; see
+    /// `client_core::session_compact_start_native`.
+    pub async fn session_compact_start_native(
         &mut self,
-        params: TurnInterruptParams,
-    ) -> Result<TurnInterruptResult> {
-        self.core.turn_interrupt(params).await
+        session_id: SessionId,
+    ) -> Result<devo_protocol::native::rpc_turn::TurnStartResult> {
+        self.core.session_compact_start_native(session_id).await
+    }
+
+    /// Native `session/interrupt`; see `client_core::session_interrupt_native`.
+    pub async fn session_interrupt_native(
+        &mut self,
+        scope: devo_protocol::native::rpc_session::SessionInterruptScope,
+    ) -> Result<devo_protocol::native::rpc_session::SessionInterruptResult> {
+        self.core.session_interrupt_native(scope).await
+    }
+
+    /// Native `task/start` kind=process; see
+    /// `client_core::task_start_process_native`.
+    pub async fn task_start_process_native(
+        &mut self,
+        session_id: SessionId,
+        command: String,
+        cwd: Option<PathBuf>,
+        idempotency_key: String,
+    ) -> Result<devo_protocol::native::rpc_turn::TaskStartResult> {
+        self.core
+            .task_start_process_native(session_id, command, cwd, idempotency_key)
+            .await
+    }
+
+    /// Native `agent/list`; see `client_core::agent_list_native`.
+    pub async fn agent_list_native(
+        &mut self,
+        session_id: SessionId,
+    ) -> Result<devo_protocol::native::rpc_turn::AgentListResult> {
+        self.core.agent_list_native(session_id).await
+    }
+
+    /// Native `agent/cancel`; see `client_core::agent_cancel_native`.
+    pub async fn agent_cancel_native(
+        &mut self,
+        item_id: &devo_protocol::native::ids::ItemId,
+    ) -> Result<()> {
+        self.core.agent_cancel_native(item_id).await
+    }
+
+    /// Native `agent/message`; see `client_core::agent_message_native`.
+    pub async fn agent_message_native(
+        &mut self,
+        item_id: &devo_protocol::native::ids::ItemId,
+        input: Vec<devo_protocol::native::item::UserInput>,
+    ) -> Result<()> {
+        self.core.agent_message_native(item_id, input).await
+    }
+
+    /// Native `agent/read`; see `client_core::agent_read_native`.
+    pub async fn agent_read_native(
+        &mut self,
+        item_id: &devo_protocol::native::ids::ItemId,
+    ) -> Result<devo_protocol::native::rpc_turn::AgentReadResult> {
+        self.core.agent_read_native(item_id).await
+    }
+
+    /// Native `task/interrupt`; see `client_core::task_interrupt_native`.
+    pub async fn task_interrupt_native(
+        &mut self,
+        item_id: &devo_protocol::native::ids::ItemId,
+    ) -> Result<()> {
+        self.core.task_interrupt_native(item_id).await
+    }
+
+    /// Native `task/start` kind=agent; see
+    /// `client_core::task_start_agent_native`.
+    pub async fn task_start_agent_native(
+        &mut self,
+        params: devo_protocol::native::rpc_turn::TaskStartParams,
+    ) -> Result<devo_protocol::native::rpc_turn::TaskStartResult> {
+        self.core.task_start_agent_native(params).await
+    }
+
+    /// Native `session/new`; see `client_core::session_new_native`.
+    pub async fn session_new_native(
+        &mut self,
+        cwd: PathBuf,
+        idempotency_key: String,
+    ) -> Result<devo_protocol::native::rpc_session::SessionNewResult> {
+        self.core.session_new_native(cwd, idempotency_key).await
+    }
+
+    /// Native `session/rollback/preview`; see
+    /// `client_core::session_rollback_preview_native`.
+    pub async fn session_rollback_preview_native(
+        &mut self,
+        session_id: SessionId,
+        user_turn_index: u32,
+        mode: devo_protocol::native::rpc_session::RollbackMode,
+    ) -> Result<devo_protocol::native::rpc_session::RestorePlan> {
+        self.core
+            .session_rollback_preview_native(session_id, user_turn_index, mode)
+            .await
+    }
+
+    /// Native `session/rollback/commit`; see
+    /// `client_core::session_rollback_commit_native`.
+    pub async fn session_rollback_commit_native(
+        &mut self,
+        restore_plan_id: devo_protocol::native::ids::RestorePlanId,
+        expected_workspace_version: String,
+    ) -> Result<devo_protocol::native::rpc_session::SessionRollbackCommitResult> {
+        self.core
+            .session_rollback_commit_native(restore_plan_id, expected_workspace_version)
+            .await
+    }
+
+    /// Native `model/list`; see `client_core::model_list_native`.
+    pub async fn model_list_native(
+        &mut self,
+    ) -> Result<devo_protocol::native::rpc_admin::ModelListResult> {
+        self.core.model_list_native().await
+    }
+
+    /// Native `skill/list` (ratified #4): workspace-scoped listing.
+    pub async fn skill_list_native(
+        &mut self,
+        cwd: Option<PathBuf>,
+        force_reload: bool,
+    ) -> Result<devo_protocol::native::rpc_admin::SkillListResult> {
+        self.core
+            .request(
+                "skill/list",
+                devo_protocol::native::rpc_admin::SkillListParams { cwd, force_reload },
+            )
+            .await
+    }
+
+    /// Native `skill/set_enabled` (ratified #4): keyed by path.
+    pub async fn skill_set_enabled_native(
+        &mut self,
+        path: PathBuf,
+        enabled: bool,
+    ) -> Result<devo_protocol::native::rpc_admin::SkillSetEnabledResult> {
+        self.core
+            .request(
+                "skill/set_enabled",
+                devo_protocol::native::rpc_admin::SkillSetEnabledParams {
+                    path,
+                    enabled,
+                    cwd: None,
+                },
+            )
+            .await
+    }
+
+    /// Native `session/list`; see `client_core::session_list_native`.
+    pub async fn session_list_native(
+        &mut self,
+        params: devo_protocol::native::rpc_session::SessionListParams,
+    ) -> Result<devo_protocol::native::rpc_session::SessionListResult> {
+        self.core.session_list_native(params).await
+    }
+
+    /// Native `session/delete`; see `client_core::session_delete_native`.
+    pub async fn session_delete_native(&mut self, session_id: SessionId) -> Result<()> {
+        self.core.session_delete_native(session_id).await
+    }
+
+    /// Native `session/resume`; see `client_core::session_resume_native`.
+    pub async fn session_resume_native(
+        &mut self,
+        session_id: SessionId,
+    ) -> Result<devo_protocol::native::rpc_session::SessionResumeResult> {
+        self.core.session_resume_native(session_id).await
+    }
+
+    /// Native `session/goal/set`; see `client_core::session_goal_set_native`.
+    pub async fn session_goal_set_native(
+        &mut self,
+        session_id: SessionId,
+        objective: String,
+        token_budget: Option<u64>,
+        if_exists: devo_protocol::native::rpc_session::GoalIfExists,
+        idempotency_key: String,
+    ) -> Result<devo_protocol::native::rpc_session::SessionGoalSetResult> {
+        self.core
+            .session_goal_set_native(
+                session_id,
+                objective,
+                token_budget,
+                if_exists,
+                idempotency_key,
+            )
+            .await
+    }
+
+    /// Native `session/goal/update`; see `client_core::session_goal_update_native`.
+    pub async fn session_goal_update_native(
+        &mut self,
+        session_id: SessionId,
+        patch: devo_protocol::native::rpc_session::GoalPatch,
+        idempotency_key: String,
+    ) -> Result<devo_protocol::native::rpc_session::SessionGoalUpdateResult> {
+        self.core
+            .session_goal_update_native(session_id, patch, idempotency_key)
+            .await
+    }
+
+    /// Native `session/goal/read`; see `client_core::session_goal_read_native`.
+    pub async fn session_goal_read_native(
+        &mut self,
+        session_id: SessionId,
+    ) -> Result<devo_protocol::native::rpc_session::SessionGoalReadResult> {
+        self.core.session_goal_read_native(session_id).await
+    }
+
+    /// Native `session/items/list`; see
+    /// `client_core::session_items_list_native`.
+    pub async fn session_items_list_native(
+        &mut self,
+        session_id: SessionId,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope>> {
+        self.core
+            .session_items_list_native(session_id, cursor, limit)
+            .await
+    }
+
+    /// Native `session/turns/list`; see
+    /// `client_core::session_turns_list_native`.
+    pub async fn session_turns_list_native(
+        &mut self,
+        session_id: SessionId,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<devo_protocol::native::page::Page<devo_protocol::native::turn::Turn>> {
+        self.core
+            .session_turns_list_native(session_id, cursor, limit)
+            .await
+    }
+
+    /// Native `session/fork`; see `client_core::session_fork_native`.
+    pub async fn session_fork_native(
+        &mut self,
+        session_id: SessionId,
+        at_turn_id: Option<TurnId>,
+    ) -> Result<devo_protocol::native::rpc_session::SessionForkResult> {
+        self.core.session_fork_native(session_id, at_turn_id).await
+    }
+
+    /// Native session title rename; see
+    /// `client_core::session_title_update_native`.
+    pub async fn session_title_update_native(
+        &mut self,
+        session_id: SessionId,
+        title: String,
+    ) -> Result<devo_protocol::native::rpc_session::SessionMetadataUpdateResult> {
+        self.core
+            .session_title_update_native(session_id, title)
+            .await
+    }
+
+    /// Native goal lifecycle transition; see
+    /// `client_core::session_goal_transition_native`.
+    pub async fn session_goal_transition_native(
+        &mut self,
+        session_id: SessionId,
+        expected_goal_id: &devo_protocol::native::ids::GoalId,
+        transition: crate::GoalLifecycleTransition,
+    ) -> Result<Option<devo_protocol::native::goal::Goal>> {
+        self.core
+            .session_goal_transition_native(session_id, expected_goal_id, transition)
+            .await
     }
 
     pub async fn session_queue_push(
         &mut self,
-        params: canonical::rpc_turn::SessionQueuePushParams,
-    ) -> Result<canonical::rpc_turn::SessionQueuePushResult> {
+        params: native::rpc_turn::SessionQueuePushParams,
+    ) -> Result<native::rpc_turn::SessionQueuePushResult> {
         self.core.session_queue_push(params).await
     }
 
     pub async fn session_queue_list(
         &mut self,
-        params: canonical::rpc_turn::SessionQueueListParams,
-    ) -> Result<canonical::rpc_turn::SessionQueueListResult> {
+        params: native::rpc_turn::SessionQueueListParams,
+    ) -> Result<native::rpc_turn::SessionQueueListResult> {
         self.core.session_queue_list(params).await
     }
 
     pub async fn session_queue_update(
         &mut self,
-        params: canonical::rpc_turn::SessionQueueUpdateParams,
-    ) -> Result<canonical::rpc_turn::SessionQueueUpdateResult> {
+        params: native::rpc_turn::SessionQueueUpdateParams,
+    ) -> Result<native::rpc_turn::SessionQueueUpdateResult> {
         self.core.session_queue_update(params).await
     }
 
     pub async fn session_queue_remove(
         &mut self,
-        params: canonical::rpc_turn::SessionQueueRemoveParams,
-    ) -> Result<canonical::rpc_turn::SessionQueueRemoveResult> {
+        params: native::rpc_turn::SessionQueueRemoveParams,
+    ) -> Result<native::rpc_turn::SessionQueueRemoveResult> {
         self.core.session_queue_remove(params).await
     }
 
     pub async fn session_queue_steer(
         &mut self,
-        params: canonical::rpc_turn::SessionQueueSteerParams,
-    ) -> Result<canonical::rpc_turn::SessionQueueSteerResult> {
+        params: native::rpc_turn::SessionQueueSteerParams,
+    ) -> Result<native::rpc_turn::SessionQueueSteerResult> {
         self.core.session_queue_steer(params).await
     }
 
     pub async fn subscription_create(
         &mut self,
-        params: canonical::event::SubscriptionCreateParams,
-    ) -> Result<canonical::event::SubscriptionCreateResult> {
+        params: native::event::SubscriptionCreateParams,
+    ) -> Result<native::event::SubscriptionCreateResult> {
         self.core.subscription_create(params).await
     }
 
@@ -416,30 +577,35 @@ impl StdioServerClient {
 
     pub async fn request_user_input_respond(
         &mut self,
-        params: RequestUserInputRespondParams,
+        request_id: String,
+        response: RequestUserInputResponse,
     ) -> Result<()> {
-        self.core.request_user_input_respond(params).await
+        self.core
+            .request_user_input_respond(request_id, response)
+            .await
     }
 
-    pub async fn reference_search_start(
+    /// Native `search/start`.
+    pub async fn search_start(
         &mut self,
-        params: ReferenceSearchStartParams,
-    ) -> Result<ReferenceSearchStartResult> {
-        self.core.reference_search_start(params).await
+        cwd: Option<PathBuf>,
+        query: String,
+    ) -> Result<devo_protocol::native::rpc_search::SearchSnapshot> {
+        self.core.search_start(cwd, query).await
     }
 
-    pub async fn reference_search_update(
+    /// Native `search/update`.
+    pub async fn search_update(
         &mut self,
-        params: ReferenceSearchUpdateParams,
-    ) -> Result<ReferenceSearchUpdateResult> {
-        self.core.reference_search_update(params).await
+        search_id: ReferenceSearchId,
+        query: String,
+    ) -> Result<devo_protocol::native::rpc_search::SearchSnapshot> {
+        self.core.search_update(search_id, query).await
     }
 
-    pub async fn reference_search_cancel(
-        &mut self,
-        params: ReferenceSearchCancelParams,
-    ) -> Result<ReferenceSearchCancelResult> {
-        self.core.reference_search_cancel(params).await
+    /// Native `search/cancel`.
+    pub async fn search_cancel(&mut self, search_id: ReferenceSearchId) -> Result<()> {
+        self.core.search_cancel(search_id).await
     }
 
     pub async fn recv_notification(&mut self) -> Option<ServerNotificationMessage> {
@@ -550,8 +716,6 @@ async fn run_stderr_reader(mut lines: tokio::io::Lines<BufReader<ChildStderr>>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ACP_PROMPT_COMPLETED_NOTIFICATION_METHOD;
-    use crate::ACP_PROMPT_STARTED_NOTIFICATION_METHOD;
     use crate::client_core::ClientWriteMessage;
     use crate::client_core::ClientWriter;
     use crate::client_core::PendingResponses;
@@ -569,11 +733,12 @@ mod tests {
     fn default_test_client_capabilities() -> devo_protocol::AcpClientCapabilities {
         devo_protocol::AcpClientCapabilities {
             fs: devo_protocol::AcpFileSystemCapabilities {
-                read_text_file: true,
-                write_text_file: true,
+                read_text_file: false,
+                write_text_file: false,
                 meta: None,
             },
             terminal: false,
+            session: None,
             meta: None,
         }
     }
@@ -631,6 +796,7 @@ mod tests {
                 meta: None,
             },
             terminal: false,
+            session: None,
             meta: None,
         };
         let (mut client, pending) =
@@ -971,7 +1137,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn turn_start_sends_devo_extension_with_full_params() {
+    async fn turn_start_sends_native_method_with_full_params() {
         let (child, stdin, stdout) = request_capture_child_for_turn_start_test().await;
         let (mut client, pending) =
             spawn_test_stdio_client(child, stdin, default_test_client_capabilities()).await;
@@ -1009,7 +1175,7 @@ mod tests {
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": expected_params,
             })
         );
@@ -1033,111 +1199,6 @@ mod tests {
             .expect("send turn_start response");
         let (result, mut client) = turn_start.await.expect("turn_start task joins");
         result.expect("turn_start response is accepted");
-
-        let _ = client.child.start_kill();
-        let _ = client.child.wait().await;
-    }
-
-    #[tokio::test]
-    async fn turn_start_falls_back_to_acp_prompt_with_lifecycle_notifications() {
-        let (child, stdin, stdout) = request_capture_child_for_turn_start_test().await;
-        let (mut client, pending) =
-            spawn_test_stdio_client(child, stdin, default_test_client_capabilities()).await;
-        let session_id = devo_protocol::SessionId::new();
-        let params = TurnStartParams {
-            session_id,
-            input: vec![devo_protocol::InputItem::Text {
-                text: "native prompt".to_string(),
-            }],
-            model: Some("ignored-by-acp".to_string()),
-            model_binding_id: None,
-            reasoning_effort_selection: None,
-            sandbox: None,
-            approval_policy: None,
-            cwd: None,
-            collaboration_mode: devo_protocol::CollaborationMode::Build,
-            execution_mode: devo_protocol::TurnExecutionMode::Regular,
-        };
-        let mut stdout_lines = BufReader::new(stdout).lines();
-
-        let turn_start = tokio::spawn(async move {
-            let result = client.turn_start(params).await;
-            (result, client)
-        });
-
-        let first_request = read_request_line(&mut stdout_lines).await;
-        assert_eq!(first_request["method"], "_devo/turn/start");
-        pending
-            .lock()
-            .await
-            .remove(&1)
-            .expect("devo turn/start has pending response")
-            .send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "error": {
-                    "code": -32601,
-                    "message": "method not found"
-                }
-            }))
-            .expect("send method-not-found response");
-
-        let second_request = read_request_line(&mut stdout_lines).await;
-        assert_eq!(
-            second_request,
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "session/prompt",
-                "params": {
-                    "sessionId": session_id,
-                    "prompt": [
-                        {
-                            "type": "text",
-                            "text": "native prompt"
-                        }
-                    ]
-                }
-            })
-        );
-
-        let (result, mut client) = turn_start.await.expect("turn_start task joins");
-        result.expect("ACP prompt fallback starts");
-        let started = client
-            .recv_notification()
-            .await
-            .expect("ACP prompt started notification");
-        assert_eq!(started.method, ACP_PROMPT_STARTED_NOTIFICATION_METHOD);
-        assert_eq!(
-            started.params,
-            serde_json::json!({ "sessionId": session_id })
-        );
-
-        pending
-            .lock()
-            .await
-            .remove(&2)
-            .expect("ACP prompt has pending response")
-            .send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "result": {
-                    "stopReason": "end_turn"
-                }
-            }))
-            .expect("send ACP prompt response");
-        let completed = timeout(Duration::from_secs(5), client.recv_notification())
-            .await
-            .expect("completed notification before timeout")
-            .expect("ACP prompt completed notification");
-        assert_eq!(completed.method, ACP_PROMPT_COMPLETED_NOTIFICATION_METHOD);
-        assert_eq!(
-            completed.params,
-            serde_json::json!({
-                "sessionId": session_id,
-                "stopReason": "end_turn"
-            })
-        );
 
         let _ = client.child.start_kill();
         let _ = client.child.wait().await;

@@ -62,12 +62,6 @@ pub(super) fn acp_mcp_config(
                     },
                 )
             }
-            AcpMcpServer::Unsupported(server) => {
-                return Err(format!(
-                    "{method} mcpServers transport '{}' is not supported",
-                    server.transport_type
-                ));
-            }
         };
         if !ids.insert(id.clone()) {
             return Err(format!(
@@ -109,6 +103,12 @@ fn acp_stdio_command(method: &str, server: &AcpMcpServerStdio) -> Result<Vec<Str
     if server.command.as_os_str().is_empty() {
         return Err(format!(
             "{method} mcpServers entry '{}' must include a non-empty command",
+            server.name
+        ));
+    }
+    if !server.command.is_absolute() {
+        return Err(format!(
+            "{method} mcpServers entry '{}' command must be an absolute path",
             server.name
         ));
     }
@@ -332,6 +332,23 @@ mod tests {
             acp_mcp_config("session/resume", &[server.clone(), server])
                 .expect_err("duplicate names should fail"),
             "session/resume mcpServers contains duplicate server name 'filesystem'"
+        );
+    }
+
+    #[test]
+    fn acp_mcp_config_rejects_relative_stdio_commands() {
+        let server = AcpMcpServer::Stdio(AcpMcpServerStdio {
+            name: "filesystem".to_string(),
+            command: PathBuf::from("mcp/filesystem"),
+            args: Vec::new(),
+            env: Vec::new(),
+            meta: None,
+        });
+
+        assert_eq!(
+            acp_mcp_config("session/new", &[server])
+                .expect_err("relative stdio command should fail"),
+            "session/new mcpServers entry 'filesystem' command must be an absolute path"
         );
     }
 }

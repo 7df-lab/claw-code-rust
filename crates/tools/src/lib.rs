@@ -13,8 +13,9 @@ pub mod tool_summary;
 
 pub use client_fs::{ClientFilesystem, ClientTextFileRead, ClientTextFileWrite};
 pub use contracts::{
-    RedactionState, SessionMode, ToolAgentScope, ToolCallError, ToolContext, ToolPermissionProfile,
-    ToolProgress, ToolProgressSender, ToolResult, ToolResultContent, ToolTerminalStatus,
+    RedactionState, SandboxNetworkPermission, SandboxPermissionOverlay, SessionMode,
+    ToolAgentScope, ToolCallError, ToolContext, ToolPermissionProfile, ToolProgress,
+    ToolProgressSender, ToolResult, ToolResultContent, ToolTerminalStatus,
 };
 pub use coordinator::AgentToolCoordinator;
 pub use errors::*;

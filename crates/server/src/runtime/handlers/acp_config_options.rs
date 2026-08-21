@@ -53,6 +53,12 @@ impl ServerRuntime {
         &self,
         params: AcpSetConfigOptionParams,
     ) -> Result<Vec<AcpSessionConfigOption>, (AcpErrorCode, String)> {
+        let Some(value) = params.value.string_value().map(str::to_owned) else {
+            return Err((
+                AcpErrorCode::InvalidParams,
+                "boolean session config options are not supported".to_string(),
+            ));
+        };
         let Some(session_arc) = self.sessions.lock().await.get(&params.session_id).cloned() else {
             return Err((
                 AcpErrorCode::ServerError,
@@ -78,21 +84,22 @@ impl ServerRuntime {
                 );
                 let value_is_allowed = match &model_option {
                     AcpSessionConfigOption::Select { options, .. } => {
-                        select_options_contain_value(options, &params.value)
+                        select_options_contain_value(options, &value)
                     }
+                    AcpSessionConfigOption::Boolean { .. } => false,
                 };
                 if !value_is_allowed {
                     return Err((
                         AcpErrorCode::InvalidParams,
                         format!(
                             "invalid value '{}' for session config option '{}'",
-                            params.value, params.config_id
+                            value, params.config_id
                         ),
                     ));
                 }
 
                 let mut turn_config = snapshot.runtime_context.resolve_turn_config(
-                    Some(params.value.as_str()),
+                    Some(value.as_str()),
                     snapshot.summary.reasoning_effort_selection.clone(),
                 );
                 turn_config.reasoning_effort_selection = current_reasoning_effort_value(
@@ -149,24 +156,25 @@ impl ServerRuntime {
                 };
                 let value_is_allowed = match &reasoning_effort_option {
                     AcpSessionConfigOption::Select { options, .. } => {
-                        select_options_contain_value(options, &params.value)
+                        select_options_contain_value(options, &value)
                     }
+                    AcpSessionConfigOption::Boolean { .. } => false,
                 };
                 if !value_is_allowed {
                     return Err((
                         AcpErrorCode::InvalidParams,
                         format!(
                             "invalid value '{}' for session config option '{}'",
-                            params.value, params.config_id
+                            value, params.config_id
                         ),
                     ));
                 }
 
                 let mut turn_config = snapshot.runtime_context.resolve_turn_config(
                     session_model_selection(&snapshot.summary),
-                    Some(params.value.clone()),
+                    Some(value.clone()),
                 );
-                turn_config.reasoning_effort_selection = Some(params.value.clone());
+                turn_config.reasoning_effort_selection = Some(value.clone());
 
                 let updated = session_arc
                     .update_session_metadata(
@@ -206,12 +214,12 @@ impl ServerRuntime {
                 )
             }
             ACP_MODE_CONFIG_ID => {
-                let Some(preset) = permission_preset_from_value(&params.value) else {
+                let Some(preset) = permission_preset_from_value(&value) else {
                     return Err((
                         AcpErrorCode::InvalidParams,
                         format!(
                             "invalid value '{}' for session config option '{}'",
-                            params.value, params.config_id
+                            value, params.config_id
                         ),
                     ));
                 };
@@ -245,17 +253,14 @@ impl ServerRuntime {
                 )
             }
             ACP_SANDBOX_PROFILE_CONFIG_ID => {
-                match session_arc
-                    .apply_sandbox_profile(params.value.clone())
-                    .await
-                {
+                match session_arc.apply_sandbox_profile(value.clone()).await {
                     Some(Ok(_)) => {}
                     Some(Err(error)) => {
                         return Err((
                             AcpErrorCode::InvalidParams,
                             format!(
                                 "invalid value '{}' for session config option '{}': {error}",
-                                params.value, params.config_id
+                                value, params.config_id
                             ),
                         ));
                     }
@@ -383,6 +388,7 @@ fn acp_mode_config_option_for_session(config: &SessionConfig) -> AcpSessionConfi
             })
             .collect(),
         ),
+        meta: None,
     }
 }
 
@@ -470,6 +476,7 @@ fn acp_model_config_option_for_turn_config(
         )),
         current_value,
         options: AcpSessionConfigSelectOptions::Ungrouped(options),
+        meta: None,
     }
 }
 
@@ -530,6 +537,7 @@ fn acp_reasoning_effort_config_option_for_turn_config(
         )),
         current_value,
         options: AcpSessionConfigSelectOptions::Ungrouped(options),
+        meta: None,
     })
 }
 

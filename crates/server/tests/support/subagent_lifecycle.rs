@@ -15,19 +15,24 @@ use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
 use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
+use devo_core::tools::AgentToolCoordinator;
 use devo_core::tools::create_default_tool_registry;
+use devo_protocol::AgentListParams;
 use devo_protocol::AgentListResult;
+use devo_protocol::AgentMessageParams;
 use devo_protocol::AgentMessageResult;
 use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
 use devo_protocol::RequestContent;
 use devo_protocol::ResponseContent;
 use devo_protocol::ResponseMetadata;
+use devo_protocol::SpawnAgentParams;
 use devo_protocol::SpawnAgentResult;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
 use devo_protocol::TurnStartResult;
 use devo_protocol::Usage;
+use devo_protocol::WaitAgentParams;
 use devo_protocol::WaitAgentResult;
 use devo_provider::ModelProviderSDK;
 use devo_provider::SingleProviderRouter;
@@ -303,6 +308,7 @@ pub async fn initialize_connection(
                 "params": {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                     "clientInfo": {
                         "name": "test",
                         "title": "test",
@@ -369,30 +375,21 @@ pub async fn spawn_child(
 
 pub async fn spawn_child_with(
     runtime: &Arc<ServerRuntime>,
-    connection_id: u64,
+    _connection_id: u64,
     parent_session_id: devo_protocol::SessionId,
     message: &str,
     fork_turns: Option<&str>,
 ) -> Result<SpawnAgentResult> {
-    let mut params = serde_json::json!({
-        "session_id": parent_session_id,
-        "message": message,
-    });
-    if let Some(fork_turns) = fork_turns {
-        params["fork_turns"] = serde_json::json!(fork_turns);
-    }
-    let response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 3,
-                "method": "_devo/agent/spawn",
-                "params": params
-            }),
-        )
-        .await
-        .context("agent/spawn")?;
-    Ok(serde_json::from_value::<devo_server::SuccessResponse<SpawnAgentResult>>(response)?.result)
+    Ok(Arc::clone(runtime)
+        .spawn_agent(SpawnAgentParams {
+            session_id: parent_session_id,
+            message: message.to_string(),
+            fork_turns: fork_turns.map(str::to_string),
+            max_turns: None,
+            tool_policy: devo_protocol::AgentToolPolicy::Inherit,
+            ephemeral: false,
+        })
+        .await?)
 }
 
 pub async fn wait_for_child_turn_started(
@@ -426,33 +423,30 @@ fn notification_matches_session(
     method: &str,
     session_id: devo_protocol::SessionId,
 ) -> bool {
-    let legacy_match = value.get("method") == Some(&serde_json::json!(method))
-        && value["params"]["session_id"] == serde_json::json!(session_id);
+    let direct_match = value.get("method") == Some(&serde_json::json!(method))
+        && (value["params"]["session_id"] == serde_json::json!(session_id)
+            || value["params"]["sessionId"] == serde_json::json!(session_id)
+            || value["params"]["turn"]["sessionId"] == serde_json::json!(session_id)
+            || value["params"]["item"]["sessionId"] == serde_json::json!(session_id));
     let acp_original_match = value.get("method") == Some(&serde_json::json!("session/update"))
         && value["params"]["sessionId"] == serde_json::json!(session_id)
         && value["params"]["_meta"]["devo/originalMethod"].as_str() == Some(method);
-    legacy_match || acp_original_match
+    direct_match || acp_original_match
 }
 
 pub async fn request_agent_list(
     runtime: &Arc<ServerRuntime>,
-    connection_id: u64,
+    _connection_id: u64,
     parent_session_id: devo_protocol::SessionId,
 ) -> Result<AgentListResult> {
-    let response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 6,
-                "method": "_devo/agent/list",
-                "params": {
-                    "session_id": parent_session_id
-                }
-            }),
-        )
-        .await
-        .context("agent/list")?;
-    Ok(serde_json::from_value::<devo_server::SuccessResponse<AgentListResult>>(response)?.result)
+    Ok(AgentListResult {
+        agents: Arc::clone(runtime)
+            .list_agents(AgentListParams {
+                session_id: parent_session_id,
+                path_prefix: None,
+            })
+            .await?,
+    })
 }
 
 pub async fn request_agent_wait(
@@ -474,7 +468,7 @@ pub async fn request_agent_wait(
 
 pub async fn request_agent_wait_with<T: serde::Serialize>(
     runtime: &Arc<ServerRuntime>,
-    connection_id: u64,
+    _connection_id: u64,
     session_id: devo_protocol::SessionId,
     target: Option<T>,
     after_sequence: Option<u64>,
@@ -483,82 +477,52 @@ pub async fn request_agent_wait_with<T: serde::Serialize>(
     let target = target
         .map(serde_json::to_value)
         .transpose()
-        .context("serialize wait target")?;
-    let response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 5,
-                "method": "_devo/agent/wait",
-                "params": {
-                    "session_id": session_id,
-                    "target": target,
-                    "after_sequence": after_sequence,
-                    "timeout_secs": timeout_secs
-                }
-            }),
-        )
-        .await
-        .context("agent/wait")?;
-    Ok(serde_json::from_value::<devo_server::SuccessResponse<WaitAgentResult>>(response)?.result)
+        .context("serialize wait target")?
+        .map(serde_json::from_value)
+        .transpose()
+        .context("decode wait target")?;
+    Ok(Arc::clone(runtime)
+        .wait_agent(WaitAgentParams {
+            session_id,
+            target,
+            after_sequence,
+            timeout_secs: Some(timeout_secs),
+        })
+        .await?)
 }
 
 pub async fn request_agent_send_message<T: serde::Serialize>(
     runtime: &Arc<ServerRuntime>,
-    connection_id: u64,
+    _connection_id: u64,
     session_id: devo_protocol::SessionId,
     target: T,
     message: &str,
 ) -> Result<AgentMessageResult> {
-    let target = serde_json::to_value(target).context("serialize agent target")?;
-    let response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 7,
-                "method": "_devo/agent/send_message",
-                "params": {
-                    "session_id": session_id,
-                    "target": target,
-                    "message": message
-                }
-            }),
-        )
-        .await
-        .context("agent/send_message")?;
-    Ok(
-        serde_json::from_value::<devo_server::SuccessResponse<AgentMessageResult>>(response)?
-            .result,
-    )
+    let target_value = serde_json::to_value(target).context("serialize agent target")?;
+    let target = serde_json::from_value(target_value).context("decode agent target")?;
+    Ok(Arc::clone(runtime)
+        .send_message(AgentMessageParams {
+            session_id,
+            target,
+            message: message.to_string(),
+        })
+        .await?)
 }
 
 pub async fn request_agent_close<T: serde::Serialize>(
     runtime: &Arc<ServerRuntime>,
-    connection_id: u64,
+    _connection_id: u64,
     parent_session_id: devo_protocol::SessionId,
     target: T,
 ) -> Result<devo_protocol::CloseAgentResult> {
-    let target = serde_json::to_value(target).context("serialize agent target")?;
-    let response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 4,
-                "method": "_devo/agent/close",
-                "params": {
-                    "session_id": parent_session_id,
-                    "target": target
-                }
-            }),
-        )
-        .await
-        .context("agent/close")?;
-    Ok(
-        serde_json::from_value::<devo_server::SuccessResponse<devo_protocol::CloseAgentResult>>(
-            response,
-        )?
-        .result,
-    )
+    let target_value = serde_json::to_value(target).context("serialize agent target")?;
+    let target = serde_json::from_value(target_value).context("decode agent target")?;
+    Ok(Arc::clone(runtime)
+        .close_agent(devo_protocol::CloseAgentParams {
+            session_id: parent_session_id,
+            target,
+        })
+        .await?)
 }
 
 pub async fn start_turn(
@@ -582,7 +546,7 @@ pub async fn start_turn_with_approval_policy(
             connection_id,
             serde_json::json!({
                 "id": 9,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [{ "type": "text", "text": text }],

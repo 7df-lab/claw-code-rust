@@ -9,7 +9,7 @@ use std::sync::Mutex as StdMutex;
 
 use devo_core::AppConfigStore;
 use devo_core::ProviderVendorCatalog;
-use devo_core::normalize_canonical_path;
+use devo_core::normalize_native_path;
 use lru::LruCache;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
@@ -54,7 +54,7 @@ fn workspace_context_cache(capacity: usize) -> LruCache<PathBuf, Arc<SessionRunt
 /// Cache key for workspace contexts: canonicalize so `cwd` and `cwd/.` share one entry.
 fn canonicalize_workspace_root(path: &Path) -> PathBuf {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    normalize_canonical_path(canonical)
+    normalize_native_path(canonical)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +111,7 @@ pub(crate) struct PendingUserInput {
 
 #[derive(Clone)]
 pub(crate) struct PersistedLivingItem {
-    pub(crate) item_id: devo_protocol::canonical::ids::ItemId,
+    pub(crate) item_id: devo_protocol::native::ids::ItemId,
     pub(crate) seq: u64,
     pub(crate) created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -149,7 +149,7 @@ pub struct ServerRuntimeDependencies {
     /// LRU of workspace-scoped contexts (canonical cwd → context).
     ///
     /// Avoids rebuilding MCP/tool registry/skill catalog on every
-    /// `skills/list`, session cwd switch, or other `context_for_workspace` call.
+    /// `skill/list`, session cwd switch, or other `context_for_workspace` call.
     /// Invalidate via [`Self::invalidate_workspace_contexts`] when user MCP,
     /// skills, provider, or model config mutates.
     workspace_contexts: StdMutex<LruCache<PathBuf, Arc<SessionRuntimeContext>>>,
@@ -250,7 +250,7 @@ impl ServerRuntimeDependencies {
     /// Clears the workspace context LRU so the next lookup reloads from disk.
     ///
     /// Call after user-global config mutations (MCP enable, skills enable,
-    /// provider upsert, model/config/set). Already-running sessions keep their
+    /// provider upsert, model/preferences/write). Already-running sessions keep their
     /// own `Arc<SessionRuntimeContext>`; only subsequent lookups are affected.
     pub(crate) fn invalidate_workspace_contexts(&self) {
         self.workspace_contexts

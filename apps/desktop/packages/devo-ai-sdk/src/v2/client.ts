@@ -19,7 +19,6 @@ import {
 	toolPartFromUpdate,
 } from "./acp-client-support"
 import type {
-	AcpCancelParams,
 	AcpDeleteSessionParams,
 	AcpListSessionsResult,
 	AcpLoadSessionResult,
@@ -32,21 +31,13 @@ import type {
 	AcpSetConfigOptionResult,
 } from "./generated"
 import type {
-	ModelConfigParams,
-	ModelConfigResult,
 	ProviderValidateParams,
 	ProviderValidateResult,
 	ProviderVendorListResult,
 	ProviderVendorUpsertParams,
 	ProviderVendorUpsertResult,
-	GoalClearResult,
-	GoalSetResult,
-	GoalSetStatusResult,
-	GoalStatusResult,
 	InputItem,
-	ThreadGoalStatus,
 	TurnStartResult,
-	RequestUserInputRespondParams,
 	WorkspaceChangeCoverage,
 	WorkspaceChangeScope,
 	WorkspaceChangeSetStatus,
@@ -56,6 +47,7 @@ import type {
 	WorkspaceChangesReadResult,
 	WorkspaceChangesUpdatedPayload,
 	WorkspaceDiffDetail,
+	SessionInterruptParams,
 } from "./generated/protocol"
 import {
 	ProtocolValidationError,
@@ -83,6 +75,7 @@ export interface DevoAcpTransportEvent {
 
 export interface DevoAcpTransport {
 	request(method: string, params?: unknown, directory?: string): Promise<unknown>
+	notify?(method: string, params?: unknown, directory?: string): Promise<void>
 	respond(id: JsonRpcId, result: unknown): Promise<void>
 	subscribe(listener: (event: DevoAcpTransportEvent) => void): () => void
 	connected(): boolean
@@ -227,16 +220,16 @@ interface GlobalEvent {
 	payload: Event
 }
 
+type PendingQuestion = {
+	id?: JsonRpcId
+	sessionId: string
+	questions: QuestionInfo[]
+}
+
 type PendingPermission = {
 	id: JsonRpcId
 	sessionId: string
-	options: AcpRequestPermissionParams["options"]
-}
-
-type PendingQuestion = {
-	sessionId: string
-	turnId: string
-	questions: QuestionInfo[]
+	options: Array<{ optionId: string; kind: string }>
 }
 
 function partCacheKey(sessionId: string, messageId: string): string {
@@ -345,6 +338,144 @@ function workspaceChangesUpdatedFromOriginalEvent(
 		version: numberFromProtocol(payload.version),
 		generated_at: String(payload.generated_at ?? payload.generatedAt ?? ""),
 	}
+}
+
+// ── Canonical provider conversions (ratified #11) ──
+
+function canonicalProviderVendorWire(vendor: ProviderVendor): Record<string, unknown> {
+	return {
+		name: vendor.name,
+		...(vendor.base_url != null ? { baseUrl: vendor.base_url } : {}),
+		...(vendor.credential != null ? { credential: vendor.credential } : {}),
+		...(vendor.headers != null ? { headers: vendor.headers } : {}),
+		wireApis: vendor.wire_apis,
+		enabled: vendor.enabled,
+	}
+}
+
+function canonicalModelBindingWire(binding: ProviderModelBinding): Record<string, unknown> {
+	return {
+		bindingId: binding.binding_id,
+		modelSlug: binding.model_slug,
+		provider: binding.provider,
+		requestModel: binding.request_model,
+		...(binding.display_name != null ? { displayName: binding.display_name } : {}),
+		invocationMethod: binding.invocation_method,
+		...(binding.default_reasoning_effort != null
+			? { defaultReasoningEffort: binding.default_reasoning_effort }
+			: {}),
+		enabled: binding.enabled,
+	}
+}
+
+function legacyProviderVendorFromCanonical(vendor: Record<string, unknown>): ProviderVendor {
+	return {
+		name: String(vendor.name ?? ""),
+		base_url: (vendor.baseUrl as string | null) ?? null,
+		credential: (vendor.credential as string | null) ?? null,
+		headers: (vendor.headers as string | null) ?? null,
+		wire_apis: (vendor.wireApis ?? []) as ProviderVendor["wire_apis"],
+		enabled: Boolean(vendor.enabled),
+	}
+}
+
+function legacyModelBindingFromCanonical(binding: Record<string, unknown>): ProviderModelBinding {
+	return {
+		binding_id: String(binding.bindingId ?? ""),
+		model_slug: String(binding.modelSlug ?? ""),
+		provider: String(binding.provider ?? ""),
+		request_model: String(binding.requestModel ?? ""),
+		display_name: (binding.displayName as string | null) ?? null,
+		invocation_method: binding.invocationMethod as ProviderModelBinding["invocation_method"],
+		default_reasoning_effort: (binding.defaultReasoningEffort as string | null) ?? null,
+		enabled: Boolean(binding.enabled),
+	}
+}
+
+/** Canonical `model/preferences` wire shape (ratified #12). */type ModelPreferencesWire = {
+	model?: string
+	reasoningEffort?: string
+	availableModels?: Array<{ value: string; label: string; description?: string }>
+	availableEfforts?: Array<{ value: string; label: string; description?: string }>
+}
+
+/** Canonical model preferences → the ACP select options the config UI renders. */
+function acpConfigOptionsFromModelPreferences(preferences: ModelPreferencesWire): AcpConfigOption[] {
+	const toSelectOptions = (entries?: Array<{ value: string; label: string; description?: string }>) =>
+		(entries ?? []).map((entry) => ({
+			value: entry.value,
+			name: entry.label,
+			...(entry.description !== undefined ? { description: entry.description } : {}),
+		}))
+	const options: AcpConfigOption[] = []
+	if (preferences.model !== undefined || (preferences.availableModels?.length ?? 0) > 0) {
+		options.push({
+			type: "select",
+			id: "model",
+			name: "Model",
+			description: "Controls the model used for this session",
+			category: "model",
+			currentValue: preferences.model ?? "",
+			options: toSelectOptions(preferences.availableModels),
+		} as AcpConfigOption)
+	}
+	if (preferences.reasoningEffort !== undefined || (preferences.availableEfforts?.length ?? 0) > 0) {
+		options.push({
+			type: "select",
+			id: "thought_level",
+			name: "Reasoning Effort",
+			description: "Controls the model reasoning effort used for this session",
+			category: "thought_level",
+			currentValue: preferences.reasoningEffort ?? "",
+			options: toSelectOptions(preferences.availableEfforts),
+		} as AcpConfigOption)
+	}
+	return options
+}
+
+/** Canonical (camelCase) workspace change view → legacy generated shape. */
+function legacyWorkspaceChangeViewFromCanonical(	view: Record<string, unknown>,
+): WorkspaceChangeView {
+	const base = objectRecord(view.base)
+	return {
+		scope: view.scope as WorkspaceChangeView["scope"],
+		status: view.status as WorkspaceChangeView["status"],
+		workspace_root: String(view.workspaceRoot ?? ""),
+		base: base ? legacyWorkspaceChangeBaseFromCanonical(base) : undefined,
+		coverage: view.coverage as WorkspaceChangeView["coverage"],
+		attribution: view.attribution as WorkspaceChangeView["attribution"],
+		change_set_status: view.changeSetStatus as WorkspaceChangeView["change_set_status"],
+		files: (view.files ?? []) as WorkspaceChangeView["files"],
+		stats: workspaceChangeStats(view.stats),
+		unified_diff: typeof view.unifiedDiff === "string" ? view.unifiedDiff : undefined,
+		warnings: (view.warnings ?? []) as string[],
+		generated_at: String(view.generatedAt ?? ""),
+	}
+}
+
+function legacyWorkspaceChangeBaseFromCanonical(
+	base: Record<string, unknown>,
+): WorkspaceChangeBase {
+	if (base.kind === "branch") {
+		return {
+			kind: "branch",
+			base_branch: String(base.baseBranch ?? ""),
+			merge_base: String(base.mergeBase ?? ""),
+			head: String(base.head ?? ""),
+		} as WorkspaceChangeBase
+	}
+	if (base.kind === "turn_checkpoint") {
+		return {
+			kind: "turn_checkpoint",
+			turn_id: String(base.turnId ?? ""),
+			checkpoint_id: String(base.checkpointId ?? ""),
+			backend: base.backend,
+		} as WorkspaceChangeBase
+	}
+	return {
+		kind: "head",
+		head: typeof base.head === "string" ? base.head : undefined,
+	} as WorkspaceChangeBase
 }
 
 function deletedSessionIdsFromOriginalEvent(original: unknown): string[] {
@@ -773,21 +904,47 @@ class AcpClient {
 				})
 		},
 		abort: async (params: { sessionID: string }) => {
-			const cancelParams: AcpCancelParams = { sessionId: params.sessionID }
-			await this.request("session/cancel", cancelParams)
+			const interruptParams: SessionInterruptParams = {
+				scope: { scope: "session", sessionId: params.sessionID },
+			}
+			await this.request("session/interrupt", interruptParams)
 		},
 		update: async (params: { sessionID: string; title: string }) => {
-			const result = (await this.request("_devo/session/title/update", {
-				session_id: params.sessionID,
+			// Canonical session/metadata/update (L2-DES-APP-008): the title
+			// patch on the persist-first path; result is the canonical Session.
+			const result = (await this.requestCanonical("session/metadata/update", {
+				sessionId: params.sessionID,
+				expectedVersion: 0,
 				title: params.title,
 			})) as { session?: Record<string, unknown> }
 			const metadata = result.session ?? {}
+			const usage = objectRecord(metadata.usage)
+			const usageTotals = objectRecord(usage?.total)
+			// `rememberSession` folds the legacy snake-shaped devo/session
+			// metadata; rebuild it from the canonical Session so downstream
+			// session fields (timestamps, token totals) keep their meaning.
+			const legacyMeta: Record<string, unknown> = {
+				session_id: String(metadata.id ?? params.sessionID),
+				cwd: metadata.cwd,
+				created_at: metadata.createdAt,
+				updated_at: metadata.lastActivityAt,
+				last_activity_at: metadata.lastActivityAt,
+				title: metadata.title,
+				ephemeral: metadata.ephemeral ?? false,
+				status: metadata.status,
+				total_input_tokens: usageTotals?.inputTokens ?? 0,
+				total_output_tokens: usageTotals?.outputTokens ?? 0,
+				total_tokens: usageTotals?.totalTokens ?? 0,
+				total_cache_creation_tokens: usageTotals?.cacheCreationInputTokens ?? 0,
+				total_cache_read_tokens: usageTotals?.cacheReadInputTokens ?? 0,
+				prompt_token_estimate: usageTotals?.inputTokens ?? 0,
+			}
 			const session = this.rememberSession({
-				sessionId: String(metadata.session_id ?? params.sessionID),
+				sessionId: String(metadata.id ?? params.sessionID),
 				cwd: String(metadata.cwd ?? this.sessionDirectories.get(params.sessionID) ?? this.options.directory ?? defaultCwd()),
 				title: typeof metadata.title === "string" ? metadata.title : params.title,
-				updatedAt: typeof metadata.updated_at === "string" ? metadata.updated_at : undefined,
-				_meta: { "devo/session": metadata },
+				updatedAt: typeof metadata.lastActivityAt === "string" ? metadata.lastActivityAt : undefined,
+				_meta: { "devo/session": legacyMeta },
 			})
 			this.emit(session.directory ?? this.options.directory ?? defaultCwd(), {
 				type: "session.updated",
@@ -857,6 +1014,15 @@ class AcpClient {
 		},
 	}
 
+	question = {
+		reply: async (params: { requestID: string; answers: QuestionAnswer[] }) => {
+			await this.respondToQuestion(params.requestID, params.answers, "question.replied")
+		},
+		reject: async (params: { requestID: string }) => {
+			await this.respondToQuestion(params.requestID, [], "question.rejected")
+		},
+	}
+
 	permission = {
 		respond: async (params: {
 			sessionID: string
@@ -867,15 +1033,6 @@ class AcpClient {
 		},
 		reply: async (params: { requestID: string; reply?: "once" | "always" | "reject" }) => {
 			await this.respondToPermission(params.requestID, params.reply ?? "reject")
-		},
-	}
-
-	question = {
-		reply: async (params: { requestID: string; answers: QuestionAnswer[] }) => {
-			await this.respondToQuestion(params.requestID, params.answers, "question.replied")
-		},
-		reject: async (params: { requestID: string }) => {
-			await this.respondToQuestion(params.requestID, [], "question.rejected")
 		},
 	}
 
@@ -904,21 +1061,27 @@ class AcpClient {
 	workspace = {
 		changes: {
 			read: async (params: WorkspaceChangesReadOptions) => {
-				const wireParams: WorkspaceChangesReadParams = {
-					session_id: params.sessionID,
+				// Canonical workspace/changes/read (L2-DES-APP-008): camelCase
+				// wire shape; views convert back to the legacy snake shape the
+				// renderer consumes while it stays on generated bindings.
+				const wireParams: Record<string, unknown> = {
+					sessionId: params.sessionID,
 					scopes: params.scopes,
-					diff_detail: params.diffDetail ?? "summary",
+					diffDetail: params.diffDetail ?? "summary",
 				}
 				if (params.cwd !== undefined) wireParams.cwd = params.cwd
-				if (params.baseBranch !== undefined) wireParams.base_branch = params.baseBranch
-				if (params.turnID !== undefined) wireParams.turn_id = params.turnID
+				if (params.baseBranch !== undefined) wireParams.baseBranch = params.baseBranch
+				if (params.turnID !== undefined) wireParams.turnId = params.turnID
 				if (params.maxDiffBytes !== undefined) {
-					wireParams.max_diff_bytes = Number(params.maxDiffBytes)
+					wireParams.maxDiffBytes = Number(params.maxDiffBytes)
 				}
-				const data = (await this.request(
-					"_devo/workspace/changes/read",
+				const canonical = (await this.requestCanonical(
+					"workspace/changes/read",
 					wireParams,
-				)) as WorkspaceChangesReadResult
+				)) as { views?: Array<Record<string, unknown>> }
+				const data: WorkspaceChangesReadResult = {
+					views: (canonical.views ?? []).map(legacyWorkspaceChangeViewFromCanonical),
+				}
 				return { data }
 			},
 		},
@@ -930,45 +1093,44 @@ class AcpClient {
 
 	// User requirement: Desktop's composer status area needs direct goal state
 	// controls, while the existing /goal trigger remains available for entry.
+	private async canonicalGoalTransition(method: string, sessionID: string): Promise<unknown> {
+		const current = (await this.requestCanonical("session/goal/read", {
+			sessionId: sessionID,
+		})) as { goal?: { id?: string } | null }
+		const expectedGoalId = current.goal?.id
+		if (!expectedGoalId) throw new Error("session has no active goal")
+		return this.requestCanonical(method, {
+			sessionId: sessionID,
+			expectedGoalId,
+		})
+	}
+
 	goal = {
 		status: async (params: { sessionID: string }) => {
-			const result = (await this.request("goal/status", {
+			const result = (await this.requestCanonical("session/goal/read", {
 				sessionId: params.sessionID,
-			})) as GoalStatusResult
-			return { data: result.goal }
-		},
-		set: async (params: {
-			sessionID: string
-			objective?: string
-			status?: ThreadGoalStatus
-			tokenBudget?: number | null
-		}) => {
-			const result = (await this.request("goal/set", {
-				sessionId: params.sessionID,
-				...(params.objective !== undefined ? { objective: params.objective } : {}),
-				...(params.status !== undefined ? { status: params.status } : {}),
-				...(params.tokenBudget !== undefined ? { tokenBudget: params.tokenBudget } : {}),
-			})) as GoalSetResult
+			})) as { goal?: unknown }
 			return { data: result.goal }
 		},
 		pause: async (params: { sessionID: string }) => {
-			const result = (await this.request("goal/pause", {
-				sessionId: params.sessionID,
-				status: "paused",
-			})) as GoalSetStatusResult
+			const result = (await this.canonicalGoalTransition(
+				"session/goal/pause",
+				params.sessionID,
+			)) as { goal?: unknown }
 			return { data: result.goal }
 		},
 		resume: async (params: { sessionID: string }) => {
-			const result = (await this.request("goal/resume", {
-				sessionId: params.sessionID,
-				status: "active",
-			})) as GoalSetStatusResult
+			const result = (await this.canonicalGoalTransition(
+				"session/goal/resume",
+				params.sessionID,
+			)) as { goal?: unknown }
 			return { data: result.goal }
 		},
 		clear: async (params: { sessionID: string }) => {
-			const result = (await this.request("goal/clear", {
-				sessionId: params.sessionID,
-			})) as GoalClearResult
+			const result = await this.canonicalGoalTransition(
+				"session/goal/clear",
+				params.sessionID,
+			)
 			return { data: result }
 		},
 	}
@@ -1024,17 +1186,50 @@ class AcpClient {
 	}
 
 	provider = {
-		list: async () => ({
-			data: (await this.request("provider/list", {})) as ProviderVendorListResult,
-		}),
-		validate: async (params: ProviderValidateParams) => ({
-			data: (await this.request("provider/validate", params)) as ProviderValidateResult,
-		}),
+		list: async () => {
+			// Canonical provider/list (ratified #11): camelCase wire; vendors
+			// convert back to the generated snake shape for callers.
+			const result = (await this.requestCanonical("provider/list", {})) as {
+				providers?: Array<Record<string, unknown>>
+			}
+			const data: ProviderVendorListResult = {
+				provider_vendors: (result.providers ?? []).map(legacyProviderVendorFromCanonical),
+			}
+			return { data }
+		},
+		validate: async (params: ProviderValidateParams) => {
+			const result = (await this.requestCanonical("provider/validate", {
+				providerVendor: canonicalProviderVendorWire(params.provider_vendor),
+				modelBinding: canonicalModelBindingWire(params.model_binding),
+				...(params.api_key !== undefined && params.api_key !== null
+					? { apiKey: params.api_key }
+					: {}),
+			})) as { replyPreview?: string }
+			const data: ProviderValidateResult = { reply_preview: result.replyPreview ?? "" }
+			return { data }
+		},
 		upsert: async (params: ProviderVendorUpsertParams) => {
-			const data = (await this.request(
-				"provider/upsert",
-				params,
-			)) as ProviderVendorUpsertResult
+			const result = (await this.requestCanonical("provider/upsert", {
+				providerVendor: canonicalProviderVendorWire(params.provider_vendor),
+				...(params.model_binding
+					? { modelBinding: canonicalModelBindingWire(params.model_binding) }
+					: {}),
+				...(params.default_model_binding !== undefined && params.default_model_binding !== null
+					? { defaultModelBinding: params.default_model_binding }
+					: {}),
+				...(params.api_key !== undefined && params.api_key !== null
+					? { apiKey: params.api_key }
+					: {}),
+			})) as {
+				providerVendor?: Record<string, unknown>
+				modelBinding?: Record<string, unknown>
+			}
+			const data: ProviderVendorUpsertResult = {
+				provider_vendor: legacyProviderVendorFromCanonical(result.providerVendor ?? {}),
+				...(result.modelBinding
+					? { model_binding: legacyModelBindingFromCanonical(result.modelBinding) }
+					: {}),
+			} as ProviderVendorUpsertResult
 			this.invalidateConfigOptionCaches()
 			return { data }
 		},
@@ -1133,11 +1328,7 @@ class AcpClient {
 		}
 	private async sessionMessages(sessionId: string, limit?: number): Promise<Array<{ info: Message; parts: Part[] }>> {
 		await this.loadSession(sessionId, limit)
-		const loadedLimit = this.loadedSessionLimits.get(sessionId)
-		const messages =
-			limit === undefined || loadedLimit === limit
-				? sortedMessages(this.messages.get(sessionId) ?? [])
-				: recentMessages(this.messages.get(sessionId) ?? [], limit)
+		const messages = recentMessages(this.messages.get(sessionId) ?? [], limit)
 		return messages.map((info) => ({
 			info,
 			parts: this.parts.get(partCacheKey(sessionId, info.id)) ?? [],
@@ -1155,13 +1346,14 @@ class AcpClient {
 			cwd,
 			additionalDirectories: [],
 			mcpServers: [],
-			...(limit === undefined ? {} : { _meta: { "devo/historyLimit": limit } }),
 		})) as AcpLoadSessionResult
 		// Electron forwards replay notifications over a separate IPC event channel.
 		// Let that channel drain before callers snapshot this client's message store.
 		await new Promise((resolve) => setTimeout(resolve, 0))
 		this.rememberConfigOptions(sessionId, cwd, result.configOptions)
-		this.loadedSessionLimits.set(sessionId, limit ?? null)
+		// ACP session/load must replay the complete conversation. Apply any
+		// caller-requested window locally after the replay has been received.
+		this.loadedSessionLimits.set(sessionId, null)
 	}
 
 	private async getSessionById(sessionId: string): Promise<Session | undefined> {
@@ -1265,19 +1457,23 @@ class AcpClient {
 		})
 	}
 
-	/** Devo extension RPCs that are not yet present in the generated ACP schema bundle. */
-	private async requestExtension(method: string, params: unknown): Promise<unknown> {
+	/**
+	 * Canonical protocol RPCs (L2-DES-APP-008): served on every connection
+	 * surface via the server's dual-shape dispatch, so the desktop client can
+	 * migrate call-by-call while it stays on the ACP surface. Not yet in the
+	 * generated schema bundle — the server validates the wire shape.
+	 */
+	private async requestCanonical(method: string, params: unknown): Promise<unknown> {
 		await this.open()
 		if (!this.transport) throw new Error("Devo ACP transport is not connected")
-		const extensionMethod = method.startsWith("_devo/") ? method : `_devo/${method}`
-		return this.transport.request(extensionMethod, params, this.options.directory)
+		return this.transport.request(method, params, this.options.directory)
 	}
 
 	private ensureReferenceSearchSession(): ReferenceSearchSession {
 		if (!this.referenceSearchSession) {
 			const cwd = this.options.directory ?? defaultCwd()
 			this.referenceSearchSession = new ReferenceSearchSession(
-				(method, params) => this.requestExtension(method, params),
+				(method, params) => this.requestCanonical(method, params),
 				cwd,
 			)
 		}
@@ -1313,8 +1509,7 @@ class AcpClient {
 		}
 		if (
 			event.type === "notification" &&
-			(event.method === "workspace/changes/updated" ||
-				event.method === "_devo/workspace/changes/updated") &&
+			event.method === "workspace/changes/updated" &&
 			event.params
 		) {
 			const payload = this.validateTransportPayload<WorkspaceChangesUpdatedPayload>(
@@ -1385,17 +1580,19 @@ class AcpClient {
 		})
 	}
 
-	private async respondToPermission(permissionId: string, response: "once" | "always" | "reject"): Promise<void> {
+	private async respondToPermission(
+		permissionId: string,
+		response: "once" | "always" | "reject",
+	): Promise<void> {
 		await this.open()
 		if (!this.transport) throw new Error("Devo ACP transport is not connected")
 		const pending = this.pendingPermissions.get(permissionId)
 		if (!pending) return
 		this.pendingPermissions.delete(permissionId)
-		const optionId = permissionOptionId(pending.options, response)
 		const result = {
 			outcome: {
 				outcome: "selected",
-				optionId,
+				optionId: permissionOptionId(pending.options, response),
 			},
 		}
 		await this.transport.respond(
@@ -1406,13 +1603,16 @@ class AcpClient {
 				payload: result,
 			}),
 		)
-		this.emit(this.sessionDirectories.get(pending.sessionId) ?? this.options.directory ?? defaultCwd(), {
-			type: "permission.replied",
-			properties: {
-				sessionID: pending.sessionId,
-				requestID: permissionId,
+		this.emit(
+			this.sessionDirectories.get(pending.sessionId) ?? this.options.directory ?? defaultCwd(),
+			{
+				type: "permission.replied",
+				properties: {
+					sessionID: pending.sessionId,
+					requestID: permissionId,
+				},
 			},
-		})
+		)
 	}
 
 	private async respondToQuestion(
@@ -1432,13 +1632,15 @@ class AcpClient {
 					: [String(rawAnswer)]
 			responseAnswers[question.id] = { answers: answerValues }
 		})
-		const respondParams: RequestUserInputRespondParams = {
-			session_id: pending.sessionId,
-			turn_id: pending.turnId,
-			request_id: requestId,
-			response: { answers: responseAnswers },
+		if (pending.id === undefined) {
+			throw new Error("pending user-input request has no JSON-RPC request id")
 		}
-		await this.request("_devo/request_user_input/respond", respondParams)
+		await this.open()
+		if (!this.transport) throw new Error("Devo ACP transport is not connected")
+		await this.transport.respond(pending.id, {
+			requestId,
+			answers: responseAnswers,
+		})
 		this.pendingQuestions.delete(requestId)
 		this.emit(this.sessionDirectories.get(pending.sessionId) ?? this.options.directory ?? defaultCwd(), {
 			type: eventType,
@@ -1751,10 +1953,14 @@ class AcpClient {
 		const requestId = String(request.request_id ?? request.requestId ?? "")
 		if (!requestId) return
 		const requestSessionId = String(request.session_id ?? request.sessionId ?? sessionId)
-		const turnId = String(request.turn_id ?? request.turnId ?? "")
 		const rawQuestions = Array.isArray(payload.questions) ? payload.questions : []
 		const questions = rawQuestions.map(questionInfoFromAcp)
-		this.pendingQuestions.set(requestId, { sessionId: requestSessionId, turnId, questions })
+		const existing = this.pendingQuestions.get(requestId)
+		this.pendingQuestions.set(requestId, {
+			id: existing?.id,
+			sessionId: requestSessionId,
+			questions,
+		})
 		this.emit(directory, {
 			type: "question.asked",
 			properties: {
@@ -2094,11 +2300,20 @@ class AcpClient {
 	): Promise<AcpConfigOption[]> {
 		await this.ensureInitialized()
 		const directory = this.options.directory ?? defaultCwd()
-		const params = this.options.directory
-			? { cwd: this.options.directory, configId, value }
-			: { configId, value }
-		const result = (await this.request("model/config/set", params)) as ModelConfigResult
-		this.rememberDirectoryConfigOptions(directory, result.configOptions)
+		// Canonical model/preferences/write (ratified #12): configId maps to
+		// the patch fields; the result converts back to the select shape the
+		// config UI renders.
+		const patch: Record<string, string> = {}
+		if (configId === "model") patch.model = value
+		else if (configId === "thought_level") patch.reasoningEffort = value
+		else throw new Error(`unknown model config option '${configId}'`)
+		const params: Record<string, unknown> = { patch }
+		if (this.options.directory) params.cwd = this.options.directory
+		const result = (await this.requestCanonical("model/preferences/write", params)) as {
+			preferences?: ModelPreferencesWire
+		}
+		const options = acpConfigOptionsFromModelPreferences(result.preferences ?? {})
+		this.rememberDirectoryConfigOptions(directory, options)
 		return this.currentConfigOptions()
 	}
 
@@ -2125,9 +2340,12 @@ class AcpClient {
 
 		await this.ensureInitialized()
 		const directory = this.options.directory ?? defaultCwd()
-		const params: ModelConfigParams = this.options.directory ? { cwd: this.options.directory } : {}
-		const result = (await this.request("model/config", params)) as ModelConfigResult
-		this.rememberDirectoryConfigOptions(directory, result.configOptions)
+		// Canonical model/preferences/read (ratified #12).
+		const params: Record<string, unknown> = this.options.directory ? { cwd: this.options.directory } : {}
+		const result = (await this.requestCanonical("model/preferences/read", params)) as {
+			preferences?: ModelPreferencesWire
+		}
+		this.rememberDirectoryConfigOptions(directory, acpConfigOptionsFromModelPreferences(result.preferences ?? {}))
 		return this.currentConfigOptions()
 	}
 

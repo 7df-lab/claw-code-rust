@@ -88,6 +88,15 @@ export async function requestAcp(
 	return client.request(method, params, directory)
 }
 
+export async function notifyAcp(
+	method: string,
+	params?: unknown,
+	directory?: string,
+): Promise<void> {
+	const client = await ensureClient()
+	return client.notify(method, params, directory)
+}
+
 export async function respondAcp(id: JsonRpcId, result: unknown): Promise<void> {
 	const client = await ensureClient()
 	await client.respond(id, result)
@@ -104,6 +113,7 @@ export function isAcpConnected(): boolean {
 
 const sharedAcpTransport: AcpTransport = {
 	request: requestAcp,
+	notify: notifyAcp,
 	respond: respondAcp,
 	subscribe: subscribeAcp,
 	connected: isAcpConnected,

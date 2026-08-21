@@ -89,7 +89,7 @@ pub(crate) async fn run_prompt(
     let registry = {
         let mcp_manager = std::sync::Arc::new(RmcpMcpManager::new(
             app_config
-                .mcp
+                .mcp_runtime
                 .clone()
                 .with_code_search_workspace_cwd(cwd.clone()),
             app_config.mcp_oauth_credentials_store.unwrap_or_default(),
@@ -125,6 +125,7 @@ pub(crate) async fn run_prompt(
             network_proxy: None,
             network_no_proxy: None,
             sandbox_profile: session_state.config.sandbox_profile.clone(),
+            sandbox_profile_live: None,
         },
     );
     let provider = Arc::new(RoutedPromptProvider::new(

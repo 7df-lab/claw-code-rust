@@ -15,6 +15,7 @@ use devo_mcp::manager::RmcpMcpManager;
 use devo_util_paths::FileSystemConfigPathResolver;
 
 use crate::ListenTarget;
+use crate::ProtocolSet;
 use crate::ServerRuntime;
 use crate::db::Database;
 use crate::execution::ServerRuntimeDependencies;
@@ -45,6 +46,10 @@ pub struct ServerProcessArgs {
     /// Override the transport mode used by this server process.
     #[arg(long, value_enum, hide = true, default_value_t = ServerTransportMode::Config)]
     pub transport: ServerTransportMode,
+
+    /// Protocol adapters exposed by this server process.
+    #[arg(long, default_value = "native")]
+    pub protocols: ProtocolSet,
 
     /// Print status for an existing singleton server and exit.
     #[arg(long, hide = true)]
@@ -103,7 +108,7 @@ pub struct ServerProcessRunOptions {
 /// 1. **Stdio proxy clients** — a second `devo server --transport stdio` connects
 ///    here and pipes stdin/stdout through WebSocket frames (see `run_stdio_proxy`).
 /// 2. **Control plane** — `devo server --status` / `--shutdown` send
-///    `_devo/server/status` or `_devo/server/shutdown` after token auth.
+///    `server/status` or `server/shutdown` after token auth.
 ///
 /// The published `endpoint` in `server.lock.json` is this internal proxy URL, not
 /// the public config WebSocket address.
@@ -126,30 +131,48 @@ pub async fn run_server_process(
             }
         },
         SingletonRole::Proxy(metadata) => match action {
-            // Another server is already running: pipe stdio to its internal proxy.
-            ServerProcessAction::Run if args.transport == ServerTransportMode::Stdio => {
-                tracing::info!(
-                    pid = metadata.pid,
-                    endpoint = %metadata.endpoint,
-                    "proxying stdio to existing singleton server"
-                );
-                return run_stdio_proxy(metadata).await;
-            }
-            // Non-stdio second instances are rejected (would duplicate listeners).
             ServerProcessAction::Run => {
-                print_existing_server_status(&metadata, "already running");
-                println!("Use `devo server --shutdown` to stop it.");
+                let result = run_server_control(
+                    &metadata,
+                    ServerControlAction::EnableProtocols(args.protocols.clone()),
+                )
+                .await?;
+                if args.transport == ServerTransportMode::Stdio {
+                    tracing::info!(
+                        pid = metadata.pid,
+                        endpoint = %metadata.endpoint,
+                        protocols = %result
+                            .enabled_protocols
+                            .as_ref()
+                            .unwrap_or(&args.protocols),
+                        "proxying stdio to existing singleton server"
+                    );
+                    return run_stdio_proxy(metadata).await;
+                }
+                print_existing_server_status(
+                    &metadata,
+                    "already running",
+                    result.enabled_protocols.as_ref(),
+                );
                 return Ok(());
             }
             // `--status` / `--shutdown`: one-shot WebSocket control, then exit.
             ServerProcessAction::Status => {
                 let result = run_server_control(&metadata, ServerControlAction::Status).await?;
-                print_existing_server_status(&metadata, result.status.as_str());
+                print_existing_server_status(
+                    &metadata,
+                    result.status.as_str(),
+                    result.enabled_protocols.as_ref(),
+                );
                 return Ok(());
             }
             ServerProcessAction::Shutdown => {
                 let result = run_server_control(&metadata, ServerControlAction::Shutdown).await?;
-                print_existing_server_status(&metadata, result.status.as_str());
+                print_existing_server_status(
+                    &metadata,
+                    result.status.as_str(),
+                    result.enabled_protocols.as_ref(),
+                );
                 return Ok(());
             }
         },
@@ -191,11 +214,12 @@ pub async fn run_server_process(
         configured_listen = ?config.server.listen,
         effective_listen = ?effective_listen,
         max_connections = config.server.max_connections,
+        protocols = %args.protocols,
         "loaded server config"
     );
 
     let mcp_manager: Arc<dyn devo_core::McpManager> = Arc::new(RmcpMcpManager::new(
-        config.mcp.clone().with_code_search_workspace_cwd(
+        config.mcp_runtime.clone().with_code_search_workspace_cwd(
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         ),
         config.mcp_oauth_credentials_store.unwrap_or_default(),
@@ -230,7 +254,7 @@ pub async fn run_server_process(
 
     let registry = Arc::new(registry);
     let provider_router = Arc::clone(&provider.provider_router);
-    let runtime = ServerRuntime::new(
+    let runtime = ServerRuntime::with_protocols(
         resolver.user_config_dir(),
         ServerRuntimeDependencies::new(
             provider.provider,
@@ -248,6 +272,7 @@ pub async fn run_server_process(
             db,
             config_store,
         ),
+        args.protocols.clone(),
     );
     runtime
         .run_global_hook(
@@ -288,7 +313,7 @@ pub async fn run_server_process(
 
     // Concurrent listeners: configured stdio/ws targets + internal proxy task.
     // Returns when any listener exits; shutdown also via Ctrl+C, external token,
-    // or internal-proxy `_devo/server/shutdown` (cancels shutdown_signal).
+    // or internal-proxy `server/shutdown` (cancels shutdown_signal).
     tokio::select! {
         result = run_listeners_with_internal_proxy(
             runtime.clone(),
@@ -318,11 +343,18 @@ pub async fn run_server_process(
     Ok(())
 }
 
-fn print_existing_server_status(metadata: &crate::singleton::ServerLockMetadata, status: &str) {
+fn print_existing_server_status(
+    metadata: &crate::singleton::ServerLockMetadata,
+    status: &str,
+    enabled_protocols: Option<&ProtocolSet>,
+) {
     println!("devo server {status}");
     println!("pid: {}", metadata.pid);
     println!("endpoint: {}", metadata.endpoint);
     println!("started_at: {}", metadata.started_at);
+    if let Some(enabled_protocols) = enabled_protocols {
+        println!("protocols: {enabled_protocols}");
+    }
 }
 
 async fn wait_for_external_shutdown(
@@ -341,6 +373,7 @@ mod tests {
 
     use super::ServerProcessArgs;
     use super::ServerTransportMode;
+    use crate::ProtocolSet;
     use clap::Parser;
 
     #[test]
@@ -348,10 +381,19 @@ mod tests {
         let args = ServerProcessArgs::parse_from(["devo-server"]);
 
         assert_eq!(args.transport, ServerTransportMode::Config);
+        assert_eq!(args.protocols, ProtocolSet::default());
         assert_eq!(
             args.action().expect("action"),
             super::ServerProcessAction::Run
         );
+    }
+
+    #[test]
+    fn server_process_args_accept_protocol_sets() {
+        let args =
+            ServerProcessArgs::parse_from(["devo-server", "--protocols", "native, acp,native"]);
+
+        assert_eq!(args.protocols.names(), vec!["native", "acp"]);
     }
 
     #[test]

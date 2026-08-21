@@ -22,6 +22,7 @@ pub(super) fn acp_update_from_history_item(
                             AcpPlanEntryStatus::Pending
                         }
                     },
+                    meta: None,
                 })
                 .collect(),
             meta: Some(meta),
@@ -64,8 +65,8 @@ pub(super) fn acp_update_from_history_item(
             Some(AcpSessionUpdate::ToolCall {
                 tool_call_id,
                 title: item.title.clone(),
-                kind: AcpToolKind::Other,
-                status: AcpToolCallStatus::Completed,
+                kind: Some(AcpToolKind::Other),
+                status: Some(AcpToolCallStatus::Completed),
                 raw_input: item.tool_io.as_ref().map(|tool_io| tool_io.input.clone()),
                 raw_output: item
                     .tool_io
@@ -99,8 +100,10 @@ pub(super) fn acp_update_from_history_item(
                     .tool_io
                     .as_ref()
                     .and_then(|tool_io| tool_io.output.clone()),
-                content: vec![AcpToolCallContent::content(AcpContentBlock::text(text))],
-                locations: Vec::new(),
+                content: Some(vec![AcpToolCallContent::content(AcpContentBlock::text(
+                    text,
+                ))]),
+                locations: Some(Vec::new()),
                 meta: Some(meta),
             })
         }

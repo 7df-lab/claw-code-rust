@@ -160,7 +160,7 @@ impl StatusIndicatorWidget {
             });
     }
 
-    /// Update the inline suffix text shown after `({elapsed} • esc to interrupt)`.
+    /// Update the inline suffix text shown after `({elapsed} • ctrl+c to interrupt)`.
     ///
     /// Callers should provide plain, already-contextualized text. Passing
     /// verbose status prose here can cause frequent width truncation and hide
@@ -330,7 +330,7 @@ impl Renderable for StatusIndicatorWidget {
         spans.push(" ".into());
         if self.show_interrupt_hint {
             spans.push(format!("({pretty_elapsed} • ").dim());
-            spans.push(key_hint::plain(KeyCode::Esc).into());
+            spans.push(key_hint::ctrl(KeyCode::Char('c')).into());
             spans.push(" to interrupt)".dim());
         } else {
             spans.push(format!("({pretty_elapsed})").dim());
@@ -406,6 +406,7 @@ mod tests {
 
         assert_eq!(top_row.get(..2), Some("  "));
         assert!(top_row.contains("Working"));
+        assert!(top_row.contains("ctrl + c to interrupt"));
         assert!(tip_row.contains("└ Tip: "));
         assert!(tip_row.contains(WORKING_TIPS[0]));
     }

@@ -43,7 +43,10 @@ impl WebSocketServerClient {
             .with_context(|| format!("connect websocket server {}", config.endpoint))?;
         let (mut writer, mut reader) = socket.split();
         let (client_writer, mut write_rx) = ClientWriter::channel();
-        let core = ServerClientCore::new(client_writer, config.client_capabilities);
+        let mut core = ServerClientCore::new(client_writer, config.client_capabilities);
+        // This first-party client speaks the Native API. ACP clients connect
+        // directly to the server adapter and omit the Native wire marker.
+        core.set_native_protocol_opt_in(true);
         let reader_state = core.reader_state();
 
         let writer_task = tokio::spawn(async move {
@@ -109,6 +112,15 @@ impl WebSocketServerClient {
         self.core.session_start(params).await
     }
 
+    /// Creates a session through the Native `session/new` application path.
+    pub async fn session_new_native(
+        &mut self,
+        cwd: std::path::PathBuf,
+        idempotency_key: String,
+    ) -> Result<devo_protocol::native::rpc_session::SessionNewResult> {
+        self.core.session_new_native(cwd, idempotency_key).await
+    }
+
     pub async fn session_resume(
         &mut self,
         params: SessionResumeParams,
@@ -120,25 +132,6 @@ impl WebSocketServerClient {
         self.core.session_list().await
     }
 
-    pub async fn agent_list(&mut self, params: AgentListParams) -> Result<AgentListResult> {
-        self.core.agent_list(params).await
-    }
-
-    pub async fn agent_spawn(&mut self, params: SpawnAgentParams) -> Result<SpawnAgentResult> {
-        self.core.request_devo("agent/spawn", params).await
-    }
-
-    pub async fn agent_close(&mut self, params: CloseAgentParams) -> Result<CloseAgentResult> {
-        self.core.request_devo("agent/close", params).await
-    }
-
-    pub async fn session_title_update(
-        &mut self,
-        params: SessionTitleUpdateParams,
-    ) -> Result<SessionTitleUpdateResult> {
-        self.core.request_devo("session/title/update", params).await
-    }
-
     pub async fn session_delete(
         &mut self,
         params: AcpDeleteSessionParams,
@@ -148,255 +141,127 @@ impl WebSocketServerClient {
             .await
     }
 
-    pub async fn session_metadata_update(
+    /// Native settings patch; see `client_core::session_settings_update`.
+    pub async fn session_settings_update(
         &mut self,
-        params: SessionMetadataUpdateParams,
-    ) -> Result<SessionMetadataUpdateResult> {
-        self.core
-            .request_devo("session/metadata/update", params)
-            .await
+        session_id: devo_protocol::SessionId,
+        patch: devo_protocol::native::rpc_session::SessionSettingsPatch,
+    ) -> Result<devo_protocol::native::rpc_session::SessionMetadataUpdateResult> {
+        self.core.session_settings_update(session_id, patch).await
     }
 
-    pub async fn session_permissions_update(
-        &mut self,
-        params: SessionPermissionsUpdateParams,
-    ) -> Result<SessionPermissionsUpdateResult> {
-        self.core
-            .request_devo("session/permissions/update", params)
-            .await
-    }
-
-    pub async fn session_compaction_update(
-        &mut self,
-        params: SessionCompactionUpdateParams,
-    ) -> Result<SessionCompactionUpdateResult> {
-        self.core
-            .request_devo("session/compaction/update", params)
-            .await
-    }
-
-    pub async fn session_sandbox_profile_update(
-        &mut self,
-        params: SessionSandboxProfileUpdateParams,
-    ) -> Result<SessionSandboxProfileUpdateResult> {
-        self.core
-            .request_devo("session/sandbox_profile/update", params)
-            .await
-    }
-
-    pub async fn session_compact(
-        &mut self,
-        params: SessionCompactParams,
-    ) -> Result<TurnStartResult> {
-        self.core.request_devo("session/compact", params).await
-    }
-
-    pub async fn session_cancel(&mut self, params: AcpCancelParams) -> Result<AcpEmptyResult> {
-        self.core
-            .request(devo_protocol::ACP_SESSION_CANCEL_METHOD, params)
-            .await
-    }
-
-    pub async fn goal_create(&mut self, params: GoalCreateParams) -> Result<GoalCreateResult> {
-        self.core.request_devo("goal/create", params).await
-    }
-
-    pub async fn goal_set(&mut self, params: GoalSetParams) -> Result<GoalSetResult> {
-        self.core.request_devo("goal/set", params).await
-    }
-
-    pub async fn goal_status(&mut self, params: GoalStatusParams) -> Result<GoalStatusResult> {
-        self.core.request_devo("goal/status", params).await
-    }
-
-    pub async fn goal_pause(&mut self, params: GoalSetStatusParams) -> Result<GoalSetStatusResult> {
-        self.core.request_devo("goal/pause", params).await
-    }
-
-    pub async fn goal_resume(
-        &mut self,
-        params: GoalSetStatusParams,
-    ) -> Result<GoalSetStatusResult> {
-        self.core.request_devo("goal/resume", params).await
-    }
-
-    pub async fn goal_complete(
-        &mut self,
-        params: GoalSetStatusParams,
-    ) -> Result<GoalSetStatusResult> {
-        self.core.request_devo("goal/complete", params).await
-    }
-
-    pub async fn goal_clear(&mut self, params: GoalClearParams) -> Result<GoalClearResult> {
-        self.core.request_devo("goal/clear", params).await
-    }
-
-    pub async fn session_fork(&mut self, params: SessionForkParams) -> Result<SessionForkResult> {
-        self.core.request_devo("session/fork", params).await
-    }
-
-    pub async fn session_rollback(
-        &mut self,
-        params: SessionRollbackParams,
-    ) -> Result<SessionRollbackResult> {
-        self.core.request_devo("session/rollback", params).await
-    }
-
-    pub async fn skills_list(&mut self, params: SkillListParams) -> Result<SkillListResult> {
-        self.core.request_devo("skills/list", params).await
-    }
-
-    pub async fn skills_changed(
-        &mut self,
-        params: SkillChangedParams,
-    ) -> Result<SkillChangedResult> {
-        self.core.request_devo("skills/changed", params).await
-    }
-
-    pub async fn skills_set_enabled(
-        &mut self,
-        params: SkillSetEnabledParams,
-    ) -> Result<SkillSetEnabledResult> {
-        self.core.request_devo("skills/set_enabled", params).await
+    pub async fn session_cancel(&mut self, params: AcpCancelParams) -> Result<()> {
+        self.core.session_cancel(params).await
     }
 
     pub async fn mcp_list(
         &mut self,
-        params: devo_protocol::canonical::rpc_admin::McpListParams,
-    ) -> Result<devo_protocol::canonical::rpc_admin::McpListResult> {
-        self.core.request_devo("mcp/list", params).await
+        params: devo_protocol::native::rpc_admin::McpListParams,
+    ) -> Result<devo_protocol::native::rpc_admin::McpListResult> {
+        self.core.mcp_list(params).await
     }
 
     pub async fn mcp_tools(
         &mut self,
-        params: devo_protocol::canonical::rpc_admin::McpToolsParams,
-    ) -> Result<devo_protocol::canonical::rpc_admin::McpToolsResult> {
-        self.core.request_devo("mcp/tools", params).await
+        params: devo_protocol::native::rpc_admin::McpToolsParams,
+    ) -> Result<devo_protocol::native::rpc_admin::McpToolsResult> {
+        self.core.mcp_tools(params).await
     }
 
     pub async fn mcp_set_enabled(
         &mut self,
-        params: devo_protocol::canonical::rpc_admin::McpSetEnabledParams,
-    ) -> Result<devo_protocol::canonical::rpc_admin::McpSetEnabledResult> {
-        self.core.request_devo("mcp/set_enabled", params).await
+        params: devo_protocol::native::rpc_admin::McpSetEnabledParams,
+    ) -> Result<devo_protocol::native::rpc_admin::McpSetEnabledResult> {
+        self.core.mcp_set_enabled(params).await
     }
 
-    pub async fn model_catalog(
+    pub async fn provider_list(
         &mut self,
-        params: ModelCatalogParams,
-    ) -> Result<ModelCatalogResult> {
-        self.core.request_devo("model/catalog", params).await
+    ) -> Result<devo_protocol::native::rpc_admin::ProviderListResult> {
+        self.core.provider_list().await
     }
 
-    pub async fn model_saved(&mut self, params: ModelSavedParams) -> Result<ModelSavedResult> {
-        self.core.request_devo("model/saved", params).await
-    }
-
-    pub async fn provider_vendor_list(
+    pub async fn provider_upsert(
         &mut self,
-        params: ProviderVendorListParams,
-    ) -> Result<ProviderVendorListResult> {
-        self.core.request_devo("provider/list", params).await
-    }
-
-    pub async fn provider_vendor_upsert(
-        &mut self,
-        params: ProviderVendorUpsertParams,
-    ) -> Result<ProviderVendorUpsertResult> {
-        self.core.request_devo("provider/upsert", params).await
+        params: devo_protocol::native::rpc_admin::ProviderUpsertParams,
+    ) -> Result<devo_protocol::native::rpc_admin::ProviderUpsertResult> {
+        self.core.provider_upsert(params).await
     }
 
     pub async fn provider_validate(
         &mut self,
-        params: ProviderValidateParams,
-    ) -> Result<ProviderValidateResult> {
-        self.core.request_devo("provider/validate", params).await
+        params: devo_protocol::native::rpc_admin::ProviderValidateParams,
+    ) -> Result<devo_protocol::native::rpc_admin::ProviderValidateResult> {
+        self.core.provider_validate(params).await
     }
 
     pub async fn command_exec(&mut self, params: CommandExecParams) -> Result<CommandExecResult> {
-        self.core.request_devo("command/exec", params).await
-    }
-
-    pub async fn command_exec_write(
-        &mut self,
-        params: CommandExecWriteParams,
-    ) -> Result<CommandExecWriteResult> {
-        self.core.request_devo("command/exec/write", params).await
-    }
-
-    pub async fn command_exec_resize(
-        &mut self,
-        params: CommandExecResizeParams,
-    ) -> Result<CommandExecResizeResult> {
-        self.core.request_devo("command/exec/resize", params).await
-    }
-
-    pub async fn command_exec_terminate(
-        &mut self,
-        params: CommandExecTerminateParams,
-    ) -> Result<CommandExecTerminateResult> {
-        self.core
-            .request_devo("command/exec/terminate", params)
-            .await
+        self.core.request("command/exec", params).await
     }
 
     pub async fn turn_start(&mut self, params: TurnStartParams) -> Result<TurnStartResult> {
         self.core.turn_start(params).await
     }
 
-    pub async fn turn_shell_command(
+    /// Starts a turn through the Native `turn/start` application path.
+    pub async fn turn_start_native(
         &mut self,
-        params: ShellCommandParams,
-    ) -> Result<ShellCommandResult> {
-        self.core.request_devo("turn/shell_command", params).await
+        session_id: SessionId,
+        input: Vec<devo_protocol::native::item::UserInput>,
+        idempotency_key: String,
+    ) -> Result<devo_protocol::native::rpc_turn::TurnStartResult> {
+        self.core
+            .turn_start_native(session_id, input, idempotency_key)
+            .await
     }
 
-    pub async fn turn_interrupt(
+    /// Native `session/interrupt`; see `client_core::session_interrupt_native`.
+    pub async fn session_interrupt_native(
         &mut self,
-        params: TurnInterruptParams,
-    ) -> Result<TurnInterruptResult> {
-        self.core.request_devo("turn/interrupt", params).await
+        scope: devo_protocol::native::rpc_session::SessionInterruptScope,
+    ) -> Result<devo_protocol::native::rpc_session::SessionInterruptResult> {
+        self.core.session_interrupt_native(scope).await
     }
 
     pub async fn session_queue_push(
         &mut self,
-        params: canonical::rpc_turn::SessionQueuePushParams,
-    ) -> Result<canonical::rpc_turn::SessionQueuePushResult> {
+        params: native::rpc_turn::SessionQueuePushParams,
+    ) -> Result<native::rpc_turn::SessionQueuePushResult> {
         self.core.session_queue_push(params).await
     }
 
     pub async fn session_queue_list(
         &mut self,
-        params: canonical::rpc_turn::SessionQueueListParams,
-    ) -> Result<canonical::rpc_turn::SessionQueueListResult> {
+        params: native::rpc_turn::SessionQueueListParams,
+    ) -> Result<native::rpc_turn::SessionQueueListResult> {
         self.core.session_queue_list(params).await
     }
 
     pub async fn session_queue_update(
         &mut self,
-        params: canonical::rpc_turn::SessionQueueUpdateParams,
-    ) -> Result<canonical::rpc_turn::SessionQueueUpdateResult> {
+        params: native::rpc_turn::SessionQueueUpdateParams,
+    ) -> Result<native::rpc_turn::SessionQueueUpdateResult> {
         self.core.session_queue_update(params).await
     }
 
     pub async fn session_queue_remove(
         &mut self,
-        params: canonical::rpc_turn::SessionQueueRemoveParams,
-    ) -> Result<canonical::rpc_turn::SessionQueueRemoveResult> {
+        params: native::rpc_turn::SessionQueueRemoveParams,
+    ) -> Result<native::rpc_turn::SessionQueueRemoveResult> {
         self.core.session_queue_remove(params).await
     }
 
     pub async fn session_queue_steer(
         &mut self,
-        params: canonical::rpc_turn::SessionQueueSteerParams,
-    ) -> Result<canonical::rpc_turn::SessionQueueSteerResult> {
+        params: native::rpc_turn::SessionQueueSteerParams,
+    ) -> Result<native::rpc_turn::SessionQueueSteerResult> {
         self.core.session_queue_steer(params).await
     }
 
     pub async fn subscription_create(
         &mut self,
-        params: canonical::event::SubscriptionCreateParams,
-    ) -> Result<canonical::event::SubscriptionCreateResult> {
+        params: native::event::SubscriptionCreateParams,
+    ) -> Result<native::event::SubscriptionCreateResult> {
         self.core.subscription_create(params).await
     }
 
@@ -406,30 +271,32 @@ impl WebSocketServerClient {
 
     pub async fn request_user_input_respond(
         &mut self,
-        params: RequestUserInputRespondParams,
+        request_id: String,
+        response: RequestUserInputResponse,
     ) -> Result<()> {
-        self.core.request_user_input_respond(params).await
+        self.core
+            .request_user_input_respond(request_id, response)
+            .await
     }
 
-    pub async fn reference_search_start(
+    pub async fn search_start(
         &mut self,
-        params: ReferenceSearchStartParams,
-    ) -> Result<ReferenceSearchStartResult> {
-        self.core.request_devo("search/start", params).await
+        cwd: Option<std::path::PathBuf>,
+        query: String,
+    ) -> Result<devo_protocol::native::rpc_search::SearchSnapshot> {
+        self.core.search_start(cwd, query).await
     }
 
-    pub async fn reference_search_update(
+    pub async fn search_update(
         &mut self,
-        params: ReferenceSearchUpdateParams,
-    ) -> Result<ReferenceSearchUpdateResult> {
-        self.core.request_devo("search/update", params).await
+        search_id: ReferenceSearchId,
+        query: String,
+    ) -> Result<devo_protocol::native::rpc_search::SearchSnapshot> {
+        self.core.search_update(search_id, query).await
     }
 
-    pub async fn reference_search_cancel(
-        &mut self,
-        params: ReferenceSearchCancelParams,
-    ) -> Result<ReferenceSearchCancelResult> {
-        self.core.request_devo("search/cancel", params).await
+    pub async fn search_cancel(&mut self, search_id: ReferenceSearchId) -> Result<()> {
+        self.core.search_cancel(search_id).await
     }
 
     pub async fn recv_notification(&mut self) -> Option<ServerNotificationMessage> {

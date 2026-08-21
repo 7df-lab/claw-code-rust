@@ -513,10 +513,10 @@ impl ChatWidget {
         item: &ActiveTextItem,
     ) -> Option<Box<dyn history_cell::HistoryCell>> {
         if let Some(controller) = &item.stream_controller {
-            let lines = controller.live_lines();
-            if lines.iter().any(|line| !Self::is_blank_line(line)) {
+            let lines = controller.live_rendered_lines();
+            if lines.iter().any(|line| !Self::is_blank_line(&line.line)) {
                 return Some(Box::new(
-                    history_cell::AgentMessageCell::new_ai_response_with_prefix(
+                    history_cell::AgentMessageCell::new_with_rendered_lines(
                         lines,
                         Self::pending_dot_prefix(),
                         "  ",

@@ -7,10 +7,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Instant;
 
+use devo_sandbox::SandboxPermissionOverlay;
+use devo_util_process::SandboxProcessOptions;
 use devo_util_process::SpawnedProcess;
 pub use devo_util_process::TerminalSize;
 use devo_util_process::combine_output_receivers;
-use devo_util_process::spawn_pipe_process_no_stdin_sandboxed;
+use devo_util_process::spawn_process_no_stdin_sandboxed_with_overlay;
 use devo_util_process::spawn_pty_process;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::broadcast;
@@ -153,6 +155,14 @@ pub struct UnifiedExecProcess {
     tty: bool,
 }
 
+/// Sandbox settings for a unified-exec process.
+pub struct SandboxExecutionOptions {
+    /// Named sandbox profile applied before the child process starts.
+    pub sandbox_profile: Option<String>,
+    /// Per-invocation permissions merged into the named profile.
+    pub sandbox_overlay: Option<SandboxPermissionOverlay>,
+}
+
 impl UnifiedExecProcess {
     pub async fn spawn(
         process_id: i32,
@@ -174,6 +184,34 @@ impl UnifiedExecProcess {
         tty: bool,
         sandbox_profile: Option<String>,
     ) -> Result<(Self, broadcast::Receiver<Vec<u8>>), String> {
+        Self::spawn_with_sandbox_overlay(
+            process_id,
+            cmd,
+            cwd,
+            shell,
+            login,
+            tty,
+            SandboxExecutionOptions {
+                sandbox_profile,
+                sandbox_overlay: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn spawn_with_sandbox_overlay(
+        process_id: i32,
+        cmd: &str,
+        cwd: &Path,
+        shell: Option<&str>,
+        login: bool,
+        tty: bool,
+        sandbox: SandboxExecutionOptions,
+    ) -> Result<(Self, broadcast::Receiver<Vec<u8>>), String> {
+        let SandboxExecutionOptions {
+            sandbox_profile,
+            sandbox_overlay,
+        } = sandbox;
         let shell_spec = resolve_shell(shell, login);
         let command = command_for_shell(cmd, &shell_spec);
         let mut args = shell_spec.args.clone();
@@ -191,17 +229,21 @@ impl UnifiedExecProcess {
                     cols: PTY_COLS,
                 },
                 sandbox_profile.as_deref(),
+                sandbox_overlay.as_ref(),
             )
             .await?
         } else {
-            spawn_pipe_process_no_stdin_sandboxed(
+            spawn_process_no_stdin_sandboxed_with_overlay(
                 &shell_spec.program,
                 &args,
                 cwd,
                 &env,
                 /*arg0*/ &None,
                 &[],
-                sandbox_profile,
+                SandboxProcessOptions {
+                    sandbox_profile,
+                    sandbox_overlay,
+                },
             )
             .await
             .map_err(|error| format!("failed to spawn command: {error}"))?
@@ -218,6 +260,27 @@ impl UnifiedExecProcess {
         size: Option<TerminalSize>,
         sandbox_profile: Option<String>,
     ) -> Result<(Self, broadcast::Receiver<Vec<u8>>), String> {
+        Self::spawn_interactive_shell_with_overlay(
+            process_id,
+            cwd,
+            shell,
+            login,
+            size,
+            sandbox_profile,
+            None,
+        )
+        .await
+    }
+
+    pub async fn spawn_interactive_shell_with_overlay(
+        process_id: i32,
+        cwd: &Path,
+        shell: Option<&str>,
+        login: bool,
+        size: Option<TerminalSize>,
+        sandbox_profile: Option<String>,
+        sandbox_overlay: Option<SandboxPermissionOverlay>,
+    ) -> Result<(Self, broadcast::Receiver<Vec<u8>>), String> {
         let shell_spec = resolve_shell(shell, login);
         let args = interactive_shell_args(&shell_spec.program, login);
         let env = unified_exec_env(cwd, sandbox_profile.as_deref());
@@ -232,6 +295,7 @@ impl UnifiedExecProcess {
                 cols: PTY_COLS,
             }),
             sandbox_profile.as_deref(),
+            sandbox_overlay.as_ref(),
         )
         .await?;
 
@@ -358,12 +422,14 @@ async fn spawn_pty_with_sandbox_wrap(
     env: &HashMap<String, String>,
     size: TerminalSize,
     sandbox_profile: Option<&str>,
+    sandbox_overlay: Option<&SandboxPermissionOverlay>,
 ) -> Result<SpawnedProcess, String> {
-    let wrap = devo_sandbox::wrap_command_for_profile(
+    let wrap = devo_sandbox::wrap_command_for_profile_with_overlay(
         sandbox_profile,
         cwd,
         devo_sandbox::WrapMode::PtyOnly,
         &devo_sandbox::SandboxLogger::new(),
+        sandbox_overlay,
     )
     .map_err(|error| format!("failed to set up sandbox: {error}"))?;
     let (program, args) = match &wrap {

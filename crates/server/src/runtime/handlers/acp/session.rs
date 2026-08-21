@@ -2,6 +2,22 @@ use super::*;
 
 const ACP_SESSION_LIST_PAGE_SIZE: usize = 50;
 
+/// Accept the pre-ACP session creation shape used by existing Devo clients.
+///
+/// ACP v1 describes `mcpServers` as part of the session lifecycle request
+/// contract, while the older Devo API omitted it when no MCP servers were
+/// configured. The adapter normalizes that omission to the ACP empty-list
+/// value before deserialization; supplied MCP entries still go through the
+/// normal ACP validation path.
+fn normalize_missing_mcp_servers(mut params: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = params.as_object_mut() {
+        object
+            .entry("mcpServers")
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    }
+    params
+}
+
 impl ServerRuntime {
     pub(crate) async fn handle_acp_session_list(
         &self,
@@ -85,6 +101,7 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
+        let params = normalize_missing_mcp_servers(params);
         let params: AcpLoadSessionParams = match serde_json::from_value(params) {
             Ok(params) => params,
             Err(error) => {
@@ -146,12 +163,10 @@ impl ServerRuntime {
         legacy.result.session = updated_summary;
         self.subscribe_connection_to_session(connection_id, params.session_id, None)
             .await;
-        let history_limit = history_limit_from_meta(&params.meta);
         self.send_acp_history_updates(
             connection_id,
             params.session_id,
             &legacy.result.history_items,
-            history_limit,
         )
         .await;
         let config_options = match self.acp_session_config_options(params.session_id).await {
@@ -174,6 +189,7 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
+        let params = normalize_missing_mcp_servers(params);
         let params: AcpNewSessionParams = match serde_json::from_value(params) {
             Ok(params) => params,
             Err(error) => {
@@ -249,6 +265,7 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
+        let params = normalize_missing_mcp_servers(params);
         let params: AcpResumeSessionParams = match serde_json::from_value(params) {
             Ok(params) => params,
             Err(error) => {
@@ -353,7 +370,7 @@ impl ServerRuntime {
         if !self.sessions.lock().await.contains_key(&params.session_id) {
             return acp_error_response(
                 request_id,
-                AcpErrorCode::ServerError,
+                AcpErrorCode::ResourceNotFound,
                 "session does not exist",
             );
         }
@@ -365,7 +382,7 @@ impl ServerRuntime {
             .expect("serialize ACP cancel params"),
         )
         .await;
-        self.sessions.lock().await.remove(&params.session_id);
+        self.remove_session_actor(params.session_id).await;
         acp_success_response(request_id, AcpCloseSessionResult::default())
     }
 
@@ -404,7 +421,7 @@ impl ServerRuntime {
         acp_success_response(request_id, AcpDeleteSessionResult::default())
     }
 
-    async fn delete_session_tree(
+    pub(crate) async fn delete_session_tree(
         self: &Arc<Self>,
         root_session_id: SessionId,
     ) -> Result<Vec<SessionId>, String> {

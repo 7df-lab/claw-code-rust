@@ -11,10 +11,12 @@ mod stream_consumer;
 mod turn_continuation;
 
 pub use event::EventCallback;
+pub use event::LiveTurnSettings;
 pub use event::ProviderRetryStatus;
 pub use event::QueryEvent;
 pub use event::QueryOptions;
 pub use event::QueryProviderRetryPhase;
+pub use event::SharedLiveTurnSettings;
 
 pub(crate) use event::emit_query_event;
 pub use prompt_estimate::RawContextBreakdown;
@@ -429,16 +431,15 @@ pub async fn query(
     let mut budget_steer_injected = false;
     let mut continuation_policy =
         TurnContinuationPolicy::for_models(&turn_config.model.slug, &turn_config.request_model);
+    // Live settings override (L2-DES-CONV-002 Phase 4): the active config
+    // starts as the turn-start snapshot and is re-applied per iteration when
+    // the shared generation advances.
+    let mut active_turn_config = turn_config.clone();
+    let mut applied_live_generation = 0u64;
 
     if session.turn_state.is_none() {
         session.start_turn(devo_protocol::TurnKind::Regular);
     }
-
-    let compaction_model_slug = turn_config
-        .model
-        .resolve_reasoning_effort_selection(turn_config.reasoning_effort_selection.as_deref())
-        .request_model;
-    let compaction_request_model = turn_config.provider_request_model(&compaction_model_slug);
 
     // Explicit interrupted-turn notice for the next user message after a user
     // interrupt. Placed before pending-input processing so it sits just above the
@@ -491,6 +492,19 @@ pub async fn query(
         }
 
         // Check token budget and compact before building the request
+        if let Some(live) = &options.live_settings {
+            let live = live.lock().expect("live settings mutex poisoned");
+            if live.generation != applied_live_generation {
+                if let Some(config) = &live.turn_config {
+                    active_turn_config = config.clone();
+                }
+                if let Some(limit) = live.auto_compact_token_limit {
+                    session.config.token_budget.context_window = limit;
+                    session.config.token_budget.auto_compact_token_limit = Some(limit);
+                }
+                applied_live_generation = live.generation;
+            }
+        }
         if session.last_turn_tokens > 0
             && session
                 .config
@@ -508,6 +522,14 @@ pub async fn query(
                 budget_steer_injected = true;
             }
             info!("token budget threshold exceeded, running LLM compaction");
+            let live_compaction_model_slug = active_turn_config
+                .model
+                .resolve_reasoning_effort_selection(
+                    active_turn_config.reasoning_effort_selection.as_deref(),
+                )
+                .request_model;
+            let live_compaction_request_model =
+                active_turn_config.provider_request_model(&live_compaction_model_slug);
             // Auto: preserve tail items up to COMPACT_USER_MESSAGE_MAX_TOKENS.
             // Example: [user1, asst1, user2, asst2, user3] -> [summary, asst2, user3].
             summarize_and_compact(
@@ -515,9 +537,9 @@ pub async fn query(
                 &on_event,
                 CompactionModelRequest {
                     provider: &compaction_provider,
-                    model_slug: &compaction_model_slug,
-                    request_model: &compaction_request_model,
-                    max_tokens: turn_config.model.max_tokens.unwrap_or(4096) as usize,
+                    model_slug: &live_compaction_model_slug,
+                    request_model: &live_compaction_request_model,
+                    max_tokens: active_turn_config.model.max_tokens.unwrap_or(4096) as usize,
                 },
                 CompactionKind::Auto,
                 options.cancel_token.as_ref(),
@@ -530,7 +552,7 @@ pub async fn query(
             "turn",
             turn = session.turn_count,
             session_id = %session.id,
-            model = %turn_config.model.slug,
+            model = %active_turn_config.model.slug,
             cwd = %session.cwd.display()
         );
         let _turn_guard = turn_span.enter();
@@ -551,18 +573,20 @@ pub async fn query(
             Some(system).filter(|system| !system.trim().is_empty())
         };
 
-        // Resolve provider-bound reasoning request parameters.
+        // Resolve provider-bound reasoning request parameters from the live
+        // config so mid-turn model/effort changes apply at this model call.
         let ResolvedReasoningRequest {
             request_model,
             request_thinking,
             request_reasoning_effort,
             extra_body,
             effective_reasoning_effort: _,
-        } = turn_config
-            .model
-            .resolve_reasoning_effort_selection(turn_config.reasoning_effort_selection.as_deref());
+        } = active_turn_config.model.resolve_reasoning_effort_selection(
+            active_turn_config.reasoning_effort_selection.as_deref(),
+        );
         let catalog_request_model = request_model.clone();
-        let provider_request_model = turn_config.provider_request_model(&catalog_request_model);
+        let provider_request_model =
+            active_turn_config.provider_request_model(&catalog_request_model);
 
         let prompt_source_message_count = session.prompt_source_messages().len();
         let history_items = session
@@ -588,8 +612,10 @@ pub async fn query(
                 session_context.environment.cwd.display().to_string(),
             ),
         };
-        let mut messages = history
-            .for_prompt_with_prefix(&prefetched_user_inputs, &turn_config.model.input_modalities);
+        let mut messages = history.for_prompt_with_prefix(
+            &prefetched_user_inputs,
+            &active_turn_config.model.input_modalities,
+        );
         if let Some(goal_context) = session.goal_context_prompt() {
             insert_goal_context_message(&mut messages, &goal_context);
         }
@@ -604,7 +630,7 @@ pub async fn query(
             model: provider_request_model,
             system: request_system,
             messages,
-            max_tokens: turn_config
+            max_tokens: active_turn_config
                 .model
                 .max_tokens
                 .map_or(session.config.token_budget.max_output_tokens, |value| {
@@ -613,9 +639,9 @@ pub async fn query(
             tools: Some(request_tools.clone()),
             hosted_tools: hosted_tools.clone(),
             sampling: SamplingControls {
-                temperature: turn_config.model.temperature,
-                top_p: turn_config.model.top_p,
-                top_k: turn_config.model.top_k.map(|value| value as u32),
+                temperature: active_turn_config.model.temperature,
+                top_p: active_turn_config.model.top_p,
+                top_k: active_turn_config.model.top_k.map(|value| value as u32),
             },
             request_thinking,
             reasoning_effort: request_reasoning_effort,
@@ -671,14 +697,23 @@ pub async fn query(
                         warn!("context_too_long - compacting and retrying");
                         // Proactive: must compact even if token estimates disagree
                         // with the provider; preserve from latest user only.
+                        let retry_compaction_model_slug = active_turn_config
+                            .model
+                            .resolve_reasoning_effort_selection(
+                                active_turn_config.reasoning_effort_selection.as_deref(),
+                            )
+                            .request_model;
+                        let retry_compaction_request_model =
+                            active_turn_config.provider_request_model(&retry_compaction_model_slug);
                         summarize_and_compact(
                             session,
                             &on_event,
                             CompactionModelRequest {
                                 provider: &compaction_provider,
-                                model_slug: &compaction_model_slug,
-                                request_model: &compaction_request_model,
-                                max_tokens: turn_config.model.max_tokens.unwrap_or(4096) as usize,
+                                model_slug: &retry_compaction_model_slug,
+                                request_model: &retry_compaction_request_model,
+                                max_tokens: active_turn_config.model.max_tokens.unwrap_or(4096)
+                                    as usize,
                             },
                             CompactionKind::Proactive,
                             options.cancel_token.as_ref(),

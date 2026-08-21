@@ -15,7 +15,7 @@ pub use devo_skills::build_available_skills;
 pub use devo_skills::build_skill_injections;
 pub use devo_skills::collect_explicit_skill_mentions;
 pub use devo_skills::default_skill_metadata_budget;
-pub use devo_skills::normalize_canonical_path;
+pub use devo_skills::normalize_native_path;
 pub use devo_skills::render_available_skills_body;
 
 use crate::SkillsConfig;
@@ -144,7 +144,7 @@ impl FileSystemSkillCatalog {
             short_description: skill.short_description.clone(),
             interface: skill.interface.clone(),
             dependencies: skill.dependencies.clone(),
-            path: normalize_canonical_path(skill.path_to_skills_md.clone()),
+            path: normalize_native_path(skill.path_to_skills_md.clone()),
             enabled,
             source: skill_source(skill, workspace_root),
             scope: skill.scope,

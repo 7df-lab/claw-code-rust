@@ -11,9 +11,10 @@
 //! - [`WrapMode::PtyOnly`]: PTY spawns have no `pre_exec` hook, so the
 //!   wrapper carries the full profile policy.
 //!
-//! The API never fails closed (user decision): a missing launcher or a wrap
-//! construction failure logs a warning and yields [`SandboxWrap::None`]. Only
-//! profile resolution errors are returned as `Err`.
+//! The API preserves the historical warn-and-release behavior for base
+//! profiles. Per-invocation overlays are stricter: if the requested overlay
+//! cannot be applied, the function returns an error instead of dropping the
+//! overlay and launching with weaker permissions.
 //!
 //! Every decision that resolves a non-`off` profile is also recorded as a
 //! [`SandboxEvent`] on the caller-provided [`SandboxLogger`] (spawn-time
@@ -30,6 +31,7 @@ use std::time::{Duration, SystemTime};
 use crate::logging::SandboxLogger;
 use crate::profiles::{ProfileName, SandboxConfig, SandboxProfile, load_sandbox_config};
 use crate::types::SandboxEvent;
+use crate::{SandboxNetworkPermission, SandboxPermissionOverlay};
 
 /// Name prefix of the per-launch bwrap placeholder directory under
 /// `devo_home` (see [`crate::bwrap_placeholder`]).
@@ -103,9 +105,9 @@ pub struct WrappedCommand {
 /// Decide whether `profile` requires the spawned command to be wrapped in a
 /// sandbox launcher, and build that invocation.
 ///
-/// `None`/`"off"`/Windows → [`SandboxWrap::None`]. A missing launcher or a
-/// construction failure logs a warning and returns `Ok(SandboxWrap::None)`
-/// (never fails closed); only profile resolution errors are `Err`.
+/// `None`/`"off"`/Windows → [`SandboxWrap::None`]. Base-profile launcher
+/// failures retain the existing warn-and-release behavior. When `overlay` is
+/// present, launcher absence or construction failure is returned as an error.
 ///
 /// `logger` receives one event per resolved non-`off` decision (see the
 /// module docs) and is flushed to disk before this function returns. There is
@@ -116,6 +118,18 @@ pub fn wrap_command_for_profile(
     workspace: &Path,
     mode: WrapMode,
     logger: &SandboxLogger,
+) -> anyhow::Result<SandboxWrap> {
+    wrap_command_for_profile_with_overlay(profile, workspace, mode, logger, None)
+}
+
+/// Build a sandbox launcher while adding per-invocation capabilities to the
+/// named profile. The overlay never removes filesystem deny rules.
+pub fn wrap_command_for_profile_with_overlay(
+    profile: Option<&str>,
+    workspace: &Path,
+    mode: WrapMode,
+    logger: &SandboxLogger,
+    overlay: Option<&SandboxPermissionOverlay>,
 ) -> anyhow::Result<SandboxWrap> {
     static JANITOR: std::sync::Once = std::sync::Once::new();
     JANITOR.call_once(cleanup_stale_placeholder_dirs);
@@ -148,16 +162,28 @@ pub fn wrap_command_for_profile(
         return Ok(SandboxWrap::None);
     }
     let config = load_sandbox_config(workspace)?;
-    let resolved = profile_name.resolve_profile(workspace, &config)?;
-    let wrap = wrap_for_platform(
-        &profile_name,
-        &config,
-        &resolved,
+    let mut resolved = profile_name.resolve_profile(workspace, &config)?;
+    if let Some(overlay) = overlay {
+        resolved
+            .read_only
+            .extend(overlay.read_paths.iter().cloned());
+        resolved
+            .read_write
+            .extend(overlay.write_paths.iter().cloned());
+        if matches!(overlay.network, SandboxNetworkPermission::Enabled) {
+            resolved.restrict_network = false;
+        }
+    }
+    let wrap = wrap_for_platform(WrapContext {
+        profile_name: &profile_name,
+        config: &config,
+        resolved: &resolved,
         workspace,
         mode,
-        launcher_availability(),
+        launchers: launcher_availability(),
         logger,
-    );
+        has_overlay: overlay.is_some(),
+    });
     // Events were recorded at the decision sites; persist them (best-effort).
     if let Err(error) = logger.flush_to_disk() {
         tracing::warn!(error = %error, "failed to flush sandbox events to disk");
@@ -252,69 +278,58 @@ fn bwrap_available() -> bool {
     })
 }
 
-fn wrap_for_platform(
-    profile_name: &ProfileName,
-    config: &SandboxConfig,
-    resolved: &SandboxProfile,
-    workspace: &Path,
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+struct WrapContext<'a> {
+    profile_name: &'a ProfileName,
+    config: &'a SandboxConfig,
+    resolved: &'a SandboxProfile,
+    workspace: &'a Path,
     mode: WrapMode,
     launchers: LauncherAvailability,
-    logger: &SandboxLogger,
-) -> anyhow::Result<SandboxWrap> {
+    logger: &'a SandboxLogger,
+    has_overlay: bool,
+}
+
+fn wrap_for_platform(context: WrapContext<'_>) -> anyhow::Result<SandboxWrap> {
     #[cfg(target_os = "linux")]
     {
-        linux_wrap(
-            profile_name,
-            config,
-            resolved,
-            workspace,
-            mode,
-            launchers,
-            logger,
-        )
+        linux_wrap(context)
     }
     #[cfg(target_os = "macos")]
     {
         // `config` and bwrap availability are Linux-only inputs.
-        let _ = (config, launchers.bwrap);
-        macos_wrap(
-            profile_name,
-            resolved,
-            workspace,
-            launchers.sandbox_exec,
-            mode,
-            logger,
-        )
+        let _ = (context.config, context.launchers.bwrap);
+        macos_wrap(context)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = (
-            profile_name,
-            config,
-            resolved,
-            workspace,
-            mode,
-            launchers.sandbox_exec,
-            launchers.bwrap,
-            logger,
-        );
+        let _ = context;
         Ok(SandboxWrap::None)
     }
 }
 
 /// macOS wrap: `sandbox-exec -p <sbpl>` carrying the full profile for both pipe
-/// and PTY children. Never fails closed — a missing launcher, a build failure,
-/// or a failed precheck warns, records an event, and runs unwrapped.
+/// and PTY children. Base profiles retain warn-and-release behavior; overlays
+/// fail closed if Seatbelt cannot safely apply them.
 #[cfg(all(feature = "enforce", target_os = "macos"))]
-fn macos_wrap(
-    profile_name: &ProfileName,
-    resolved: &SandboxProfile,
-    workspace: &Path,
-    sandbox_exec_available: bool,
-    mode: WrapMode,
-    logger: &SandboxLogger,
-) -> anyhow::Result<SandboxWrap> {
+fn macos_wrap(context: WrapContext<'_>) -> anyhow::Result<SandboxWrap> {
+    let WrapContext {
+        profile_name,
+        resolved,
+        workspace,
+        mode,
+        launchers,
+        logger,
+        has_overlay,
+        ..
+    } = context;
+    let sandbox_exec_available = launchers.sandbox_exec;
     if !sandbox_exec_available {
+        if has_overlay {
+            return Err(anyhow::anyhow!(
+                "sandbox overlay requires the macOS sandbox-exec launcher"
+            ));
+        }
         tracing::warn!(
             profile = %profile_name,
             "sandbox-exec is not available; child runs WITHOUT sandbox enforcement \
@@ -335,6 +350,9 @@ fn macos_wrap(
     let sbpl = match crate::seatbelt::seatbelt_profile_for(workspace, resolved) {
         Ok(sbpl) => sbpl,
         Err(error) => {
+            if has_overlay {
+                return Err(error);
+            }
             tracing::warn!(
                 profile = %profile_name,
                 error = %error,
@@ -351,6 +369,11 @@ fn macos_wrap(
         }
     };
     if !crate::seatbelt::sandbox_exec_accepts_profile(&sbpl) {
+        if has_overlay {
+            return Err(anyhow::anyhow!(
+                "sandbox-exec rejected the generated overlay profile"
+            ));
+        }
         tracing::warn!(
             profile = %profile_name,
             "sandbox-exec rejected the generated Seatbelt profile; child runs \
@@ -387,17 +410,23 @@ fn macos_wrap(
     }))
 }
 
-/// Without the `enforce` feature there is no sbpl emitter; warn, record, and
-/// run unwrapped (never fail closed).
+/// Without the `enforce` feature there is no sbpl emitter. Overlays fail
+/// closed because they cannot be represented without Seatbelt.
 #[cfg(all(not(feature = "enforce"), target_os = "macos"))]
-fn macos_wrap(
-    profile_name: &ProfileName,
-    _resolved: &SandboxProfile,
-    workspace: &Path,
-    _sandbox_exec_available: bool,
-    mode: WrapMode,
-    logger: &SandboxLogger,
-) -> anyhow::Result<SandboxWrap> {
+fn macos_wrap(context: WrapContext<'_>) -> anyhow::Result<SandboxWrap> {
+    let WrapContext {
+        profile_name,
+        workspace,
+        mode,
+        logger,
+        has_overlay,
+        ..
+    } = context;
+    if has_overlay {
+        return Err(anyhow::anyhow!(
+            "sandbox overlay requires the sandbox enforce feature"
+        ));
+    }
     tracing::warn!(
         profile = %profile_name,
         "built without the 'enforce' feature; child runs WITHOUT sandbox enforcement"
@@ -416,15 +445,17 @@ fn macos_wrap(
 }
 
 #[cfg(target_os = "linux")]
-fn linux_wrap(
-    profile_name: &ProfileName,
-    config: &SandboxConfig,
-    resolved: &SandboxProfile,
-    workspace: &Path,
-    mode: WrapMode,
-    launchers: LauncherAvailability,
-    logger: &SandboxLogger,
-) -> anyhow::Result<SandboxWrap> {
+fn linux_wrap(context: WrapContext<'_>) -> anyhow::Result<SandboxWrap> {
+    let WrapContext {
+        profile_name,
+        config,
+        resolved,
+        workspace,
+        mode,
+        launchers,
+        logger,
+        has_overlay,
+    } = context;
     // Prefer the Linux helper path (bwrap → apply-seccomp-then-exec) when
     // available: parent only serializes the profile; the helper enforces.
     // Skip when DEVO_SANDBOX_LAUNCHER forces a direct launcher (helper outer
@@ -432,7 +463,8 @@ fn linux_wrap(
     if matches!(
         launcher_override(std::env::var(LAUNCHER_OVERRIDE_ENV).ok().as_deref()),
         LauncherOverride::Auto
-    ) && linux_wrap_adds_enforcement(resolved, mode)
+    ) && !has_overlay
+        && linux_wrap_adds_enforcement(resolved, mode)
         && let Some(helper) = crate::linux_helper::find_linux_sandbox_helper()
     {
         let mut permission_profile =
@@ -483,6 +515,11 @@ fn linux_wrap(
         return Ok(SandboxWrap::None);
     }
     if !launchers.bwrap {
+        if has_overlay {
+            return Err(anyhow::anyhow!(
+                "sandbox overlay requires bwrap when the profile needs a launcher"
+            ));
+        }
         // Pipe spawns keep their pre_exec Landlock enforcement (including the
         // nono network block); PTY spawns get nothing at all. Either way the
         // deny bind-overs are lost, so name the paths that go unenforced.
@@ -529,6 +566,9 @@ fn linux_wrap(
             }))
         }
         Err(error) => {
+            if has_overlay {
+                return Err(error);
+            }
             tracing::warn!(
                 profile = %profile_name,
                 mode = ?mode,

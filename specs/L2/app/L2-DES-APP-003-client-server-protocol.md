@@ -161,9 +161,9 @@ Representative client-to-server JSON-RPC request methods and response results:
 | `command/exec/write` | Write base64-encoded stdin bytes to a running client-owned PTY process. | optional `session_id`, `process_id`, optional `delta_base64`, `close_stdin`. | empty success. |
 | `command/exec/resize` | Resize a running PTY process. | optional `session_id`, `process_id`, `size`. | empty success. |
 | `command/exec/terminate` | Terminate a running client-owned PTY process. | optional `session_id`, `process_id`. | empty success. |
-| `turn/shell_command` | Legacy compatibility path for submitting a user-authored Shell Mode command as a turn. | `session_id`, `command`, optional `cwd`. | `session_id`, `turn_id`, `accepted`, `latest_sequence`. |
-| `message/editPrevious` | Edit the immediately preceding eligible user-authored message in the current session branch. | `session_id`, `expected_target_message_id`, `edited_content_parts`, `edited_mentions`, `client_edit_id`, optional `edit_mode`, optional `workspace_restore_policy`. | `accepted`, `edit_id`, `target_message_id`, `replacement_message_id`, `superseded_turn_id` where applicable, `workspace_restore_state`, `new_turn_id` or `queue_item_id` where applicable, `edit_state`, `latest_sequence`. |
-| `turn/interrupt` | Request interruption of active execution, including model generation, tool execution, pending prompts, or the whole turn. | `session_id`, `turn_id`, `reason`, optional `target_kind`, optional `target_id`, optional `interrupt_mode`. | `turn_id`, `interrupt_id`, `interrupt_state`, `cleanup_state`, `latest_sequence`. |
+| `turn/shell_command` | Removed external compatibility endpoint; the shared shell-turn execution path is internal only. | — | — |
+| `message/editPrevious` | Removed external compatibility endpoint; use canonical `session/message/edit`. | — | — |
+| `session/interrupt` | Request interruption of the active session turn, a Native task, or a sessionless command process. | `scope: { scope: "session", session_id }`, `scope: { scope: "task", item_id }`, or `scope: { scope: "command", process_id }`. | `interrupted`. |
 | `turn/resume` | Start a continuation turn linked to an interrupted or otherwise recoverable turn. | `session_id`, `interrupted_turn_id`, `client_resume_id`, optional `resume_content_parts`, optional `resume_mentions`, optional `resume_mode`. | `session_id`, `turn_id`, `resume_of_turn_id`, `accepted`, `resume_state`, `latest_sequence`. |
 | `execution/inspect` | Return active execution state so a client can show running work and let the user choose what to stop. | `session_id`, optional `include_background_processes`, optional `include_recent_output`, optional `redaction_level`. | `active_turn`, `running_tool_calls`, `pending_approvals`, `pending_questions`, `background_processes`, `latest_sequence`. |
 | `backgroundProcess/stop` | Request stop for a tracked background process started by the program. | `process_id`, optional `session_id`, optional `turn_id`, `reason`, optional `stop_mode`. | `process_id`, `stop_state`, `latest_sequence`. |
@@ -202,7 +202,7 @@ Rules:
 - `command/exec` process routing is keyed by connection id, optional `session_id`, and `process_id`. Missing `session_id` is valid for startup shell commands when the client provides an explicit `cwd`.
 - When `session_id` is omitted, the server must not create or activate a session. When `session_id` is present and `cwd` is omitted, the server resolves the process cwd from the session.
 - `command/exec/outputDelta` and `command/exec/exited` are delivered to the owning connection for both session-bound and sessionless processes.
-- `turn/shell_command` remains a legacy compatibility endpoint, but the TUI should not use it for Shell Mode.
+- The former `turn/shell_command` compatibility endpoint is removed; Shell Mode uses `command/exec` and session-owned process control uses `task/*`.
 
 ## Server Notifications
 
@@ -353,7 +353,7 @@ The server is authoritative for interrupt and resume state. Clients request cont
 
 Rules:
 
-- `turn/interrupt` must return promptly after the server accepts or rejects the request. It must not wait for every provider stream, tool call, or background process cleanup action to finish.
+- `session/interrupt` must return after the server accepts or rejects the request. Turn cancellation continues through the existing runtime cancellation path; command termination remains scoped to the requesting connection and session.
 - Accepted interruption should move the target into stopping, interrupted, completed-before-interrupt, failed, or cleanup-pending state.
 - If the target turn is already terminal, the server should return an idempotent terminal result or a structured stale-state error.
 - `execution/inspect` should return enough active work state for clients to show running model invocation, running tools, pending prompts, and tracked background processes without exposing secrets.

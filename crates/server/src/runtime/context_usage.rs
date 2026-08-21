@@ -2,9 +2,9 @@
 
 use devo_core::SessionId;
 use devo_protocol::SuccessResponse;
-use devo_protocol::canonical::item::ContextOccupancy;
-use devo_protocol::canonical::rpc_admin::ContextUsageReadParams;
-use devo_protocol::canonical::rpc_admin::ContextUsageReadResult;
+use devo_protocol::native::item::ContextOccupancy;
+use devo_protocol::native::rpc_admin::ContextUsageReadParams;
+use devo_protocol::native::rpc_admin::ContextUsageReadResult;
 
 use super::ServerRuntime;
 use crate::ProtocolErrorCode;

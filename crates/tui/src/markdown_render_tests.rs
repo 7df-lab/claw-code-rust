@@ -613,6 +613,85 @@ fn inline_code() {
 }
 
 #[test]
+fn inline_math_renders_as_terminal_notation() {
+    let text = render_markdown_text("Energy is $E = mc^2$ in physics");
+    let expected = Text::from(Line::from_iter([
+        "Energy is ".into(),
+        "E = mc²".cyan(),
+        " in physics".into(),
+    ]));
+    assert_eq!(text, expected);
+}
+
+#[test]
+fn math_delimiters_stay_literal_when_in_code_or_unpaired() {
+    let text = render_markdown_text("`$x$` stays code; $20,000 is not math");
+    let plain: String = text
+        .lines
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.clone()))
+        .collect();
+    assert_eq!(plain, "$x$ stays code; $20,000 is not math");
+
+    for md in ["Cost $20,000", "2000$ is not math", "2000$ value", "x$$y"] {
+        let text = render_markdown_text(md);
+        let plain: String = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.clone()))
+            .collect();
+        assert_eq!(plain, md);
+    }
+}
+
+fn plain_lines(text: &Text<'static>) -> Vec<String> {
+    text.lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.clone())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+#[test]
+fn display_math_renders_as_highlighted_block() {
+    let md = "Before\n\n$$\n\\frac{a}{b}\n$$\n\nAfter";
+    let text = render_markdown_text(md);
+    let lines = plain_lines(&text);
+    assert_eq!(lines.first().map(String::as_str), Some("Before"));
+    assert_eq!(lines.last().map(String::as_str), Some("After"));
+    assert!(lines.iter().any(|line| line.contains('a')));
+    assert!(lines.iter().any(|line| line.contains('b')));
+    assert!(lines.iter().any(|line| line.contains('─')));
+    assert!(!lines.iter().any(|line| line.contains("\\frac")));
+}
+
+#[test]
+fn math_and_latex_code_fences_use_latex_highlighting() {
+    for lang in ["math", "latex"] {
+        let md = format!("```{lang}\n\\alpha + \\beta\n```");
+        let text = render_markdown_text(&md);
+        assert_eq!(plain_lines(&text), ["\\alpha + \\beta"], "lang {lang}");
+    }
+}
+
+#[test]
+fn display_math_is_not_wrapped_at_narrow_width() {
+    let md = "$$\nE = mc^2 + \\frac{1}{2} mv^2\n$$";
+    let text = render_markdown_text_with_width_and_cwd(md, /*width*/ Some(10), None);
+    let lines = plain_lines(&text);
+    assert!(lines.iter().any(|line| line.contains("E = mc²")));
+    assert!(lines.iter().any(|line| line.contains('─')));
+    assert!(
+        lines.iter().any(|line| line.chars().count() > 10),
+        "math rows should remain structural instead of wrapping at width 10: {lines:?}"
+    );
+}
+
+#[test]
 fn strong() {
     assert_eq!(
         render_markdown_text("**Strong**"),

@@ -282,7 +282,7 @@ The current runtime triggers hooks where Devo has a matching lifecycle point:
 tool execution, prompt submission, server setup, session start and resume,
 session shutdown, turn stop and failure, subagent start and stop, manual
 compaction, permission request and denial, config writes through `provider/upsert`
-and `skills/set_enabled`, per-turn cwd changes, and file changes reported by
+and `skill/set_enabled`, per-turn cwd changes, and file changes reported by
 `write`/`apply_patch` tool metadata.
 
 Runtime-triggered events:

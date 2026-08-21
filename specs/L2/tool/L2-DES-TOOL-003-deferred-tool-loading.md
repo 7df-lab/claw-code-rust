@@ -390,8 +390,8 @@ MCP tools are conditionally deferred. Each MCP server can define a tool loading 
 In user or project `config.toml`:
 
 ```toml
-[[mcp.servers]]
-id = "code_search"
+[mcp_servers.code_search]
+command = "devo-code-search-mcp"
 enabled = false
 
 [tools.deferred_loading]

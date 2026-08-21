@@ -12,13 +12,13 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use devo_protocol::canonical::item::ItemEnvelope;
-use devo_protocol::canonical::session::Session;
-use devo_protocol::canonical::turn::Turn;
+use devo_protocol::native::item::ItemEnvelope;
+use devo_protocol::native::session::Session;
+use devo_protocol::native::turn::Turn;
 
 use super::legacy_projector::{LegacyProjectError, LegacyProjector};
 use super::rollout_v2::{
-    ParsedRolloutLine, RolloutLineReadError, RolloutLineV2, parse_rollout_line,
+    InternalRecordV2, ParsedRolloutLine, RolloutLineReadError, RolloutLineV2, parse_rollout_line,
 };
 
 /// A session's effective canonical history, in file order.
@@ -100,6 +100,35 @@ fn apply_v2_line(history: &mut CanonicalHistory, line: RolloutLineV2) {
         RolloutLineV2::SessionMeta { session, .. } => history.session = Some(session),
         RolloutLineV2::Turn { turn, .. } => history.turns.push(turn),
         RolloutLineV2::Item { item, .. } => history.items.push(item),
+        RolloutLineV2::Internal {
+            entry:
+                InternalRecordV2::SessionSettings {
+                    field,
+                    value,
+                    epoch,
+                    ..
+                },
+            ..
+        } => {
+            // Field-level settings lines (L2-DES-CONV-002 DD-4) fold into the
+            // canonical session snapshot: the last line per field wins, and
+            // the settings epoch raises the session version so canonical
+            // readers observe the mutation.
+            if let Some(session) = history.session.as_mut() {
+                apply_settings_to_canonical_session(session, field, value);
+                // `epoch + 1`: the SessionMeta-projected version starts at 1,
+                // and the first settings write must already observe a bump.
+                session.version = session.version.max(epoch + 1);
+            }
+        }
+        RolloutLineV2::SessionTitleUpdated { title, .. } => {
+            // Title changes are session metadata; fold them so canonical
+            // readers (including the metadata-update response path) see the
+            // latest title.
+            if let Some(session) = history.session.as_mut() {
+                session.title = Some(title);
+            }
+        }
         RolloutLineV2::SessionRollback {
             retained_turn_ids, ..
         } => {
@@ -111,17 +140,70 @@ fn apply_v2_line(history: &mut CanonicalHistory, line: RolloutLineV2) {
                 .items
                 .retain(|item| retained.contains(item.turn_id.as_str()));
         }
-        // Internal entries are not items; title updates are folded into the
-        // session snapshot by callers that need them; compaction snapshots
-        // shape the prompt, not the displayed history; workspace lines are
-        // not part of the conversational timeline.
+        // Other internal entries are not items; compaction snapshots shape
+        // the prompt, not the displayed history; workspace lines are not part
+        // of the conversational timeline.
         RolloutLineV2::Internal { .. }
-        | RolloutLineV2::SessionTitleUpdated { .. }
         | RolloutLineV2::CompactionSnapshot { .. }
         | RolloutLineV2::WorkspaceCheckpoint { .. }
         | RolloutLineV2::WorkspaceChange { .. }
         | RolloutLineV2::WorkspaceRestoreStarted { .. }
         | RolloutLineV2::WorkspaceRestoreCompleted { .. } => {}
+    }
+}
+
+/// Folds one field-level settings line into the canonical session snapshot.
+/// Model-family fields live on `Session::model` / the session record rather
+/// than `SessionSettings`; they are intentionally not folded here.
+fn apply_settings_to_canonical_session(
+    session: &mut devo_protocol::native::session::Session,
+    field: crate::conversation::records::SessionSettingsField,
+    value: serde_json::Value,
+) {
+    use crate::conversation::records::SessionSettingsField;
+    match field {
+        SessionSettingsField::PermissionPreset => {
+            // The persisted value uses the legacy `PermissionPreset` wire
+            // shape (kebab-case); map it onto the canonical profile enum.
+            if let Ok(preset) = serde_json::from_value::<devo_protocol::PermissionPreset>(value) {
+                session.settings.permission_profile = match preset {
+                    devo_protocol::PermissionPreset::Default => {
+                        devo_protocol::native::model::PermissionProfile::Default
+                    }
+                    devo_protocol::PermissionPreset::AutoReview => {
+                        devo_protocol::native::model::PermissionProfile::AutoReview
+                    }
+                    devo_protocol::PermissionPreset::FullAccess => {
+                        devo_protocol::native::model::PermissionProfile::FullAccess
+                    }
+                };
+            }
+        }
+        SessionSettingsField::SandboxProfile => {
+            if let Ok(name) = serde_json::from_value::<String>(value) {
+                session.settings.sandbox_profile = Some(name);
+            }
+        }
+        SessionSettingsField::ReasoningEffortSelection => {
+            if let Ok(Some(raw)) = serde_json::from_value::<Option<String>>(value)
+                && let Ok(effort) = raw.parse::<devo_protocol::ReasoningEffort>()
+            {
+                session.settings.reasoning_effort = Some(effort);
+            }
+        }
+        SessionSettingsField::CollaborationMode => {
+            if let Ok(raw) = serde_json::from_value::<String>(value) {
+                session.settings.mode = Some(raw);
+            }
+        }
+        SessionSettingsField::Model => {
+            // Model lives on `Session::model`, not `SessionSettings`; fold the
+            // slug so canonical readers observe the switch.
+            if let Ok(Some(slug)) = serde_json::from_value::<Option<String>>(value) {
+                session.model.model = slug;
+            }
+        }
+        SessionSettingsField::ModelBindingId => {}
     }
 }
 
@@ -135,7 +217,7 @@ mod tests {
         ItemLine, ItemRecord, RolloutLine, SessionRollbackLine, TextItem, TurnItem,
     };
     use crate::conversation::{ItemId, SessionId, TurnId, TurnStatus};
-    use devo_protocol::canonical::item::ItemState;
+    use devo_protocol::native::item::ItemState;
 
     fn write_lines(path: &Path, lines: &[RolloutLine]) {
         let mut text = String::new();
@@ -198,7 +280,7 @@ mod tests {
         assert_eq!(history.items.len(), 1);
         assert_eq!(history.items[0].state, ItemState::Completed);
         assert!(
-            matches!(&history.items[0].item, devo_protocol::canonical::item::Item::AssistantMessage { text, .. } if text == "kept")
+            matches!(&history.items[0].item, devo_protocol::native::item::Item::AssistantMessage { text, .. } if text == "kept")
         );
     }
 
@@ -245,5 +327,97 @@ mod tests {
         let error = read_canonical_history(&dir.path().join("rollout.jsonl"))
             .expect_err("damaged line must fail");
         assert!(matches!(error, HistoryReadError::DamagedLine { .. }));
+    }
+
+    /// Trace: L2-DES-CONV-002
+    /// Verifies: field-level settings lines fold into the canonical session
+    /// snapshot (last line per field wins) and bump its version (DD-4).
+    #[test]
+    fn session_settings_lines_fold_into_canonical_session() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let session_id = SessionId::new();
+        let now = Utc.with_ymd_and_hms(2026, 8, 2, 12, 0, 0).unwrap();
+        let record = crate::conversation::SessionRecord {
+            id: session_id,
+            rollout_path: dir.path().join("rollout.jsonl"),
+            created_at: now,
+            updated_at: now,
+            last_activity_at: Some(now),
+            source: "cli".into(),
+            agent_nickname: None,
+            agent_role: None,
+            agent_path: None,
+            model_provider: "test".into(),
+            model: Some("test-model".into()),
+            model_binding_id: None,
+            reasoning_effort_selection: None,
+            cwd: dir.path().to_path_buf(),
+            additional_directories: Vec::new(),
+            cli_version: "test".into(),
+            title: None,
+            title_state: crate::conversation::SessionTitleState::Unset,
+            sandbox_policy: "workspace-write".into(),
+            approval_mode: "on-request".into(),
+            effective_context_window: None,
+            tokens_used: 0,
+            first_user_message: None,
+            archived_at: None,
+            git_sha: None,
+            git_branch: None,
+            git_origin_url: None,
+            parent_session_id: None,
+            session_context: None,
+            latest_turn_context: None,
+            collaboration_mode: None,
+            permission_preset: None,
+            schema_version: 2,
+        };
+        write_lines(
+            &dir.path().join("rollout.jsonl"),
+            &[
+                RolloutLine::SessionMeta(Box::new(crate::conversation::SessionMetaLine {
+                    timestamp: now,
+                    session: record,
+                })),
+                RolloutLine::SessionSettings(crate::conversation::SessionSettingsLine {
+                    timestamp: now,
+                    session_id,
+                    field: crate::conversation::SessionSettingsField::PermissionPreset,
+                    value: serde_json::to_value(devo_protocol::PermissionPreset::FullAccess)
+                        .expect("serialize preset"),
+                    epoch: 0,
+                }),
+                RolloutLine::SessionSettings(crate::conversation::SessionSettingsLine {
+                    timestamp: now,
+                    session_id,
+                    field: crate::conversation::SessionSettingsField::SandboxProfile,
+                    value: serde_json::Value::String("strict".into()),
+                    epoch: 0,
+                }),
+                RolloutLine::SessionSettings(crate::conversation::SessionSettingsLine {
+                    timestamp: now,
+                    session_id,
+                    field: crate::conversation::SessionSettingsField::ReasoningEffortSelection,
+                    value: serde_json::to_value(Some("high".to_string()))
+                        .expect("serialize effort"),
+                    epoch: 0,
+                }),
+            ],
+        );
+
+        let history = read_canonical_history(&dir.path().join("rollout.jsonl")).expect("read");
+        let session = history.session.expect("session");
+        assert_eq!(
+            session.settings.permission_profile,
+            devo_protocol::native::model::PermissionProfile::FullAccess
+        );
+        assert_eq!(session.settings.sandbox_profile.as_deref(), Some("strict"));
+        assert_eq!(
+            session.settings.reasoning_effort,
+            Some(devo_protocol::ReasoningEffort::High)
+        );
+        // Three settings epochs (1, 2, 3) raise the SessionMeta version (1)
+        // to 4.
+        assert_eq!(session.version, 4);
     }
 }

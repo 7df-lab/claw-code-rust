@@ -59,6 +59,8 @@ contextBridge.exposeInMainWorld("devo", {
 	acp: {
 		request: (request: { method: string; params?: unknown; directory?: string }) =>
 			ipcRenderer.invoke("acp:request", request),
+		notify: (notification: { method: string; params?: unknown; directory?: string }) =>
+			ipcRenderer.invoke("acp:notify", notification),
 		respond: (response: { id: number | string; result: unknown }) =>
 			ipcRenderer.invoke("acp:respond", response),
 		connected: () => ipcRenderer.invoke("acp:connected"),

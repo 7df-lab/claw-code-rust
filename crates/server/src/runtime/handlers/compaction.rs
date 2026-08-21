@@ -11,23 +11,78 @@ enum CompactionTurnOutcome {
     Canceled,
 }
 
+struct SessionCompactRequest {
+    session_id: SessionId,
+}
+
 impl ServerRuntime {
-    pub(crate) async fn handle_session_compact(
+    /// Native `session/compact/start` (L2-DES-APP-008 Phase B): lean
+    /// params and a canonical turn snapshot result, produced by translating
+    /// into the legacy flow and projecting the admitted compaction turn.
+    pub(crate) async fn handle_native_session_compact_start(
         self: &Arc<Self>,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        let params: SessionCompactParams = match serde_json::from_value(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    format!("invalid session/compact params: {error}"),
-                );
-            }
+        let params: devo_protocol::native::rpc_session::SessionCompactStartParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical session/compact/start params: {error}"),
+                    );
+                }
+            };
+        let Ok(legacy_session_id) = SessionId::try_from(params.session_id.as_str()) else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session id is not addressable by this server",
+            );
         };
+        let response = self
+            .handle_session_compact_translated(
+                request_id.clone(),
+                SessionCompactRequest {
+                    session_id: legacy_session_id,
+                },
+            )
+            .await;
+        let Ok(success) =
+            serde_json::from_value::<SuccessResponse<TurnStartResult>>(response.clone())
+        else {
+            return response;
+        };
+        let TurnStartResult::Started { turn_id, .. } = success.result else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::TurnAlreadyRunning,
+                "cannot compact while a turn is active or queued",
+            );
+        };
+        let Some(metadata) = self
+            .session_turn_reservation_snapshot(legacy_session_id)
+            .await
+            .and_then(|reservation| reservation.active_turn)
+            .filter(|turn| turn.turn_id == turn_id)
+        else {
+            return response;
+        };
+        let turn = devo_protocol::native::wire_projector::native_turn_from_metadata(&metadata);
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: devo_protocol::native::rpc_turn::TurnStartResult { turn },
+        })
+        .expect("serialize canonical session/compact/start response")
+    }
 
+    async fn handle_session_compact_translated(
+        self: &Arc<Self>,
+        request_id: serde_json::Value,
+        params: SessionCompactRequest,
+    ) -> serde_json::Value {
         let Some(session_handle) = self.session(params.session_id).await else {
             return self.error_response(
                 request_id,
@@ -35,6 +90,23 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+
+        // Busy rejection must not wait on the session actor: turns execute
+        // inline on the actor, so a mailbox round-trip here would deadlock
+        // while a turn is running. `runtime_active_turn_id` reads the runtime
+        // turn cache only; the mailbox-based `try_begin_active_turn` below
+        // stays the authoritative admission check once the session is idle.
+        if self
+            .runtime_active_turn_id(params.session_id)
+            .await
+            .is_some()
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::TurnAlreadyRunning,
+                "cannot compact while a turn is active or queued",
+            );
+        }
 
         let _state_change_guard = session_handle.lock_state_change().await;
         let Some(reservation) = session_handle.turn_reservation_snapshot().await else {
@@ -267,9 +339,13 @@ impl ServerRuntime {
             .await;
             return;
         };
-        self.broadcast_event(ServerEvent::SessionCompactionStarted(SessionEventPayload {
-            session: started_summary,
-        }))
+        self.broadcast_event(ServerEvent::SessionCompactionStarted(
+            devo_protocol::SessionCompactionStartedPayload {
+                session: started_summary,
+                turn_id: turn.turn_id,
+                trigger: devo_protocol::native::item::CompactionTrigger::Manual,
+            },
+        ))
         .await;
         self.run_session_hook(
             session_id,
@@ -354,7 +430,7 @@ impl ServerRuntime {
                     .provider_for_route(turn_config.provider_route.clone()),
                 session_id,
                 Some(turn.turn_id),
-                devo_protocol::canonical::usage::UsagePurpose::Compaction,
+                devo_protocol::native::usage::UsagePurpose::Compaction,
             );
             let summarizer = DefaultHistorySummarizer::with_models(
                 provider,
@@ -716,7 +792,11 @@ impl ServerRuntime {
                     .await;
                 }
                 self.broadcast_event(ServerEvent::SessionCompactionCompleted(
-                    SessionEventPayload { session: summary },
+                    devo_protocol::SessionCompactionCompletedPayload {
+                        session: summary,
+                        turn_id: completed_turn.turn_id,
+                        item_id: Some(item_id),
+                    },
                 ))
                 .await;
                 self.broadcast_event(ServerEvent::TurnCompleted(TurnEventPayload {
@@ -855,7 +935,11 @@ impl ServerRuntime {
                     .await;
                 }
                 self.broadcast_event(ServerEvent::SessionCompactionCompleted(
-                    SessionEventPayload { session: summary },
+                    devo_protocol::SessionCompactionCompletedPayload {
+                        session: summary,
+                        turn_id: turn.turn_id,
+                        item_id: None,
+                    },
                 ))
                 .await;
                 self.broadcast_event(ServerEvent::TurnCompleted(TurnEventPayload {

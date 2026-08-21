@@ -37,7 +37,7 @@ EOF
 # Run your test client connected to the server
 ```
 
-3. Call the skills/list endpoint:
+3. Call the `skill/list` endpoint:
 
 The endpoint should return the discovered skills in the response:
 
@@ -57,9 +57,7 @@ The endpoint should return the discovered skills in the response:
 }
 ```
 
-4. Call the skills/changed endpoint:
-
-Similar to skills/list, this returns skills when they change:
+4. Call `skill/list` with `forceReload: true` after changing the workspace:
 
 ```json
 {
@@ -77,7 +75,7 @@ Similar to skills/list, this returns skills when they change:
 }
 ```
 
-5. Call the skills/set_enabled endpoint to persist a path-based toggle:
+5. Call the `skill/set_enabled` endpoint to persist a path-based toggle:
 
 ```json
 {
@@ -88,9 +86,9 @@ Similar to skills/list, this returns skills when they change:
 
 ## Expected Behaviors
 
-- skills/list returns all discovered skills and honors `force_reload`
-- skills/changed forces a refreshed list after workspace changes
-- skills/set_enabled persists path-based enablement overrides
+- skill/list returns all discovered skills and honors `forceReload`
+- skill/list with `forceReload: true` refreshes after workspace changes
+- skill/set_enabled persists path-based enablement overrides
 - Skills without SKILL.md are not discovered
 - Disabled skills (enabled: false) are still listed but not usable
 - Skill source and scope indicate whether it came from User, Workspace, System, Admin, or Plugin

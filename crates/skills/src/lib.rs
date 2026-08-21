@@ -36,7 +36,7 @@ pub use model::SkillPolicy;
 pub use model::SkillScope;
 pub use model::SkillToolDependency;
 pub use model::canonicalize_for_identity;
-pub use model::normalize_canonical_path;
+pub use model::normalize_native_path;
 pub use package::{
     FrontmatterFormat, Sha256Digest, SkillCompatibility, SkillDefinition, SkillDiagnostic,
     SkillName, SkillPackage, SkillPackageId, SkillResourceKind, SkillResourceRef, SkillSourceKind,

@@ -1,0 +1,30 @@
+# Rust
+/target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+
+# Compiled native extensions (produced by maturin develop)
+*.so
+*.dylib
+*.dll
+
+# Sphinx build output
+python/docs/_build/
+
+# Root-level dev notes (design.md, research.md — not for the repo)
+/docs/
+
+# Editor / OS
+*.log
+*.tmp
+*.bak
+.DS_Store

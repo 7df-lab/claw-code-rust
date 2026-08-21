@@ -1,8 +1,8 @@
 //! `devo mcp` subcommands for managing user-level MCP server configuration.
 //!
-//! These commands mutate `~/.devo/config.toml` (`[[mcp.servers]]`) using the
-//! same schema the runtime loads. They do not refresh an already-running
-//! interactive session.
+//! These commands mutate `~/.devo/config.toml` under `[mcp]` and
+//! `[mcp_servers.<server_id>]` using the same schema the runtime loads.
+//! They do not refresh an already-running interactive session.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -33,7 +33,7 @@ pub enum McpCommand {
         /// Static HTTP headers for http/sse servers (`KEY=VALUE`).
         #[arg(long = "header", value_name = "KEY=VALUE")]
         headers: Vec<String>,
-        /// Bearer token for http/sse authentication.
+        /// Bearer token for http/sse authentication (plaintext, discouraged).
         #[arg(long = "bearer-token")]
         bearer_token: Option<String>,
         /// Working directory for stdio servers.

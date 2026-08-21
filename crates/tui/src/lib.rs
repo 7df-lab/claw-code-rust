@@ -37,6 +37,7 @@ mod live_wrap;
 mod markdown;
 pub mod markdown_render;
 mod markdown_stream;
+mod math_render;
 #[cfg(test)]
 mod mcp_command_tests;
 mod mcp_picker;

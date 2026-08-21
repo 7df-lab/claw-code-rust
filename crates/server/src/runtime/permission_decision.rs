@@ -1,4 +1,4 @@
-use devo_protocol::canonical::item::ApprovalDecisionSource;
+use devo_protocol::native::item::ApprovalDecisionSource;
 
 /// One authorization-layer decision before it is converted into an execution
 /// grant or an interactive control request.

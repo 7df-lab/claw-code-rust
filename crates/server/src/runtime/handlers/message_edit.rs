@@ -4,22 +4,198 @@ use super::message_edit_restore::{
     discover_restore_candidates, restore_completed_payload, restore_started_payload,
 };
 
+struct MessageEditRequest {
+    session_id: SessionId,
+    target_message_id: Option<devo_protocol::ItemId>,
+    expected_target_message_id: Option<devo_protocol::ItemId>,
+    edited_content_parts: Vec<serde_json::Value>,
+    edited_mentions: Vec<serde_json::Value>,
+    edit_mode: devo_protocol::native::rpc_session::MessageEditMode,
+    client_edit_id: Option<String>,
+    workspace_restore_policy:
+        Option<devo_protocol::native::rpc_session::MessageEditWorkspaceRestore>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MessageEditResult {
+    edit_id: String,
+    replacement_message_id: devo_protocol::ItemId,
+    replacement_turn_id: Option<TurnId>,
+    edit_state: String,
+}
+
 impl ServerRuntime {
-    pub(crate) async fn handle_message_edit_previous(
+    /// Native `session/message/edit` (ratified #10; L1-REQ-CONV-005):
+    /// runs the shared edit machinery and projects the superseding
+    /// `UserMessage` revision. `expectedRevision` is enforced
+    /// against the rollout-backed canonical history (`0` skips).
+    pub(crate) async fn handle_native_session_message_edit(
         self: &Arc<Self>,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        let params: crate::MessageEditPreviousParams = match serde_json::from_value(params) {
-            Ok(params) => params,
+        let params: devo_protocol::native::rpc_session::SessionMessageEditParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical session/message/edit params: {error}"),
+                    );
+                }
+            };
+        let Ok(legacy_session_id) = SessionId::try_from(params.session_id.as_str()) else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session id is not addressable by this server",
+            );
+        };
+        let Ok(target_item_id) = devo_protocol::ItemId::try_from(params.item_id.as_str()) else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InvalidContentParts,
+                "invalid canonical item id",
+            );
+        };
+
+        if params.expected_revision > 0 {
+            match self
+                .native_item_revision(legacy_session_id, params.item_id.as_str())
+                .await
+            {
+                Some(revision) if revision == params.expected_revision => {}
+                Some(_) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::WorkspaceVersionConflict,
+                        "item revision changed; refetch before editing",
+                    );
+                }
+                None => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidContentParts,
+                        "item does not exist in the canonical history",
+                    );
+                }
+            }
+        }
+
+        let edited_input = match super::queue::legacy_input_items(&params.content) {
+            Ok(input) => input,
             Err(error) => {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InvalidParams,
-                    format!("invalid message/editPrevious params: {error}"),
+                    format!("invalid canonical session/message/edit content: {error}"),
                 );
             }
         };
+        let edited_content_parts: Vec<serde_json::Value> = edited_input
+            .iter()
+            .map(|item| serde_json::to_value(item).expect("serialize input item"))
+            .collect();
+
+        let edit_params = MessageEditRequest {
+            session_id: legacy_session_id,
+            target_message_id: Some(target_item_id),
+            expected_target_message_id: None,
+            edited_content_parts,
+            edited_mentions: Vec::new(),
+            edit_mode: params.mode,
+            client_edit_id: Some(params.idempotency_key.clone()),
+            workspace_restore_policy: Some(params.workspace_restore),
+        };
+        let response = self
+            .handle_message_edit(request_id.clone(), edit_params)
+            .await;
+        let Ok(success) =
+            serde_json::from_value::<SuccessResponse<MessageEditResult>>(response.clone())
+        else {
+            return response;
+        };
+        let result = success.result;
+
+        // Facade envelope for the superseding UserMessage revision (same
+        // concession as the other facade items: seq 0, history is the truth).
+        let now = Utc::now();
+        let item = devo_protocol::native::item::ItemEnvelope {
+            id: devo_protocol::native::ids::ItemId::from_string(
+                result.replacement_message_id.to_string(),
+            ),
+            session_id: params.session_id.clone(),
+            turn_id: result
+                .replacement_turn_id
+                .map(|turn_id| devo_protocol::native::ids::TurnId::from_string(turn_id.to_string()))
+                .unwrap_or_else(|| {
+                    devo_protocol::native::ids::TurnId::from_string(
+                        params.session_id.as_str().to_string(),
+                    )
+                }),
+            seq: 0,
+            revision: params.expected_revision + 1,
+            created_at: now,
+            updated_at: now,
+            state: devo_protocol::native::item::ItemState::Completed,
+            item: devo_protocol::native::item::Item::UserMessage {
+                client_user_message_id: None,
+                content: params.content.clone(),
+                entry: match params.mode {
+                    devo_protocol::native::rpc_session::MessageEditMode::Normal => {
+                        devo_protocol::native::item::UserMessageEntry::TurnStart
+                    }
+                    devo_protocol::native::rpc_session::MessageEditMode::QueuedOnly => {
+                        devo_protocol::native::item::UserMessageEntry::Queue
+                    }
+                },
+            },
+        };
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: devo_protocol::native::rpc_session::SessionMessageEditResult {
+                item,
+                replacement_turn_id: result.replacement_turn_id.map(|turn_id| {
+                    devo_protocol::native::ids::TurnId::from_string(turn_id.to_string())
+                }),
+                edit_state: match result.edit_state.as_str() {
+                    "queued" => devo_protocol::native::rpc_session::MessageEditState::Queued,
+                    _ => devo_protocol::native::rpc_session::MessageEditState::Accepted,
+                },
+            },
+        })
+        .expect("serialize canonical session/message/edit response")
+    }
+
+    /// Current revision of one item in the rollout-backed canonical history.
+    async fn native_item_revision(&self, session_id: SessionId, item_id: &str) -> Option<u32> {
+        let rollout_path = self
+            .deps
+            .db
+            .get_session_index(&session_id)
+            .ok()
+            .flatten()
+            .and_then(|index| index.rollout_path)
+            .or_else(|| {
+                self.rollout_store
+                    .find_rollout_by_session_id(&session_id)
+                    .ok()
+                    .flatten()
+            })?;
+        let history = devo_core::read_canonical_history(&rollout_path).ok()?;
+        history
+            .items
+            .iter()
+            .find(|item| item.id.as_str() == item_id)
+            .map(|item| item.revision)
+    }
+
+    async fn handle_message_edit(
+        self: &Arc<Self>,
+        request_id: serde_json::Value,
+        params: MessageEditRequest,
+    ) -> serde_json::Value {
         let edited_input = match params
             .edited_content_parts
             .iter()
@@ -32,7 +208,7 @@ impl ServerRuntime {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InvalidContentParts,
-                    format!("invalid message/editPrevious edited content: {error}"),
+                    format!("invalid session/message/edit content: {error}"),
                 );
             }
         };
@@ -40,7 +216,7 @@ impl ServerRuntime {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::InvalidContentParts,
-                "message/editPrevious edited content is empty",
+                "session/message/edit content is empty",
             );
         };
 
@@ -103,14 +279,14 @@ impl ServerRuntime {
                 return self.error_response(
                     request_id,
                     code,
-                    format!("failed to resolve message/editPrevious input: {error}"),
+                    format!("failed to resolve session/message/edit input: {error}"),
                 );
             }
         }) else {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::InvalidContentParts,
-                "message/editPrevious edited content is empty",
+                "session/message/edit content is empty",
             );
         };
         let prompt_hook_report = self
@@ -142,15 +318,15 @@ impl ServerRuntime {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InvalidMentions,
-                    format!("invalid message/editPrevious mentions: {error}"),
+                    format!("invalid session/message/edit mentions: {error}"),
                 );
             }
         };
-        if params.edit_mode != devo_protocol::EditMode::Normal {
+        if params.edit_mode != devo_protocol::native::rpc_session::MessageEditMode::Normal {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::WorkspaceRestoreFailedToStart,
-                "message/editPrevious queued-only edits are not implemented",
+                "session/message/edit queued-only edits are not implemented",
             );
         }
         let Some(session) = session_handle.export_runtime_session().await else {
@@ -194,13 +370,13 @@ impl ServerRuntime {
         }
         let requested_restore_policy = params
             .workspace_restore_policy
-            .unwrap_or(crate::MessageEditWorkspaceRestorePolicy::Safe);
+            .unwrap_or(devo_protocol::native::rpc_session::MessageEditWorkspaceRestore::Safe);
         let workspace_restore_policy = core_restore_policy(requested_restore_policy);
         let Some(record) = session.record.clone() else {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,
-                "message/editPrevious requires a durable session",
+                "session/message/edit requires a durable session",
             );
         };
         let target_message_id = target.item_id;
@@ -251,7 +427,7 @@ impl ServerRuntime {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InternalError,
-                    "message/editPrevious did not create the expected durable records",
+                    "session/message/edit did not create the expected durable records",
                 );
             }
         };
@@ -263,7 +439,7 @@ impl ServerRuntime {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,
-                "message/editPrevious created unexpected durable records",
+                "session/message/edit created unexpected durable records",
             );
         };
         edit_record.requested_by_client_id = params.client_edit_id.clone();
@@ -285,7 +461,7 @@ impl ServerRuntime {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InternalError,
-                    "message/editPrevious created unexpected workspace restore record",
+                    "session/message/edit created unexpected workspace restore record",
                 );
             };
             superseded_record.restore_id = Some(restore_id);
@@ -357,7 +533,7 @@ impl ServerRuntime {
                 return self.error_response(
                     request_id,
                     ProtocolErrorCode::InternalError,
-                    "message/editPrevious created unexpected workspace restore completion",
+                    "session/message/edit created unexpected workspace restore completion",
                 );
             };
             if let Err(error) = self
@@ -590,13 +766,13 @@ impl ServerRuntime {
 
         serde_json::to_value(SuccessResponse {
             id: request_id,
-            result: crate::MessageEditPreviousResult {
+            result: MessageEditResult {
                 edit_id: edit_record.edit_id.0.to_string(),
                 replacement_message_id,
                 replacement_turn_id: Some(replacement_turn_id),
                 edit_state: "accepted".to_string(),
             },
         })
-        .expect("serialize message/editPrevious response")
+        .expect("serialize session/message/edit response")
     }
 }

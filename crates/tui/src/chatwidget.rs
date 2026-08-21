@@ -5,7 +5,6 @@
 //! interaction. Protocol reasoning choices come from `devo_protocol`
 //! through `Model` instead of a TUI-local reasoning enum.
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -68,8 +67,6 @@ mod subagent_live_list;
 
 mod permission_presets;
 
-mod resume_browser;
-
 mod sandbox_profiles;
 
 mod text_stream;
@@ -88,7 +85,6 @@ mod worker_events;
 
 use self::permission_presets::permission_preset_items;
 use self::permission_presets::permission_preset_label;
-use self::resume_browser::ResumeBrowserState;
 use self::session_header::SessionHeaderParams;
 use self::subagent_monitor::SubagentMonitorState;
 
@@ -269,8 +265,6 @@ pub(crate) struct ChatWidget {
     acp_usage: Option<(u64, u64, Option<AcpCost>)>,
     onboarding: Option<OnboardingWidget>,
     exit_after_onboarding: bool,
-    resume_browser: Option<ResumeBrowserState>,
-    resume_browser_loading: bool,
     resuming_session: bool,
     subagent_monitor: SubagentMonitorState,
     theme_set: ThemeSet,
@@ -278,7 +272,6 @@ pub(crate) struct ChatWidget {
     /// Monotonic epoch used to coalesce rapid theme-driven transcript reloads.
     theme_reload_epoch: u64,
     collapse_reasoning: bool,
-    resume_browser_last_height: Cell<u16>,
     turn_count: usize,
     total_input_tokens: usize,
     total_output_tokens: usize,
@@ -286,7 +279,7 @@ pub(crate) struct ChatWidget {
     prompt_token_estimate: usize,
     last_query_input_tokens: usize,
     last_query_total_tokens: usize,
-    last_context_occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+    last_context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
     last_plan_progress: Option<(usize, usize)>,
     queued_count: usize,
     queued_input_modes: VecDeque<InputMode>,
@@ -301,6 +294,10 @@ pub(crate) struct ChatWidget {
     boundary_committed_assistant_items: HashSet<ItemId>,
     current_turn_has_user_shell_command: bool,
     pending_approval: Option<PendingApprovalRequest>,
+    /// Approval decision ids already rendered in the active session. The server
+    /// and the client ACP bridge can both emit the same decision item, so this
+    /// guards the transcript against duplicate permission lines.
+    seen_approval_decisions: HashSet<String>,
     active_proposed_plan: Option<ActiveProposedPlan>,
     pending_proposed_plan_actions: bool,
     permission_preset: devo_protocol::PermissionPreset,
@@ -544,15 +541,12 @@ impl ChatWidget {
             acp_usage: None,
             onboarding: None,
             exit_after_onboarding,
-            resume_browser: None,
-            resume_browser_loading: false,
             resuming_session: false,
             subagent_monitor: SubagentMonitorState::default(),
             theme_set,
             active_theme_name,
             theme_reload_epoch: 0,
             collapse_reasoning: initial_collapse_reasoning,
-            resume_browser_last_height: Cell::new(0),
             turn_count: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
@@ -575,6 +569,7 @@ impl ChatWidget {
             boundary_committed_assistant_items: HashSet::new(),
             current_turn_has_user_shell_command: false,
             pending_approval: None,
+            seen_approval_decisions: HashSet::new(),
             active_proposed_plan: None,
             pending_proposed_plan_actions: false,
             permission_preset: initial_permission_preset,

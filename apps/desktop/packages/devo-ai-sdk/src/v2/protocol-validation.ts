@@ -86,7 +86,7 @@ export function assertValidProtocolPayload<T = unknown>({
 }
 
 function bindingForMethod(method: string): MethodSchemaBinding | undefined {
-	return bundle.methods[method] ?? bundle.methods[`_devo/${method}`]
+	return bundle.methods[method]
 }
 
 function validatorForSchema(

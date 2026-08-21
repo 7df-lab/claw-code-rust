@@ -45,6 +45,23 @@ pub use exec_policy_loader::{
 pub(crate) mod shell_exec;
 pub(crate) mod websearch_prompt;
 
+pub(crate) fn sandbox_overlay_for_spawn(
+    overlay: Option<&devo_tools::SandboxPermissionOverlay>,
+) -> Option<devo_sandbox::SandboxPermissionOverlay> {
+    overlay.map(|overlay| devo_sandbox::SandboxPermissionOverlay {
+        network: match overlay.network {
+            devo_tools::SandboxNetworkPermission::Unchanged => {
+                devo_sandbox::SandboxNetworkPermission::Unchanged
+            }
+            devo_tools::SandboxNetworkPermission::Enabled => {
+                devo_sandbox::SandboxNetworkPermission::Enabled
+            }
+        },
+        read_paths: overlay.read_paths.clone(),
+        write_paths: overlay.write_paths.clone(),
+    })
+}
+
 pub use contracts::{
     RedactionState, SessionMode, ToolAgentScope, ToolCallError, ToolContext, ToolPermissionProfile,
     ToolProgress, ToolProgressSender, ToolResult, ToolResultContent, ToolTerminalStatus,

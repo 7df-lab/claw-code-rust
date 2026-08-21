@@ -51,11 +51,19 @@ describe("ComposerStatusStack", () => {
 			clearsGoal: chatViewSource.includes("client.goal.clear"),
 			editReusesGoalTrigger: chatViewSource.includes('setActiveTrigger("goal")'),
 			refreshesAfterGoalPrompt: chatViewSource.includes('if (trigger === "goal")'),
-			clientStatus: clientSource.includes('"goal/status"'),
-			clientSet: clientSource.includes('"goal/set"'),
-			clientPause: clientSource.includes('"goal/pause"'),
-			clientResume: clientSource.includes('"goal/resume"'),
-			clientClear: clientSource.includes('"goal/clear"'),
+			clientStatus: clientSource.includes('"session/goal/read"'),
+			clientPause: clientSource.includes('"session/goal/pause"'),
+			clientResume: clientSource.includes('"session/goal/resume"'),
+			clientClear: clientSource.includes('"session/goal/clear"'),
+			noLegacyGoalMethods: ![
+				"goal/create",
+				"goal/set",
+				"goal/status",
+				"goal/pause",
+				"goal/resume",
+				"goal/complete",
+				"goal/clear",
+			].some((method) => clientSource.includes(`"${method}"`)),
 		}).toEqual({
 			normalizesGoal: true,
 			loadsGoalStatus: true,
@@ -65,10 +73,10 @@ describe("ComposerStatusStack", () => {
 			editReusesGoalTrigger: true,
 			refreshesAfterGoalPrompt: true,
 			clientStatus: true,
-			clientSet: true,
 			clientPause: true,
 			clientResume: true,
 			clientClear: true,
+			noLegacyGoalMethods: true,
 		})
 	})
 

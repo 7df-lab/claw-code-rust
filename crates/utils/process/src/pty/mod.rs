@@ -9,6 +9,9 @@ mod win;
 
 pub const DEFAULT_OUTPUT_BYTES_CAP: usize = 1024 * 1024;
 
+/// Spawn a non-interactive process with a named sandbox profile and an
+/// additional per-invocation sandbox overlay.
+pub use pipe::SandboxProcessOptions;
 /// Spawn a non-interactive process using regular pipes for stdin/stdout/stderr.
 pub use pipe::spawn_process as spawn_pipe_process;
 /// Spawn a non-interactive process using regular pipes, but close stdin immediately.
@@ -16,6 +19,7 @@ pub use pipe::spawn_process_no_stdin as spawn_pipe_process_no_stdin;
 /// Spawn a non-interactive process using regular pipes, close stdin immediately,
 /// and apply the named sandbox profile in the child before `exec`.
 pub use pipe::spawn_process_no_stdin_sandboxed as spawn_pipe_process_no_stdin_sandboxed;
+pub use pipe::spawn_process_no_stdin_sandboxed_with_overlay;
 /// Spawn a non-interactive process using regular pipes for stdin/stdout/stderr,
 /// applying the named sandbox profile in the child before `exec`.
 pub use pipe::spawn_process_sandboxed as spawn_pipe_process_sandboxed;

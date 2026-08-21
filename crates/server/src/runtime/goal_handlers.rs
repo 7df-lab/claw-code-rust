@@ -1,6 +1,420 @@
 use super::*;
 
+/// Projects the server-internal goal into the canonical goal shape
+/// (L2-DES-APP-008 Phase B, goal domain). `Cleared` goals are filtered by
+/// callers (canonical `goal/read` answers `None` for them).
+fn native_goal_from_internal(goal: &crate::goal::Goal) -> devo_protocol::native::goal::Goal {
+    use devo_protocol::native::goal::GoalStatus as NativeStatus;
+    let status = match goal.status {
+        crate::goal::GoalStatus::Active => NativeStatus::Active,
+        crate::goal::GoalStatus::Paused => NativeStatus::Paused,
+        crate::goal::GoalStatus::Blocked => NativeStatus::Blocked,
+        crate::goal::GoalStatus::BudgetLimited => NativeStatus::BudgetLimited,
+        crate::goal::GoalStatus::Completed => NativeStatus::Completed,
+        crate::goal::GoalStatus::Failed => NativeStatus::Failed,
+        crate::goal::GoalStatus::Canceled | crate::goal::GoalStatus::Cleared => {
+            NativeStatus::Canceled
+        }
+    };
+    devo_protocol::native::goal::Goal {
+        id: devo_protocol::native::ids::GoalId::from_string(format!(
+            "goal_{}",
+            goal.durable_goal_id.0
+        )),
+        session_id: devo_protocol::native::ids::SessionId::from_string(goal.session_id.to_string()),
+        objective: goal.prompt.clone(),
+        status,
+        token_budget: goal
+            .budget
+            .max_tokens
+            .and_then(|budget| u64::try_from(budget).ok()),
+        tokens_used: u64::try_from(goal.usage.tokens_used).unwrap_or(0),
+        time_used_seconds: goal.usage.duration_seconds,
+        progress_summary: goal.progress_summary.clone(),
+        created_at: goal.created_at,
+        updated_at: goal.updated_at,
+    }
+}
+
 impl ServerRuntime {
+    // ── Goal Handlers ─────────────────────────────────────────────────
+
+    /// Native `session/goal/set` (L2-DES-APP-008 Phase B): creates the
+    /// session goal with `ifExists` semantics and idempotency-key replay.
+    pub(super) async fn handle_native_session_goal_set(
+        self: &Arc<Self>,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_session::SessionGoalSetParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical session/goal/set params: {error}"),
+                    );
+                }
+            };
+        let Ok(legacy_session_id) = SessionId::try_from(params.session_id.as_str()) else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session id is not addressable by this server",
+            );
+        };
+        if let Some(goal) = self
+            .goal_set_idempotency
+            .lock()
+            .await
+            .get(&(legacy_session_id, params.idempotency_key.clone()))
+            .cloned()
+        {
+            return serde_json::to_value(SuccessResponse {
+                id: request_id,
+                result: devo_protocol::native::rpc_session::SessionGoalSetResult { goal },
+            })
+            .expect("serialize canonical session/goal/set response");
+        }
+        let legacy_params = devo_protocol::GoalCreateParams {
+            session_id: legacy_session_id,
+            objective: params.objective.clone(),
+            token_budget: params
+                .token_budget
+                .and_then(|budget| i64::try_from(budget).ok()),
+            replace_existing: matches!(
+                params.if_exists,
+                devo_protocol::native::rpc_session::GoalIfExists::Replace
+            ),
+        };
+        let response = self
+            .handle_goal_create(
+                request_id.clone(),
+                serde_json::to_value(&legacy_params).expect("serialize legacy goal params"),
+            )
+            .await;
+        if response.get("error").is_some() {
+            return response;
+        }
+        let Some(native_goal) = self
+            .goal_stores
+            .lock()
+            .await
+            .get(&legacy_session_id)
+            .and_then(|store| store.get().map(native_goal_from_internal))
+        else {
+            return response;
+        };
+        self.goal_set_idempotency.lock().await.insert(
+            (legacy_session_id, params.idempotency_key),
+            native_goal.clone(),
+        );
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: devo_protocol::native::rpc_session::SessionGoalSetResult { goal: native_goal },
+        })
+        .expect("serialize canonical session/goal/set response")
+    }
+
+    /// Native `session/goal/update` (ratified #3): in-place edit of the
+    /// current goal preserving id, usage stats, and continuation linkage.
+    /// Translates the patch into the legacy in-place `goal/set` path.
+    pub(super) async fn handle_native_session_goal_update(
+        self: &Arc<Self>,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_session::SessionGoalUpdateParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical session/goal/update params: {error}"),
+                    );
+                }
+            };
+        let Ok(legacy_session_id) = SessionId::try_from(params.session_id.as_str()) else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session id is not addressable by this server",
+            );
+        };
+        // Precondition: an active goal exists and matches expectedGoalId.
+        let current = self
+            .goal_stores
+            .lock()
+            .await
+            .get(&legacy_session_id)
+            .and_then(|store| store.get().map(native_goal_from_internal));
+        let Some(current) = current else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::GoalNotFound,
+                "no active goal to update",
+            );
+        };
+        if let Some(expected) = params.expected_goal_id.as_ref()
+            && *expected != current.id
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::GoalNotFound,
+                "goal was replaced; refetch before editing",
+            );
+        }
+        if let Some(goal) = self
+            .goal_update_idempotency
+            .lock()
+            .await
+            .get(&(legacy_session_id, params.idempotency_key.clone()))
+            .cloned()
+        {
+            return serde_json::to_value(SuccessResponse {
+                id: request_id,
+                result: devo_protocol::native::rpc_session::SessionGoalUpdateResult { goal },
+            })
+            .expect("serialize canonical session/goal/update replay response");
+        }
+
+        let status = match params.patch.status {
+            None => None,
+            Some(devo_protocol::native::goal::GoalStatus::Active) => {
+                Some(devo_protocol::ThreadGoalStatus::Active)
+            }
+            Some(devo_protocol::native::goal::GoalStatus::Paused) => {
+                Some(devo_protocol::ThreadGoalStatus::Paused)
+            }
+            Some(devo_protocol::native::goal::GoalStatus::Completed) => {
+                Some(devo_protocol::ThreadGoalStatus::Complete)
+            }
+            Some(system_controlled) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    format!("goal status {system_controlled:?} is system-computed, not editable"),
+                );
+            }
+        };
+        let token_budget = match params.patch.token_budget {
+            devo_protocol::native::patch::PatchField::Missing => None,
+            devo_protocol::native::patch::PatchField::Null => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    "clearing the token budget is not in the vocabulary",
+                );
+            }
+            devo_protocol::native::patch::PatchField::Value(budget) => Some(budget),
+        };
+        let legacy_params = devo_protocol::GoalSetParams {
+            session_id: legacy_session_id,
+            objective: params.patch.objective.clone(),
+            status,
+            token_budget,
+        };
+        let response = self
+            .handle_goal_set(
+                request_id.clone(),
+                serde_json::to_value(&legacy_params).expect("serialize legacy goal/set params"),
+            )
+            .await;
+        if response.get("error").is_some() {
+            return response;
+        }
+        let Some(native_goal) = self
+            .goal_stores
+            .lock()
+            .await
+            .get(&legacy_session_id)
+            .and_then(|store| store.get().map(native_goal_from_internal))
+        else {
+            return response;
+        };
+        self.goal_update_idempotency.lock().await.insert(
+            (legacy_session_id, params.idempotency_key),
+            native_goal.clone(),
+        );
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: devo_protocol::native::rpc_session::SessionGoalUpdateResult {
+                goal: native_goal,
+            },
+        })
+        .expect("serialize canonical session/goal/update response")
+    }
+
+    /// Native `session/goal/read`: the session's current goal, or `null`
+    /// when none (including cleared goals).
+    pub(super) async fn handle_native_session_goal_read(
+        self: &Arc<Self>,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_session::SessionGoalReadParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical session/goal/read params: {error}"),
+                    );
+                }
+            };
+        let Ok(legacy_session_id) = SessionId::try_from(params.session_id.as_str()) else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session id is not addressable by this server",
+            );
+        };
+        let goal = self
+            .goal_stores
+            .lock()
+            .await
+            .get(&legacy_session_id)
+            .and_then(|store| store.get())
+            .filter(|goal| goal.status != crate::goal::GoalStatus::Cleared)
+            .map(native_goal_from_internal);
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: devo_protocol::native::rpc_session::SessionGoalReadResult { goal },
+        })
+        .expect("serialize canonical session/goal/read response")
+    }
+
+    /// Native goal lifecycle transitions (`session/goal/pause|resume|
+    /// complete|cancel|clear`). `expectedGoalId` is a precondition against
+    /// acting on a concurrently replaced goal.
+    pub(super) async fn handle_native_session_goal_transition(
+        self: &Arc<Self>,
+        method: &str,
+        request_id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let params: devo_protocol::native::rpc_session::SessionGoalTransitionParams =
+            match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InvalidParams,
+                        format!("invalid canonical {method} params: {error}"),
+                    );
+                }
+            };
+        let Ok(legacy_session_id) = SessionId::try_from(params.session_id.as_str()) else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session id is not addressable by this server",
+            );
+        };
+        let current_goal = self
+            .goal_stores
+            .lock()
+            .await
+            .get(&legacy_session_id)
+            .and_then(|store| store.get().cloned());
+        let Some(current_goal) = current_goal else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::GoalNotFound,
+                "session has no goal",
+            );
+        };
+        if params.expected_goal_id.as_str() != format!("goal_{}", current_goal.durable_goal_id.0) {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::GoalNotFound,
+                "expected goal id does not match the session's current goal",
+            );
+        }
+        let legacy_status_params = |status: devo_protocol::ThreadGoalStatus| {
+            serde_json::json!({
+                "sessionId": legacy_session_id,
+                "status": status,
+            })
+        };
+        let response = match method {
+            "session/goal/pause" => {
+                self.handle_goal_pause(
+                    request_id.clone(),
+                    legacy_status_params(devo_protocol::ThreadGoalStatus::Paused),
+                )
+                .await
+            }
+            "session/goal/resume" => {
+                self.handle_goal_resume(
+                    request_id.clone(),
+                    legacy_status_params(devo_protocol::ThreadGoalStatus::Active),
+                )
+                .await
+            }
+            "session/goal/complete" => {
+                self.handle_goal_complete(
+                    request_id.clone(),
+                    legacy_status_params(devo_protocol::ThreadGoalStatus::Complete),
+                )
+                .await
+            }
+            "session/goal/cancel" => {
+                self.handle_goal_cancel(
+                    request_id.clone(),
+                    serde_json::json!({
+                        "sessionId": legacy_session_id,
+                        "goalId": current_goal.goal_id.0,
+                    }),
+                )
+                .await
+            }
+            "session/goal/clear" => {
+                let response = self
+                    .handle_goal_clear(
+                        request_id.clone(),
+                        serde_json::json!({ "sessionId": legacy_session_id }),
+                    )
+                    .await;
+                if response.get("error").is_some() {
+                    return response;
+                }
+                return serde_json::to_value(SuccessResponse {
+                    id: request_id,
+                    result: devo_protocol::native::rpc_session::SessionGoalClearResult {},
+                })
+                .expect("serialize canonical session/goal/clear response");
+            }
+            _ => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InvalidParams,
+                    format!("unknown goal transition method '{method}'"),
+                );
+            }
+        };
+        if response.get("error").is_some() {
+            return response;
+        }
+        let Some(goal) = self
+            .goal_stores
+            .lock()
+            .await
+            .get(&legacy_session_id)
+            .and_then(|store| store.get().map(native_goal_from_internal))
+        else {
+            return response;
+        };
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: devo_protocol::native::rpc_session::SessionGoalTransitionResult { goal },
+        })
+        .expect("serialize canonical goal transition response")
+    }
+
     // ── Goal Handlers ─────────────────────────────────────────────────
 
     pub(super) async fn handle_goal_create(

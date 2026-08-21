@@ -16,10 +16,11 @@ pub use legacy_projector::{LegacyProjectError, LegacyProjector, canonical_turn_f
 pub use records::{
     ApprovalDecisionItem, ApprovalRequestItem, CommandExecutionItem, CompactionSnapshotLine,
     ItemLine, ItemRecord, MessageEditRecordedLine, RolloutLine, SessionContextUpdatedLine,
-    SessionMetaLine, SessionRecord, SessionRollbackLine, SessionTitleUpdatedLine, TextItem,
-    ToolCallItem, ToolProgressItem, ToolResultItem, TurnError, TurnItem, TurnLine, TurnRecord,
-    TurnSupersededLine, TurnWorkspaceChangeRecordedLine, TurnWorkspaceCheckpointRecordedLine,
-    TurnWorkspaceRestoreCompletedLine, TurnWorkspaceRestoreStartedLine, Worklog,
+    SessionMetaLine, SessionRecord, SessionRollbackLine, SessionSettingsField, SessionSettingsLine,
+    SessionTitleUpdatedLine, TextItem, ToolCallItem, ToolProgressItem, ToolResultItem, TurnError,
+    TurnItem, TurnLine, TurnRecord, TurnSupersededLine, TurnWorkspaceChangeRecordedLine,
+    TurnWorkspaceCheckpointRecordedLine, TurnWorkspaceRestoreCompletedLine,
+    TurnWorkspaceRestoreStartedLine, Worklog,
 };
 pub use rollout_v2::{
     InternalRecordV2, ParsedRolloutLine, ROLLOUT_FORMAT_VERSION, RolloutLineReadError,

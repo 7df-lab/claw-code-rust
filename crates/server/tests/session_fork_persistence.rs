@@ -82,7 +82,7 @@ async fn session_fork_reports_and_replays_parent_session_id() -> Result<()> {
             connection_id,
             serde_json::json!({
                 "id": 4,
-                "method": "_devo/session/fork",
+                "method": "session/fork",
                 "params": {
                     "session_id": source.session_id,
                     "title": "Forked session",
@@ -109,9 +109,15 @@ async fn session_fork_reports_and_replays_parent_session_id() -> Result<()> {
     let sessions = list_sessions(&rebuilt_runtime, rebuilt_connection_id).await?;
     let replayed_fork = sessions
         .iter()
-        .find(|session| session.session_id == fork.session.session_id)
+        .find(|session| session.id.as_str() == fork.session.session_id.to_string())
         .context("replayed fork session")?;
-    assert_eq!(replayed_fork.parent_session_id, Some(source.session_id));
+    let parent_session_id = match &replayed_fork.parent {
+        Some(devo_protocol::native::session::SessionParent::Fork { session_id, .. }) => {
+            Some(session_id.to_string())
+        }
+        Some(devo_protocol::native::session::SessionParent::Agent { .. }) | None => None,
+    };
+    assert_eq!(parent_session_id, Some(source.session_id.to_string()));
 
     Ok(())
 }
@@ -141,7 +147,7 @@ async fn failed_session_fork_metadata_persistence_does_not_register_fork() -> Re
             connection_id,
             serde_json::json!({
                 "id": 4,
-                "method": "_devo/session/fork",
+                "method": "session/fork",
                 "params": {
                     "session_id": source.session_id,
                     "title": "Unpersistable fork",
@@ -164,7 +170,12 @@ async fn failed_session_fork_metadata_persistence_does_not_register_fork() -> Re
             .contains("failed to persist forked session metadata")
     );
     let sessions_after = list_sessions(&runtime, connection_id).await?;
-    assert_eq!(sessions_after, sessions_before);
+    assert!(
+        sessions_after
+            .iter()
+            .all(|session| session.id.as_str() == source.session_id.to_string()),
+        "a failed fork must not register a new session"
+    );
 
     Ok(())
 }
@@ -228,6 +239,7 @@ async fn initialize_connection(
                 "params": {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
+                    "_meta": { "devo": { "protocol": "native" } },
                     "clientInfo": {
                         "name": "session-fork-persistence-test",
                         "title": "session-fork-persistence-test",
@@ -284,7 +296,7 @@ async fn start_and_complete_turn(
             connection_id,
             serde_json::json!({
                 "id": 3,
-                "method": "_devo/turn/start",
+                "method": "turn/start",
                 "params": {
                     "session_id": session_id,
                     "input": [{ "type": "text", "text": "seed fork history" }],
@@ -330,7 +342,7 @@ fn has_original_method(value: &serde_json::Value, method: &str) -> bool {
 async fn list_sessions(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
-) -> Result<Vec<devo_server::SessionMetadata>> {
+) -> Result<Vec<devo_protocol::native::session::Session>> {
     let response = runtime
         .handle_incoming(
             connection_id,
@@ -342,27 +354,8 @@ async fn list_sessions(
         )
         .await
         .context("session/list response")?;
-    let response: devo_server::AcpSuccessResponse<devo_server::AcpListSessionsResult> =
-        serde_json::from_value(response)?;
-    response
-        .result
-        .sessions
-        .into_iter()
-        .map(|session| {
-            session
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.get(devo_server::DEVO_SESSION_META))
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .context("decode Devo session metadata from ACP session/list response")?
-                .with_context(|| {
-                    format!(
-                        "ACP session/list response missing Devo session metadata for {}",
-                        session.session_id
-                    )
-                })
-        })
-        .collect()
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionListResult,
+    > = serde_json::from_value(response)?;
+    Ok(response.result.data)
 }

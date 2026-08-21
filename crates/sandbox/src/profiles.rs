@@ -269,6 +269,15 @@ impl ProfileName {
         workspace: &Path,
         profile: &SandboxProfile,
     ) -> anyhow::Result<CapabilitySet> {
+        Self::capability_set_from_profile_with_overlay(workspace, profile, None)
+    }
+
+    #[cfg(all(feature = "enforce", unix))]
+    pub fn capability_set_from_profile_with_overlay(
+        workspace: &Path,
+        profile: &SandboxProfile,
+        overlay: Option<&SandboxPermissionOverlay>,
+    ) -> anyhow::Result<CapabilitySet> {
         let mut caps = CapabilitySet::new();
 
         // Default read access
@@ -310,7 +319,14 @@ impl ProfileName {
             if !p.exists() {
                 continue;
             }
-            if let Err(e) = caps.allow_file_mut(p, AccessMode::ReadWrite) {
+            if p.is_dir() {
+                // Some systems (e.g. Fedora) expose `/dev/fd` as a directory
+                // symlink to `/proc/self/fd`. Treat it like other device
+                // directories so bwrap gets a well-formed sandbox command.
+                if let Err(e) = caps.allow_path(dev, AccessMode::ReadWrite) {
+                    tracing::warn!(path = dev, error = %e, "Could not allow device directory");
+                }
+            } else if let Err(e) = caps.allow_file_mut(p, AccessMode::ReadWrite) {
                 tracing::warn!(path = dev, error = %e, "Could not allow device file");
             }
         }
@@ -319,6 +335,24 @@ impl ProfileName {
             let p = Path::new(dev);
             if p.exists() && p.is_dir() {
                 caps = caps.allow_path(dev, AccessMode::ReadWrite)?;
+            }
+        }
+
+        if let Some(overlay) = overlay {
+            for path in &overlay.read_paths {
+                if !path.exists() {
+                    continue;
+                }
+                caps = caps.allow_path(path, AccessMode::Read)?;
+            }
+            for path in &overlay.write_paths {
+                if !path.exists() && std::fs::create_dir_all(path).is_err() {
+                    anyhow::bail!(
+                        "additional sandbox write path does not exist and could not be created: {}",
+                        path.display()
+                    );
+                }
+                caps = caps.allow_path(path, AccessMode::ReadWrite)?;
             }
         }
 
@@ -347,6 +381,11 @@ impl ProfileName {
             caps = caps.block_network();
             let managed_network = crate::managed_network::managed_network_context_from_env();
             caps = crate::managed_network::apply_managed_network_context(caps, &managed_network);
+        }
+        if overlay.is_some_and(|overlay| {
+            matches!(overlay.network, crate::SandboxNetworkPermission::Enabled)
+        }) {
+            caps = caps.set_network_mode(nono::NetworkMode::AllowAll);
         }
 
         Ok(caps)
@@ -801,6 +840,46 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// Trace: L2-DES-SAFETY-002
+    /// Verifies: additional permissions expand a profile without disabling its sandbox policy.
+    #[test]
+    #[cfg(all(feature = "enforce", unix))]
+    fn sandbox_overlay_adds_paths_and_network_access() {
+        let workspace = std::env::current_dir().unwrap();
+        let temp_root = std::env::temp_dir();
+        let suffix = std::process::id();
+        let read_path = temp_root.join(format!("devo-sandbox-overlay-input-{suffix}"));
+        let write_path = temp_root.join(format!("devo-sandbox-overlay-test-{suffix}"));
+        let _ = std::fs::remove_file(&read_path);
+        let _ = std::fs::remove_dir_all(&read_path);
+        let _ = std::fs::remove_dir_all(&write_path);
+        std::fs::create_dir_all(&read_path).expect("create input");
+        std::fs::create_dir_all(&write_path).expect("create output");
+        let read_path = std::fs::canonicalize(&read_path).expect("canonicalize input");
+        let write_path = std::fs::canonicalize(&write_path).expect("canonicalize output");
+        let overlay = SandboxPermissionOverlay {
+            network: crate::SandboxNetworkPermission::Enabled,
+            read_paths: vec![read_path.clone()],
+            write_paths: vec![write_path.clone()],
+        };
+
+        let profile = ProfileName::Strict
+            .resolve_profile(&workspace, &SandboxConfig::default())
+            .expect("resolve strict profile");
+        let caps = ProfileName::capability_set_from_profile_with_overlay(
+            &workspace,
+            &profile,
+            Some(&overlay),
+        )
+        .expect("build overlay capability set");
+
+        assert!(caps.path_covered_with_access(&read_path, AccessMode::Read));
+        assert!(caps.path_covered_with_access(&write_path, AccessMode::ReadWrite));
+        assert_eq!(*caps.network_mode(), nono::NetworkMode::AllowAll);
+        std::fs::remove_dir_all(&write_path).expect("remove output");
+        std::fs::remove_dir_all(&read_path).expect("remove input");
     }
 
     #[test]

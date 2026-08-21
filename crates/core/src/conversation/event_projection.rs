@@ -13,11 +13,11 @@
 use sha2::Digest;
 use sha2::Sha256;
 
-use devo_protocol::canonical::event::ServerNotification;
-use devo_protocol::canonical::ids::RestorePlanId;
-use devo_protocol::canonical::ids::SessionId;
-use devo_protocol::canonical::item::ItemState;
-use devo_protocol::canonical::turn::TurnStatus;
+use devo_protocol::native::event::ServerNotification;
+use devo_protocol::native::ids::RestorePlanId;
+use devo_protocol::native::ids::SessionId;
+use devo_protocol::native::item::ItemState;
+use devo_protocol::native::turn::TurnStatus;
 
 use super::rollout_v2::RolloutLineV2;
 
@@ -204,13 +204,13 @@ pub fn events_from_v2_line(line: &RolloutLineV2) -> Vec<DerivedEvent> {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use devo_protocol::canonical::ids::ItemId;
-    use devo_protocol::canonical::ids::TurnId;
-    use devo_protocol::canonical::item::Item;
-    use devo_protocol::canonical::item::ItemEnvelope;
-    use devo_protocol::canonical::item::ItemState;
-    use devo_protocol::canonical::item::UserInput;
-    use devo_protocol::canonical::item::UserMessageEntry;
+    use devo_protocol::native::ids::ItemId;
+    use devo_protocol::native::ids::TurnId;
+    use devo_protocol::native::item::Item;
+    use devo_protocol::native::item::ItemEnvelope;
+    use devo_protocol::native::item::ItemState;
+    use devo_protocol::native::item::UserInput;
+    use devo_protocol::native::item::UserMessageEntry;
     use pretty_assertions::assert_eq;
 
     use super::*;

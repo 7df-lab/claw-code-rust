@@ -145,12 +145,10 @@ impl ChatWidget {
                 self.show_delete_session_confirmation();
             }
             SlashCommand::Resume => {
-                self.resume_browser = None;
-                self.resume_browser_loading = true;
+                self.bottom_pane
+                    .open_resume_picker(self.session.cwd.clone());
                 self.app_event_tx
-                    .send(AppEvent::Command(AppCommand::RunUserShellCommand {
-                        command: "session list".to_string(),
-                    }));
+                    .send(AppEvent::Command(AppCommand::list_sessions()));
                 self.set_status_message("Loading sessions");
             }
             SlashCommand::Btw => {

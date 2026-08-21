@@ -1,8 +1,8 @@
 //! Helpers for canonical session queue entries in the TUI worker/UI.
 
 use devo_protocol::InputItem;
-use devo_protocol::canonical::item::UserInput;
-use devo_protocol::canonical::queue::QueueEntry;
+use devo_protocol::native::item::UserInput;
+use devo_protocol::native::queue::QueueEntry;
 
 /// Map legacy [`InputItem`] values into canonical [`UserInput`] for queue RPCs.
 pub(crate) fn user_input_from_input_items(items: &[InputItem]) -> Vec<UserInput> {

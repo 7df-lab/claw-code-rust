@@ -75,6 +75,14 @@ fn initialize_request(_transport: &str) -> serde_json::Value {
     })
 }
 
+fn native_initialize_request() -> serde_json::Value {
+    let mut request = initialize_request("native");
+    request["params"]["_meta"] = serde_json::json!({
+        "devo": { "protocol": "native" }
+    });
+    request
+}
+
 struct PendingProvider;
 
 #[async_trait]
@@ -209,6 +217,8 @@ async fn stdio_server_process_supports_handshake_and_session_start() -> Result<(
         .arg("server")
         .arg("--transport")
         .arg("stdio")
+        .arg("--protocols")
+        .arg("acp")
         .env("DEVO_HOME", home_dir.path().join(".devo"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -284,7 +294,7 @@ async fn stdio_server_process_supports_handshake_and_session_start() -> Result<(
 }
 
 #[tokio::test]
-async fn second_stdio_server_process_proxies_to_singleton() -> Result<()> {
+async fn second_stdio_server_process_extends_protocols_before_proxying() -> Result<()> {
     let home_dir = TempDir::new()?;
     write_test_config(&home_dir, &["stdio://"])?;
     let devo_home = home_dir.path().join(".devo");
@@ -310,7 +320,7 @@ async fn second_stdio_server_process_proxies_to_singleton() -> Result<()> {
     let mut first_stderr_reader = AsyncBufReader::new(first_stderr);
 
     first_stdin
-        .write_all(format!("{}\n", initialize_request("stdio")).as_bytes())
+        .write_all(format!("{}\n", native_initialize_request()).as_bytes())
         .await?;
     first_stdin.flush().await?;
     let first_initialize = read_stdio_line(
@@ -333,6 +343,8 @@ async fn second_stdio_server_process_proxies_to_singleton() -> Result<()> {
         .arg("server")
         .arg("--transport")
         .arg("stdio")
+        .arg("--protocols")
+        .arg("acp")
         .env("DEVO_HOME", &devo_home)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -529,14 +541,10 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 3,
-                "method": "_devo/turn/start",
+                "method": "session/prompt",
                 "params": {
-                    "session_id": session_id,
-                    "input": [{ "type": "text", "text": "hello" }],
-                    "model": null,
-                    "sandbox": null,
-                    "approval_policy": null,
-                    "cwd": null
+                    "sessionId": session_id,
+                    "prompt": [{ "type": "text", "text": "hello" }]
                 }
             })
             .to_string()
@@ -550,9 +558,6 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
             messages
                 .iter()
                 .any(|value| has_original_method(value, "turn/started"))
-                && messages
-                    .iter()
-                    .any(|value| value.get("id") == Some(&serde_json::json!(3)))
         },
         8,
     )
@@ -562,11 +567,7 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
         .iter()
         .find(|value| has_original_method(value, "turn/started"))
         .context("find turn/started notification")?;
-    let turn_start_response = turn_start_messages
-        .iter()
-        .find(|value| value.get("id") == Some(&serde_json::json!(3)))
-        .context("find turn/start response")?;
-    let turn_id = turn_start_response["result"]["turn_id"]
+    let turn_id = original_event(turn_started)["turn"]["turn_id"]
         .as_str()
         .context("extract turn id")?
         .to_string();
@@ -580,11 +581,9 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 4,
-                "method": "_devo/turn/interrupt",
+                "method": "session/cancel",
                 "params": {
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "reason": "e2e test"
+                    "sessionId": session_id
                 }
             })
             .to_string()
@@ -608,11 +607,11 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
         8,
     )
     .await
-    .context("read turn/interrupt websocket messages")?;
+    .context("read session/interrupt websocket messages")?;
     let interrupt_response = interrupt_messages
         .iter()
         .find(|value| value.get("id") == Some(&serde_json::json!(4)))
-        .context("find turn/interrupt response")?;
+        .context("find session/interrupt response")?;
     let interrupted_event = interrupt_messages
         .iter()
         .find(|value| has_original_method(value, "turn/interrupted"))
@@ -622,10 +621,7 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
         .find(|value| has_original_method(value, "turn/completed"))
         .context("find turn/completed notification")?;
 
-    assert_eq!(
-        interrupt_response["result"]["status"],
-        serde_json::json!("Interrupted")
-    );
+    assert_eq!(interrupt_response["result"], serde_json::json!({}));
     assert_eq!(
         original_event(interrupted_event)["turn"]["status"],
         serde_json::json!("Interrupted")
@@ -738,14 +734,10 @@ async fn websocket_turn_streams_final_tool_metadata_for_read_and_glob() -> Resul
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 3,
-                "method": "_devo/turn/start",
+                "method": "session/prompt",
                 "params": {
-                    "session_id": session_id,
-                    "input": [{ "type": "text", "text": "read and glob" }],
-                    "model": null,
-                    "sandbox": null,
-                    "approval_policy": null,
-                    "cwd": null
+                    "sessionId": session_id,
+                    "prompt": [{ "type": "text", "text": "read and glob" }]
                 }
             })
             .to_string()

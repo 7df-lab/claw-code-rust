@@ -455,6 +455,11 @@ export interface DevoAPI {
 			params?: unknown
 			directory?: string
 		}) => Promise<unknown>
+		notify: (notification: {
+			method: string
+			params?: unknown
+			directory?: string
+		}) => Promise<void>
 		respond: (response: { id: number | string; result: unknown }) => Promise<void>
 		connected: () => Promise<boolean>
 		subscribe: (callback: (event: unknown) => void) => () => void

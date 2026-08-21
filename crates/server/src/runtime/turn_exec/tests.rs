@@ -281,52 +281,6 @@ fn exec_tool_start_item_uses_command_execution_payload() {
 }
 
 #[test]
-fn user_shell_exec_input_uses_pty_backed_exec_command() {
-    let cwd = std::path::PathBuf::from("workspace");
-
-    let input = user_shell_exec_input("pwd", cwd.clone());
-
-    assert_eq!(
-        input,
-        serde_json::json!({
-            "cmd": "pwd",
-            "workdir": cwd,
-            "login": true,
-            "tty": true,
-        })
-    );
-}
-
-#[test]
-fn user_shell_command_payload_uses_user_shell_source() {
-    let output = serde_json::json!({ "output": "done" });
-
-    let input = user_shell_exec_input("pwd", std::path::PathBuf::from("workspace"));
-    let payload = user_shell_command_payload(
-        "call-1",
-        "pwd",
-        input.clone(),
-        Vec::new(),
-        Some(output.clone()),
-        false,
-    );
-
-    assert_eq!(
-        payload,
-        CommandExecutionPayload {
-            tool_call_id: "call-1".to_string(),
-            tool_name: "exec_command".to_string(),
-            command: "pwd".to_string(),
-            input: Some(input),
-            source: devo_protocol::protocol::ExecCommandSource::UserShell,
-            command_actions: Vec::new(),
-            output: Some(output),
-            is_error: false,
-        }
-    );
-}
-
-#[test]
 fn live_only_apply_patch_start_item_stays_tool_call() {
     let input = serde_json::json!({
         "patch": "*** Begin Patch\n*** End Patch"
@@ -469,6 +423,7 @@ async fn provider_retry_status_waits_for_channel_capacity() {
         provider: "openai".to_string(),
         model: "test-model".to_string(),
         attempt: 1,
+        max_attempts: 5,
         backoff_ms: 250,
         phase: devo_core::QueryProviderRetryPhase::Scheduled,
         message: "Retrying provider request in 0.2s".to_string(),

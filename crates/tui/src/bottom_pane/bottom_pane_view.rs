@@ -3,6 +3,7 @@ use crossterm::event::KeyEvent;
 
 use super::CancellationEvent;
 use super::ModelPickerSelection;
+use super::resume_picker::ResumePickerAction;
 
 /// Trait implemented by every view that can be shown in the bottom pane.
 pub(crate) trait BottomPaneView: Renderable {
@@ -36,6 +37,57 @@ pub(crate) trait BottomPaneView: Renderable {
         None
     }
 
+    fn take_resume_action(&mut self) -> Option<ResumePickerAction> {
+        None
+    }
+
+    fn update_resume_sessions(&mut self, _sessions: Vec<crate::events::SessionListEntry>) -> bool {
+        false
+    }
+
+    fn update_resume_list_error(&mut self, _message: String) -> bool {
+        false
+    }
+
+    fn update_resume_preview(
+        &mut self,
+        _session_id: devo_core::SessionId,
+        _result: Result<Vec<crate::events::SessionPreviewMessage>, String>,
+    ) -> bool {
+        false
+    }
+
+    fn update_resume_rename(
+        &mut self,
+        _session_id: Option<devo_core::SessionId>,
+        _result: Result<String, String>,
+    ) -> bool {
+        false
+    }
+
+    fn update_resume_delete(
+        &mut self,
+        _session_id: Option<devo_core::SessionId>,
+        _result: Result<(), String>,
+    ) -> bool {
+        false
+    }
+
+    #[cfg(test)]
+    fn resume_selection_for_test(&self) -> Option<usize> {
+        None
+    }
+
+    #[cfg(test)]
+    fn resume_scroll_offset_for_test(&self) -> Option<usize> {
+        None
+    }
+
+    #[cfg(test)]
+    fn resume_pending_delete_for_test(&self) -> Option<devo_core::SessionId> {
+        None
+    }
+
     /// Refresh Settings Hub rows when nested editors change current values.
     fn update_settings_hub_snapshot(
         &mut self,
@@ -47,7 +99,7 @@ pub(crate) trait BottomPaneView: Renderable {
     /// Refresh an open `/status` panel when occupancy or session totals change.
     fn update_status_panel(
         &mut self,
-        _occupancy: Option<devo_protocol::canonical::item::ContextOccupancy>,
+        _occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
         _session: super::SessionTokenTotals,
     ) -> bool {
         false

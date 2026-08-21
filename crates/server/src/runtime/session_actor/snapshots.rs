@@ -7,13 +7,10 @@ use devo_core::SessionRecord;
 use devo_core::TurnKind;
 use devo_protocol::PendingInputItem;
 use devo_protocol::SessionId;
-use devo_safety::PermissionMode;
-use devo_safety::RuntimePermissionProfile;
 
 use crate::session::SessionMetadata;
 use crate::session_context::SessionRuntimeContext;
 use crate::turn::TurnMetadata;
-use devo_core::tools::ToolRegistry;
 
 /// Snapshot used when reserving or queueing a turn on a session actor.
 #[derive(Clone)]
@@ -44,14 +41,9 @@ pub(crate) struct TurnPersistenceSnapshot {
     pub(crate) record: Option<SessionRecord>,
 }
 
-/// Permission and tool context for shell-command turns.
+/// Sandbox context for session-owned command execution.
 #[derive(Clone)]
 pub(crate) struct ShellExecContextSnapshot {
-    pub(crate) permission_mode: PermissionMode,
-    pub(crate) permission_profile: RuntimePermissionProfile,
-    pub(crate) runtime_context: Arc<SessionRuntimeContext>,
-    pub(crate) tool_registry: Arc<ToolRegistry>,
-    pub(crate) file_read_ledger: Arc<devo_core::tools::FileReadLedger>,
     pub(crate) sandbox_profile: Option<String>,
 }
 

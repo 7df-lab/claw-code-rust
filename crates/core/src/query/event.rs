@@ -100,6 +100,9 @@ pub struct ProviderRetryStatus {
     pub provider: String,
     pub model: String,
     pub attempt: usize,
+    /// Total attempts allowed by the retry policy (carried into the
+    /// canonical `model/queryRetrying` notification).
+    pub max_attempts: usize,
     pub backoff_ms: u64,
     pub phase: QueryProviderRetryPhase,
     pub message: String,
@@ -118,7 +121,32 @@ pub struct QueryOptions {
     /// seam to attach Compaction metering without misclassifying the main
     /// streaming query as compaction overhead.
     pub compaction_provider: Option<Arc<dyn ModelProviderSDK>>,
+    /// Live settings override channel for the running turn (L2-DES-CONV-002
+    /// Phase 4). The query loop re-reads it once per iteration so a mid-turn
+    /// settings change applies at the next model call or compaction check.
+    pub live_settings: Option<SharedLiveTurnSettings>,
 }
+
+/// Live per-session settings shared with a running turn. The server writes
+/// overrides through the settings channel; every field starts as `None`,
+/// meaning "keep the turn-start value". Callers outside tests should treat
+/// writes as rare, user-driven events.
+#[derive(Debug, Clone, Default)]
+pub struct LiveTurnSettings {
+    /// Replacement turn configuration for model/effort changes, applied at
+    /// the next iteration boundary.
+    pub turn_config: Option<crate::session::TurnConfig>,
+    /// Auto-compaction token limit override, applied at the next compaction
+    /// check (mirrors the session-level `ApplyEffectiveContextWindow`
+    /// semantics: both the context window and the compact limit move).
+    pub auto_compact_token_limit: Option<usize>,
+    /// Bumped by the writer on every change; the loop re-applies only when
+    /// the generation advances.
+    pub generation: u64,
+}
+
+/// Shared handle to a turn's live settings override.
+pub type SharedLiveTurnSettings = Arc<std::sync::Mutex<LiveTurnSettings>>;
 
 impl std::fmt::Debug for QueryOptions {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -131,6 +159,10 @@ impl std::fmt::Debug for QueryOptions {
                     .compaction_provider
                     .as_ref()
                     .map(|provider| provider.name()),
+            )
+            .field(
+                "live_settings",
+                &self.live_settings.as_ref().map(|_| "<shared>"),
             )
             .finish()
     }

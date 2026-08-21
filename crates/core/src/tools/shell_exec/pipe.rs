@@ -37,12 +37,14 @@ pub(crate) async fn run_with_pipes(
         yield_time_ms,
         max_output_tokens,
         sandbox_profile,
+        sandbox_permission_overlay,
     } = run;
 
     info!(command = %command_to_run, shell = shell.program, "executing shell command");
 
     let plan = match SandboxLaunchPlan::prepare_pipe(
         sandbox_profile.as_deref(),
+        sandbox_permission_overlay.as_ref(),
         &workdir,
         &shell,
         &command_to_run,

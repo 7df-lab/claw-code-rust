@@ -22,6 +22,7 @@ use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::bottom_pane::InputMode;
 use crate::bottom_pane::InputResult;
+use crate::bottom_pane::ResumePickerAction;
 use crate::history_cell;
 use crate::history_cell::PlainHistoryCell;
 use crate::onboarding_widget::OnboardingResult;
@@ -34,6 +35,35 @@ use super::ExternalEditorState;
 use super::UserMessage;
 
 impl ChatWidget {
+    pub(crate) fn is_resume_picker_open(&self) -> bool {
+        self.bottom_pane.is_resume_picker_open()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_resume_picker_for_test(
+        &mut self,
+        sessions: Vec<crate::events::SessionListEntry>,
+    ) {
+        self.bottom_pane
+            .open_resume_picker(self.session.cwd.clone());
+        self.bottom_pane.update_resume_sessions(sessions);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resume_picker_selection_for_test(&self) -> Option<usize> {
+        self.bottom_pane.resume_selection_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resume_picker_scroll_offset_for_test(&self) -> Option<usize> {
+        self.bottom_pane.resume_scroll_offset_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resume_picker_pending_delete_for_test(&self) -> Option<devo_core::SessionId> {
+        self.bottom_pane.resume_pending_delete_for_test()
+    }
+
     pub(crate) fn handle_key_event(&mut self, key: KeyEvent) {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return;
@@ -51,22 +81,6 @@ impl ChatWidget {
         }
         if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.focus_subagent_live_list();
-            return;
-        }
-        if self.resume_browser_loading {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.resume_browser = None;
-                    self.resume_browser_loading = false;
-                    self.set_status_message("Ready");
-                    self.frame_requester.schedule_frame();
-                }
-                _ => {}
-            }
-            return;
-        }
-        if self.resume_browser.is_some() {
-            self.handle_resume_browser_key_event(key);
             return;
         }
         if self.onboarding.is_some() && Self::is_copy_shortcut(key) {
@@ -211,6 +225,36 @@ impl ChatWidget {
                     .send(AppEvent::Command(AppCommand::QueueRemove { queue_item_id }));
                 self.set_status_message("Removing queued message");
             }
+            InputResult::ResumeAction(action) => {
+                match action {
+                    ResumePickerAction::Resume { session_id } => {
+                        self.clear_for_session_switch();
+                        self.begin_session_resume();
+                        self.app_event_tx
+                            .send(AppEvent::Command(AppCommand::switch_session(session_id)));
+                    }
+                    ResumePickerAction::Preview { session_id } => {
+                        self.app_event_tx
+                            .send(AppEvent::Command(AppCommand::preview_session(session_id)));
+                    }
+                    ResumePickerAction::Rename { session_id, title } => {
+                        self.app_event_tx.send(AppEvent::Command(
+                            AppCommand::rename_session_by_id(session_id, title),
+                        ));
+                    }
+                    ResumePickerAction::Delete {
+                        session_id,
+                        is_active,
+                    } => {
+                        if is_active {
+                            self.clear_for_session_switch();
+                        }
+                        self.app_event_tx.send(AppEvent::Command(
+                            AppCommand::delete_session_by_id(session_id),
+                        ));
+                    }
+                }
+            }
             InputResult::None => {}
             InputResult::InputModeChanged { input_mode } => {
                 self.current_turn_mode = input_mode;
@@ -258,9 +302,6 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_paste(&mut self, text: String) {
-        if self.resume_browser.is_some() {
-            return;
-        }
         if let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.handle_paste(text);
             self.drain_onboarding_transcript_events();
@@ -361,19 +402,18 @@ impl ChatWidget {
             }
             AppEvent::Interrupt => {}
             AppEvent::Command(command) => {
+                if matches!(command, AppCommand::ListSessions)
+                    && !self.bottom_pane.is_resume_picker_open()
+                {
+                    self.bottom_pane
+                        .open_resume_picker(self.session.cwd.clone());
+                }
                 if let AppCommand::UserTurn {
                     collaboration_mode, ..
                 } = &command
                 {
                     self.bottom_pane
                         .set_input_mode(InputMode::from_collaboration_mode(*collaboration_mode));
-                }
-                if matches!(
-                    &command,
-                    AppCommand::RunUserShellCommand { command } if command == "session list"
-                ) {
-                    self.resume_browser = None;
-                    self.resume_browser_loading = true;
                 }
                 if command == AppCommand::Compact {
                     self.busy = true;
@@ -430,10 +470,12 @@ impl ChatWidget {
     }
 
     pub(crate) fn request_interrupt(&mut self) -> bool {
-        if !self.busy || self.active_turn_id.is_none() {
+        if !self.busy || (self.active_turn_id.is_none() && !self.bottom_pane.is_task_running()) {
             return false;
         }
-        self.bottom_pane.begin_interrupt();
+        if !self.bottom_pane.try_begin_interrupt() {
+            return false;
+        }
         self.set_status_message("Stopping…");
         true
     }

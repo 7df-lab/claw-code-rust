@@ -112,7 +112,6 @@ impl Renderable for ChatWidget {
         history_height
             .saturating_add(self.subagent_live_list_desired_height())
             .saturating_add(self.bottom_pane.desired_height(width))
-            .saturating_add(2)
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
@@ -138,9 +137,16 @@ impl ChatWidget {
         );
         let subagent_height = self
             .subagent_live_list_desired_height()
-            .min(area.height.saturating_sub(bottom_height).saturating_sub(1));
+            .min(area.height.saturating_sub(bottom_height));
+        let history_height = u16::try_from(self.active_viewport_lines(area.width.max(1)).len())
+            .unwrap_or(u16::MAX)
+            .min(
+                area.height
+                    .saturating_sub(bottom_height)
+                    .saturating_sub(subagent_height),
+            );
         let [history_area, subagent_area, bottom_area] = Layout::vertical([
-            Constraint::Min(1),
+            Constraint::Length(history_height),
             Constraint::Length(subagent_height),
             Constraint::Length(bottom_height),
         ])

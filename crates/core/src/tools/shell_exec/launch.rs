@@ -98,7 +98,7 @@ impl SandboxLaunchPlan {
         shell: &ShellSpec,
         command: &str,
         mode: devo_sandbox::WrapMode,
-        _attach_child_apply: bool,
+        attach_child_apply: bool,
     ) -> Result<Self, String> {
         // Platform wrap decision (details in module docs):
         // - macOS → sandbox-exec / Seatbelt
@@ -131,6 +131,8 @@ impl SandboxLaunchPlan {
         )?;
         #[cfg(unix)]
         let _ = (shell, command);
+        #[cfg(not(unix))]
+        let _ = attach_child_apply;
 
         #[cfg(unix)]
         let child_apply_plan = if attach_child_apply && wrap.requires_child_apply() {
@@ -192,7 +194,8 @@ impl SandboxLaunchPlan {
     /// Build a tokio pipe [`Command`] from this plan (shell + command args).
     pub(crate) fn build_tokio_command(&self, shell: &ShellSpec, command: &str) -> Command {
         // Prefer OS wrapper (`sandbox-exec` / `bwrap` / Windows launcher); else bare shell.
-        let child = match &self.wrap {
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut child = match &self.wrap {
             devo_sandbox::SandboxWrap::Wrapped(wrapped) => {
                 let mut child = Command::new(&wrapped.program);
                 child

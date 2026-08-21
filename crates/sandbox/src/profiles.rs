@@ -19,6 +19,8 @@ use crate::paths::devo_home;
 #[cfg(all(feature = "enforce", unix))]
 use crate::paths::{DEVICE_DIRS, DEVICE_FILES};
 use crate::paths::{essential_writable_paths, essential_writable_paths_minimal};
+#[cfg(all(feature = "enforce", unix))]
+use crate::permissions::SandboxPermissionOverlay;
 
 /// A resolved sandbox profile ready to be converted to a `CapabilitySet`.
 #[derive(Debug, Clone)]
@@ -323,11 +325,16 @@ impl ProfileName {
                 // Some systems (e.g. Fedora) expose `/dev/fd` as a directory
                 // symlink to `/proc/self/fd`. Treat it like other device
                 // directories so bwrap gets a well-formed sandbox command.
-                if let Err(e) = caps.allow_path(dev, AccessMode::ReadWrite) {
-                    tracing::warn!(path = dev, error = %e, "Could not allow device directory");
+                match caps.clone().allow_path(dev, AccessMode::ReadWrite) {
+                    Ok(updated_caps) => caps = updated_caps,
+                    Err(e) => {
+                        tracing::warn!(path = dev, error = %e, "Could not allow device directory");
+                    }
                 }
-            } else if let Err(e) = caps.allow_file_mut(p, AccessMode::ReadWrite) {
-                tracing::warn!(path = dev, error = %e, "Could not allow device file");
+            } else {
+                if let Err(e) = caps.allow_file_mut(p, AccessMode::ReadWrite) {
+                    tracing::warn!(path = dev, error = %e, "Could not allow device file");
+                }
             }
         }
         // Device directories (e.g. /dev/pts for PTY slaves on Linux).

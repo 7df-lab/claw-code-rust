@@ -157,7 +157,7 @@ pub fn resolve_enforcement_plan(
 pub fn resolve_enforcement_plan_with_overlay(
     profile: Option<&str>,
     workspace: &Path,
-    _overlay: Option<&SandboxPermissionOverlay>,
+    overlay: Option<&SandboxPermissionOverlay>,
 ) -> anyhow::Result<Option<ResolvedEnforcementPlan>> {
     let Some(profile_name) = profile else {
         return Ok(None);
@@ -185,7 +185,7 @@ pub fn resolve_enforcement_plan_with_overlay(
     }
     #[cfg(not(all(feature = "enforce", unix)))]
     {
-        let _ = workspace;
+        let _ = (workspace, overlay);
         Ok(Some(ResolvedEnforcementPlan {
             profile_name: profile_name.to_string(),
         }))

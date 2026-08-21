@@ -90,5 +90,11 @@ pub use session_store::*;
 pub use skills::SkillRecord as CoreSkillRecord;
 pub use skills::SkillScope as CoreSkillScope;
 pub use skills::SkillSource as CoreSkillSource;
-pub use skills::*;
+pub use skills::{
+    FileSystemSkillCatalog, ResolvedSkill, SkillCatalog, SkillDependencies, SkillError, SkillId,
+    SkillInterface, SkillRecord, SkillScope, SkillSelector, SkillSource, SkillsManager,
+    SkillsRuntimeConfig, build_available_skills, build_skill_injections,
+    collect_explicit_skill_mentions, default_skill_metadata_budget, normalize_native_path,
+    render_available_skills_body,
+};
 pub use update_check::*;

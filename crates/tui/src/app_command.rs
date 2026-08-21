@@ -135,7 +135,15 @@ pub(crate) enum AppCommand {
     SwitchSession {
         session_id: SessionId,
     },
+    ListSessions,
+    PreviewSession {
+        session_id: SessionId,
+    },
     RenameSession {
+        title: String,
+    },
+    RenameSessionById {
+        session_id: SessionId,
         title: String,
     },
     /// Delete a session. `None` deletes the current active session.
@@ -421,8 +429,20 @@ impl AppCommand {
         Self::SwitchSession { session_id }
     }
 
+    pub(crate) fn list_sessions() -> Self {
+        Self::ListSessions
+    }
+
+    pub(crate) fn preview_session(session_id: SessionId) -> Self {
+        Self::PreviewSession { session_id }
+    }
+
     pub(crate) fn rename_session(title: String) -> Self {
         Self::RenameSession { title }
+    }
+
+    pub(crate) fn rename_session_by_id(session_id: SessionId, title: String) -> Self {
+        Self::RenameSessionById { session_id, title }
     }
 
     pub(crate) fn delete_session() -> Self {
@@ -470,7 +490,10 @@ impl AppCommand {
             Self::UpdateSandboxProfile { .. } => "update_sandbox_profile",
             Self::BrowseInputHistory { .. } => "browse_input_history",
             Self::SwitchSession { .. } => "switch_session",
+            Self::ListSessions => "list_sessions",
+            Self::PreviewSession { .. } => "preview_session",
             Self::RenameSession { .. } => "rename_session",
+            Self::RenameSessionById { .. } => "rename_session_by_id",
             Self::DeleteSession { .. } => "delete_session",
             Self::RollbackToUserTurn { .. } => "rollback_to_user_turn",
             Self::ForkAtUserTurn { .. } => "fork_at_user_turn",
@@ -579,6 +602,9 @@ impl AppCommand {
                 session_id: *session_id,
             },
             Self::RenameSession { title } => AppCommandView::RenameSession { title },
+            Self::ListSessions | Self::PreviewSession { .. } | Self::RenameSessionById { .. } => {
+                AppCommandView::ReloadUserConfig
+            }
             Self::DeleteSession { .. } => AppCommandView::DeleteSession,
             Self::RollbackToUserTurn { user_turn_index } => AppCommandView::ThreadRollback {
                 num_turns: *user_turn_index,

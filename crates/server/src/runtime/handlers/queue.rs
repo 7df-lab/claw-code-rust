@@ -904,6 +904,7 @@ pub(crate) fn native_turn_from_metadata(turn: &crate::turn::TurnMetadata) -> Nat
                 .as_deref()
                 .and_then(|selection| selection.parse().ok()),
         },
+        collaboration_mode: None,
         started_at: turn.started_at,
         completed_at: turn.completed_at,
         error: None,

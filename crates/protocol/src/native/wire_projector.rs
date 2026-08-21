@@ -374,6 +374,7 @@ pub fn native_turn_from_metadata(metadata: &crate::TurnMetadata) -> crate::nativ
                 .and_then(|selection| selection.parse().ok())
                 .or(metadata.reasoning_effort),
         },
+        collaboration_mode: None,
         started_at: metadata.started_at,
         completed_at: metadata.completed_at,
         error: None,

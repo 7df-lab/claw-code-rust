@@ -585,6 +585,7 @@ fn inverse_rejects_prefixed_canonical_ids() {
             git_info: None,
             preview: String::new(),
             last_activity_at: ts(0),
+            transcript_size_bytes: None,
             usage: devo_protocol::native::usage::SessionUsage {
                 total: devo_protocol::native::usage::UsageTotals::default(),
                 by_purpose: Vec::new(),

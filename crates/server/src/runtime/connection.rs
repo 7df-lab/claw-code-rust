@@ -626,6 +626,9 @@ impl ServerRuntime {
             if connection.opt_out_notification_methods.contains(method) {
                 return;
             }
+            if !connection.should_project_event(event) {
+                return;
+            }
             let event_seq = connection.next_seq();
             let event = event.clone().with_seq(event_seq);
             let (method, value) = connection.notification_for(method, &event);
@@ -668,6 +671,9 @@ impl ServerRuntime {
             if !connection.should_deliver_connection_local(method) {
                 return;
             }
+            if !connection.should_project_event(&event) {
+                return;
+            }
             let event_seq = connection.next_seq();
             let event = event.with_seq(event_seq);
             let (method, value) = connection.notification_for(method, &event);
@@ -707,6 +713,9 @@ impl ServerRuntime {
                 return;
             };
             if !connection.should_deliver(method, session_id, &child_parent_by_session) {
+                return;
+            }
+            if !connection.should_project_event(&event) {
                 return;
             }
             let event_seq = connection.next_seq();
@@ -779,6 +788,9 @@ impl ServerRuntime {
                             event_cwd.as_deref(),
                         )
                     {
+                        return None;
+                    }
+                    if !connection.should_project_event(&event) {
                         return None;
                     }
                     let event_seq = connection.next_seq();
@@ -1272,6 +1284,25 @@ pub(super) fn is_connection_local_notification(method: &str) -> bool {
 }
 
 impl ConnectionRuntime {
+    /// Returns whether this connection should project an internal server event.
+    ///
+    /// Legacy failure and interruption paths emit a specialized terminal event followed by a
+    /// generic `TurnCompleted`. Both specialized events already project to the canonical Native
+    /// `turn/completed` shape, so suppress the trailing duplicate only for Native connections.
+    /// ACP keeps both legacy events for compatibility.
+    pub(super) fn should_project_event(&self, event: &ServerEvent) -> bool {
+        !matches!(
+            (self.protocol, event),
+            (
+                Some(ConnectionProtocol::Native),
+                ServerEvent::TurnCompleted(payload)
+            ) if matches!(
+                payload.turn.status,
+                TurnStatus::Failed | TurnStatus::Interrupted
+            )
+        )
+    }
+
     /// Connection-local notifications bypass session subscription filters.
     pub(super) fn should_deliver_connection_local(&self, method: &str) -> bool {
         !self.opt_out_notification_methods.contains(method)
@@ -2152,6 +2183,175 @@ mod tests {
                 .await
                 .is_err(),
             "ACP delivery must occur once"
+        );
+
+        Ok(())
+    }
+
+    /// Trace: L2-DES-APP-009
+    /// Verifies: Native collapses legacy abnormal terminal pairs into one canonical completion,
+    /// while ACP retains both compatibility notifications.
+    #[tokio::test]
+    async fn native_collapses_abnormal_terminal_pairs_while_acp_keeps_both() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let runtime = build_runtime(data_root.path());
+        let session_id = SessionId::new();
+        let (native_outbound, mut native_receiver) = super::outbound::test_outbound_channel(16);
+        let (acp_outbound, mut acp_receiver) = super::outbound::test_outbound_channel(16);
+        let native_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, native_outbound)
+            .await;
+        let acp_connection_id = runtime
+            .register_connection(ClientTransportKind::Stdio, acp_outbound)
+            .await;
+        runtime
+            .handle_acp_initialize(
+                native_connection_id,
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                    "_meta": { "devo": { "protocol": "native" } },
+                }),
+            )
+            .await;
+        runtime
+            .handle_acp_initialize(
+                acp_connection_id,
+                Some(serde_json::json!(2)),
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": false },
+                }),
+            )
+            .await;
+        runtime
+            .subscribe_connection_to_session(native_connection_id, session_id, None)
+            .await;
+        runtime
+            .subscribe_connection_to_session(acp_connection_id, session_id, None)
+            .await;
+
+        let turn_metadata = |sequence, status| crate::turn::TurnMetadata {
+            turn_id: TurnId::new(),
+            session_id,
+            sequence,
+            status,
+            kind: devo_core::TurnKind::Regular,
+            model: "test-model".to_string(),
+            model_binding_id: None,
+            reasoning_effort_selection: None,
+            reasoning_effort: None,
+            request_model: "test-model".to_string(),
+            request_thinking: None,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            usage: None,
+            stop_reason: None,
+            failure_reason: None,
+        };
+        let failed_turn = turn_metadata(1, TurnStatus::Failed);
+        let interrupted_turn = turn_metadata(2, TurnStatus::Interrupted);
+        let cases = vec![
+            (
+                failed_turn.clone(),
+                ServerEvent::TurnFailed(devo_protocol::TurnFailedPayload {
+                    session_id,
+                    turn: failed_turn,
+                    error: Some(devo_protocol::TurnErrorPayload {
+                        code: "PROVIDER_SERVER_ERROR".to_string(),
+                        message: "provider failed".to_string(),
+                        recovery_hint: Some("retry later".to_string()),
+                    }),
+                }),
+                "turn/failed",
+                "failed",
+                Some("provider failed"),
+            ),
+            (
+                interrupted_turn.clone(),
+                ServerEvent::TurnInterrupted(TurnEventPayload {
+                    session_id,
+                    turn: interrupted_turn,
+                }),
+                "turn/interrupted",
+                "interrupted",
+                None,
+            ),
+        ];
+
+        for (turn, specialized_event, specialized_method, expected_status, expected_error) in cases
+        {
+            runtime.broadcast_event(specialized_event).await;
+            runtime
+                .broadcast_event(ServerEvent::TurnCompleted(TurnEventPayload {
+                    session_id,
+                    turn: turn.clone(),
+                }))
+                .await;
+
+            let native = tokio::time::timeout(Duration::from_secs(1), native_receiver.recv())
+                .await?
+                .expect("Native connection receives terminal notification");
+            assert_eq!(native["method"], serde_json::json!("turn/completed"));
+            assert_eq!(
+                native["params"]["turn"]["id"],
+                serde_json::json!(turn.turn_id.to_string())
+            );
+            assert_eq!(
+                native["params"]["turn"]["status"],
+                serde_json::json!(expected_status)
+            );
+            assert_eq!(
+                native["params"]["turn"]["error"]["message"].as_str(),
+                expected_error
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), native_receiver.recv())
+                    .await
+                    .is_err(),
+                "Native must receive one terminal notification per turn"
+            );
+
+            let mut acp_methods = Vec::new();
+            for _ in 0..2 {
+                let notification =
+                    tokio::time::timeout(Duration::from_secs(1), acp_receiver.recv())
+                        .await?
+                        .expect("ACP connection receives compatibility notification");
+                assert_eq!(
+                    notification["method"],
+                    serde_json::json!(crate::ACP_SESSION_UPDATE_METHOD)
+                );
+                let notification = serde_json::from_value::<devo_protocol::AcpSessionNotification>(
+                    notification["params"].clone(),
+                )
+                .expect("decode ACP session notification");
+                let (method, _event) =
+                    devo_protocol::original_event_from_acp_notification(&notification)
+                        .expect("ACP terminal notification preserves original event");
+                acp_methods.push(method);
+            }
+            assert_eq!(
+                acp_methods,
+                vec![specialized_method.to_string(), "turn/completed".to_string()]
+            );
+        }
+
+        let connections = runtime.connections.lock().await;
+        assert_eq!(
+            (
+                connections
+                    .get(&native_connection_id)
+                    .expect("Native connection")
+                    .next_event_seq,
+                connections
+                    .get(&acp_connection_id)
+                    .expect("ACP connection")
+                    .next_event_seq,
+            ),
+            (3, 5),
+            "suppressed Native duplicates must not consume event sequence numbers"
         );
 
         Ok(())

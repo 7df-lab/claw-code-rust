@@ -30,6 +30,10 @@ pub struct Turn {
     /// change afterwards; history must faithfully answer "what did this turn
     /// run with".
     pub model: ModelBinding,
+    /// Collaboration mode captured for this turn. Older servers may omit it;
+    /// clients may then fall back to the session's current mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_mode: Option<crate::CollaborationMode>,
     pub started_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<DateTime<Utc>>,

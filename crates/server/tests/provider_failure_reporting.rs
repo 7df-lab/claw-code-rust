@@ -136,6 +136,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
     let failed_turn_id = start_turn(&runtime, connection_id, session.session_id, 3).await?;
     let mut retry_statuses = Vec::new();
     let mut failed_error = None;
+    let mut failed_completion_count = 0;
     let mut failed_agent_items = Vec::new();
     timeout(Duration::from_secs(30), async {
         while let Some(value) = notifications_rx.recv().await {
@@ -150,6 +151,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
                 Some("turn/completed")
                     if value["params"]["turn"]["status"] == serde_json::json!("failed") =>
                 {
+                    failed_completion_count += 1;
                     let error = &value["params"]["turn"]["error"];
                     failed_error = Some(TurnErrorPayload {
                         code: error["errorCode"].as_str().unwrap_or_default().to_string(),
@@ -158,6 +160,10 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
                             .as_str()
                             .map(ToString::to_string),
                     });
+                }
+                Some("session/status/changed")
+                    if value["params"]["status"] == serde_json::json!("idle") =>
+                {
                     break;
                 }
                 Some(_) | None => {}
@@ -181,6 +187,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
             recovery_hint: None,
         })
     );
+    assert_eq!(failed_completion_count, 1);
     assert_eq!(failed_agent_items, Vec::<serde_json::Value>::new());
 
     let rollout = std::fs::read_to_string(rollout_path(data_root.path(), &session))?;

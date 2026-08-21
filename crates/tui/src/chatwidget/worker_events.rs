@@ -1062,17 +1062,19 @@ impl ChatWidget {
                 prompt_token_estimate,
                 last_query_input_tokens,
             } => {
-                self.resume_browser_loading = false;
                 self.finish_session_resume();
-                self.commit_active_streams(DotStatus::Failed);
-                if let Some(cell) = self
-                    .active_cell
-                    .as_mut()
-                    .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
-                {
-                    cell.mark_failed();
+                let failed_turn_was_finalized = self.failed_turn_visually_finalized;
+                if !failed_turn_was_finalized {
+                    self.commit_active_streams(DotStatus::Failed);
+                    if let Some(cell) = self
+                        .active_cell
+                        .as_mut()
+                        .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+                    {
+                        cell.mark_failed();
+                    }
+                    self.flush_active_cell();
                 }
-                self.flush_active_cell();
                 self.active_tool_calls.clear();
                 self.pending_tool_calls.clear();
                 self.pending_approval = None;
@@ -1085,29 +1087,31 @@ impl ChatWidget {
                 self.total_cache_read_tokens = total_cache_read_tokens;
                 self.last_query_input_tokens = last_query_input_tokens;
                 self.prompt_token_estimate = prompt_token_estimate;
-                let input_mode = if self.current_turn_has_user_shell_command {
-                    InputMode::Shell
-                } else {
-                    self.current_turn_mode
-                };
-                let model_name = if self.current_turn_has_user_shell_command {
-                    "Shell".to_string()
-                } else {
-                    self.session
-                        .model
-                        .as_ref()
-                        .map(|m| m.display_name.clone())
-                        .or_else(|| self.session.model.as_ref().map(|m| m.slug.clone()))
-                        .unwrap_or_default()
-                };
-                let accent_color = self.active_accent_color();
-                self.add_to_history(history_cell::new_error_event_with_hint(message, hint));
-                self.add_to_history(history_cell::TurnSummaryCell::new_failed(
-                    input_mode,
-                    model_name,
-                    accent_color,
-                ));
-                self.failed_turn_visually_finalized = true;
+                if !failed_turn_was_finalized {
+                    let input_mode = if self.current_turn_has_user_shell_command {
+                        InputMode::Shell
+                    } else {
+                        self.current_turn_mode
+                    };
+                    let model_name = if self.current_turn_has_user_shell_command {
+                        "Shell".to_string()
+                    } else {
+                        self.session
+                            .model
+                            .as_ref()
+                            .map(|m| m.display_name.clone())
+                            .or_else(|| self.session.model.as_ref().map(|m| m.slug.clone()))
+                            .unwrap_or_default()
+                    };
+                    let accent_color = self.active_accent_color();
+                    self.add_to_history(history_cell::new_error_event_with_hint(message, hint));
+                    self.add_to_history(history_cell::TurnSummaryCell::new_failed(
+                        input_mode,
+                        model_name,
+                        accent_color,
+                    ));
+                    self.failed_turn_visually_finalized = true;
+                }
                 self.bottom_pane.set_task_running(false);
                 self.set_status_message("Query failed; see error above");
                 self.current_turn_has_user_shell_command = false;
@@ -1187,8 +1191,26 @@ impl ChatWidget {
                 self.set_status_message("Provider save failed");
             }
             WorkerEvent::SessionsListed { sessions } => {
-                self.resume_browser_loading = false;
-                self.open_resume_browser(sessions);
+                self.bottom_pane.update_resume_sessions(sessions);
+                self.set_status_message("Resume session");
+            }
+            WorkerEvent::SessionsListFailed { message } => {
+                self.bottom_pane.update_resume_list_error(message);
+                self.set_status_message("Failed to load sessions");
+            }
+            WorkerEvent::SessionPreviewLoaded {
+                session_id,
+                messages,
+            } => {
+                self.bottom_pane
+                    .update_resume_preview(session_id, Ok(messages));
+            }
+            WorkerEvent::SessionPreviewFailed {
+                session_id,
+                message,
+            } => {
+                self.bottom_pane
+                    .update_resume_preview(session_id, Err(message));
             }
             WorkerEvent::SubagentDiscovered { agent } => {
                 self.on_subagent_discovered(agent);
@@ -1286,7 +1308,6 @@ impl ChatWidget {
                 last_query_input_tokens: _,
                 total_cache_read_tokens: _,
             } => {
-                self.resume_browser_loading = false;
                 self.finish_session_resume();
                 self.session.cwd = cwd;
                 self.update_session_model_selection(model, model_binding_id);
@@ -1354,7 +1375,6 @@ impl ChatWidget {
                 permission_preset,
                 effective_context_window,
             } => {
-                self.resume_browser_loading = false;
                 self.finish_session_resume();
                 self.session.cwd = cwd;
                 if let Some(model) = model {
@@ -1456,19 +1476,40 @@ impl ChatWidget {
                 self.set_status_message("Side question failed");
             }
             WorkerEvent::SessionRenamed { session_id, title } => {
+                let parsed_session_id = devo_core::SessionId::try_from(session_id.as_str()).ok();
+                self.bottom_pane
+                    .update_resume_rename(parsed_session_id, Ok(title.clone()));
                 self.add_to_history(history_cell::new_info_event(
                     format!("renamed {session_id} to {title}"),
                     None,
                 ));
                 self.set_status_message("Session renamed");
             }
+            WorkerEvent::SessionRenameFailed {
+                session_id,
+                message,
+            } => {
+                self.bottom_pane
+                    .update_resume_rename(session_id, Err(message.clone()));
+                self.set_status_message("Session rename failed");
+            }
             WorkerEvent::SessionDeleted { session_id } => {
-                self.remove_session_from_resume_browser(&session_id);
+                let parsed_session_id = devo_core::SessionId::try_from(session_id.as_str()).ok();
+                self.bottom_pane
+                    .update_resume_delete(parsed_session_id, Ok(()));
                 self.add_to_history(history_cell::new_info_event(
                     format!("deleted session {session_id}"),
                     None,
                 ));
                 self.set_status_message("Session deleted");
+            }
+            WorkerEvent::SessionDeleteFailed {
+                session_id,
+                message,
+            } => {
+                self.bottom_pane
+                    .update_resume_delete(session_id, Err(message.clone()));
+                self.set_status_message("Session delete failed");
             }
             WorkerEvent::EffectiveContextWindowUpdated {
                 effective_context_window,

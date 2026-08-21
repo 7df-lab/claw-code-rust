@@ -289,7 +289,7 @@ impl ServerRuntime {
     /// to persist by design) and the snapshot is built from the SQLite
     /// index instead.
     pub(crate) async fn handle_native_session_metadata_update(
-        &self,
+        self: &Arc<Self>,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
@@ -331,12 +331,39 @@ impl ServerRuntime {
                         "session title cannot be empty",
                     );
                 }
-                let Some(session_handle) = self.session(legacy_session_id).await else {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::SessionNotFound,
-                        "session does not exist",
-                    );
+                let session_handle = match self.get_or_load_parent_session(legacy_session_id).await
+                {
+                    Ok(handle) => handle,
+                    Err(crate::runtime::session_cache::LoadSessionError::SessionNotFound)
+                    | Err(crate::runtime::session_cache::LoadSessionError::RolloutMissing) => {
+                        return self.error_response(
+                            request_id,
+                            ProtocolErrorCode::SessionNotFound,
+                            "session does not exist",
+                        );
+                    }
+                    Err(
+                        crate::runtime::session_cache::LoadSessionError::SubagentNotResumable {
+                            parent_session_id,
+                        },
+                    ) => {
+                        return self.error_response(
+                            request_id,
+                            ProtocolErrorCode::InvalidParams,
+                            format!(
+                                "subagent sessions cannot be renamed directly; rename the parent session {parent_session_id} instead"
+                            ),
+                        );
+                    }
+                    Err(crate::runtime::session_cache::LoadSessionError::RestoreFailed(
+                        message,
+                    )) => {
+                        return self.error_response(
+                            request_id,
+                            ProtocolErrorCode::InternalError,
+                            format!("failed to load session for metadata update: {message}"),
+                        );
+                    }
                 };
                 {
                     let _state_change_guard = session_handle.lock_state_change().await;
@@ -1027,6 +1054,7 @@ impl ServerRuntime {
             git_info: None,
             preview: String::new(),
             last_activity_at: metadata.last_activity_at,
+            transcript_size_bytes: None,
             usage: devo_protocol::native::usage::SessionUsage {
                 total: devo_protocol::native::usage::UsageTotals {
                     total_tokens: metadata.total_tokens as u64,
@@ -1248,9 +1276,29 @@ impl ServerRuntime {
             {
                 continue;
             }
-            if let Some(session) = self.native_session_snapshot(summary.session_id).await {
-                sessions.push(session);
-            }
+            let mut session = self
+                .native_session_snapshot(summary.session_id)
+                .await
+                .unwrap_or_else(|| {
+                    Self::native_session_from_index_metadata(&summary, summary.session_id)
+                });
+            let rollout_path = self
+                .deps
+                .db
+                .get_session_index(&summary.session_id)
+                .ok()
+                .flatten()
+                .and_then(|index| index.rollout_path)
+                .or_else(|| {
+                    self.rollout_store
+                        .find_rollout_by_session_id(&summary.session_id)
+                        .ok()
+                        .flatten()
+                });
+            session.transcript_size_bytes = rollout_path
+                .and_then(|path| std::fs::metadata(path).ok())
+                .map(|metadata| metadata.len());
+            sessions.push(session);
         }
         let next_start = start.saturating_add(limit);
         let next_cursor = (next_start < sessions.len()).then(|| next_start.to_string());

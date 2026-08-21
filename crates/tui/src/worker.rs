@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -62,6 +63,8 @@ use crate::bottom_pane::SkillMetadata;
 use crate::events::PlanStep;
 use crate::events::PlanStepStatus;
 use crate::events::SessionListEntry;
+use crate::events::SessionPreviewMessage;
+use crate::events::SessionPreviewRole;
 use crate::events::SubagentMonitorAgent;
 use crate::events::SubagentMonitorEvent;
 use crate::events::TextItemKind;
@@ -273,6 +276,8 @@ enum OperationCommand {
     },
     /// Request a session list from the server.
     ListSessions,
+    /// Load a compact conversation preview for one persisted session.
+    PreviewSession(SessionId),
     /// Request a skills list from the server.
     ListSkills,
     /// Request MCP server runtime statuses from the server.
@@ -320,6 +325,11 @@ enum OperationCommand {
     SwitchSession(SessionId),
     /// Rename the current active session.
     RenameSession(String),
+    /// Rename a persisted session without switching to it.
+    RenameSessionById {
+        session_id: SessionId,
+        title: String,
+    },
     /// Delete a session. `None` deletes the current active session and starts a
     /// fresh local session; `Some(id)` deletes that session id (and only resets
     /// local state when it is the active one).
@@ -608,6 +618,12 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
+    pub(crate) fn preview_session(&self, session_id: SessionId) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::PreviewSession(session_id))
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
     /// Requests the current skill list from the background worker.
     pub(crate) fn list_skills(&self) -> Result<()> {
         self.command_tx
@@ -712,6 +728,12 @@ impl QueryWorkerHandle {
     pub(crate) fn rename_session(&self, title: String) -> Result<()> {
         self.command_tx
             .send(OperationCommand::RenameSession(title))
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    pub(crate) fn rename_session_by_id(&self, session_id: SessionId, title: String) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::RenameSessionById { session_id, title })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -1453,11 +1475,24 @@ async fn run_worker_inner(
                                             title: session
                                                 .title
                                                 .clone()
-                                                .unwrap_or_else(|| "(untitled)".to_string()),
-                                            updated_at: session
-                                                .last_activity_at
-                                                .format("%Y-%m-%d %H:%M:%S UTC")
-                                                .to_string(),
+                                                .filter(|title| !title.trim().is_empty())
+                                                .unwrap_or_else(|| {
+                                                    session
+                                                        .preview
+                                                        .lines()
+                                                        .next()
+                                                        .filter(|line| !line.trim().is_empty())
+                                                        .unwrap_or("(untitled)")
+                                                        .to_string()
+                                                }),
+                                            preview: session.preview.clone(),
+                                            cwd: session.cwd.clone(),
+                                            branch: session
+                                                .git_info
+                                                .as_ref()
+                                                .and_then(|git| git.branch.clone()),
+                                            last_activity_at: session.last_activity_at,
+                                            transcript_size_bytes: session.transcript_size_bytes,
                                             is_active: Some(entry_session_id) == session_id,
                                         })
                                     })
@@ -1465,29 +1500,29 @@ async fn run_worker_inner(
                                 let _ = event_tx.send(WorkerEvent::SessionsListed { sessions });
                             }
                             Ok(Err(error)) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                let _ = event_tx.send(WorkerEvent::SessionsListFailed {
                                     message: error.to_string(),
-                                    hint: None,
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
                                 });
                             }
                             Err(_) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                let _ = event_tx.send(WorkerEvent::SessionsListFailed {
                                     message: "session list request timed out".to_string(),
-                                    hint: None,
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
+                                });
+                            }
+                        }
+                    }
+                    Some(OperationCommand::PreviewSession(preview_session_id)) => {
+                        match collect_session_preview(&mut client, preview_session_id).await {
+                            Ok(messages) => {
+                                let _ = event_tx.send(WorkerEvent::SessionPreviewLoaded {
+                                    session_id: preview_session_id,
+                                    messages,
+                                });
+                            }
+                            Err(error) => {
+                                let _ = event_tx.send(WorkerEvent::SessionPreviewFailed {
+                                    session_id: preview_session_id,
+                                    message: error.to_string(),
                                 });
                             }
                         }
@@ -2083,43 +2118,42 @@ async fn run_worker_inner(
                     }
                     Some(OperationCommand::RenameSession(title)) => {
                         let Some(active_session_id) = session_id else {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
+                            let _ = event_tx.send(WorkerEvent::SessionRenameFailed {
+                                session_id: None,
                                 message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
-                                hint: None,
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
                             });
                             continue;
                         };
-                        match client
-                            .session_title_update_native(active_session_id, title.clone())
-                            .await
-                        {
-                            Ok(result) => {
+                        match rename_persisted_session(&mut client, active_session_id, title).await {
+                            Ok(title) => {
                                 let _ = event_tx.send(WorkerEvent::SessionRenamed {
                                     session_id: active_session_id.to_string(),
-                                    title: result
-                                        .session
-                                        .title
-                                        .unwrap_or(title),
+                                    title,
                                 });
                             }
                             Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                let _ = event_tx.send(WorkerEvent::SessionRenameFailed {
+                                    session_id: Some(active_session_id),
                                     message: error.to_string(),
-                                    hint: None,
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
+                                });
+                            }
+                        }
+                    }
+                    Some(OperationCommand::RenameSessionById {
+                        session_id: target_session_id,
+                        title,
+                    }) => {
+                        match rename_persisted_session(&mut client, target_session_id, title).await {
+                            Ok(title) => {
+                                let _ = event_tx.send(WorkerEvent::SessionRenamed {
+                                    session_id: target_session_id.to_string(),
+                                    title,
+                                });
+                            }
+                            Err(error) => {
+                                let _ = event_tx.send(WorkerEvent::SessionRenameFailed {
+                                    session_id: Some(target_session_id),
+                                    message: error.to_string(),
                                 });
                             }
                         }
@@ -2129,16 +2163,9 @@ async fn run_worker_inner(
                     }) => {
                         let target_session_id = requested_session_id.or(session_id);
                         let Some(target_session_id) = target_session_id else {
-                            let _ = event_tx.send(WorkerEvent::TurnFailed {
+                            let _ = event_tx.send(WorkerEvent::SessionDeleteFailed {
+                                session_id: None,
                                 message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
-                                hint: None,
-                                turn_count,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_tokens,
-                                total_cache_read_tokens,
-                                prompt_token_estimate: total_input_tokens,
-                                last_query_input_tokens,
                             });
                             continue;
                         };
@@ -2203,16 +2230,9 @@ async fn run_worker_inner(
                                 }
                             }
                             Err(error) => {
-                                let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                let _ = event_tx.send(WorkerEvent::SessionDeleteFailed {
+                                    session_id: Some(target_session_id),
                                     message: error.to_string(),
-                                    hint: None,
-                                    turn_count,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_tokens,
-                                    total_cache_read_tokens,
-                                    prompt_token_estimate: total_input_tokens,
-                                    last_query_input_tokens,
                                 });
                             }
                         }
@@ -4259,11 +4279,155 @@ async fn collect_user_input_texts(
     Ok(texts)
 }
 
+const MAX_PREVIEW_MESSAGES: usize = 4;
+
+fn append_preview_item(
+    messages: &mut VecDeque<SessionPreviewMessage>,
+    item: devo_protocol::native::item::Item,
+) {
+    let message = match item {
+        devo_protocol::native::item::Item::UserMessage { content, .. } => {
+            let text = content
+                .into_iter()
+                .filter_map(|input| match input {
+                    devo_protocol::native::item::UserInput::Text { text } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.trim().is_empty()).then_some(SessionPreviewMessage {
+                role: SessionPreviewRole::User,
+                text,
+            })
+        }
+        devo_protocol::native::item::Item::AssistantMessage { text, .. } => {
+            (!text.trim().is_empty()).then_some(SessionPreviewMessage {
+                role: SessionPreviewRole::Assistant,
+                text,
+            })
+        }
+        devo_protocol::native::item::Item::Reasoning { .. }
+        | devo_protocol::native::item::Item::Plan { .. }
+        | devo_protocol::native::item::Item::ToolCall { .. }
+        | devo_protocol::native::item::Item::ToolResult { .. }
+        | devo_protocol::native::item::Item::CommandExecution { .. }
+        | devo_protocol::native::item::Item::HostedToolCall { .. }
+        | devo_protocol::native::item::Item::FileChange { .. }
+        | devo_protocol::native::item::Item::Approval { .. }
+        | devo_protocol::native::item::Item::UserInputRequest { .. }
+        | devo_protocol::native::item::Item::SubAgent { .. }
+        | devo_protocol::native::item::Item::BackgroundTask { .. }
+        | devo_protocol::native::item::Item::ContextCompaction { .. }
+        | devo_protocol::native::item::Item::GoalProgress { .. }
+        | devo_protocol::native::item::Item::Warning { .. } => None,
+    };
+    if let Some(message) = message {
+        if messages.len() == MAX_PREVIEW_MESSAGES {
+            messages.pop_front();
+        }
+        messages.push_back(message);
+    }
+}
+
+/// Loads only the recent user/assistant dialogue needed by the inline resume picker.
+async fn collect_session_preview(
+    client: &mut StdioServerClient,
+    session_id: SessionId,
+) -> Result<Vec<SessionPreviewMessage>> {
+    const MAX_PREVIEW_MESSAGES: usize = 4;
+
+    let mut messages = VecDeque::with_capacity(MAX_PREVIEW_MESSAGES);
+    let mut cursor = None;
+    loop {
+        let page = client
+            .session_items_list_native(session_id, cursor.clone(), Some(500))
+            .await?;
+        let page_len = page.data.len();
+        let next_cursor = page.next_cursor;
+        for item in page.data {
+            append_preview_item(&mut messages, item.item);
+        }
+        match (next_cursor, page_len) {
+            (Some(next), len) if len > 0 => cursor = Some(next),
+            _ => break,
+        }
+    }
+    Ok(messages.into_iter().collect())
+}
+
+async fn rename_persisted_session(
+    client: &mut StdioServerClient,
+    session_id: SessionId,
+    title: String,
+) -> Result<String> {
+    let result = client
+        .session_title_update_native(session_id, title.clone())
+        .await?;
+    Ok(result.session.title.unwrap_or(title))
+}
+
+fn restored_history_items(
+    turns: Vec<devo_protocol::native::turn::Turn>,
+    items: Vec<devo_protocol::native::item::ItemEnvelope>,
+    fallback_mode: devo_protocol::CollaborationMode,
+) -> Vec<devo_protocol::SessionHistoryItem> {
+    let mut items_by_turn = HashMap::<String, Vec<_>>::new();
+    for item in items {
+        items_by_turn
+            .entry(item.turn_id.as_str().to_string())
+            .or_default()
+            .push(item);
+    }
+    let mut history_items = Vec::new();
+    for turn in &turns {
+        if let Some(turn_items) = items_by_turn.remove(turn.id.as_str()) {
+            history_items.extend(
+                turn_items
+                    .iter()
+                    .filter_map(typed_events::history_item_from_native_item),
+            );
+        }
+        if let Some(summary) = typed_events::history_item_from_native_turn(turn, fallback_mode) {
+            history_items.push(summary);
+        }
+    }
+    let mut orphan_items = items_by_turn.into_values().flatten().collect::<Vec<_>>();
+    orphan_items.sort_by_key(|item| item.seq);
+    history_items.extend(
+        orphan_items
+            .iter()
+            .filter_map(typed_events::history_item_from_native_item),
+    );
+    history_items
+}
+
 async fn restore_session_native(
     client: &mut StdioServerClient,
     session_id: SessionId,
 ) -> Result<NativeSessionRestore> {
     let resumed = client.session_resume_native(session_id).await?;
+    let fallback_mode = resumed
+        .session
+        .settings
+        .mode
+        .as_deref()
+        .and_then(|mode| serde_json::from_value(serde_json::Value::String(mode.to_string())).ok())
+        .unwrap_or_default();
+
+    let mut turns = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = client
+            .session_turns_list_native(session_id, cursor.clone(), Some(200))
+            .await?;
+        let page_len = page.data.len();
+        let next_cursor = page.next_cursor;
+        turns.extend(page.data);
+        match (next_cursor, page_len) {
+            (Some(next), len) if len > 0 => cursor = Some(next),
+            _ => break,
+        }
+    }
 
     let mut items = Vec::new();
     let mut cursor = None;
@@ -4279,10 +4443,7 @@ async fn restore_session_native(
             _ => break,
         }
     }
-    let history_items = items
-        .iter()
-        .filter_map(typed_events::history_item_from_native_item)
-        .collect();
+    let history_items = restored_history_items(turns, items, fallback_mode);
 
     let queue = client
         .session_queue_list(devo_protocol::native::rpc_turn::SessionQueueListParams {
@@ -6190,8 +6351,12 @@ mod tests {
     use devo_server::SkillScope;
     use devo_server::SkillSource;
 
+    use crate::events::SessionPreviewMessage;
+    use crate::events::SessionPreviewRole;
+
     use super::QueryWorkerHandle;
     use super::ShellCommandExecStart;
+    use super::append_preview_item;
     use super::btw_agent_prompt;
     use super::btw_spawn_params;
     use super::handle_completed_item;
@@ -6200,6 +6365,7 @@ mod tests {
     use super::normalize_display_output;
     use super::project_history_items;
     use super::render_skill_list_body;
+    use super::restored_history_items;
     use super::should_apply_terminal_turn_usage_fallback;
     use super::should_pause_goal_before_session_leave;
     use super::summarize_tool_call;
@@ -7584,15 +7750,16 @@ mod tests {
         let entry = SessionListEntry {
             session_id: summary.session_id,
             title: summary.title.clone().unwrap_or_default(),
-            updated_at: summary
-                .updated_at
-                .format("%Y-%m-%d %H:%M:%S UTC")
-                .to_string(),
+            preview: String::new(),
+            cwd: summary.cwd.clone(),
+            branch: None,
+            last_activity_at: summary.last_activity_at,
+            transcript_size_bytes: Some(10_300),
             is_active: true,
         };
 
         assert_eq!(entry.title, "Saved conversation");
-        assert!(entry.updated_at.contains("UTC"));
+        assert_eq!(entry.last_activity_at, summary.last_activity_at);
     }
 
     #[test]
@@ -7632,10 +7799,11 @@ mod tests {
         let entry = SessionListEntry {
             session_id: summary.session_id,
             title: summary.title.clone().unwrap_or_default(),
-            updated_at: summary
-                .updated_at
-                .format("%Y-%m-%d %H:%M:%S UTC")
-                .to_string(),
+            preview: String::new(),
+            cwd: summary.cwd.clone(),
+            branch: None,
+            last_activity_at: summary.last_activity_at,
+            transcript_size_bytes: Some(10_300),
             is_active: false,
         };
 
@@ -7869,6 +8037,100 @@ mod tests {
                 "",
                 "thinking aloud"
             )]
+        );
+    }
+    #[test]
+    fn preview_keeps_only_last_four_dialogue_messages() {
+        let user = |text: &str| devo_protocol::native::item::Item::UserMessage {
+            client_user_message_id: None,
+            content: vec![devo_protocol::native::item::UserInput::Text {
+                text: text.to_string(),
+            }],
+            entry: devo_protocol::native::item::UserMessageEntry::default(),
+        };
+        let assistant = |text: &str| devo_protocol::native::item::Item::AssistantMessage {
+            text: text.to_string(),
+            phase: None,
+        };
+        let mut messages = std::collections::VecDeque::new();
+        for item in [
+            user("one"),
+            assistant("two"),
+            devo_protocol::native::item::Item::Reasoning {
+                text: "hidden".to_string(),
+                provider_payload_ref: None,
+            },
+            user("three"),
+            assistant("four"),
+            user("five"),
+        ] {
+            append_preview_item(&mut messages, item);
+        }
+
+        assert_eq!(
+            messages.into_iter().collect::<Vec<_>>(),
+            vec![
+                SessionPreviewMessage {
+                    role: SessionPreviewRole::Assistant,
+                    text: "two".to_string(),
+                },
+                SessionPreviewMessage {
+                    role: SessionPreviewRole::User,
+                    text: "three".to_string(),
+                },
+                SessionPreviewMessage {
+                    role: SessionPreviewRole::Assistant,
+                    text: "four".to_string(),
+                },
+                SessionPreviewMessage {
+                    role: SessionPreviewRole::User,
+                    text: "five".to_string(),
+                },
+            ]
+        );
+    }
+    #[test]
+    fn restored_history_includes_native_turn_summary() {
+        let started_at = Utc::now();
+        let turn = devo_protocol::native::turn::Turn {
+            id: devo_protocol::native::ids::TurnId::from_legacy_uuid(
+                devo_protocol::TurnId::new().into(),
+            ),
+            session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(
+                devo_protocol::SessionId::new().into(),
+            ),
+            sequence: 1,
+            kind: devo_protocol::native::turn::TurnKind::Regular,
+            status: devo_protocol::native::turn::TurnStatus::Completed,
+            model: devo_protocol::native::model::ModelBinding {
+                provider: "test".to_string(),
+                model: "test-model".to_string(),
+                reasoning_effort: None,
+            },
+            collaboration_mode: Some(devo_protocol::CollaborationMode::Plan),
+            started_at,
+            completed_at: Some(started_at + chrono::Duration::seconds(3)),
+            error: None,
+            usage: None,
+        };
+
+        assert_eq!(
+            restored_history_items(
+                vec![turn],
+                Vec::new(),
+                devo_protocol::CollaborationMode::Build,
+            ),
+            vec![devo_protocol::SessionHistoryItem {
+                tool_call_id: None,
+                kind: devo_protocol::SessionHistoryItemKind::TurnSummary,
+                title: "test-model".to_string(),
+                body: String::new(),
+                tool_io: None,
+                metadata: Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
+                    collaboration_mode: devo_protocol::CollaborationMode::Plan,
+                }),
+                duration_ms: Some(3),
+            }]
         );
     }
 }

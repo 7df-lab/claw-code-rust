@@ -73,7 +73,7 @@ impl ThemeSet {
         &[
             "Press Ctrl+T to toggle full-screen mode.",
             "Type / to see available slash commands.",
-            "Use Esc to interrupt an active task.",
+            "Use Ctrl+C to interrupt an active task.",
             "Press Up/Down in the composer to browse input history.",
             "Use /model to switch between configured models.",
             "Use /settings to change the UI color scheme.",
@@ -81,7 +81,7 @@ impl ThemeSet {
             "Use /compact to reclaim context window space.",
             "Use /resume to pick up a previous chat.",
             "Use /new to start a fresh session.",
-            "Ctrl+C or /exit to quit.",
+            "Press Ctrl+C twice while idle, or use /exit, to quit.",
             "Alt+Up/Alt+Down to select turns in the transcript.",
             "Use /diff to review changes.",
             "Reasoning effort can be configured via /model picker.",

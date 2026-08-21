@@ -39,6 +39,7 @@ mod prompt_args;
 mod proposed_plan_actions_view;
 mod reference_popup;
 mod request_user_input_overlay;
+mod resume_picker;
 pub(crate) mod scroll_state;
 mod selection_popup_common;
 mod settings_hub_view;
@@ -61,13 +62,13 @@ pub(crate) use context_occupancy_view::SessionTokenTotals;
 pub(crate) use context_occupancy_view::StatusPanelSnapshot;
 pub(crate) use custom_prompt_view::CustomPromptView;
 pub(crate) use delete_session_confirm_view::DeleteSessionConfirmView;
-pub(crate) use horizontal_chip_strip::HorizontalChipStrip;
 pub(crate) use input_mode::InputMode;
 pub(crate) use model_picker::ModelPickerEffortOption;
 pub(crate) use model_picker::ModelPickerEntry;
 pub(crate) use model_picker::ModelPickerSelection;
 use model_picker::ModelPickerView;
 pub(crate) use proposed_plan_actions_view::ProposedPlanActionsView;
+pub(crate) use resume_picker::ResumePickerAction;
 pub(crate) use settings_hub_view::SettingsHubSnapshot;
 pub(crate) use settings_hub_view::SettingsHubTab;
 use settings_hub_view::SettingsHubView;
@@ -232,6 +233,7 @@ pub(crate) enum InputResult {
     InputModeChanged {
         input_mode: InputMode,
     },
+    ResumeAction(ResumePickerAction),
     None,
 }
 
@@ -738,6 +740,24 @@ impl BottomPane {
         !self.view_stack.is_empty()
     }
 
+    #[cfg(test)]
+    pub(crate) fn resume_selection_for_test(&self) -> Option<usize> {
+        self.active_view()
+            .and_then(BottomPaneView::resume_selection_for_test)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resume_scroll_offset_for_test(&self) -> Option<usize> {
+        self.active_view()
+            .and_then(BottomPaneView::resume_scroll_offset_for_test)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resume_pending_delete_for_test(&self) -> Option<SessionId> {
+        self.active_view()
+            .and_then(BottomPaneView::resume_pending_delete_for_test)
+    }
+
     pub(crate) fn open_request_user_input(
         &mut self,
         session_id: SessionId,
@@ -891,7 +911,10 @@ impl BottomPane {
         }
     }
 
-    pub(crate) fn begin_interrupt(&mut self) {
+    pub(crate) fn try_begin_interrupt(&mut self) -> bool {
+        if self.interrupt_requested {
+            return false;
+        }
         self.interrupt_requested = true;
         if let Some(status) = self.status.as_mut() {
             status.update_header("Stopping…".to_string());
@@ -901,6 +924,79 @@ impl BottomPane {
             status.update_inline_message(None);
         }
         self.request_redraw();
+        true
+    }
+
+    pub(crate) fn open_resume_picker(&mut self, current_cwd: PathBuf) {
+        self.view_stack.clear();
+        self.push_view(Box::new(resume_picker::ResumePickerView::loading(
+            current_cwd,
+            self.accent_color,
+        )));
+    }
+
+    pub(crate) fn is_resume_picker_open(&self) -> bool {
+        self.active_view().and_then(BottomPaneView::view_id) == Some("resume_picker")
+    }
+
+    pub(crate) fn update_resume_sessions(
+        &mut self,
+        sessions: Vec<crate::events::SessionListEntry>,
+    ) {
+        for view in self.view_stack.iter_mut().rev() {
+            if view.update_resume_sessions(sessions.clone()) {
+                self.request_redraw();
+                break;
+            }
+        }
+    }
+
+    pub(crate) fn update_resume_list_error(&mut self, message: String) {
+        for view in self.view_stack.iter_mut().rev() {
+            if view.update_resume_list_error(message.clone()) {
+                self.request_redraw();
+                break;
+            }
+        }
+    }
+
+    pub(crate) fn update_resume_preview(
+        &mut self,
+        session_id: SessionId,
+        result: Result<Vec<crate::events::SessionPreviewMessage>, String>,
+    ) {
+        for view in self.view_stack.iter_mut().rev() {
+            if view.update_resume_preview(session_id, result.clone()) {
+                self.request_redraw();
+                break;
+            }
+        }
+    }
+
+    pub(crate) fn update_resume_rename(
+        &mut self,
+        session_id: Option<SessionId>,
+        result: Result<String, String>,
+    ) {
+        for view in self.view_stack.iter_mut().rev() {
+            if view.update_resume_rename(session_id, result.clone()) {
+                self.request_redraw();
+                break;
+            }
+        }
+    }
+
+    pub(crate) fn update_resume_delete(
+        &mut self,
+        session_id: Option<SessionId>,
+        result: Result<(), String>,
+    ) {
+        for view in self.view_stack.iter_mut().rev() {
+            if view.update_resume_delete(session_id, result.clone()) {
+                self.request_redraw();
+                break;
+            }
+        }
     }
 
     pub(crate) fn interrupt_failed(&mut self) {
@@ -1066,6 +1162,7 @@ impl BottomPane {
         if !completed_by_cancel {
             view.handle_key_event(key);
         }
+        let resume_action = view.take_resume_action();
 
         let view_complete = self
             .view_stack
@@ -1090,7 +1187,14 @@ impl BottomPane {
             if let Some(name) = selected_theme {
                 return InputResult::ThemeSelected { name };
             }
+            if let Some(action) = resume_action {
+                return InputResult::ResumeAction(action);
+            }
             return InputResult::None;
+        }
+
+        if let Some(action) = resume_action {
+            return InputResult::ResumeAction(action);
         }
 
         if view_in_paste_burst {

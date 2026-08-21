@@ -560,6 +560,7 @@ fn footer_from_props_lines(
                 esc_backtrack_hint: props.esc_backtrack_hint,
                 is_wsl: props.is_wsl,
                 input_modes_enabled: props.input_modes_enabled,
+                is_task_running: props.is_task_running,
             };
             shortcut_overlay_lines(state)
         }
@@ -725,6 +726,7 @@ mod tests {
             esc_backtrack_hint: false,
             is_wsl: false,
             input_modes_enabled: false,
+            is_task_running: false,
         };
         let rendered = shortcut_overlay_lines(state)
             .iter()
@@ -736,6 +738,31 @@ mod tests {
             "overlay:\n{rendered}"
         );
     }
+
+    #[test]
+    fn shortcut_overlay_uses_ctrl_c_for_interrupt_while_task_is_running() {
+        let state = ShortcutsState {
+            use_shift_enter_hint: false,
+            esc_backtrack_hint: false,
+            is_wsl: false,
+            input_modes_enabled: false,
+            is_task_running: true,
+        };
+        let rendered = shortcut_overlay_lines(state)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rendered.contains("ctrl + c to interrupt"),
+            "overlay:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("ctrl + c to exit"),
+            "overlay:\n{rendered}"
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -744,6 +771,7 @@ struct ShortcutsState {
     esc_backtrack_hint: bool,
     is_wsl: bool,
     input_modes_enabled: bool,
+    is_task_running: bool,
 }
 
 fn quit_shortcut_reminder_line(key: KeyBinding) -> Line<'static> {
@@ -975,6 +1003,7 @@ impl ShortcutDescriptor {
                     ]);
                 }
             }
+            ShortcutId::Quit if state.is_task_running => line.push_span(" to interrupt"),
             _ => line.push_span(self.label),
         };
         Some(line)

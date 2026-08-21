@@ -5,7 +5,6 @@
 //! interaction. Protocol reasoning choices come from `devo_protocol`
 //! through `Model` instead of a TUI-local reasoning enum.
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -68,8 +67,6 @@ mod subagent_live_list;
 
 mod permission_presets;
 
-mod resume_browser;
-
 mod sandbox_profiles;
 
 mod text_stream;
@@ -88,7 +85,6 @@ mod worker_events;
 
 use self::permission_presets::permission_preset_items;
 use self::permission_presets::permission_preset_label;
-use self::resume_browser::ResumeBrowserState;
 use self::session_header::SessionHeaderParams;
 use self::subagent_monitor::SubagentMonitorState;
 
@@ -269,8 +265,6 @@ pub(crate) struct ChatWidget {
     acp_usage: Option<(u64, u64, Option<AcpCost>)>,
     onboarding: Option<OnboardingWidget>,
     exit_after_onboarding: bool,
-    resume_browser: Option<ResumeBrowserState>,
-    resume_browser_loading: bool,
     resuming_session: bool,
     subagent_monitor: SubagentMonitorState,
     theme_set: ThemeSet,
@@ -278,7 +272,6 @@ pub(crate) struct ChatWidget {
     /// Monotonic epoch used to coalesce rapid theme-driven transcript reloads.
     theme_reload_epoch: u64,
     collapse_reasoning: bool,
-    resume_browser_last_height: Cell<u16>,
     turn_count: usize,
     total_input_tokens: usize,
     total_output_tokens: usize,
@@ -548,15 +541,12 @@ impl ChatWidget {
             acp_usage: None,
             onboarding: None,
             exit_after_onboarding,
-            resume_browser: None,
-            resume_browser_loading: false,
             resuming_session: false,
             subagent_monitor: SubagentMonitorState::default(),
             theme_set,
             active_theme_name,
             theme_reload_epoch: 0,
             collapse_reasoning: initial_collapse_reasoning,
-            resume_browser_last_height: Cell::new(0),
             turn_count: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,

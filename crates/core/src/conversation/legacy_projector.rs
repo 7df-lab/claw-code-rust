@@ -429,6 +429,7 @@ impl LegacyProjector {
             git_info,
             preview: record.first_user_message.clone().unwrap_or_default(),
             last_activity_at: record.last_activity_at.unwrap_or(record.updated_at),
+            transcript_size_bytes: None,
             usage: SessionUsage {
                 total: legacy_totals.clone(),
                 by_purpose: Vec::new(),
@@ -850,6 +851,13 @@ pub fn canonical_turn_from_record(record: &TurnRecord) -> Result<Turn, LegacyPro
                 .as_deref()
                 .and_then(|selection| selection.parse().ok()),
         },
+        collaboration_mode: Some(
+            record
+                .turn_context
+                .as_ref()
+                .map(|context| context.collaboration_mode)
+                .unwrap_or_default(),
+        ),
         started_at: record.started_at,
         completed_at: record.completed_at,
         error,

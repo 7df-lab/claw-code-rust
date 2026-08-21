@@ -99,6 +99,12 @@ In raw mode, the application receives key events directly. This is required for 
 
 Because raw mode changes terminal behavior globally for the process, it must be restored reliably. A broken exit path can leave the user’s terminal in a bad state.
 
+#### Native text selection and Ctrl+C
+
+The TUI deliberately leaves mouse capture disabled, so text selection, scrollback, and copy-on-select remain owned by the terminal emulator. If the terminal is configured to copy on selection, dragging across text copies it immediately. When a selection is active, the terminal must also bind Ctrl+C to copy and consume the key before it reaches devo.
+
+When the terminal sends Ctrl+C to devo because there is no active selection, devo interrupts active work immediately. While idle, the first Ctrl+C shows a confirmation and a second press within two seconds exits. Terminals that do not provide copy-on-select or consume Ctrl+C for an active selection cannot be made to do so by the TUI because terminal-native selected text is not exposed to applications.
+
 #### Alternate screen
 
 The alternate screen is a separate terminal screen buffer. Full-screen terminal applications usually draw into the alternate screen so the user’s shell scrollback is restored when the app exits.

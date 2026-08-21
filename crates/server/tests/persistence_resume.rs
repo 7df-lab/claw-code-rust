@@ -2759,6 +2759,103 @@ async fn turn_start_persists_session_context_before_turn_completes() -> Result<(
 }
 
 #[tokio::test]
+async fn metadata_update_renames_cold_session_by_id_without_resume() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let runtime = build_runtime(data_root.path())?;
+    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
+
+    let start_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 1,
+                "method": "session/start",
+                "params": {
+                    "cwd": data_root.path(),
+                    "ephemeral": false,
+                    "title": "Cold title",
+                    "model": "test-model"
+                }
+            }),
+        )
+        .await
+        .context("session/start response")?;
+    let session_id = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_server::SessionStartResult>,
+    >(start_response)?
+    .result
+    .session
+    .session_id;
+    let turn_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 2,
+                "method": "turn/start",
+                "params": {
+                    "session_id": session_id,
+                    "input": [{ "type": "text", "text": "persist the cold session" }],
+                    "model": null,
+                    "sandbox": null,
+                    "approval_policy": null,
+                    "cwd": null
+                }
+            }),
+        )
+        .await
+        .context("turn/start response")?;
+    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+        serde_json::from_value(turn_response)?;
+    wait_for_turn_completed(&mut notifications_rx).await?;
+    drop(runtime);
+
+    let rebuilt_runtime = build_runtime(data_root.path())?;
+    rebuilt_runtime.refresh_session_index()?;
+    let (rebuilt_connection_id, _) = initialize_connection(&rebuilt_runtime).await?;
+    let rename_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 3,
+                "method": "session/metadata/update",
+                "params": {
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "title": "Renamed while cold"
+                }
+            }),
+        )
+        .await
+        .context("cold session metadata update")?;
+    let renamed = serde_json::from_value::<
+        devo_server::SuccessResponse<
+            devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
+        >,
+    >(rename_response)?
+    .result;
+    assert_eq!(renamed.session.title.as_deref(), Some("Renamed while cold"));
+
+    let list_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 4,
+                "method": "session/list",
+                "params": {}
+            }),
+        )
+        .await
+        .context("session/list after cold rename")?;
+    let sessions = decode_native_session_list_response(list_response)?;
+    let listed = sessions
+        .iter()
+        .find(|session| session.id.as_str() == session_id.to_string())
+        .expect("renamed cold session remains listed");
+    assert_eq!(listed.title.as_deref(), Some("Renamed while cold"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn lazy_resume_loads_parent_session_from_rollout_on_map_miss() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
@@ -2808,6 +2905,47 @@ async fn lazy_resume_loads_parent_session_from_rollout_on_map_miss() -> Result<(
     let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
         serde_json::from_value(turn_start_response)?;
     wait_for_turn_completed(&mut notifications_rx).await?;
+
+    let db = devo_server::db::Database::open(data_root.path().join("test_persistence.db"))?;
+    let rollout_path = db
+        .get_session_index(&session_id)?
+        .expect("indexed session")
+        .rollout_path
+        .expect("rollout path");
+    let expected_transcript_size = std::fs::metadata(&rollout_path)?.len();
+    let list_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 20,
+                "method": "session/list",
+                "params": {}
+            }),
+        )
+        .await
+        .context("session/list response")?;
+    let sessions = decode_native_session_list_response(list_response)?;
+    let listed = sessions
+        .iter()
+        .find(|session| session.id.as_str() == session_id.to_string())
+        .expect("listed persisted session");
+    assert_eq!(listed.transcript_size_bytes, Some(expected_transcript_size));
+
+    let turns_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 21,
+                "method": "session/turns/list",
+                "params": { "sessionId": session_id }
+            }),
+        )
+        .await
+        .context("session/turns/list response")?;
+    assert_eq!(
+        turns_response["result"]["data"][0]["collaborationMode"],
+        "build"
+    );
 
     let rebuilt_runtime = build_runtime(data_root.path())?;
     rebuilt_runtime.refresh_session_index()?;
@@ -3105,6 +3243,24 @@ async fn lazy_resume_fails_when_rollout_file_is_missing() -> Result<()> {
 
     let rebuilt_runtime = build_runtime(data_root.path())?;
     let (rebuilt_connection_id, _) = initialize_connection(&rebuilt_runtime).await?;
+    let list_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 30,
+                "method": "session/list",
+                "params": {}
+            }),
+        )
+        .await
+        .context("session/list response")?;
+    let sessions = decode_native_session_list_response(list_response)?;
+    let listed = sessions
+        .iter()
+        .find(|session| session.id.as_str() == session_id.to_string())
+        .expect("missing-rollout session remains listed");
+    assert_eq!(listed.transcript_size_bytes, None);
+
     let resume_response = rebuilt_runtime
         .handle_incoming(
             rebuilt_connection_id,

@@ -72,6 +72,11 @@ pub struct Session {
     // ── Derived caches (server-maintained, client read-only) ──
     pub preview: String,
     pub last_activity_at: DateTime<Utc>,
+    /// Current on-disk size of the durable JSONL transcript. This is a
+    /// list-view cache: servers may omit it from non-list responses or when
+    /// the session has no readable rollout file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_size_bytes: Option<u64>,
     /// Redundant aggregate of turn usages for list views; the ledger wins on
     /// any disagreement.
     pub usage: SessionUsage,

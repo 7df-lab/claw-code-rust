@@ -466,11 +466,9 @@ fn resume_command_opens_loading_browser_immediately() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_app_event(AppEvent::Command(AppCommand::RunUserShellCommand {
-        command: "session list".to_string(),
-    }));
+    widget.handle_app_event(AppEvent::Command(AppCommand::list_sessions()));
 
-    assert!(widget.is_resume_browser_open());
+    assert!(widget.is_resume_picker_open());
 
     let rows = rendered_rows(&widget, 80, 12);
     assert!(
@@ -480,32 +478,30 @@ fn resume_command_opens_loading_browser_immediately() {
 }
 
 #[test]
-fn resume_loading_browser_closes_with_esc_or_q() {
+fn resume_loading_picker_esc_closes_while_loading() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
         ..Model::default()
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
-    widget.handle_app_event(AppEvent::Command(AppCommand::RunUserShellCommand {
-        command: "session list".to_string(),
-    }));
-    assert!(widget.is_resume_browser_open());
+    widget.handle_app_event(AppEvent::Command(AppCommand::list_sessions()));
+    assert!(widget.is_resume_picker_open());
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!widget.is_resume_browser_open());
+    assert!(!widget.is_resume_picker_open());
 
-    widget.handle_app_event(AppEvent::Command(AppCommand::RunUserShellCommand {
-        command: "session list".to_string(),
-    }));
-    assert!(widget.is_resume_browser_open());
+    widget.handle_app_event(AppEvent::Command(AppCommand::list_sessions()));
+    assert!(widget.is_resume_picker_open());
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
-    assert!(!widget.is_resume_browser_open());
+    assert!(widget.is_resume_picker_open());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!widget.is_resume_picker_open());
 }
 
 #[test]
-fn resume_browser_clips_sessions_to_viewport_height() {
+fn resume_picker_clips_rows_to_available_bottom_area() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
@@ -516,32 +512,27 @@ fn resume_browser_clips_sessions_to_viewport_height() {
         .map(|index| crate::events::SessionListEntry {
             session_id: SessionId::new(),
             title: format!("Session {index}"),
-            updated_at: format!("2026-05-{index:02} 10:00"),
+            preview: String::new(),
+            cwd: PathBuf::from("."),
+            branch: Some("main".to_string()),
+            last_activity_at: chrono::Utc::now(),
+            transcript_size_bytes: Some(10_300),
             is_active: index == 0,
         })
         .collect();
-    widget.open_resume_browser_for_test(sessions);
+    widget.open_resume_picker_for_test(sessions);
 
-    let rows = rendered_rows(&widget, 80, 10);
-    let blob = rows.join("\n");
+    let blob = rendered_rows(&widget, 80, 10).join("\n");
+    assert!(blob.contains("Resume session (1 of 12)"));
     assert!(blob.contains("Session 0"));
-    assert!(blob.contains("Session 1"));
     assert!(
-        !blob.contains("Session 2"),
-        "rows should be clipped to viewport:\n{blob}"
-    );
-    assert!(
-        !blob.contains("Session 3"),
-        "rows should be clipped to viewport:\n{blob}"
-    );
-    assert!(
-        blob.contains("↓ more"),
-        "expected lower overflow indicator:\n{blob}"
+        !blob.contains("Session 1"),
+        "rows outside the bottom area should be clipped:\n{blob}"
     );
 }
 
 #[test]
-fn resume_browser_list_closes_with_esc_or_q() {
+fn resume_browser_esc_clears_search_before_closing() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
@@ -551,19 +542,27 @@ fn resume_browser_list_closes_with_esc_or_q() {
     let sessions = vec![crate::events::SessionListEntry {
         session_id: SessionId::new(),
         title: "Session".to_string(),
-        updated_at: "2026-05-18 10:00".to_string(),
+        preview: String::new(),
+        cwd: PathBuf::from("."),
+        branch: Some("main".to_string()),
+        last_activity_at: chrono::Utc::now(),
+        transcript_size_bytes: Some(10_300),
         is_active: true,
     }];
-    widget.open_resume_browser_for_test(sessions.clone());
-    assert!(widget.is_resume_browser_open());
+    widget.open_resume_picker_for_test(sessions.clone());
+    assert!(widget.is_resume_picker_open());
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!widget.is_resume_browser_open());
+    assert!(!widget.is_resume_picker_open());
 
-    widget.open_resume_browser_for_test(sessions);
-    assert!(widget.is_resume_browser_open());
+    widget.open_resume_picker_for_test(sessions);
+    assert!(widget.is_resume_picker_open());
     widget.handle_key_event(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
-    assert!(!widget.is_resume_browser_open());
+    assert!(widget.is_resume_picker_open());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(widget.is_resume_picker_open());
+    widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!widget.is_resume_picker_open());
 }
 
 #[test]
@@ -578,17 +577,21 @@ fn resume_browser_keeps_selection_visible_when_navigating_down() {
         .map(|index| crate::events::SessionListEntry {
             session_id: SessionId::new(),
             title: format!("Session {index}"),
-            updated_at: format!("2026-05-{index:02} 10:00"),
+            preview: String::new(),
+            cwd: PathBuf::from("."),
+            branch: Some("main".to_string()),
+            last_activity_at: chrono::Utc::now(),
+            transcript_size_bytes: Some(10_300),
             is_active: index == 0,
         })
         .collect();
-    widget.open_resume_browser_for_test(sessions);
+    widget.open_resume_picker_for_test(sessions);
 
     for _ in 0..11 {
         widget.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
 
-    assert_eq!(widget.resume_browser_selection_for_test(), Some(11));
+    assert_eq!(widget.resume_picker_selection_for_test(), Some(11));
 
     let rows = rendered_rows(&widget, 80, 10);
     let blob = rows.join("\n");
@@ -599,10 +602,6 @@ fn resume_browser_keeps_selection_visible_when_navigating_down() {
     assert!(
         !blob.contains("Session 0"),
         "viewport should have scrolled away from the head:\n{blob}"
-    );
-    assert!(
-        blob.contains("↑ more"),
-        "expected upper overflow indicator after scrolling:\n{blob}"
     );
 }
 
@@ -618,12 +617,16 @@ fn resume_browser_enter_resumes_selected_scrolled_session() {
         .map(|index| crate::events::SessionListEntry {
             session_id: SessionId::new(),
             title: format!("Session {index}"),
-            updated_at: format!("2026-05-{index:02} 10:00"),
+            preview: String::new(),
+            cwd: PathBuf::from("."),
+            branch: Some("main".to_string()),
+            last_activity_at: chrono::Utc::now(),
+            transcript_size_bytes: Some(10_300),
             is_active: index == 0,
         })
         .collect();
     let expected = sessions[11].session_id;
-    widget.open_resume_browser_for_test(sessions);
+    widget.open_resume_picker_for_test(sessions);
 
     for _ in 0..11 {
         widget.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -648,10 +651,14 @@ fn resume_browser_enter_blocks_prompt_submission_until_switch_completes() {
     };
     let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
     let target_session_id = SessionId::new();
-    widget.open_resume_browser_for_test(vec![crate::events::SessionListEntry {
+    widget.open_resume_picker_for_test(vec![crate::events::SessionListEntry {
         session_id: target_session_id,
         title: "Session".to_string(),
-        updated_at: "2026-05-18 10:00".to_string(),
+        preview: String::new(),
+        cwd: PathBuf::from("."),
+        branch: Some("main".to_string()),
+        last_activity_at: chrono::Utc::now(),
+        transcript_size_bytes: Some(10_300),
         is_active: false,
     }]);
 
@@ -693,10 +700,14 @@ fn session_switched_clears_resume_blocking_state() {
     };
     let cwd = PathBuf::from(".");
     let (mut widget, mut app_event_rx) = widget_with_model(model, cwd.clone());
-    widget.open_resume_browser_for_test(vec![crate::events::SessionListEntry {
+    widget.open_resume_picker_for_test(vec![crate::events::SessionListEntry {
         session_id: SessionId::new(),
         title: "Session".to_string(),
-        updated_at: "2026-05-18 10:00".to_string(),
+        preview: String::new(),
+        cwd: PathBuf::from("."),
+        branch: Some("main".to_string()),
+        last_activity_at: chrono::Utc::now(),
+        transcript_size_bytes: Some(10_300),
         is_active: false,
     }]);
     widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -751,30 +762,34 @@ fn resume_browser_supports_page_and_home_end_navigation() {
         .map(|index| crate::events::SessionListEntry {
             session_id: SessionId::new(),
             title: format!("Session {index}"),
-            updated_at: format!("2026-05-{index:02} 10:00"),
+            preview: String::new(),
+            cwd: PathBuf::from("."),
+            branch: Some("main".to_string()),
+            last_activity_at: chrono::Utc::now(),
+            transcript_size_bytes: Some(10_300),
             is_active: index == 0,
         })
         .collect();
-    widget.open_resume_browser_for_test(sessions);
+    widget.open_resume_picker_for_test(sessions);
     let _ = rendered_rows(&widget, 80, 10);
 
     widget.handle_key_event(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-    assert_eq!(widget.resume_browser_selection_for_test(), Some(3));
+    assert_eq!(widget.resume_picker_selection_for_test(), Some(5));
 
     widget.handle_key_event(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert_eq!(widget.resume_browser_selection_for_test(), Some(11));
+    assert_eq!(widget.resume_picker_selection_for_test(), Some(11));
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
-    assert_eq!(widget.resume_browser_selection_for_test(), Some(0));
+    assert_eq!(widget.resume_picker_selection_for_test(), Some(0));
 
     let blob = rendered_rows(&widget, 80, 10).join("\n");
     assert!(
-        blob.contains("pgup/pgdn page"),
-        "expected paging hint text in resume browser:\n{blob}"
+        blob.contains("Space preview"),
+        "expected preview hint text in resume picker:\n{blob}"
     );
     assert!(
-        blob.contains("home/end jump"),
-        "expected home/end hint text in resume browser:\n{blob}"
+        blob.contains("Ctrl+R rename"),
+        "expected rename hint text in resume picker:\n{blob}"
     );
 }
 
@@ -790,20 +805,24 @@ fn resume_browser_up_down_do_not_wrap_around() {
         .map(|index| crate::events::SessionListEntry {
             session_id: SessionId::new(),
             title: format!("Session {index}"),
-            updated_at: format!("2026-05-{index:02} 10:00"),
+            preview: String::new(),
+            cwd: PathBuf::from("."),
+            branch: Some("main".to_string()),
+            last_activity_at: chrono::Utc::now(),
+            transcript_size_bytes: Some(10_300),
             is_active: index == 0,
         })
         .collect();
-    widget.open_resume_browser_for_test(sessions);
+    widget.open_resume_picker_for_test(sessions);
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    assert_eq!(widget.resume_browser_selection_for_test(), Some(0));
+    assert_eq!(widget.resume_picker_selection_for_test(), Some(0));
 
     widget.handle_key_event(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert_eq!(widget.resume_browser_selection_for_test(), Some(3));
+    assert_eq!(widget.resume_picker_selection_for_test(), Some(3));
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert_eq!(widget.resume_browser_selection_for_test(), Some(3));
+    assert_eq!(widget.resume_picker_selection_for_test(), Some(3));
 }
 
 #[test]
@@ -818,22 +837,22 @@ fn resume_browser_shows_position_and_scroll_progress() {
         .map(|index| crate::events::SessionListEntry {
             session_id: SessionId::new(),
             title: format!("Session {index}"),
-            updated_at: format!("2026-05-{index:02} 10:00"),
+            preview: String::new(),
+            cwd: PathBuf::from("."),
+            branch: Some("main".to_string()),
+            last_activity_at: chrono::Utc::now(),
+            transcript_size_bytes: Some(10_300),
             is_active: index == 0,
         })
         .collect();
-    widget.open_resume_browser_for_test(sessions);
+    widget.open_resume_picker_for_test(sessions);
     let _ = rendered_rows(&widget, 80, 10);
     widget.handle_key_event(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
 
     let blob = rendered_rows(&widget, 80, 10).join("\n");
     assert!(
-        blob.contains("12 / 12"),
+        blob.contains("Resume session (12 of 12)"),
         "expected position label in resume header:\n{blob}"
-    );
-    assert!(
-        blob.contains("100%"),
-        "expected scroll percent in resume header:\n{blob}"
     );
 }
 
@@ -845,11 +864,15 @@ fn resume_browser_title_uses_ascii_ellipsis_when_too_long() {
         ..Model::default()
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
-    widget.open_resume_browser_for_test(vec![crate::events::SessionListEntry {
+    widget.open_resume_picker_for_test(vec![crate::events::SessionListEntry {
         session_id: SessionId::new(),
         title: "This is a very long session title that should be truncated in resume browser"
             .to_string(),
-        updated_at: "2026-05-17 10:00".to_string(),
+        preview: String::new(),
+        cwd: PathBuf::from("."),
+        branch: Some("main".to_string()),
+        last_activity_at: chrono::Utc::now(),
+        transcript_size_bytes: Some(10_300),
         is_active: true,
     }]);
 
@@ -868,10 +891,14 @@ fn resume_browser_dash_only_title_is_truncated_with_ascii_ellipsis() {
         ..Model::default()
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
-    widget.open_resume_browser_for_test(vec![crate::events::SessionListEntry {
+    widget.open_resume_picker_for_test(vec![crate::events::SessionListEntry {
         session_id: SessionId::new(),
         title: "------------------------------------------------------------".to_string(),
-        updated_at: "2026-05-18 10:00".to_string(),
+        preview: String::new(),
+        cwd: PathBuf::from("."),
+        branch: Some("main".to_string()),
+        last_activity_at: chrono::Utc::now(),
+        transcript_size_bytes: Some(10_300),
         is_active: true,
     }]);
 
@@ -890,10 +917,14 @@ fn resume_browser_cjk_title_truncates_by_display_width() {
         ..Model::default()
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
-    widget.open_resume_browser_for_test(vec![crate::events::SessionListEntry {
+    widget.open_resume_picker_for_test(vec![crate::events::SessionListEntry {
         session_id: SessionId::new(),
         title: "这是一个非常非常长的中文会话标题用于测试截断显示是否正确".to_string(),
-        updated_at: "2026-05-18 10:00".to_string(),
+        preview: String::new(),
+        cwd: PathBuf::from("."),
+        branch: Some("main".to_string()),
+        last_activity_at: chrono::Utc::now(),
+        transcript_size_bytes: Some(10_300),
         is_active: true,
     }]);
 
@@ -909,7 +940,7 @@ fn resume_browser_cjk_title_truncates_by_display_width() {
 }
 
 #[test]
-fn resume_browser_cjk_and_ascii_titles_keep_session_id_column_aligned() {
+fn resume_picker_renders_cjk_and_ascii_titles_without_session_ids() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
@@ -918,56 +949,34 @@ fn resume_browser_cjk_and_ascii_titles_keep_session_id_column_aligned() {
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
     let cjk_session_id = SessionId::new();
     let ascii_session_id = SessionId::new();
-    widget.open_resume_browser_for_test(vec![
+    widget.open_resume_picker_for_test(vec![
         crate::events::SessionListEntry {
             session_id: cjk_session_id,
             title: "中文标题用于对齐测试".to_string(),
-            updated_at: "2026-05-18 10:00".to_string(),
+            preview: String::new(),
+            cwd: PathBuf::from("."),
+            branch: Some("main".to_string()),
+            last_activity_at: chrono::Utc::now(),
+            transcript_size_bytes: Some(10_300),
             is_active: true,
         },
         crate::events::SessionListEntry {
             session_id: ascii_session_id,
             title: "ASCII title".to_string(),
-            updated_at: "2026-05-18 10:00".to_string(),
+            preview: String::new(),
+            cwd: PathBuf::from("."),
+            branch: Some("main".to_string()),
+            last_activity_at: chrono::Utc::now(),
+            transcript_size_bytes: Some(10_300),
             is_active: false,
         },
     ]);
 
-    let area = ratatui::layout::Rect::new(0, 0, 90, 10);
-    let mut buf = ratatui::buffer::Buffer::empty(area);
-    widget.render(area, &mut buf);
-
-    let cjk_id_text = cjk_session_id.to_string();
-    let ascii_id_text = ascii_session_id.to_string();
-    let mut cjk_pos = None;
-    let mut ascii_pos = None;
-    for row in 0..area.height {
-        let row_text = (0..area.width)
-            .map(|col| buf[(col, row)].symbol())
-            .collect::<String>();
-        if row_text.contains(&cjk_id_text) {
-            cjk_pos = (0..area.width).find(|col| {
-                let tail = (*col..area.width)
-                    .map(|scan_col| buf[(scan_col, row)].symbol())
-                    .collect::<String>();
-                tail.starts_with(&cjk_id_text)
-            });
-        }
-        if row_text.contains(&ascii_id_text) {
-            ascii_pos = (0..area.width).find(|col| {
-                let tail = (*col..area.width)
-                    .map(|scan_col| buf[(scan_col, row)].symbol())
-                    .collect::<String>();
-                tail.starts_with(&ascii_id_text)
-            });
-        }
-    }
-    let cjk_col = cjk_pos.expect("cjk session id column");
-    let ascii_col = ascii_pos.expect("ascii session id column");
-    assert_eq!(
-        cjk_col, ascii_col,
-        "expected Session ID column alignment across CJK and ASCII rows"
-    );
+    let blob = rendered_rows(&widget, 90, 20).join("\n");
+    assert!(blob.contains("中 文 标 题"), "{blob}");
+    assert!(blob.contains("ASCII title"), "{blob}");
+    assert!(!blob.contains(&cjk_session_id.to_string()), "{blob}");
+    assert!(!blob.contains(&ascii_session_id.to_string()), "{blob}");
 }
 
 #[test]
@@ -2387,7 +2396,7 @@ fn delete_slash_command_esc_cancels_without_deleting() {
 }
 
 #[test]
-fn resume_browser_delete_requires_confirmation() {
+fn resume_picker_ctrl_d_requires_confirmation() {
     let model = Model {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
@@ -2396,67 +2405,47 @@ fn resume_browser_delete_requires_confirmation() {
     let (mut widget, mut app_event_rx) = widget_with_model(model, PathBuf::from("."));
     let target = SessionId::new();
     let other = SessionId::new();
-    widget.open_resume_browser_for_test(vec![
+    widget.open_resume_picker_for_test(vec![
         crate::events::SessionListEntry {
             session_id: target,
             title: "Keep me".to_string(),
-            updated_at: "2026-05-18 10:00".to_string(),
+            preview: String::new(),
+            cwd: PathBuf::from("."),
+            branch: Some("main".to_string()),
+            last_activity_at: chrono::Utc::now(),
+            transcript_size_bytes: Some(10_300),
             is_active: false,
         },
         crate::events::SessionListEntry {
             session_id: other,
             title: "Other".to_string(),
-            updated_at: "2026-05-18 11:00".to_string(),
+            preview: String::new(),
+            cwd: PathBuf::from("."),
+            branch: Some("main".to_string()),
+            last_activity_at: chrono::Utc::now(),
+            transcript_size_bytes: Some(10_300),
             is_active: true,
         },
     ]);
-    // Active session is selected by default; move to the non-active row.
     widget.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    assert_eq!(widget.resume_browser_selection_for_test(), Some(0));
+    assert_eq!(widget.resume_picker_selection_for_test(), Some(0));
 
-    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
-    assert_eq!(
-        widget.resume_browser_pending_delete_for_test(),
-        Some(target)
-    );
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert_eq!(widget.resume_picker_pending_delete_for_test(), Some(target));
     assert!(app_event_rx.try_recv().is_err());
-
     let rows = rendered_rows(&widget, 100, 16).join("\n");
-    assert!(
-        rows.contains("Delete \"Keep me\"?"),
-        "expected pending delete footer:\n{rows}"
-    );
-    assert!(
-        rows.contains("[Cancel]") && rows.contains("Delete"),
-        "expected horizontal Cancel/Delete chips:\n{rows}"
-    );
-    assert!(
-        rows.lines()
-            .any(|line| line.contains("[Cancel]") && line.starts_with("  [")),
-        "expected left-padded chip row:\n{rows}"
-    );
-    assert!(
-        rows.lines()
-            .any(|line| line.contains("Resume Session") && line.starts_with("  Resume")),
-        "expected left-padded Resume Session title:\n{rows}"
-    );
-    assert!(
-        !rows.contains("Devo Sessions"),
-        "block title Devo Sessions should be removed:\n{rows}"
-    );
-    assert!(rows.contains("choose"), "expected choose hint:\n{rows}");
+    assert!(rows.contains("[Cancel] [Delete]"), "{rows}");
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(widget.resume_browser_pending_delete_for_test(), None);
-    assert!(widget.is_resume_browser_open());
+    assert_eq!(widget.resume_picker_pending_delete_for_test(), None);
+    assert!(widget.is_resume_picker_open());
 
-    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
-    // Default Cancel: Enter dismisses confirm without deleting.
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
     widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(widget.resume_browser_pending_delete_for_test(), None);
+    assert_eq!(widget.resume_picker_pending_delete_for_test(), None);
     assert!(app_event_rx.try_recv().is_err());
 
-    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    widget.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
     widget.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(
@@ -2465,7 +2454,7 @@ fn resume_browser_delete_requires_confirmation() {
             session_id: Some(target)
         })
     );
-    assert!(widget.is_resume_browser_open());
+    assert!(widget.is_resume_picker_open());
 }
 
 #[test]
@@ -5866,6 +5855,69 @@ fn paired_failed_turn_events_finalize_ui_once_in_order() {
 }
 
 #[test]
+fn duplicate_turn_failed_events_render_one_plan_footer() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    widget.handle_app_event(AppEvent::ClearTranscript);
+    widget.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    paste_and_submit(&mut widget, "plan this");
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnStarted {
+        model: "test-model".to_string(),
+        model_binding_id: None,
+        reasoning_effort_selection: None,
+        reasoning_effort: None,
+        turn_id: TurnId::new(),
+    });
+
+    let provider_error = "provider rejected the request: quota exceeded";
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnFailed {
+        message: provider_error.to_string(),
+        hint: None,
+        turn_count: 0,
+        total_input_tokens: 10,
+        total_output_tokens: 2,
+        total_tokens: 12,
+        total_cache_read_tokens: 1,
+        prompt_token_estimate: 10,
+        last_query_input_tokens: 10,
+    });
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnFailed {
+        message: "turn failed with status Failed".to_string(),
+        hint: None,
+        turn_count: 0,
+        total_input_tokens: 20,
+        total_output_tokens: 4,
+        total_tokens: 24,
+        total_cache_read_tokens: 2,
+        prompt_token_estimate: 11,
+        last_query_input_tokens: 11,
+    });
+
+    assert_eq!(
+        widget.status_message_for_test(),
+        "Query failed; see error above"
+    );
+    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert_eq!(
+        history.matches(provider_error).count(),
+        1,
+        "history:\n{history}"
+    );
+    assert!(
+        !history.contains("turn failed with status Failed"),
+        "duplicate failure should not add a fallback error:\n{history}"
+    );
+    assert_eq!(history.matches("▣ PLAN · Test Model · failed").count(), 1);
+    assert!(
+        !history.contains("▣ BUILD · Test Model · failed"),
+        "duplicate failure should not add a Build footer after resetting the mode:\n{history}"
+    );
+}
+#[test]
 fn turn_failed_renders_recovery_hint() {
     let mut widget = widget_with_live_explored_cell();
     let provider_error = "model provider error: provider timeout: stream idle timeout";
@@ -7122,6 +7174,7 @@ fn interrupt_request_switches_working_status_to_stopping_immediately() {
     widget.handle_key_event(press_key(KeyCode::Esc));
     assert_eq!(app_event_rx.try_recv(), Ok(AppEvent::Interrupt));
     assert!(widget.request_interrupt());
+    assert!(!widget.request_interrupt());
     let rows = rendered_rows(&widget, 120, 20).join("\n");
     assert!(rows.contains("Stopping…"), "rows:\n{rows}");
     assert!(!rows.contains("to interrupt"), "rows:\n{rows}");

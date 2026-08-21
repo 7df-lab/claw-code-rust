@@ -11,6 +11,8 @@ use devo_protocol::SessionHistoryItemKind;
 use devo_protocol::SessionHistoryMetadata;
 use devo_protocol::TypedItemEventPayload;
 use devo_protocol::native::item::Item;
+use devo_protocol::native::turn::Turn;
+use devo_protocol::native::turn::TurnStatus;
 
 /// Converts one canonical history item (from `session/items/list`) into the
 /// legacy display model used for transcript restore (L2-DES-APP-008 Phase
@@ -137,6 +139,37 @@ pub(super) fn history_item_from_native_item(
         | Item::BackgroundTask { .. }
         | Item::GoalProgress { .. }
         | Item::Warning { .. } => return None,
+    })
+}
+
+/// Reconstructs the end-of-turn display row that is stored as rollout-only
+/// metadata and therefore is not returned by `session/items/list`.
+pub(super) fn history_item_from_native_turn(
+    turn: &Turn,
+    fallback_mode: devo_protocol::CollaborationMode,
+) -> Option<SessionHistoryItem> {
+    let body = match turn.status {
+        TurnStatus::InProgress => return None,
+        TurnStatus::Completed => String::new(),
+        TurnStatus::Interrupted => "interrupted".to_string(),
+        TurnStatus::Failed => "failed".to_string(),
+    };
+    let duration = turn.completed_at.and_then(|completed_at| {
+        let seconds = completed_at
+            .signed_duration_since(turn.started_at)
+            .num_seconds();
+        (seconds > 0).then_some(seconds as u64)
+    });
+    Some(SessionHistoryItem {
+        tool_call_id: None,
+        kind: SessionHistoryItemKind::TurnSummary,
+        title: turn.model.model.clone(),
+        body,
+        tool_io: None,
+        metadata: Some(SessionHistoryMetadata::TurnSummary {
+            collaboration_mode: turn.collaboration_mode.unwrap_or(fallback_mode),
+        }),
+        duration_ms: duration,
     })
 }
 
@@ -308,5 +341,42 @@ mod tests {
         assert_eq!(payload.tool_call_id, "call-1");
         assert_eq!(payload.tool_name, "exec_command");
         assert_eq!(payload.parameters, serde_json::json!({ "cmd": "ls" }));
+    }
+
+    #[test]
+    fn native_turn_restores_plan_summary_row() {
+        let started_at = chrono::Utc::now();
+        let turn = Turn {
+            id: NativeTurnId::from_legacy_uuid(devo_protocol::TurnId::new().into()),
+            session_id: NativeSessionId::from_legacy_uuid(devo_protocol::SessionId::new().into()),
+            sequence: 1,
+            kind: devo_protocol::native::turn::TurnKind::Regular,
+            status: TurnStatus::Completed,
+            model: devo_protocol::native::model::ModelBinding {
+                provider: "test".to_string(),
+                model: "test-model".to_string(),
+                reasoning_effort: None,
+            },
+            collaboration_mode: Some(devo_protocol::CollaborationMode::Plan),
+            started_at,
+            completed_at: Some(started_at + chrono::Duration::seconds(65)),
+            error: None,
+            usage: None,
+        };
+
+        assert_eq!(
+            history_item_from_native_turn(&turn, devo_protocol::CollaborationMode::Build),
+            Some(SessionHistoryItem {
+                tool_call_id: None,
+                kind: SessionHistoryItemKind::TurnSummary,
+                title: "test-model".to_string(),
+                body: String::new(),
+                tool_io: None,
+                metadata: Some(SessionHistoryMetadata::TurnSummary {
+                    collaboration_mode: devo_protocol::CollaborationMode::Plan,
+                }),
+                duration_ms: Some(65),
+            })
+        );
     }
 }

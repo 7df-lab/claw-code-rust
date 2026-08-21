@@ -219,7 +219,9 @@ fn evaluate_access_with_roots(
 ) -> PolicyDecision {
     match access {
         ExtractedAccess::Path { mode, path } => {
-            let mut path = normalize_windows_drive_relative_path(path);
+            let path = normalize_windows_drive_relative_path(path);
+            #[cfg(windows)]
+            let mut path = path;
             let path_buf = Path::new(&path);
             let Some(cwd) = cwd.or_else(|| path_buf.is_absolute().then(|| Path::new("/"))) else {
                 return PolicyDecision::Ask;

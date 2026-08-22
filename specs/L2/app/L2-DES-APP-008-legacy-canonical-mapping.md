@@ -1,12 +1,12 @@
 ---
 artifact_id: L2-DES-APP-008-MAP
-revision: 1
+revision: 2
 status: Approved
 active_baseline: yes
 supersedes:
 superseded_by:
 owner: Assistant
-last_updated: 2026-08-11
+last_updated: 2026-08-22
 ---
 
 # L2-DES-APP-008-MAP — Legacy → Canonical Method Mapping (Phase A Appendix)
@@ -129,7 +129,7 @@ Under DD-7, a sub-agent is a task with `kind: "agent"` backed by a child session
 | Legacy method | Canonical counterpart | Disposition |
 |---|---|---|
 | `request_user_input/respond` | `userInput/request` (server request) + JSON-RPC response | ✅ removed 2026-08-11; canonical clients answer the reverse request through the pending JSON-RPC registry, and no first-party client emits the old response method |
-| `approval/respond` (notification) | `approval/command/request` + `approval/fileChange/request` + `approval/permission/request` + client response | ✅ server side served 2026-08-09 (DD-8 mixed-surface fan-out: canonical connections get canonical reverse requests with the `Item::Approval` waiting payload, ACP connections get `session/request_permission`; canonical `ApprovalDecision` answers translate into the internal decision/scope tuple); Native client bridge answers canonical requests with `ApprovalRespondParams`, while third-party ACP clients may answer the ACP request. TUI needs no change (approval UI rides the server item events) |
+| `approval/respond` (notification) | `approval/command/request` + `approval/fileChange/request` + `approval/permission/request` + client response | ✅ served; DD-8 mixed-surface fan-out sends Native controllers an `Item::Approval` reverse request before publishing its waiting item, while ACP controllers retain `session/request_permission`. The Native client registers the request before dispatching the typed item to the TUI, and answers with `ApprovalRespondParams`. |
 
 ## Search / Workspace / Edit
 

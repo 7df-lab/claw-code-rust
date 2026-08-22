@@ -26,10 +26,43 @@ use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
 use windows_sys::Win32::Foundation::SetHandleInformation;
+use windows_sys::Win32::System::IO::CancelIoEx;
+use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
+use windows_sys::Win32::System::JobObjects::JobObjectExtendedLimitInformation;
+use windows_sys::Win32::System::JobObjects::SetInformationJobObject;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::GetExitCodeProcess;
 use windows_sys::Win32::System::Threading::INFINITE;
+use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+const WAIT_OBJECT_0: u32 = 0;
+const WAIT_TIMEOUT: u32 = 0x0000_0102;
+
+fn create_kill_on_close_job() -> Option<HANDLE> {
+    unsafe {
+        let job = CreateJobObjectW(ptr::null_mut(), ptr::null());
+        if job == 0 {
+            return None;
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            ptr::from_mut(&mut limits).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            CloseHandle(job);
+            return None;
+        }
+        Some(job)
+    }
+}
 
 type PipeHandles = ((HANDLE, HANDLE), (HANDLE, HANDLE), (HANDLE, HANDLE));
 
@@ -47,7 +80,7 @@ fn wait_for_process(
     let Some(cancellation) = cancellation else {
         let timeout = timeout_ms.map(|ms| ms as u32).unwrap_or(INFINITE);
         let res = unsafe { WaitForSingleObject(process, timeout) };
-        return if res == 0x0000_0102 {
+        return if res == WAIT_TIMEOUT {
             WaitOutcome::TimedOut
         } else {
             WaitOutcome::Exited
@@ -70,10 +103,12 @@ fn wait_for_process(
             None => 50,
         };
         let res = unsafe { WaitForSingleObject(process, wait_ms) };
-        if res == 0x0000_0102 {
-            continue;
+        if res == WAIT_OBJECT_0 {
+            return WaitOutcome::Exited;
         }
-        return WaitOutcome::Exited;
+        // WAIT_TIMEOUT: poll cancellation again. WAIT_FAILED / other
+        // codes must not be treated as exit — that skips TerminateProcess
+        // and leaves the stdout reader blocked on a live pipe.
     }
 }
 
@@ -203,6 +238,21 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
             write_root_sids: &security.write_root_sids,
         },
     )?;
+    if cancellation
+        .as_ref()
+        .is_some_and(WindowsSandboxCancellationToken::is_cancelled)
+    {
+        unsafe {
+            CloseHandle(security.h_token);
+        }
+        log_failure(&command, "cancelled before spawn", logs_base_dir);
+        return Ok(CaptureResult {
+            exit_code: 1,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            timed_out: false,
+        });
+    }
     let (stdin_pair, stdout_pair, stderr_pair) = unsafe { setup_stdio_pipes()? };
     let ((in_r, in_w), (out_r, out_w), (err_r, err_w)) = (stdin_pair, stdout_pair, stderr_pair);
     let spawn_res = unsafe {
@@ -213,7 +263,7 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
             &env_map,
             logs_base_dir,
             Some((in_r, out_w, err_w)),
-            ConsoleMode::Inherit,
+            ConsoleMode::NoWindow,
             use_private_desktop,
         )
     };
@@ -234,6 +284,12 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
     };
     let pi = created.process_info;
     let _desktop = created;
+    let mut job = create_kill_on_close_job();
+    if let Some(job) = job {
+        unsafe {
+            let _ = AssignProcessToJobObject(job, pi.hProcess);
+        }
+    }
 
     unsafe {
         CloseHandle(in_r);
@@ -298,7 +354,25 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
         }
     } else {
         unsafe {
-            windows_sys::Win32::System::Threading::TerminateProcess(pi.hProcess, 1);
+            let _ = TerminateProcess(pi.hProcess, 1);
+        }
+        if let Some(job) = job.take() {
+            // Kill the process tree before joining pipe readers. Closing the
+            // job is what actually reaps children that still hold stdout.
+            unsafe { CloseHandle(job) };
+        }
+        unsafe {
+            let _ = WaitForSingleObject(pi.hProcess, 2_000);
+        }
+        // CancelIoEx is a no-op if ReadFile is not pending yet, so retry
+        // until the reader threads finish or a short deadline elapses.
+        let join_deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < join_deadline && (!t_out.is_finished() || !t_err.is_finished()) {
+            unsafe {
+                let _ = CancelIoEx(out_r, ptr::null_mut());
+                let _ = CancelIoEx(err_r, ptr::null_mut());
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -310,9 +384,16 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
             CloseHandle(pi.hProcess);
         }
         CloseHandle(security.h_token);
+        if let Some(job) = job {
+            CloseHandle(job);
+        }
     }
     let _ = t_out.join();
     let _ = t_err.join();
+    unsafe {
+        CloseHandle(out_r);
+        CloseHandle(err_r);
+    }
     let stdout = rx_out.recv().unwrap_or_default();
     let stderr = rx_err.recv().unwrap_or_default();
     let exit_code = if timed_out {

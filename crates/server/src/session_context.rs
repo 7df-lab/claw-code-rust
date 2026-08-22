@@ -320,14 +320,14 @@ impl SessionRuntimeContext {
                 .projects
                 .get(&devo_core::project_config_key(&cwd));
             let preset = match project.and_then(|project| project.permission_preset) {
-                Some(devo_protocol::PermissionPreset::AutoReview) => {
-                    devo_safety::PermissionPreset::AutoReview
+                Some(devo_protocol::PermissionPreset::Default) => {
+                    devo_safety::PermissionPreset::Default
                 }
                 Some(devo_protocol::PermissionPreset::FullAccess) => {
                     devo_safety::PermissionPreset::FullAccess
                 }
-                Some(devo_protocol::PermissionPreset::Default) | None => {
-                    devo_safety::PermissionPreset::Default
+                Some(devo_protocol::PermissionPreset::AutoReview) | None => {
+                    devo_safety::PermissionPreset::AutoReview
                 }
             };
             let sandbox_from_project = project.and_then(|project| project.sandbox_profile.clone());

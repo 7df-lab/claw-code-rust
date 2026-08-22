@@ -1,7 +1,7 @@
 /**
  * Onboarding Step 2: Environment Check.
  *
- * Verifies the bundled Devo runtime used by the private stdio ACP child process.
+ * Verifies the bundled Devo runtime used by the private stdio Native child process.
  */
 
 import { Button } from "@devo/ui/components/button"

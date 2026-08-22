@@ -64,12 +64,12 @@ pub struct TurnSteerParams {
 )]
 pub enum TurnSteerResult {
     Injected {
+        #[schemars(rename = "itemId")]
+        #[ts(rename = "itemId")]
         item_id: ItemId,
     },
     /// Turn ended before the injection boundary; input was queued instead.
-    DegradedToQueue {
-        entry: QueueEntry,
-    },
+    DegradedToQueue { entry: QueueEntry },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -181,27 +181,41 @@ pub struct SessionQueueSteerResult {
 )]
 pub enum TaskStartParams {
     Process {
+        #[schemars(rename = "sessionId")]
+        #[ts(rename = "sessionId")]
         session_id: SessionId,
         command: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<std::path::PathBuf>,
+        #[schemars(rename = "idempotencyKey")]
+        #[ts(rename = "idempotencyKey")]
         idempotency_key: String,
     },
     Agent {
+        #[schemars(rename = "sessionId")]
+        #[ts(rename = "sessionId")]
         session_id: SessionId,
         input: Vec<super::item::UserInput>,
         /// Context fork depth for the child session (e.g. `"all"`), matching
         /// the legacy spawn semantics.
+        #[schemars(rename = "forkTurns")]
+        #[ts(rename = "forkTurns")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fork_turns: Option<String>,
+        #[schemars(rename = "maxTurns")]
+        #[ts(rename = "maxTurns")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_turns: Option<u32>,
         /// Tool access policy for the child agent.
+        #[schemars(rename = "toolPolicy")]
+        #[ts(rename = "toolPolicy")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_policy: Option<crate::AgentToolPolicy>,
         /// Ephemeral agents are not persisted (transient Q&A flows).
         #[serde(default)]
         ephemeral: bool,
+        #[schemars(rename = "idempotencyKey")]
+        #[ts(rename = "idempotencyKey")]
         idempotency_key: String,
     },
 }

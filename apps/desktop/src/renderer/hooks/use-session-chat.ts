@@ -39,10 +39,10 @@ const PAGE_SIZE = PAGE_TURN_COUNT * MESSAGES_PER_TURN_ESTIMATE
 /**
  * Hook to load chat data for a session.
  *
- * - Reads messages/parts from Jotai atoms (populated by ACP events)
+ * - Reads messages/parts from Jotai atoms (populated by Native events)
  * - Does a one-time initial fetch to hydrate the store
  * - Uses structural sharing in `groupIntoTurns` to preserve React.memo()
- * - No polling — ACP events keep data up to date
+ * - No polling — Native events keep data up to date
  * - Subscribes to the per-session streaming version so only updates for
  *   THIS session trigger re-renders (not all sessions globally).
  */

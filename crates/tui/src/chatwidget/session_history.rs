@@ -95,7 +95,7 @@ impl ChatWidget {
         }
         for step in steps {
             let (prefix, style) = match step.status {
-                PlanStepStatus::Completed => ("✔ ", Style::default().green()),
+                PlanStepStatus::Completed => ("→ ", Style::default().green()),
                 PlanStepStatus::InProgress => ("→ ", Style::default().cyan()),
                 PlanStepStatus::Pending => ("□ ", Style::default().dim()),
                 PlanStepStatus::Cancelled => ("✗ ", Style::default().red()),

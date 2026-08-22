@@ -282,6 +282,7 @@ export const addPermissionAtom = atom(
 	) => {
 		const entry = get(sessionFamily(args.sessionId))
 		if (!entry) return
+		if (entry.permissions.some((permission) => permission.id === args.permission.id)) return
 		set(sessionFamily(args.sessionId), {
 			...entry,
 			permissions: [...entry.permissions, args.permission],
@@ -351,7 +352,7 @@ export const removeQuestionAtom = atom(
 /**
  * Bulk-set sessions (used during project load).
  * Merges new sessions into the store without overwriting
- * permissions/questions that arrived via ACP events before the fetch completed.
+ * permissions/questions that arrived via Native events before the fetch completed.
  *
  * Uses each session's own `directory` field from the API (falling back to
  * `args.directory`). This preserves sandbox (worktree) paths so the mapping

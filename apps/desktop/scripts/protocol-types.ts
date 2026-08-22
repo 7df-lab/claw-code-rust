@@ -12,7 +12,7 @@ const GENERATE_PROTOCOL_TYPES_ARGS = [
 	"-p",
 	"devo-protocol",
 	"--bin",
-	"generate-acp-ts",
+	"generate-native-ts",
 	"--",
 	GENERATED_DIR,
 ]

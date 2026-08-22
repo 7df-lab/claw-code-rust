@@ -40,14 +40,17 @@ use super::session::Session;
 pub enum SessionInterruptScope {
     Session {
         #[schemars(rename = "sessionId")]
+        #[ts(rename = "sessionId")]
         session_id: SessionId,
     },
     Task {
         #[schemars(rename = "itemId")]
+        #[ts(rename = "itemId")]
         item_id: ItemId,
     },
     Command {
         #[schemars(rename = "processId")]
+        #[ts(rename = "processId")]
         process_id: String,
     },
 }

@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test"
-import { createDevoClient, type DevoAcpTransport, type DevoAcpTransportEvent } from "./client"
-import type { AcpSessionConfigOption, AcpSessionNotification } from "./generated"
+import { createDevoClient, type DevoNativeTransport, type DevoNativeTransportEvent } from "./client"
+import type { SessionConfigOption } from "./native-client-support"
 import type {
 	ProviderValidateParams,
 	ProviderVendor,
 	ProviderVendorUpsertParams,
-} from "./generated/protocol"
+} from "./generated/native"
 
-class FakeTransport implements DevoAcpTransport {
+class FakeTransport implements DevoNativeTransport {
 	readonly requests: Array<{ method: string; params: unknown; directory?: string }> = []
-	private listeners: Array<(event: DevoAcpTransportEvent) => void> = []
+	private listeners: Array<(event: DevoNativeTransportEvent) => void> = []
 
 	constructor(
 		private readonly handler: (
@@ -26,7 +26,7 @@ class FakeTransport implements DevoAcpTransport {
 
 	async respond(): Promise<void> {}
 
-	subscribe(listener: (event: DevoAcpTransportEvent) => void): () => void {
+	subscribe(listener: (event: DevoNativeTransportEvent) => void): () => void {
 		this.listeners.push(listener)
 		return () => {
 			this.listeners = this.listeners.filter((item) => item !== listener)
@@ -37,11 +37,6 @@ class FakeTransport implements DevoAcpTransport {
 		return true
 	}
 
-	emitSessionUpdate(params: unknown): void {
-		for (const listener of this.listeners) {
-			listener({ type: "notification", method: "session/update", params })
-		}
-	}
 }
 
 const initializeResult = {
@@ -56,6 +51,7 @@ const modelPreferences = {
 		{ value: "test-openai", label: "Test OpenAI", description: "OpenAI: test-model" },
 		{ value: "alt-openai", label: "Alt OpenAI", description: "OpenAI: alt-model" },
 	],
+	availableEfforts: [],
 }
 
 const configOptions = [
@@ -70,7 +66,7 @@ const configOptions = [
 			{ value: "alt-openai", name: "Alt OpenAI", description: "OpenAI: alt-model" },
 		],
 	},
-] satisfies AcpSessionConfigOption[]
+] satisfies SessionConfigOption[]
 
 const providerVendor = {
 	name: "openai",
@@ -119,7 +115,7 @@ const providerUpsertParams = {
 	default_model_binding: "openai-gpt-4o",
 } satisfies ProviderVendorUpsertParams
 
-describe("ACP desktop SDK config option cache", () => {
+describe("Native desktop SDK config option cache", () => {
 	test("loads cold-start config options from model/preferences/read when no session cache exists", async () => {
 		const transport = new FakeTransport((method, params) => {
 			if (method === "initialize") return initializeResult
@@ -140,31 +136,6 @@ describe("ACP desktop SDK config option cache", () => {
 			"initialize",
 			"model/preferences/read",
 		])
-	})
-
-	test("keeps session model options when a live config update is empty", async () => {
-		const transport = new FakeTransport((method) => {
-			if (method === "initialize") return initializeResult
-			if (method === "session/new") return { sessionId: "s1", configOptions }
-			if (method === "model/preferences/read") {
-				throw new Error("model/preferences/read should not be called")
-			}
-			throw new Error(`unexpected request ${method}`)
-		})
-		const client = createDevoClient({ directory: "/repo", transport })
-
-		await client.session.create()
-		const before = await client.config.providers()
-		transport.emitSessionUpdate({
-			sessionId: "s1",
-			update: {
-				sessionUpdate: "config_option_update",
-				configOptions: [],
-			},
-		} satisfies AcpSessionNotification)
-		const after = await client.config.providers()
-
-		expect(after.data).toEqual(before.data)
 	})
 
 	test("persists cold-start model config options through the runtime API", async () => {
@@ -234,6 +205,7 @@ describe("ACP desktop SDK config option cache", () => {
 			availableModels: [
 				{ value: "openai-gpt-4o", label: "GPT-4o", description: "OpenAI: gpt-4o" },
 			],
+			availableEfforts: [],
 		}
 		const transport = new FakeTransport((method, params) => {
 			if (method === "initialize") return initializeResult

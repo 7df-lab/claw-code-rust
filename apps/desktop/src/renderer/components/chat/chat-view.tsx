@@ -80,7 +80,7 @@ import {
 import type { ChatTurn } from "../../hooks/use-session-chat"
 import { createLogger } from "../../lib/logger"
 import { computeTurnWorkTimeSplit, formatWorkDuration } from "../../lib/session-metrics"
-import type { Agent, FileAttachment, QuestionAnswer } from "../../lib/types"
+import type { Agent, FileAttachment, PermissionResponse, QuestionAnswer } from "../../lib/types"
 import { persistRuntimeModelConfigOption, persistRuntimeModelSelection } from "../../lib/model-config-options"
 import { getProjectClient } from "../../services/connection-manager"
 
@@ -753,7 +753,7 @@ interface ChatViewProps {
 		agent: Agent,
 		permissionSessionId: string,
 		permissionId: string,
-		response?: "once" | "always",
+		response?: PermissionResponse,
 	) => Promise<void>
 	onDeny?: (agent: Agent, permissionSessionId: string, permissionId: string) => Promise<void>
 	/** Question handlers */
@@ -916,7 +916,7 @@ export function ChatView({
 			a: Agent,
 			permissionSessionId: string,
 			permissionId: string,
-			response?: "once" | "always",
+			response?: PermissionResponse,
 		) => {
 			await onApprove?.(a, permissionSessionId, permissionId, response)
 			removePermission({ sessionId: permissionSessionId, permissionId })
@@ -1165,7 +1165,7 @@ interface ChatInputSectionProps {
 		agent: Agent,
 		permissionSessionId: string,
 		permissionId: string,
-		response?: "once" | "always",
+		response?: PermissionResponse,
 	) => Promise<void>
 	onDeny?: (agent: Agent, permissionSessionId: string, permissionId: string) => Promise<void>
 	onReplyQuestion?: ChatViewProps["onReplyQuestion"]
@@ -1311,7 +1311,7 @@ function ChatInputSection({
 			a: Agent,
 			permissionSessionId: string,
 			permissionId: string,
-			response?: "once" | "always",
+			response?: PermissionResponse,
 		) => {
 			await onApprove?.(a, permissionSessionId, permissionId, response)
 			removePermission({ sessionId: permissionSessionId, permissionId })
@@ -1540,7 +1540,7 @@ function ChatInputSection({
 
 			// Product requirement: Desktop slash commands are limited to first-party
 			// entries. Compact executes immediately; Goal/Plan become footer trigger
-			// chips; Research stays as slash text so ACP can run it after a question.
+			// chips; Research stays as slash text so Native can run it after a question.
 			switch (cmdName.toLowerCase()) {
 				case "compact":
 					if (agent.directory && effectiveModel) {

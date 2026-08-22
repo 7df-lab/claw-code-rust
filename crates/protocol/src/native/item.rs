@@ -79,6 +79,8 @@ pub enum Item {
     UserMessage {
         /// Domain-level dedup key: the same logical message materializes only
         /// once across steer/queue races and RPC retries.
+        #[schemars(rename = "clientUserMessageId")]
+        #[ts(rename = "clientUserMessageId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_user_message_id: Option<String>,
         content: Vec<UserInput>,
@@ -97,6 +99,8 @@ pub enum Item {
     /// re-attached when building outbound context.
     Reasoning {
         text: String,
+        #[schemars(rename = "providerPayloadRef")]
+        #[ts(rename = "providerPayloadRef")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_payload_ref: Option<String>,
     },
@@ -107,20 +111,32 @@ pub enum Item {
 
     // ── Local tools (call/result pairing + approval/sandbox) ──
     ToolCall {
+        #[schemars(rename = "callId")]
+        #[ts(rename = "callId")]
         call_id: String,
+        #[schemars(rename = "toolName")]
+        #[ts(rename = "toolName")]
         tool_name: String,
         source: ToolSource,
+        #[schemars(rename = "serverName")]
+        #[ts(rename = "serverName")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         server_name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input: Option<JsonValue>,
     },
     ToolResult {
+        #[schemars(rename = "callId")]
+        #[ts(rename = "callId")]
         call_id: String,
         output: JsonValue,
         /// Compressed UI rendering; does not change replay semantics.
+        #[schemars(rename = "displayContent")]
+        #[ts(rename = "displayContent")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         display_content: Option<String>,
+        #[schemars(rename = "isError")]
+        #[ts(rename = "isError")]
         is_error: bool,
         truncated: bool,
     },
@@ -130,6 +146,8 @@ pub enum Item {
     /// `origin = userShell`. Displaying the command plus prompt replay needs
     /// the original model input, hence a dedicated variant.
     CommandExecution {
+        #[schemars(rename = "callId")]
+        #[ts(rename = "callId")]
         call_id: String,
         command: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -139,11 +157,19 @@ pub enum Item {
         input: Option<JsonValue>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<JsonValue>,
+        #[schemars(rename = "exitCode")]
+        #[ts(rename = "exitCode")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
+        #[schemars(rename = "executionHandle")]
+        #[ts(rename = "executionHandle")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         execution_handle: Option<String>,
+        #[schemars(rename = "isError")]
+        #[ts(rename = "isError")]
         is_error: bool,
+        #[schemars(rename = "executionMode")]
+        #[ts(rename = "executionMode")]
         execution_mode: ExecutionMode,
         origin: ExecOrigin,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,7 +181,11 @@ pub enum Item {
     /// provider-hosted tools (code_interpreter, ...) need zero protocol
     /// changes; clients render by `tool_name`.
     HostedToolCall {
+        #[schemars(rename = "callId")]
+        #[ts(rename = "callId")]
         call_id: String,
+        #[schemars(rename = "toolName")]
+        #[ts(rename = "toolName")]
         tool_name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input: Option<JsonValue>,
@@ -168,6 +198,8 @@ pub enum Item {
     /// granularity (one apply_patch may touch many files), approval is per
     /// change, and a stable item lets diff-review UIs update in place.
     FileChange {
+        #[schemars(rename = "callId")]
+        #[ts(rename = "callId")]
         call_id: String,
         changes: Vec<FileChangeEntry>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,17 +211,35 @@ pub enum Item {
     /// `ApprovalRequest` + `ApprovalDecision` pair); `decision = None` is the
     /// waiting state, filled in place on response.
     Approval {
+        #[schemars(rename = "approvalId")]
+        #[ts(rename = "approvalId")]
         approval_id: String,
         /// Points at the action item being approved
         /// (CommandExecution/FileChange/ToolCall).
+        #[schemars(rename = "targetItemId")]
+        #[ts(rename = "targetItemId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_item_id: Option<ItemId>,
+        #[schemars(rename = "actionSummary")]
+        #[ts(rename = "actionSummary")]
         action_summary: String,
         justification: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resource: Option<String>,
+        #[schemars(rename = "availableScopes")]
+        #[ts(rename = "availableScopes")]
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         available_scopes: Vec<String>,
+        /// Normalized command pattern used by session-scoped approval labels.
+        #[schemars(rename = "commandPattern")]
+        #[ts(rename = "commandPattern")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_pattern: Option<Vec<String>>,
+        /// Suggested command prefix for persistent exec-policy approval.
+        #[schemars(rename = "commandPrefix")]
+        #[ts(rename = "commandPrefix")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_prefix: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<ApprovalTarget>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,7 +248,11 @@ pub enum Item {
     /// Structured questions from a tool (options/forms). Must be persisted so
     /// pending questions survive reconnect/resume and remain answerable.
     UserInputRequest {
+        #[schemars(rename = "requestId")]
+        #[ts(rename = "requestId")]
         request_id: String,
+        #[schemars(rename = "targetItemId")]
+        #[ts(rename = "targetItemId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_item_id: Option<ItemId>,
         questions: Vec<UserQuestion>,
@@ -211,9 +265,15 @@ pub enum Item {
     /// (process stdin/stdout vs. a full session's message channel and
     /// permission inheritance). Both share `SpawnedWorkState`.
     SubAgent {
+        #[schemars(rename = "originCallId")]
+        #[ts(rename = "originCallId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin_call_id: Option<String>,
+        #[schemars(rename = "agentSessionId")]
+        #[ts(rename = "agentSessionId")]
         agent_session_id: SessionId,
+        #[schemars(rename = "parentSessionId")]
+        #[ts(rename = "parentSessionId")]
         parent_session_id: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<String>,
@@ -221,14 +281,22 @@ pub enum Item {
         state: SpawnedWorkState,
     },
     BackgroundTask {
+        #[schemars(rename = "originCallId")]
+        #[ts(rename = "originCallId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin_call_id: Option<String>,
+        #[schemars(rename = "taskKind")]
+        #[ts(rename = "taskKind")]
         task_kind: BackgroundTaskKind,
         state: SpawnedWorkState,
+        #[schemars(rename = "executionHandle")]
+        #[ts(rename = "executionHandle")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         execution_handle: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<PathBuf>,
+        #[schemars(rename = "exitCode")]
+        #[ts(rename = "exitCode")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
     },
@@ -244,7 +312,12 @@ pub enum Item {
     },
     /// Human-readable milestone summary only; no percentage — a value that
     /// cannot be honestly computed does not enter the protocol.
-    GoalProgress { goal_id: GoalId, summary: String },
+    GoalProgress {
+        #[schemars(rename = "goalId")]
+        #[ts(rename = "goalId")]
+        goal_id: GoalId,
+        summary: String,
+    },
     /// Non-fatal events (model retry, capability downgrade, quota pressure)
     /// that must leave a trace without failing the turn.
     Warning {
@@ -311,6 +384,8 @@ pub enum UserInput {
     },
     Image {
         uri: String,
+        #[schemars(rename = "mimeType")]
+        #[ts(rename = "mimeType")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mime_type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,6 +399,8 @@ pub enum UserInput {
     /// Experimental; not part of the v1 guaranteed modalities.
     Audio {
         uri: String,
+        #[schemars(rename = "mimeType")]
+        #[ts(rename = "mimeType")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mime_type: Option<String>,
     },
@@ -439,7 +516,11 @@ pub enum FileChangeKind {
         content: String,
     },
     Update {
+        #[schemars(rename = "unifiedDiff")]
+        #[ts(rename = "unifiedDiff")]
         unified_diff: String,
+        #[schemars(rename = "movePath")]
+        #[ts(rename = "movePath")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         move_path: Option<PathBuf>,
     },
@@ -846,6 +927,8 @@ mod tests {
             justification: "tests needed".to_owned(),
             resource: None,
             available_scopes: vec![],
+            command_pattern: None,
+            command_prefix: None,
             target: None,
             decision: None,
         };

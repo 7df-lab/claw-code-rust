@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import { AcpTrafficLogStatus, ServerSettings } from "./server-settings"
+import { NativeTrafficLogStatus, ServerSettings } from "./server-settings"
 
 describe("ServerSettings", () => {
 	test("keeps runtime status and restart controls without transport or stop rows", () => {
@@ -12,12 +12,12 @@ describe("ServerSettings", () => {
 			hasRestartRuntime: markup.includes("Restart runtime"),
 			hasRestartButton: markup.includes(">Restart</button>"),
 			hasTransportRow: markup.includes("Transport"),
-			hasTransportDescription: markup.includes("ACP over child-process stdin/stdout"),
+			hasTransportDescription: markup.includes("Native over child-process stdin/stdout"),
 			hasStopRuntime: markup.includes("Stop runtime"),
 			hasStopDescription: markup.includes("Stop the managed Devo child process"),
 				hasDeveloperMode: markup.includes("Developer mode"),
 				hasDeveloperOptions: markup.includes("Developer options"),
-				hasAcpTrafficLog: markup.includes("ACP traffic log"),
+				hasNativeTrafficLog: markup.includes("Native traffic log"),
 				hasNetworkProxy: markup.includes("Network proxy"),
 				hasProxyMode: markup.includes("Proxy mode"),
 				hasRestartNotice: markup.includes("Restart runtime to apply proxy changes."),
@@ -32,7 +32,7 @@ describe("ServerSettings", () => {
 				hasStopDescription: false,
 				hasDeveloperMode: false,
 				hasDeveloperOptions: false,
-				hasAcpTrafficLog: false,
+				hasNativeTrafficLog: false,
 				hasNetworkProxy: true,
 				hasProxyMode: true,
 				hasRestartNotice: true,
@@ -42,7 +42,7 @@ describe("ServerSettings", () => {
 	test("shows a collapsed developer trigger without the log path when enabled", () => {
 		const logPath = "/Users/tester/.devo/traces/protocol-12345-20260703T153000Z.ndjsonl"
 		const markup = renderToStaticMarkup(
-			<AcpTrafficLogStatus
+			<NativeTrafficLogStatus
 				state={{
 					enabled: true,
 					path: logPath,
@@ -52,7 +52,7 @@ describe("ServerSettings", () => {
 
 		expect({
 			hasDeveloperOptions: markup.includes("Developer options"),
-			hasTrigger: markup.includes("ACP traffic log"),
+			hasTrigger: markup.includes("Native traffic log"),
 			hasDescription: markup.includes("Protocol trace enabled via DEVO_PROTOCOL_TRACE"),
 			hasCollapsedState: markup.includes('aria-expanded="false"'),
 			hasPath: markup.includes(logPath),
@@ -72,7 +72,7 @@ describe("ServerSettings", () => {
 	test("shows log location details when the developer trigger is expanded", () => {
 		const logPath = "/Users/tester/.devo/traces/protocol-12345-20260703T153000Z.ndjsonl"
 		const markup = renderToStaticMarkup(
-			<AcpTrafficLogStatus
+			<NativeTrafficLogStatus
 				initialExpanded
 				state={{
 					enabled: true,

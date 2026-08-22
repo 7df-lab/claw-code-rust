@@ -161,6 +161,9 @@ impl ServerRuntime {
             params.cwd.clone(),
             params.additional_directories.clone(),
         );
+        summary.permission_preset = Some(protocol_preset_from_safety(
+            core_session.config.permission_profile.preset,
+        ));
         crate::runtime::context_occupancy::apply_resolved_compaction_limit(
             &mut core_session.config,
             applied_compaction_limit as usize,
@@ -412,7 +415,11 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
-        let _state_change_guard = session_handle.lock_state_change().await;
+        // Persist-first: never wait on the session actor, and never take
+        // the state-change gate for a settings patch. Title generation and
+        // finalize hold that gate across mailbox waits; taking it here
+        // stalls the TUI's pre-turn `session/metadata/update` until the
+        // 10s client timeout, after which `turn/start` hits the same gate.
         // Mailbox-free rollout resolution: SQLite index first, rollout scan
         // fallback (same sources as the subscription snapshot path). The
         // index metadata also supplies the current model/binding/effort

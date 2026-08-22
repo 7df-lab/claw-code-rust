@@ -145,6 +145,8 @@ impl LegacyProjector {
                     justification,
                     resource,
                     available_scopes,
+                    command_pattern,
+                    command_prefix,
                     target,
                     decision,
                     ..
@@ -164,6 +166,8 @@ impl LegacyProjector {
                                         justification,
                                         resource,
                                         available_scopes,
+                                        command_pattern,
+                                        command_prefix,
                                         target,
                                     ),
                                 },
@@ -882,6 +886,8 @@ fn approval_request_from_parts(
     justification: &str,
     resource: &Option<String>,
     available_scopes: &[String],
+    command_pattern: &Option<Vec<String>>,
+    command_prefix: &Option<Vec<String>>,
     target: &Option<ApprovalTarget>,
 ) -> ApprovalRequestItem {
     let (path, host, target) = target
@@ -897,6 +903,8 @@ fn approval_request_from_parts(
         justification: justification.into(),
         resource: resource.clone(),
         available_scopes: available_scopes.into(),
+        command_pattern: command_pattern.clone(),
+        command_prefix: command_prefix.clone(),
         path,
         host,
         target,
@@ -933,6 +941,8 @@ fn approval_request_item(
         justification: request.justification.clone(),
         resource: request.resource.clone(),
         available_scopes: request.available_scopes.clone(),
+        command_pattern: request.command_pattern.clone(),
+        command_prefix: request.command_prefix.clone(),
         target: approval_target(request),
         decision,
     }

@@ -16,6 +16,7 @@ pub use event::ProviderRetryStatus;
 pub use event::QueryEvent;
 pub use event::QueryOptions;
 pub use event::QueryProviderRetryPhase;
+pub use event::SharedLastModelRequest;
 pub use event::SharedLiveTurnSettings;
 
 pub(crate) use event::emit_query_event;
@@ -661,6 +662,11 @@ pub async fn query(
             has_system = request.system.is_some(),
             "built model request"
         );
+        if let Some(slot) = &options.last_model_request
+            && let Ok(mut last) = slot.lock()
+        {
+            *last = Some(request.clone());
+        }
 
         let assembled = match run_provider_attempt(
             provider.as_ref(),

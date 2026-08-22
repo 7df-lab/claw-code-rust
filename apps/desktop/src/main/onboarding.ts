@@ -23,7 +23,7 @@ import {
 	buildOpenCodeProviderMigrationPreview,
 	executeOpenCodeProviderMigration,
 } from "./opencode-provider-migration"
-import { requestAcp } from "./devo-manager"
+import { requestNative } from "./devo-manager"
 import { createLogger } from "./logger"
 
 const log = createLogger("onboarding")
@@ -769,7 +769,7 @@ export async function executeMigration(
 ): Promise<MigrationResult> {
 	if (provider === "opencode") {
 		const providerResult = categories.includes("config")
-			? await executeOpenCodeProviderMigration(scanResult, requestAcp)
+			? await executeOpenCodeProviderMigration(scanResult, requestNative)
 			: { filesWritten: [], warnings: [], manualActions: [], errors: [] }
 		return {
 			success: true,
@@ -800,7 +800,7 @@ export async function executeMigration(
 	let historyDuplicatesSkipped = 0
 
 	if (provider === "claude-code" && categories.includes("config")) {
-		const providerResult = await executeClaudeCodeProviderMigration(scanResult, requestAcp)
+		const providerResult = await executeClaudeCodeProviderMigration(scanResult, requestNative)
 		allFilesWritten.push(...providerResult.filesWritten)
 		allWarnings.push(...providerResult.warnings)
 		allManualActions.push(...providerResult.manualActions)

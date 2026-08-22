@@ -1004,6 +1004,7 @@ fn handle_worker_event(
         | WorkerEvent::QueueUpdated { .. }
         | WorkerEvent::ApprovalRequest { .. }
         | WorkerEvent::RequestUserInput { .. }
+        | WorkerEvent::UserInputResolved { .. }
         | WorkerEvent::ApprovalDecision { .. }
         | WorkerEvent::SteerAccepted { .. }
         | WorkerEvent::ProviderRetryStatus { .. }

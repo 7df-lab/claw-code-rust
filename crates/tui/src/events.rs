@@ -374,6 +374,9 @@ pub(crate) enum WorkerEvent {
         request_id: String,
         questions: Vec<RequestUserInputQuestion>,
     },
+    UserInputResolved {
+        request_id: String,
+    },
     ApprovalDecision {
         approval_id: String,
         decision: String,

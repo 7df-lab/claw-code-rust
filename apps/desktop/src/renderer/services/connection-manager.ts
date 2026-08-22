@@ -38,14 +38,14 @@ const log = createLogger("connection-manager")
 // ============================================================
 
 /**
- * Lightweight ACP health probe. Devo desktop talks to the runtime through
+ * Lightweight Native health probe. Devo desktop talks to the runtime through
  * Electron's preload bridge, so readiness means the main-process stdio
  * transport is connected.
  */
 async function checkHealth(url: string, authHeader: string | null): Promise<boolean> {
 	void url
 	void authHeader
-	return typeof window !== "undefined" && "devo" in window ? window.devo.acp.connected() : true
+	return typeof window !== "undefined" && "devo" in window ? window.devo.native.connected() : true
 }
 
 // ============================================================
@@ -57,7 +57,7 @@ let connection: {
 	url: string
 	/** Auth header for stdio compatibility (currently null). */
 	authHeader: string | null
-	/** Base client (no directory) — used for the ACP event subscription */
+	/** Base client (no directory) — used for the Native event subscription */
 	baseClient: DevoClient
 	abortController: AbortController
 } | null = null
@@ -77,22 +77,22 @@ const projectEventBridgeDirs = new Set<string>()
 let eventLoopGeneration = 0
 
 /**
- * Global reference to the ACP event AbortController that survives Vite HMR
+ * Global reference to the Native event AbortController that survives Vite HMR
  * module replacement. When HMR replaces this module, the old module's
  * `connection` variable is lost, but the old event loop keeps running
  * with an unreachable AbortController. By storing it on `window`, the
  * new module can abort the stale loop on reconnect.
  */
-const ACP_ABORT_KEY = "__devo_acp_abort__" as const
+const NATIVE_ABORT_KEY = "__devo_native_abort__" as const
 
 function getGlobalAbort(): AbortController | undefined {
-	// biome-ignore lint/suspicious/noExplicitAny: accessing dynamic window property for ACP event abort controller
-	return (window as any)[ACP_ABORT_KEY]
+	// biome-ignore lint/suspicious/noExplicitAny: accessing dynamic window property for Native event abort controller
+	return (window as any)[NATIVE_ABORT_KEY]
 }
 
 function setGlobalAbort(controller: AbortController | null) {
-	// biome-ignore lint/suspicious/noExplicitAny: accessing dynamic window property for ACP event abort controller
-	;(window as any)[ACP_ABORT_KEY] = controller
+	// biome-ignore lint/suspicious/noExplicitAny: accessing dynamic window property for Native event abort controller
+	;(window as any)[NATIVE_ABORT_KEY] = controller
 }
 
 function clearProjectClients(): void {
@@ -172,7 +172,7 @@ async function hydrateProjectSessionsFromCache(
 
 /**
  * Connect to an Devo server.
- * Starts ACP event subscription for all-project events.
+ * Starts Native event subscription for all-project events.
  *
  * @param url       Base URL of the Devo server
  * @param authHeader  Deprecated compatibility auth header
@@ -186,11 +186,11 @@ export async function connectToDevo(url: string, authHeader?: string | null): Pr
 		clearDiscoverySessionCache()
 	}
 
-	// Also abort any stale ACP event loop from a previous HMR module that we can't
+	// Also abort any stale Native event loop from a previous HMR module that we can't
 	// reach through the module-level `connection` variable.
 	const staleAbort = getGlobalAbort()
 	if (staleAbort && !staleAbort.signal.aborted) {
-		log.info("Aborting stale ACP event loop from previous module")
+		log.info("Aborting stale Native event loop from previous module")
 		staleAbort.abort()
 	}
 
@@ -218,10 +218,10 @@ export async function connectToDevo(url: string, authHeader?: string | null): Pr
 	if (healthy) {
 		log.info("Server health check passed", { url })
 	} else {
-		log.warn("Server health check failed, will retry via ACP event loop", { url })
+		log.warn("Server health check failed, will retry via Native event loop", { url })
 	}
 
-	// Start ACP event loop in the background.
+	// Start Native event loop in the background.
 	// Connected state is updated when the event stream opens or fails.
 	startEventLoop(baseClient, abortController.signal, gen)
 }
@@ -415,10 +415,10 @@ export function getProjectClient(directory: string): DevoClient | null {
 		if (storeUrl) {
 			log.warn("Connection lost (likely HMR), reconnecting to", { url: storeUrl })
 
-			// Abort any stale ACP event loop from the previous module
+			// Abort any stale Native event loop from the previous module
 			const staleAbort = getGlobalAbort()
 			if (staleAbort && !staleAbort.signal.aborted) {
-				log.info("Aborting stale ACP event connection from previous module")
+				log.info("Aborting stale Native event connection from previous module")
 				staleAbort.abort()
 			}
 
@@ -429,7 +429,7 @@ export function getProjectClient(directory: string): DevoClient | null {
 			connection = { url: storeUrl, authHeader: storeAuth, baseClient, abortController }
 			setGlobalAbort(abortController)
 			startEventLoop(baseClient, abortController.signal, eventLoopGeneration)
-			// Connected state is set by startEventLoop once ACP event stream opens
+			// Connected state is set by startEventLoop once Native event stream opens
 		} else {
 			return null
 		}
@@ -451,7 +451,7 @@ export function getProjectClient(directory: string): DevoClient | null {
  * Fetch a single session by ID using the global (non-directory-scoped) client.
  *
  * Used as a fallback when navigating directly to a session that is not yet in
- * the Jotai store — for example, subagent sessions that arrived while the ACP
+ * the Jotai store — for example, subagent sessions that arrived while the Native
  * event stream was reconnecting, or sessions absent from the initial batch load.
  *
  * Returns `null` if the session is not found, the server is unreachable, or
@@ -480,7 +480,7 @@ export function getBaseClient(): DevoClient | null {
 			connection = { url: storeUrl, authHeader: storeAuth, baseClient, abortController }
 			setGlobalAbort(abortController)
 			startEventLoop(baseClient, abortController.signal, eventLoopGeneration)
-			// Connected state is set by startEventLoop once ACP event stream opens
+			// Connected state is set by startEventLoop once Native event stream opens
 		} else {
 			return null
 		}
@@ -489,7 +489,7 @@ export function getBaseClient(): DevoClient | null {
 }
 
 /**
- * Clear cached ACP model preferences on every active SDK client.
+ * Clear cached Native model preferences on every active SDK client.
  * Provider updates mutate server config, so model/preferences/read must be reloaded.
  */
 export function invalidateConfigOptionCaches(): void {
@@ -522,7 +522,7 @@ export function getServerUrl(): string | null {
 /**
  * Reload all Devo configuration by disposing all server instances.
  * This forces the server to re-read config files, agents, skills, commands, etc.
- * The resulting ACP events automatically invalidate UI queries.
+ * The resulting Native events automatically invalidate UI queries.
  */
 export async function reloadConfig(): Promise<void> {
 	if (!connection) {
@@ -696,7 +696,7 @@ function createEventBatcher() {
 }
 
 // ============================================================
-// ACP Event Loop
+// Native Event Loop
 // ============================================================
 
 async function startEventLoop(
@@ -713,11 +713,11 @@ async function startEventLoop(
 		if (!isStale()) appStore.set(serverConnectedAtom, value)
 	}
 
-	log.info("ACP event loop started", { generation })
+	log.info("Native event loop started", { generation })
 
 	while (!isStale()) {
-		// Before opening the ACP event stream, check if the server is reachable.
-		// This avoids firing expensive IPC/ACP event requests against a dead server.
+		// Before opening the Native event stream, check if the server is reachable.
+		// This avoids firing expensive IPC event requests against a dead server.
 		// On the first iteration the caller already ran a health check, so
 		// we only probe when retrying (retryDelay > 1000 means we already failed once).
 		if (retryDelay > 1000 || !appStore.get(serverConnectedAtom)) {
@@ -735,13 +735,13 @@ async function startEventLoop(
 		const batcher = createEventBatcher()
 
 		try {
-			log.debug("Opening ACP event stream", { generation })
+			log.debug("Opening Native event stream", { generation })
 			const stream = await subscribeToGlobalEvents(client)
 			if (isStale()) break
 			retryDelay = 1000
-			log.info("ACP event stream connected", { generation })
+			log.info("Native event stream connected", { generation })
 
-			// ACP event stream opened successfully, server is reachable
+			// Native event stream opened successfully, server is reachable
 			setConnected(true)
 
 			for await (const globalEvent of stream) {
@@ -752,12 +752,12 @@ async function startEventLoop(
 				}
 			}
 			if (!isStale()) {
-				log.warn("ACP event stream ended (server closed connection)", { generation })
+				log.warn("Native event stream ended (server closed connection)", { generation })
 				setConnected(false)
 			}
 		} catch (err) {
 			if (isStale()) break
-			log.error("ACP event stream disconnected", { generation, retryDelay }, err)
+			log.error("Native event stream disconnected", { generation, retryDelay }, err)
 			setConnected(false)
 		} finally {
 			// Discard pending events when the loop is stale (server switched / disconnected).
@@ -767,12 +767,12 @@ async function startEventLoop(
 
 		if (isStale()) break
 
-		log.info("Reconnecting ACP event stream in", { delayMs: retryDelay, generation })
+		log.info("Reconnecting Native event stream in", { delayMs: retryDelay, generation })
 		await new Promise((resolve) => setTimeout(resolve, retryDelay))
 		retryDelay = Math.min(retryDelay * 2, 30000)
 	}
 
-	log.info("ACP event loop exited", { generation, stale: generation !== eventLoopGeneration })
+	log.info("Native event loop exited", { generation, stale: generation !== eventLoopGeneration })
 }
 
 function startProjectEventBridge(client: DevoClient, directory: string, signal: AbortSignal): void {

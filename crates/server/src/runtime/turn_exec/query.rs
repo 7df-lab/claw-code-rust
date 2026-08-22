@@ -122,6 +122,15 @@ impl ServerRuntime {
         } else {
             None
         };
+        let last_model_request = if let Some(stream) = self.active_stream_state(session_id).await {
+            let stream = stream.lock().await;
+            stream
+                .turn_inline
+                .as_ref()
+                .map(|inline| Arc::clone(&inline.last_model_request))
+        } else {
+            None
+        };
         if let Some(live) = &live_turn_settings {
             let mut live = live.lock().expect("live settings mutex poisoned");
             if live.generation == 0 && live.turn_config.is_none() {
@@ -216,6 +225,7 @@ impl ServerRuntime {
                     cancel_token: Some(query_cancel_token.clone()),
                     compaction_provider: Some(compaction_provider),
                     live_settings: live_turn_settings.clone(),
+                    last_model_request,
                 },
             ));
             tokio::select! {

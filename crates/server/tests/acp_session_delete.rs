@@ -345,7 +345,7 @@ async fn acp_session_delete_broadcasts_deleted_session_ids() -> Result<()> {
         .await
         .context("observer should receive session/deleted broadcast")?;
     assert_eq!(
-        notification["params"]["deleted_session_ids"],
+        notification["params"]["deletedSessionIds"],
         serde_json::json!([new_session.session_id])
     );
     Ok(())

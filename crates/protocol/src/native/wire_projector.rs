@@ -209,6 +209,8 @@ pub fn project_wire_item(
                 justification: request.justification,
                 resource: request.resource,
                 available_scopes: request.available_scopes,
+                command_pattern: request.command_pattern,
+                command_prefix: request.command_prefix,
                 target: approval_target(request.path, request.host, request.target),
                 decision: None,
             })
@@ -244,6 +246,8 @@ pub fn project_wire_item(
                             .collect()
                     })
                     .unwrap_or_default(),
+                command_pattern: string_array_field(payload, "command_pattern"),
+                command_prefix: string_array_field(payload, "command_prefix"),
                 target: approval_target(
                     payload
                         .get("path")
@@ -277,6 +281,19 @@ pub fn project_wire_item(
             })
         }
     }
+}
+
+fn string_array_field(payload: &serde_json::Value, field: &str) -> Option<Vec<String>> {
+    payload
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
 }
 
 /// Builds the native typed envelope for one legacy item event.
@@ -382,7 +399,83 @@ pub fn native_turn_from_metadata(metadata: &crate::TurnMetadata) -> crate::nativ
     }
 }
 
-/// Projects an `item/started` / `item/completed` server event into its
+fn native_session_value(metadata: &crate::SessionMetadata) -> serde_json::Value {
+    let status = match metadata.status {
+        crate::SessionRuntimeStatus::ActiveTurn | crate::SessionRuntimeStatus::WaitingClient => {
+            "active"
+        }
+        crate::SessionRuntimeStatus::Idle
+        | crate::SessionRuntimeStatus::Archived
+        | crate::SessionRuntimeStatus::Unloaded => "idle",
+    };
+    let permission_profile = match metadata.permission_preset {
+        Some(crate::PermissionPreset::AutoReview) => "autoReview",
+        Some(crate::PermissionPreset::FullAccess) => "fullAccess",
+        Some(crate::PermissionPreset::Default) | None => "default",
+    };
+    let parent = metadata.parent_session_id.map(|session_id| {
+        let session_id = SessionId::from_legacy_uuid(Uuid::from(session_id));
+        if metadata.agent_path.is_some() {
+            serde_json::json!({
+                "kind": "agent",
+                "sessionId": session_id,
+                "role": metadata.agent_role,
+            })
+        } else {
+            serde_json::json!({
+                "kind": "fork",
+                "sessionId": session_id,
+            })
+        }
+    });
+    serde_json::json!({
+        "id": SessionId::from_legacy_uuid(Uuid::from(metadata.session_id)),
+        "version": 1,
+        "cwd": metadata.cwd,
+        "additionalDirectories": metadata.additional_directories,
+        "parent": parent,
+        "ephemeral": metadata.ephemeral,
+        "createdAt": metadata.created_at,
+        "status": status,
+        "flags": [],
+        "archived": matches!(metadata.status, crate::SessionRuntimeStatus::Archived),
+        "queuedCount": 0,
+        "title": metadata.title,
+        "model": {
+            "provider": metadata.model_binding_id.as_deref().unwrap_or("unknown"),
+            "model": metadata.model.as_deref().unwrap_or_default(),
+            "reasoningEffort": metadata.reasoning_effort_selection,
+        },
+        "settings": {
+            "permissionProfile": permission_profile,
+            "reasoningEffort": metadata.reasoning_effort_selection,
+            "mode": serde_json::to_value(metadata.collaboration_mode)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string)),
+            "effectiveContextWindow": metadata.effective_context_window,
+        },
+        "preview": "",
+        "lastActivityAt": metadata.last_activity_at,
+        "usage": {
+            "total": {
+                "totalTokens": metadata.total_tokens,
+                "inputTokens": metadata.total_input_tokens,
+                "outputTokens": metadata.total_output_tokens,
+                "reasoningTokens": 0,
+                "cacheReadInputTokens": metadata.total_cache_read_tokens,
+                "cacheCreationInputTokens": metadata.total_cache_creation_tokens,
+                "callCount": 0,
+                "meteredCallCount": 0,
+                "failedCallCount": 0,
+                "cancelledCallCount": 0,
+            },
+            "byPurpose": [],
+            "updatedAt": metadata.updated_at,
+        },
+    })
+}
+
+/// Projects internal server events into their Native live-notification shape.
 /// native typed notification (`{"context": ..., "item": <native
 /// envelope>}`) for connections that opted in to typed items. All other
 /// events — and item events whose payload does not project — return `None`
@@ -423,6 +516,91 @@ pub fn typed_item_notification_from_server_event(
         };
         let value = serde_json::to_value(delta).expect("serialize typed delta payload");
         return Some((method.to_string(), value));
+    }
+    match event {
+        ServerEvent::SessionStarted(payload) => {
+            return Some((
+                "session/created".to_string(),
+                serde_json::json!({ "session": native_session_value(&payload.session) }),
+            ));
+        }
+        ServerEvent::SessionTitleUpdated(payload) => {
+            return Some((
+                "session/metadataUpdated".to_string(),
+                serde_json::json!({ "session": native_session_value(&payload.session) }),
+            ));
+        }
+        ServerEvent::SessionStatusChanged(payload) => {
+            let status = match payload.status {
+                crate::SessionRuntimeStatus::ActiveTurn
+                | crate::SessionRuntimeStatus::WaitingClient => "active",
+                crate::SessionRuntimeStatus::Idle
+                | crate::SessionRuntimeStatus::Archived
+                | crate::SessionRuntimeStatus::Unloaded => "idle",
+            };
+            return Some((
+                "session/statusChanged".to_string(),
+                serde_json::json!({
+                    "sessionId": SessionId::from_legacy_uuid(Uuid::from(payload.session_id)),
+                    "status": status,
+                    "flags": [],
+                    "activeTurnId": null,
+                }),
+            ));
+        }
+        ServerEvent::SessionArchived(payload) | ServerEvent::SessionUnarchived(payload) => {
+            return Some((
+                "session/archived".to_string(),
+                serde_json::json!({
+                    "sessionId": SessionId::from_legacy_uuid(Uuid::from(
+                        payload.session.session_id,
+                    )),
+                    "archived": matches!(event, ServerEvent::SessionArchived(_)),
+                }),
+            ));
+        }
+        ServerEvent::SessionClosed(payload) => {
+            return Some((
+                "session/closed".to_string(),
+                serde_json::json!({
+                    "sessionId": SessionId::from_legacy_uuid(Uuid::from(
+                        payload.session.session_id,
+                    )),
+                }),
+            ));
+        }
+        ServerEvent::SessionDeleted(payload) => {
+            return Some((
+                "session/deleted".to_string(),
+                serde_json::json!({
+                    "sessionId": SessionId::from_legacy_uuid(Uuid::from(payload.session_id)),
+                    "deletedSessionIds": payload.deleted_session_ids.iter().map(|session_id| {
+                        SessionId::from_legacy_uuid(Uuid::from(*session_id))
+                    }).collect::<Vec<_>>(),
+                }),
+            ));
+        }
+        ServerEvent::WorkspaceChangesUpdated(payload) => {
+            return Some((
+                "workspace/changes/updated".to_string(),
+                serde_json::json!({
+                    "sessionId": SessionId::from_legacy_uuid(Uuid::from(payload.session_id)),
+                    "turnId": TurnId::from_legacy_uuid(Uuid::from(payload.turn_id)),
+                    "scope": payload.scope,
+                    "status": payload.status,
+                    "coverage": payload.coverage,
+                    "changeSetStatus": payload.change_set_status,
+                    "stats": {
+                        "filesChanged": payload.stats.files_changed,
+                        "additions": payload.stats.additions,
+                        "deletions": payload.stats.deletions,
+                    },
+                    "version": payload.version,
+                    "generatedAt": payload.generated_at,
+                }),
+            ));
+        }
+        _ => {}
     }
     // Turn lifecycle (L2-DES-APP-009 DD-3): all terminal states flow through
     // the single native `turn/completed` notification.
@@ -1089,6 +1267,8 @@ mod tests {
                 justification: "Need to verify".into(),
                 resource: Some("ShellExec".into()),
                 available_scopes: vec!["Once".into()],
+                command_pattern: None,
+                command_prefix: None,
                 target: Some(ApprovalTarget::Command {
                     command: "cargo test".into()
                 }),
@@ -1116,6 +1296,8 @@ mod tests {
                 justification: String::new(),
                 resource: None,
                 available_scopes: Vec::new(),
+                command_pattern: None,
+                command_prefix: None,
                 target: None,
                 decision: Some(ApprovalDecision {
                     decision: ApprovalDecisionKind::Approved,
@@ -1320,6 +1502,45 @@ mod tests {
         assert_eq!(
             projected.error.expect("error").message,
             "it broke".to_string()
+        );
+    }
+
+    #[test]
+    fn live_session_status_and_delete_events_use_native_shapes() {
+        let session_id = crate::SessionId::new();
+        let (method, value) = typed_item_notification_from_server_event(
+            &ServerEvent::SessionStatusChanged(crate::SessionStatusChangedPayload {
+                session_id,
+                status: crate::SessionRuntimeStatus::WaitingClient,
+            }),
+        )
+        .expect("session status projects");
+        assert_eq!(method, "session/statusChanged");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "status": "active",
+                "flags": [],
+                "activeTurnId": null,
+            })
+        );
+
+        let child_id = crate::SessionId::new();
+        let (method, value) = typed_item_notification_from_server_event(
+            &ServerEvent::SessionDeleted(crate::SessionDeletedPayload {
+                session_id,
+                deleted_session_ids: vec![session_id, child_id],
+            }),
+        )
+        .expect("session deletion projects");
+        assert_eq!(method, "session/deleted");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "deletedSessionIds": [session_id.to_string(), child_id.to_string()],
+            })
         );
     }
 

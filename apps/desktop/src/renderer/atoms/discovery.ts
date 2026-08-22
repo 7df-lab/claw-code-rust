@@ -10,7 +10,7 @@ import type { DevoProject } from "../lib/types"
  *
  * - `idle`: initial state, discovery hasn't started
  * - `starting-server`: waiting for the Devo server to start/connect
- * - `connecting`: establishing ACP event stream
+ * - `connecting`: establishing Native event stream
  * - `loading-projects`: fetching the project list from the API
  * - `loading-sessions`: fetching sessions for discovered projects
  * - `ready`: discovery complete, app is usable

@@ -1,8 +1,8 @@
 //! Sub-agent metadata helpers for the TUI worker.
 //!
-//! Live sub-agent monitor updates are routed from ACP `session/update`
-//! notifications. This module only normalizes agent metadata returned by ACP
-//! session info and `agent/list`.
+//! Live sub-agent monitor updates are routed from Native session, turn, and
+//! item notifications. This module normalizes the protocol shapes used by the
+//! monitor.
 
 use devo_protocol::AgentInfo;
 use devo_protocol::SessionMetadata;
@@ -72,6 +72,35 @@ pub(super) fn agent_from_session(session: &SessionMetadata) -> Option<SubagentMo
             .clone()
             .unwrap_or_else(|| "default".to_string()),
         status: format!("{:?}", session.status).to_lowercase(),
+        last_task_message: None,
+    })
+}
+
+pub(super) fn agent_from_native_session(
+    session: &devo_protocol::native::session::Session,
+) -> Option<SubagentMonitorAgent> {
+    let devo_protocol::native::session::SessionParent::Agent {
+        session_id: parent_session_id,
+        role,
+    } = session.parent.as_ref()?
+    else {
+        return None;
+    };
+    let session_id = devo_protocol::SessionId::try_from(session.id.as_str()).ok()?;
+    Some(SubagentMonitorAgent {
+        session_id,
+        parent_session_id: devo_protocol::SessionId::try_from(parent_session_id.as_str()).ok()?,
+        agent_path: session.id.to_string(),
+        nickname: session
+            .title
+            .clone()
+            .unwrap_or_else(|| session.id.to_string()),
+        role: role.clone().unwrap_or_else(|| "default".to_string()),
+        status: match session.status {
+            devo_protocol::native::session::SessionStatus::Idle => "idle",
+            devo_protocol::native::session::SessionStatus::Active => "active",
+        }
+        .to_string(),
         last_task_message: None,
     })
 }

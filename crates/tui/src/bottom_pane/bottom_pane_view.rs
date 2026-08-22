@@ -22,6 +22,17 @@ pub(crate) trait BottomPaneView: Renderable {
         None
     }
 
+    /// Approval identifier for overlays that may be resolved by another controller.
+    fn approval_id(&self) -> Option<&str> {
+        None
+    }
+
+    /// User-input request identifier for overlays that may be resolved by
+    /// another controller or a lifecycle event.
+    fn user_input_request_id(&self) -> Option<&str> {
+        None
+    }
+
     #[allow(dead_code)]
     /// Actual item index for list-based views that want to preserve selection
     /// across external refreshes.

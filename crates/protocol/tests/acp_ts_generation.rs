@@ -79,7 +79,26 @@ fn generated_protocol_schema_contains_method_bindings() {
         value["methods"]["logout"]["incomingResult"],
         "AcpLogoutResult"
     );
-    assert!(value["methods"]["userInput/request"].is_null());
+    assert_eq!(
+        value["methods"]["session/new"]["outgoingRequest"],
+        "SessionNewParams"
+    );
+    assert_eq!(
+        value["methods"]["session/new"]["incomingResult"],
+        "SessionNewResult"
+    );
+    assert_eq!(
+        value["methods"]["userInput/request"]["incomingRequest"],
+        "Item"
+    );
+    assert_eq!(
+        value["methods"]["userInput/request"]["outgoingResponse"],
+        "UserInputRespondParams"
+    );
+    assert_eq!(
+        value["methods"]["approval/command/request"]["outgoingResponse"],
+        "ApprovalRespondParams"
+    );
     assert!(value["schemas"]["AcpRequestPermissionParams"].is_object());
     assert!(value["schemas"]["AcpFsReadTextFileParams"].is_object());
     assert!(value["schemas"]["AcpFsWriteTextFileParams"].is_object());
@@ -103,4 +122,40 @@ fn generated_protocol_schema_contains_method_bindings() {
             .as_array()
             .is_some_and(|required| required.iter().any(|item| item == "configOptions"))
     );
+}
+
+#[test]
+fn generated_protocol_schema_covers_the_complete_native_registry() {
+    let output = devo_protocol::acp_ts::generate_protocol_schema_json();
+    let value: serde_json::Value = serde_json::from_str(&output).expect("schema JSON");
+
+    for spec in devo_protocol::native::methods::NATIVE_METHODS {
+        assert!(
+            value["methods"][spec.name].is_object(),
+            "missing Native method binding for {}",
+            spec.name
+        );
+    }
+    for spec in devo_protocol::native::methods::REVERSE_METHODS {
+        assert_eq!(
+            value["methods"][spec.name]["incomingRequest"], "Item",
+            "wrong reverse request schema for {}",
+            spec.name
+        );
+        assert!(
+            value["methods"][spec.name]["outgoingResponse"].is_string(),
+            "missing reverse response schema for {}",
+            spec.name
+        );
+    }
+    for method in ["session/created", "turn/completed", "item/started"] {
+        assert!(
+            value["methods"][method]["incomingNotification"].is_string(),
+            "missing Native notification binding for {method}"
+        );
+    }
+    let item_started_schema = value["methods"]["item/started"]["incomingNotification"]
+        .as_str()
+        .expect("item started schema name");
+    assert!(value["schemas"][item_started_schema]["properties"]["item"].is_object());
 }

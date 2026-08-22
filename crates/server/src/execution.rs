@@ -30,6 +30,7 @@ use devo_core::tools::ToolRegistry;
 use devo_protocol::ApprovalDecisionValue;
 use devo_protocol::PendingInputItem;
 use devo_protocol::RequestUserInputResponse;
+use devo_protocol::SessionId;
 use devo_provider::ModelProviderSDK;
 use devo_provider::ProviderRouter;
 
@@ -101,6 +102,7 @@ pub(crate) struct PendingApproval {
 }
 
 pub(crate) struct PendingUserInput {
+    pub(crate) owner_session_id: SessionId,
     pub(crate) turn_id: TurnId,
     /// The questions the tool asked; kept so subscription snapshots can
     /// rebuild the waiting `UserInputRequest` item (08 §4).

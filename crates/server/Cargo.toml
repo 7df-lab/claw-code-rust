@@ -31,6 +31,7 @@ devo-util-shell-command = { workspace = true }
 diffy = { workspace = true }
 futures = { workspace = true }
 fs2 = { workspace = true }
+jsonrepair = { workspace = true }
 lru = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }

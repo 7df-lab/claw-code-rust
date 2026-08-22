@@ -6,29 +6,29 @@ export const PROTOCOL_TRACE_ENV = "DEVO_PROTOCOL_TRACE"
 export const PROTOCOL_TRACE_FILE_ENV = "DEVO_PROTOCOL_TRACE_FILE"
 export const DEVO_HOME_ENV = "DEVO_HOME"
 
-export type AcpTrafficDirection = "desktop-to-server" | "server-to-desktop" | "system"
-export type AcpTrafficKind = "request" | "response" | "notification" | "invalid" | "closed"
-export type AcpTrafficJsonRpcId = number | string
+export type NativeTrafficDirection = "desktop-to-server" | "server-to-desktop" | "system"
+export type NativeTrafficKind = "request" | "response" | "notification" | "invalid" | "closed"
+export type NativeTrafficJsonRpcId = number | string
 
-export interface AcpTrafficLogState {
+export interface NativeTrafficLogState {
 	enabled: boolean
 	path: string | null
 }
 
-export interface AcpTrafficLogRecord {
-	direction: AcpTrafficDirection
-	kind: AcpTrafficKind
-	id?: AcpTrafficJsonRpcId
+export interface NativeTrafficLogRecord {
+	direction: NativeTrafficDirection
+	kind: NativeTrafficKind
+	id?: NativeTrafficJsonRpcId
 	method?: string
 	payload?: unknown
 }
 
-export interface AcpTrafficLogger {
-	getState(): AcpTrafficLogState
-	record(entry: AcpTrafficLogRecord): void
+export interface NativeTrafficLogger {
+	getState(): NativeTrafficLogState
+	record(entry: NativeTrafficLogRecord): void
 }
 
-interface CreateAcpTrafficLoggerOptions {
+interface CreateNativeTrafficLoggerOptions {
 	env?: Record<string, string | undefined>
 	clock?: () => Date
 	pid?: number
@@ -88,18 +88,18 @@ export function resolveProtocolTracePath({
 	}
 }
 
-export function createAcpTrafficLoggerFromEnv({
+export function createNativeTrafficLoggerFromEnv({
 	env = process.env,
 	clock = () => new Date(),
 	pid = process.pid,
-}: CreateAcpTrafficLoggerOptions = {}): AcpTrafficLogger {
+}: CreateNativeTrafficLoggerOptions = {}): NativeTrafficLogger {
 	const logPath = resolveProtocolTracePath({ env, clock, pid })
-	return new AcpTrafficFileLogger({ enabled: logPath !== null, path: logPath }, clock)
+	return new NativeTrafficFileLogger({ enabled: logPath !== null, path: logPath }, clock)
 }
 
-class AcpTrafficFileLogger implements AcpTrafficLogger {
+class NativeTrafficFileLogger implements NativeTrafficLogger {
 	constructor(
-		private readonly state: AcpTrafficLogState,
+		private readonly state: NativeTrafficLogState,
 		private readonly clock: () => Date,
 	) {
 		if (this.state.enabled && this.state.path) {
@@ -108,11 +108,11 @@ class AcpTrafficFileLogger implements AcpTrafficLogger {
 		}
 	}
 
-	getState(): AcpTrafficLogState {
+	getState(): NativeTrafficLogState {
 		return { ...this.state }
 	}
 
-	record(entry: AcpTrafficLogRecord): void {
+	record(entry: NativeTrafficLogRecord): void {
 		if (!this.state.enabled || !this.state.path) return
 
 		appendFileSync(

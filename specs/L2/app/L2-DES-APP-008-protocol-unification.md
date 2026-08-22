@@ -1,12 +1,12 @@
 ---
 artifact_id: L2-DES-APP-008
-revision: 3
+revision: 4
 status: Approved
 active_baseline: yes
 supersedes:
 superseded_by:
 owner: Assistant
-last_updated: 2026-08-11
+last_updated: 2026-08-22
 ---
 
 # L2-DES-APP-008 — Protocol Unification: Canonical Core with Edge Adapters
@@ -72,6 +72,14 @@ The approval engine already resolves decisions through reverse JSON-RPC, not thr
 
 **Decision**: on native-surface connections (L2-DES-APP-009 DD-6), the server sends the canonical reverse requests: `approval/command/request` (shell exec), `approval/fileChange/request` (file write), `approval/permission/request` (other resources), and `userInput/request` for structured questions. On ACP connections, the server retains the ACP `session/request_permission` projection and ACP clients may answer it; ACP filesystem requests remain capability-gated by `clientCapabilities.fs`. The Native request params are the waiting-state item payload — canonical `Item::Approval` with `decision = None`, `Item::UserInputRequest` with `answers = None` — so the wire request, the persisted item, and the subscription event are one fact. The corresponding clients answer `ApprovalRespondParams` / `UserInputRespondParams`, while ACP outcomes translate into the same internal decision/scope tuple at the adapter boundary. `session/goal/completionApproval/request` follows the same model when the goal completion flow migrates.
 
+For Native approvals, the reverse request is registered and queued before the
+waiting item event is published, and first-party clients register the request
+in receive order before dispatching that event to UI code. Interactive waits
+have no wall-clock timeout; interrupt, disconnect, and session termination
+complete the waiting item as cancelled and clear its correlation state.
+`Item::Approval` carries optional normalized command pattern/prefix fields so
+the TUI can render every offered command scope without consulting legacy state.
+
 ### DD-9: Runtime protocol exposure is a monotonic `ProtocolSet`
 
 `ServerProtocol::{Native, Acp}` is the user-facing domain vocabulary. `Native` names the client-facing API and the `"native"` wire marker. A non-empty process-local `ProtocolSet` aggregate controls which adapters may be selected during connection initialization. The default server set is Native only; ACP must be explicitly enabled with `devo server --protocols acp` or `devo server --protocols native,acp`.
@@ -116,3 +124,4 @@ Each phase is independently shippable. Rollback within a phase is ordinary rever
 | 1 | 2026-08-02 | Assistant | Initial | Initial draft; direction approved by human (canonical as single surface; ACP behavior frozen during migration). Status Approved by human 2026-08-02, including DD-7 unified task abstraction. |
 | 2 | 2026-08-09 | Assistant | Added DD-8 | Canonical reverse-request model for approvals and structured questions (mixed-surface fan-out; decision vocabulary converges on canonical `ApprovalDecision`). |
 | 3 | 2026-08-11 | Assistant | Added DD-9 | Runtime `ProtocolSet`, Native CLI vocabulary, monotonic singleton extension, initialize-time adapter selection, and once-per-connection event projection. |
+| 4 | 2026-08-22 | Assistant | Clarified DD-8 | Defined request-before-event ordering, lifecycle cancellation cleanup, indefinite interactive waits, and command pattern/prefix carriage for Native approvals. |

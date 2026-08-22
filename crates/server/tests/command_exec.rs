@@ -424,7 +424,7 @@ async fn wait_for_command_exec_exit(
                 }
                 return Ok(output);
             }
-            Some(("session/started", _)) if session_id.is_none() => {
+            Some(("session/created" | "session/started", _)) if session_id.is_none() => {
                 anyhow::bail!("sessionless command/exec unexpectedly created a session")
             }
             _ => {}

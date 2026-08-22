@@ -49,6 +49,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::QueryEvent;
 use super::QueryOptions;
+use super::SharedLastModelRequest;
 use super::hosted_tools_for_web_search;
 use super::insert_subagent_request_reminders;
 use super::query;
@@ -2955,6 +2956,49 @@ async fn query_locks_system_prompt_and_environment_prefix_per_session() {
         panic!("expected text prefix");
     };
     assert_eq!(first_text, second_text);
+}
+
+#[tokio::test]
+async fn query_publishes_last_model_request_for_prefix_reuse() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider: Arc<dyn ModelProviderSDK> = Arc::new(CapturingProvider {
+        requests: Arc::clone(&requests),
+    });
+    let registry = Arc::new(ToolRegistry::new());
+    let runtime = ToolRuntime::new_without_permissions(Arc::clone(&registry));
+    let mut session = SessionState::new(SessionConfig::default(), std::env::temp_dir());
+    session.push_message(Message::user("hello"));
+    let last_model_request: SharedLastModelRequest = Arc::new(Mutex::new(None));
+
+    query(
+        &mut session,
+        &TurnConfig::new(Model::default(), None),
+        provider,
+        registry,
+        &runtime,
+        None,
+        QueryOptions {
+            last_model_request: Some(Arc::clone(&last_model_request)),
+            ..QueryOptions::default()
+        },
+    )
+    .await
+    .expect("query should succeed");
+
+    let captured = requests.lock().expect("lock requests");
+    let published = last_model_request
+        .lock()
+        .expect("lock last request")
+        .clone()
+        .expect("query should publish the assembled request");
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].system, published.system);
+    assert_eq!(captured[0].model, published.model);
+    assert_eq!(captured[0].messages.len(), published.messages.len());
+    assert_eq!(
+        captured[0].tools.as_ref().map(Vec::len),
+        published.tools.as_ref().map(Vec::len)
+    );
 }
 
 #[tokio::test]

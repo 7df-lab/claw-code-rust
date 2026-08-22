@@ -53,6 +53,18 @@ pub(crate) async fn resolve_approval_response(
     ))
 }
 
+/// Drops a Native reverse-request correlation after the server completes the
+/// approval through cancellation or another controller.
+pub(crate) async fn discard_approval_request(
+    pending_approvals: &PendingApprovals,
+    approval_id: &str,
+) {
+    pending_approvals
+        .lock()
+        .await
+        .remove(&native_pending_key(approval_id));
+}
+
 fn native_pending_key(approval_id: &str) -> String {
     format!("native:{approval_id}")
 }
@@ -96,7 +108,10 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tokio::sync::Mutex;
 
-    use super::{PendingApprovals, handle_approval_request, resolve_approval_response};
+    use super::{
+        PendingApprovals, discard_approval_request, handle_approval_request,
+        resolve_approval_response,
+    };
 
     #[tokio::test]
     async fn native_approval_request_resolves_with_approval_respond_params() {
@@ -138,5 +153,21 @@ mod tests {
             answer.decision.scope,
             devo_protocol::native::item::ApprovalScope::Session
         );
+    }
+
+    #[tokio::test]
+    async fn completed_approval_discards_reverse_request_correlation() {
+        let pending_approvals: PendingApprovals = Arc::new(Mutex::new(HashMap::new()));
+        handle_approval_request(
+            serde_json::json!(56),
+            serde_json::json!({ "approvalId": "call-cancelled" }),
+            Arc::clone(&pending_approvals),
+        )
+        .await
+        .expect("Native approval request is accepted");
+
+        discard_approval_request(&pending_approvals, "call-cancelled").await;
+
+        assert!(pending_approvals.lock().await.is_empty());
     }
 }

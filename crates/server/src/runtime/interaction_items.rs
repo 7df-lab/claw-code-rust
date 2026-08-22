@@ -231,6 +231,35 @@ impl ServerRuntime {
         self.persist_native_active_turn_item(session_id, item).await;
     }
 
+    pub(super) async fn persist_terminal_user_input_item(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        request_id: String,
+        questions: &[devo_protocol::RequestUserInputQuestion],
+        state: ItemState,
+        persisted: &crate::execution::PersistedLivingItem,
+    ) {
+        let now = Utc::now();
+        let item = ItemEnvelope {
+            id: persisted.item_id.clone(),
+            session_id: NativeSessionId::from_legacy_uuid(Uuid::from(session_id)),
+            turn_id: NativeTurnId::from_legacy_uuid(Uuid::from(turn_id)),
+            seq: persisted.seq,
+            revision: 2,
+            created_at: persisted.created_at,
+            updated_at: now,
+            state,
+            item: Item::UserInputRequest {
+                request_id,
+                target_item_id: None,
+                questions: native_questions(questions),
+                answers: None,
+            },
+        };
+        self.persist_native_active_turn_item(session_id, item).await;
+    }
+
     async fn persist_native_active_turn_item(
         &self,
         session_id: SessionId,
@@ -294,6 +323,8 @@ fn approval_envelope(
             justification: request.justification.clone().unwrap_or_default(),
             resource: Some(format!("{:?}", request.resource)),
             available_scopes: available_scopes.to_vec(),
+            command_pattern: request.command_pattern.clone(),
+            command_prefix: request.command_prefix.clone(),
             target: request
                 .path
                 .as_ref()

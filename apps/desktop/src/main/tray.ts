@@ -3,7 +3,7 @@
  *
  * Shows live agent statuses grouped by project, pending action counts,
  * and quick-access actions. Rebuilds the context menu whenever session
- * state changes via the notification-watcher's ACP event stream.
+ * state changes via the notification-watcher's Native event stream.
  *
  * macOS features:
  * - Full-color tray icon that preserves the Devo black rounded-square mark
@@ -22,7 +22,7 @@ import {
 	onStateChanged,
 	type SessionState,
 } from "./notification-watcher"
-import { getAcpTransport, getServerUrl, onServerReady } from "./devo-manager"
+import { getNativeTransport, getServerUrl, onServerReady } from "./devo-manager"
 import { buildDevoTrayMenuTemplate, type DiscoveryCache } from "./tray-menu"
 
 const log = createLogger("tray")
@@ -261,7 +261,7 @@ async function refreshDiscovery(): Promise<void> {
 
 async function refreshDiscoveryForServer(): Promise<void> {
 	try {
-		const client = createDevoClient({ transport: getAcpTransport() })
+		const client = createDevoClient({ transport: getNativeTransport() })
 		const [projectsResult, sessionsResult] = await Promise.all([
 			client.project.list(),
 			client.session.list({ roots: true }),

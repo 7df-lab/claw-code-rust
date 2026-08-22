@@ -38,7 +38,7 @@ static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 fn legacy_process_test_guard() -> MutexGuard<'static, ()> {
     LEGACY_PROCESS_TEST_LOCK
         .lock()
-        .expect("legacy Windows sandbox process test lock poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn current_thread_runtime() -> tokio::runtime::Runtime {
@@ -567,12 +567,9 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
 
 #[test]
 fn legacy_capture_cancellation_is_not_reported_as_timeout() {
-    let Some(pwsh) = pwsh_path() else {
-        eprintln!("skipping cancellation regression test: PowerShell 7 is not installed");
-        return;
-    };
     let _guard = legacy_process_test_guard();
-    let cwd = sandbox_cwd();
+    let workspace = sandbox_home("legacy-capture-cancel-ws");
+    let cwd = workspace.path().to_path_buf();
     let devo_home = sandbox_home("legacy-capture-cancel");
     let permission_profile = PermissionProfile::workspace_write();
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -591,10 +588,11 @@ fn legacy_capture_cancellation_is_not_reported_as_timeout() {
         workspace_roots_for(cwd.as_path()).as_slice(),
         devo_home.path(),
         vec![
-            pwsh.display().to_string(),
-            "-NoProfile".to_string(),
-            "-Command".to_string(),
-            "Start-Sleep -Seconds 30".to_string(),
+            r"C:\Windows\System32\cmd.exe".to_string(),
+            "/c".to_string(),
+            // Stay alive well past the 30s wait budget so an ignored cancel
+            // is reported as `timed_out` instead of a natural process exit.
+            "ping -n 3600 127.0.0.1 >NUL".to_string(),
         ],
         cwd.as_path(),
         HashMap::new(),
@@ -602,20 +600,17 @@ fn legacy_capture_cancellation_is_not_reported_as_timeout() {
         /*cancellation*/ Some(cancellation),
         /*use_private_desktop*/ true,
     )
-    .expect("run legacy capture powershell with cancellation");
+    .expect("run legacy capture with cancellation");
     cancel_thread.join().expect("cancel thread should finish");
 
     assert!(
-        // This test is sensitive to CI load and process start-up latency.
-        // Cancellation should still happen well before the capture timeout
-        // (30s), but allow a bit more slack to avoid flaky failures.
-        started_at.elapsed() < Duration::from_secs(15),
-        "cancellation should end capture before the timeout"
-    );
-    assert!(
         !result.timed_out,
-        "cancellation should not be reported as a timeout"
+        "cancellation should not be reported as a timeout (elapsed={:?})",
+        started_at.elapsed()
     );
+    // Do not bound wall clock: restricted-token and private-desktop setup
+    // can exceed 30s under load. An ignored cancel would wait the full 30s
+    // *after* spawn against ping -n 3600 and set timed_out.
     assert_ne!(result.exit_code, 0);
 }
 

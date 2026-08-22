@@ -6,10 +6,15 @@
 use devo_protocol::ItemEnvelope as LegacyItemEnvelope;
 use devo_protocol::ItemEventPayload;
 use devo_protocol::ItemKind;
+use devo_protocol::PendingServerRequestContext;
+use devo_protocol::ServerRequestKind;
 use devo_protocol::SessionHistoryItem;
 use devo_protocol::SessionHistoryItemKind;
 use devo_protocol::SessionHistoryMetadata;
 use devo_protocol::TypedItemEventPayload;
+use devo_protocol::native::item::ApprovalDecisionKind;
+use devo_protocol::native::item::ApprovalScope;
+use devo_protocol::native::item::ApprovalTarget;
 use devo_protocol::native::item::Item;
 use devo_protocol::native::turn::Turn;
 use devo_protocol::native::turn::TurnStatus;
@@ -175,7 +180,7 @@ pub(super) fn history_item_from_native_turn(
 
 /// Converts a canonical typed item event into the legacy item-event shape
 /// understood by the TUI's item handlers. Variants the TUI does not render
-/// (approvals, hosted tools, background work, warnings, ...) yield `None`,
+/// (hosted tools, background work, warnings, ...) yield `None`,
 /// matching the legacy handler's ignore list.
 pub(super) fn legacy_item_event_from_typed(
     payload: &TypedItemEventPayload,
@@ -252,11 +257,33 @@ pub(super) fn legacy_item_event_from_typed(
             })
             .expect("serialize legacy command execution payload"),
         ),
+        Item::Approval {
+            approval_id,
+            action_summary,
+            justification,
+            resource,
+            available_scopes,
+            command_pattern,
+            command_prefix,
+            target,
+            decision,
+            ..
+        } => approval_legacy_payload(
+            payload,
+            approval_id,
+            action_summary,
+            justification,
+            resource,
+            available_scopes,
+            command_pattern,
+            command_prefix,
+            target.as_ref(),
+            decision.as_ref(),
+        )?,
         Item::ContextCompaction { .. } => (ItemKind::ContextCompaction, serde_json::json!({})),
         Item::UserMessage { .. }
         | Item::HostedToolCall { .. }
         | Item::FileChange { .. }
-        | Item::Approval { .. }
         | Item::UserInputRequest { .. }
         | Item::SubAgent { .. }
         | Item::BackgroundTask { .. }
@@ -271,6 +298,90 @@ pub(super) fn legacy_item_event_from_typed(
             payload: legacy_payload,
         },
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn approval_legacy_payload(
+    payload: &TypedItemEventPayload,
+    approval_id: &str,
+    action_summary: &str,
+    justification: &str,
+    resource: &Option<String>,
+    available_scopes: &[String],
+    command_pattern: &Option<Vec<String>>,
+    command_prefix: &Option<Vec<String>>,
+    target: Option<&ApprovalTarget>,
+    decision: Option<&devo_protocol::native::item::ApprovalDecision>,
+) -> Option<(ItemKind, serde_json::Value)> {
+    if let Some(decision) = decision {
+        let decision_label = match decision.decision {
+            ApprovalDecisionKind::Approved => "approve",
+            ApprovalDecisionKind::Denied => "deny",
+            ApprovalDecisionKind::Cancelled => "cancel",
+        };
+        let scope = match decision.scope {
+            ApprovalScope::Once => "once",
+            ApprovalScope::Turn => "turn",
+            ApprovalScope::Session => "session",
+            ApprovalScope::PathPrefix => "path_prefix",
+            ApprovalScope::Host => "host",
+            ApprovalScope::Tool => "tool",
+            ApprovalScope::CommandPrefix => "command_prefix",
+            ApprovalScope::CommandPrefixPersist => "command_prefix_persist",
+        };
+        return Some((
+            ItemKind::ApprovalDecision,
+            serde_json::to_value(devo_protocol::ApprovalDecisionPayload {
+                approval_id: approval_id.to_string().into(),
+                decision: decision_label.to_string(),
+                scope: scope.to_string(),
+                decision_source: Some(decision.decision_source),
+            })
+            .expect("serialize legacy approval decision payload"),
+        ));
+    }
+
+    let turn_id = payload
+        .context
+        .turn_id
+        .or_else(|| devo_protocol::TurnId::try_from(payload.item.turn_id.as_str()).ok())?;
+    let (path, host, target) = match target {
+        Some(ApprovalTarget::Path { path }) => (Some(path.display().to_string()), None, None),
+        Some(ApprovalTarget::Host { host }) => (None, Some(host.clone()), None),
+        Some(ApprovalTarget::Command { command }) => (None, None, Some(command.clone())),
+        None => (None, None, None),
+    };
+    Some((
+        ItemKind::ApprovalRequest,
+        serde_json::to_value(devo_protocol::ApprovalRequestPayload {
+            request: PendingServerRequestContext {
+                request_id: approval_id.to_string().into(),
+                request_kind: approval_request_kind(resource.as_deref()),
+                session_id: payload.context.session_id,
+                turn_id: Some(turn_id),
+                item_id: payload.context.item_id,
+            },
+            approval_id: approval_id.to_string().into(),
+            action_summary: action_summary.to_string(),
+            justification: justification.to_string(),
+            resource: resource.clone(),
+            available_scopes: available_scopes.to_vec(),
+            path,
+            host,
+            target,
+            command_pattern: command_pattern.clone(),
+            command_prefix: command_prefix.clone(),
+        })
+        .expect("serialize legacy approval request payload"),
+    ))
+}
+
+fn approval_request_kind(resource: Option<&str>) -> ServerRequestKind {
+    match resource {
+        Some("ShellExec") => ServerRequestKind::ItemCommandExecutionRequestApproval,
+        Some("FileWrite") => ServerRequestKind::ItemFileChangeRequestApproval,
+        Some(_) | None => ServerRequestKind::ItemPermissionsRequestApproval,
+    }
 }
 
 #[cfg(test)]
@@ -341,6 +452,90 @@ mod tests {
         assert_eq!(payload.tool_call_id, "call-1");
         assert_eq!(payload.tool_name, "exec_command");
         assert_eq!(payload.parameters, serde_json::json!({ "cmd": "ls" }));
+    }
+
+    #[test]
+    fn typed_approval_converts_to_tui_request_payload() {
+        let typed = typed_payload(Item::Approval {
+            approval_id: "call-approval-1".into(),
+            target_item_id: None,
+            action_summary: "Run cargo test".into(),
+            justification: "Verify the change".into(),
+            resource: Some("ShellExec".into()),
+            available_scopes: vec!["once".into(), "command_prefix_persist".into()],
+            command_pattern: Some(vec!["cargo".into(), "test".into()]),
+            command_prefix: Some(vec!["cargo".into(), "test".into()]),
+            target: Some(ApprovalTarget::Command {
+                command: "cargo test".into(),
+            }),
+            decision: None,
+        });
+        let legacy = legacy_item_event_from_typed(&typed).expect("approval converts");
+        let request: devo_protocol::ApprovalRequestPayload =
+            serde_json::from_value(legacy.item.payload).expect("approval request payload");
+
+        assert_eq!(legacy.item.item_kind, ItemKind::ApprovalRequest);
+        assert_eq!(
+            request,
+            devo_protocol::ApprovalRequestPayload {
+                request: PendingServerRequestContext {
+                    request_id: "call-approval-1".into(),
+                    request_kind: ServerRequestKind::ItemCommandExecutionRequestApproval,
+                    session_id: typed.context.session_id,
+                    turn_id: typed.context.turn_id,
+                    item_id: typed.context.item_id,
+                },
+                approval_id: "call-approval-1".into(),
+                action_summary: "Run cargo test".into(),
+                justification: "Verify the change".into(),
+                resource: Some("ShellExec".into()),
+                available_scopes: vec!["once".into(), "command_prefix_persist".into()],
+                path: None,
+                host: None,
+                target: Some("cargo test".into()),
+                command_pattern: Some(vec!["cargo".into(), "test".into()]),
+                command_prefix: Some(vec!["cargo".into(), "test".into()]),
+            }
+        );
+    }
+
+    #[test]
+    fn typed_approval_decision_converts_to_tui_decision_payload() {
+        let mut typed = typed_payload(Item::Approval {
+            approval_id: "call-approval-2".into(),
+            target_item_id: None,
+            action_summary: "Run cargo test".into(),
+            justification: String::new(),
+            resource: Some("ShellExec".into()),
+            available_scopes: vec!["once".into()],
+            command_pattern: None,
+            command_prefix: None,
+            target: None,
+            decision: Some(devo_protocol::native::item::ApprovalDecision {
+                decision: ApprovalDecisionKind::Cancelled,
+                scope: ApprovalScope::Once,
+                decision_source:
+                    devo_protocol::native::item::ApprovalDecisionSource::ExternalPolicy,
+                decided_at: chrono::Utc::now(),
+            }),
+        });
+        typed.item.state = ItemState::Completed;
+        let legacy = legacy_item_event_from_typed(&typed).expect("approval decision converts");
+        let decision: devo_protocol::ApprovalDecisionPayload =
+            serde_json::from_value(legacy.item.payload).expect("approval decision payload");
+
+        assert_eq!(legacy.item.item_kind, ItemKind::ApprovalDecision);
+        assert_eq!(
+            decision,
+            devo_protocol::ApprovalDecisionPayload {
+                approval_id: "call-approval-2".into(),
+                decision: "cancel".into(),
+                scope: "once".into(),
+                decision_source: Some(
+                    devo_protocol::native::item::ApprovalDecisionSource::ExternalPolicy,
+                ),
+            }
+        );
     }
 
     #[test]

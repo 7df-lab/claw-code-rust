@@ -2199,7 +2199,7 @@ fn legacy_event_from_acp_notification(value: serde_json::Value) -> serde_json::V
 }
 
 fn title_from_notification(value: &serde_json::Value) -> Option<&str> {
-    if value.get("method") == Some(&serde_json::json!("session/title/updated")) {
+    if value.get("method") == Some(&serde_json::json!("session/metadataUpdated")) {
         return value["params"]["session"]["title"].as_str();
     }
     if value.get("method") == Some(&serde_json::json!("session/update"))

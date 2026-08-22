@@ -23,6 +23,7 @@ export type {
 	Message,
 	Part,
 	PermissionRequest,
+	PermissionResponse,
 	Project as DevoProject,
 	QuestionAnswer,
 	QuestionInfo,

@@ -430,7 +430,10 @@ base_instructions = "Catalog-only model instructions"
     let mode_option = acp_config_option(&session_new_response["result"], "mode")?;
     assert_eq!(mode_option["name"], serde_json::json!("Session Mode"));
     assert_eq!(mode_option["category"], serde_json::json!("mode"));
-    assert_eq!(mode_option["currentValue"], serde_json::json!("default"));
+    assert_eq!(
+        mode_option["currentValue"],
+        serde_json::json!("auto-review")
+    );
     assert_config_option_values(mode_option, &["default", "auto-review", "full-access"])?;
 
     write_stdio_json(
@@ -522,7 +525,10 @@ base_instructions = "Catalog-only model instructions"
     );
     assert!(acp_config_option_optional(&set_config_response["result"], "thought_level").is_none());
     let mode_option = acp_config_option(&set_config_response["result"], "mode")?;
-    assert_eq!(mode_option["currentValue"], serde_json::json!("default"));
+    assert_eq!(
+        mode_option["currentValue"],
+        serde_json::json!("auto-review")
+    );
 
     write_stdio_json(
         &mut stdin,

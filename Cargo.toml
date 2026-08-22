@@ -99,6 +99,7 @@ image = { version = "^0.25.9", default-features = false }
 include_dir = "0.7"
 insta = "1.46.3"
 itertools = "0.14.0"
+jsonrepair = { version = "0.1", default-features = false, features = ["serde"] }
 keyring = { version = "3.6", default-features = false }
 lazy_static = "1"
 libc = "0.2.182"

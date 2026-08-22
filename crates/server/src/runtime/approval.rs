@@ -16,8 +16,15 @@ use std::path::Path;
 
 enum AutoReviewOutcome {
     Approve,
-    Deny(String),
     AskUser,
+}
+
+fn review_response_preview(content: &[devo_protocol::ResponseContent]) -> String {
+    let raw = format!("{content:?}");
+    match raw.char_indices().nth(240) {
+        Some((index, _)) => format!("{}…", &raw[..index]),
+        None => raw,
+    }
 }
 
 impl ServerRuntime {
@@ -189,18 +196,6 @@ impl ServerRuntime {
                             );
                             return Ok(approved_permission_grant(&request));
                         }
-                        AutoReviewOutcome::Deny(reason) => {
-                            trace_permission_decision(
-                                session_id,
-                                &request,
-                                devo_protocol::native::item::ApprovalDecisionSource::AutoReview,
-                                "deny",
-                                Some(reason.as_str()),
-                            );
-                            self.run_permission_denied_hook(session_id, &request, &reason)
-                                .await;
-                            return Err(format!("rejected by auto-reviewer: {reason}"));
-                        }
                         AutoReviewOutcome::AskUser => {}
                     }
                 }
@@ -254,19 +249,40 @@ impl ServerRuntime {
         request: &ToolPermissionRequest,
         permission_profile: &devo_safety::RuntimePermissionProfile,
     ) -> AutoReviewOutcome {
-        let (model, runtime_context) = {
+        let from_inline = if let Some(stream) = self.active_stream_state(session_id).await {
+            let stream = stream.lock().await;
+            stream.turn_inline.as_ref().map(|inline| {
+                let prefix = inline
+                    .last_model_request
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.clone());
+                let fallback_model =
+                    inline.summary.model.clone().unwrap_or_else(|| {
+                        inline.hook_context.runtime_context.default_model.clone()
+                    });
+                (
+                    Arc::clone(&inline.hook_context.runtime_context),
+                    prefix,
+                    fallback_model,
+                )
+            })
+        } else {
+            None
+        };
+        let (runtime_context, prefix, fallback_model) = if let Some(inputs) = from_inline {
+            inputs
+        } else {
             let Some(reservation) = self.session_turn_reservation_snapshot(session_id).await else {
                 return AutoReviewOutcome::AskUser;
             };
             let runtime_context = reservation.runtime_context;
-            (
-                reservation
-                    .summary
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| runtime_context.default_model.clone()),
-                runtime_context,
-            )
+            let fallback_model = reservation
+                .summary
+                .model
+                .clone()
+                .unwrap_or_else(|| runtime_context.default_model.clone());
+            (runtime_context, None, fallback_model)
         };
 
         let context = self
@@ -277,7 +293,10 @@ impl ServerRuntime {
                 &runtime_context,
             )
             .await;
-        let model_request = build_approval_review_request(model, request, &context);
+        let model_request = match prefix {
+            Some(prefix) => extend_approval_review_request(prefix, request, &context),
+            None => build_approval_review_request(fallback_model, request, &context),
+        };
         let provider = self.usage_ledger.instrumented_provider(
             Arc::clone(&runtime_context.provider),
             session_id,
@@ -308,46 +327,25 @@ impl ServerRuntime {
             }
         };
         match parse_reviewer_decision(&response.content) {
-            Some(ReviewerDecision::Approve { rationale }) => {
+            Some(assessment) if assessment.risk.allows_without_user() => {
                 tracing::info!(
                     session_id = %session_id,
                     tool = %request.tool_name,
-                    rationale = %rationale,
-                    "auto-review approved tool request"
+                    risk = assessment.risk.as_str(),
+                    rationale = %assessment.rationale,
+                    "auto-review allowed tool request"
                 );
-                self.emit_auto_review_decision(
-                    session_id,
-                    turn_id,
-                    request,
-                    "approve",
-                    rationale.as_str(),
-                )
-                .await;
+                self.emit_auto_review_decision(session_id, turn_id, request, &assessment)
+                    .await;
                 AutoReviewOutcome::Approve
             }
-            Some(ReviewerDecision::Deny { rationale }) => {
-                tracing::warn!(
-                    session_id = %session_id,
-                    tool = %request.tool_name,
-                    rationale = %rationale,
-                    "auto-review denied tool request"
-                );
-                self.emit_auto_review_decision(
-                    session_id,
-                    turn_id,
-                    request,
-                    "deny",
-                    rationale.as_str(),
-                )
-                .await;
-                AutoReviewOutcome::Deny(rationale)
-            }
-            Some(ReviewerDecision::Uncertain { rationale }) => {
+            Some(assessment) => {
                 tracing::info!(
                     session_id = %session_id,
                     tool = %request.tool_name,
-                    rationale = %rationale,
-                    "auto-review deferred tool request to user"
+                    risk = assessment.risk.as_str(),
+                    rationale = %assessment.rationale,
+                    "auto-review deferred high-risk tool request to user"
                 );
                 AutoReviewOutcome::AskUser
             }
@@ -355,7 +353,8 @@ impl ServerRuntime {
                 tracing::warn!(
                     session_id = %session_id,
                     tool = %request.tool_name,
-                    "auto-review returned an invalid decision"
+                    preview = %review_response_preview(&response.content),
+                    "auto-review returned an invalid risk assessment"
                 );
                 AutoReviewOutcome::AskUser
             }
@@ -434,17 +433,11 @@ impl ServerRuntime {
         session_id: SessionId,
         turn_id: TurnId,
         request: &ToolPermissionRequest,
-        decision: &str,
-        rationale: &str,
+        assessment: &crate::approval_reviewer::ReviewerAssessment,
     ) {
         let approval_id = format!("auto-review-{}", request.tool_call_id);
         let item_id = ItemId::new();
         let item_seq = self.allocate_item_sequence(session_id).await;
-        let native_decision = if decision.eq_ignore_ascii_case("approve") {
-            devo_protocol::native::item::ApprovalDecisionKind::Approved
-        } else {
-            devo_protocol::native::item::ApprovalDecisionKind::Denied
-        };
         self.persist_completed_approval_item(
             session_id,
             turn_id,
@@ -452,7 +445,7 @@ impl ServerRuntime {
             item_seq,
             &approval_id,
             request,
-            native_decision,
+            devo_protocol::native::item::ApprovalDecisionKind::Approved,
             devo_protocol::native::item::ApprovalDecisionSource::AutoReview,
         )
         .await;
@@ -464,11 +457,12 @@ impl ServerRuntime {
             ItemKind::ApprovalDecision,
             serde_json::json!({
                 "approval_id": approval_id,
-                "decision": decision,
+                "decision": "approve",
+                "risk": assessment.risk.as_str(),
                 "scope": "auto_review",
                 "decision_source": "autoReview",
                 "revision": 1,
-                "rationale": rationale,
+                "rationale": assessment.rationale,
                 "action_summary": request.action_summary,
                 "justification": request.justification,
                 "tool_name": request.tool_name,
@@ -724,15 +718,6 @@ impl ServerRuntime {
             command_pattern: request.command_pattern.clone(),
             command_prefix: request.command_prefix.clone(),
         };
-        self.emit_item_started(
-            session_id,
-            turn_id,
-            approval_item_id,
-            Some(approval_item_seq),
-            ItemKind::ApprovalRequest,
-            serde_json::to_value(&request_payload).expect("serialize approval request payload"),
-        )
-        .await;
         let persisted_approval = self
             .persist_waiting_approval_item(
                 session_id,
@@ -744,6 +729,7 @@ impl ServerRuntime {
             )
             .await;
         let (tx, rx) = oneshot::channel();
+        let (controller_tx, mut controller_rx) = tokio::sync::mpsc::unbounded_channel();
         let pending = PendingApproval {
             owner_session_id: session_id,
             turn_id,
@@ -763,7 +749,13 @@ impl ServerRuntime {
             tx,
         };
         self.session_interactive
-            .register_pending_approval(host_session_id, approval_id.clone(), pending)
+            .register_pending_approval(
+                host_session_id,
+                approval_id.clone(),
+                pending,
+                controller_tx,
+                available_scopes.clone(),
+            )
             .await;
 
         let request_params =
@@ -777,6 +769,14 @@ impl ServerRuntime {
             devo_safety::ResourceKind::FileRead
             | devo_safety::ResourceKind::Network
             | devo_safety::ResourceKind::Custom(_) => "approval/permission/request",
+        };
+        let native_target = if let Some(path) = &request.path {
+            Some(devo_protocol::native::item::ApprovalTarget::Path { path: path.clone() })
+        } else if let Some(host) = &request.host {
+            Some(devo_protocol::native::item::ApprovalTarget::Host { host: host.clone() })
+        } else {
+            devo_core::tools::command_str_for_permission_request(&request)
+                .map(|command| devo_protocol::native::item::ApprovalTarget::Command { command })
         };
         let native_params = serde_json::to_value(devo_protocol::native::item::Item::Approval {
             approval_id: approval_id.clone(),
@@ -792,7 +792,9 @@ impl ServerRuntime {
                         .and_then(|value| value.as_str().map(str::to_string))
                 })
                 .collect(),
-            target: None,
+            command_pattern: request.command_pattern.clone(),
+            command_prefix: request.command_prefix.clone(),
+            target: native_target,
             decision: None,
         })
         .expect("serialize native approval request params");
@@ -800,25 +802,119 @@ impl ServerRuntime {
             .active_turns
             .cancel_token_for_host_or_session(host_session_id, session_id)
             .await;
-        let (decision, scope) = match self
-            .request_permission_from_controllers(
-                host_session_id,
-                owner_connection_id,
-                request_params,
-                native_method,
-                native_params,
-                cancel_token,
-            )
-            .await
-        {
+        let (request_ready_tx, request_ready_rx) = oneshot::channel();
+        let permission_request = async {
+            tokio::select! {
+                result = self.request_permission_from_controllers(
+                    host_session_id,
+                    owner_connection_id,
+                    super::control_requests::PermissionControllerRequest {
+                        acp_params: request_params,
+                        native_method: native_method.to_string(),
+                        native_params,
+                        ready: request_ready_tx,
+                    },
+                    cancel_token,
+                ) => result,
+                result = controller_rx.recv() => result.ok_or_else(|| {
+                    "permission controller recovery channel closed".to_string()
+                }),
+            }
+        };
+        let publish_waiting_item = async {
+            match request_ready_rx.await {
+                Ok(Ok(())) => {
+                    self.emit_item_started(
+                        session_id,
+                        turn_id,
+                        approval_item_id,
+                        Some(approval_item_seq),
+                        ItemKind::ApprovalRequest,
+                        serde_json::to_value(&request_payload)
+                            .expect("serialize approval request payload"),
+                    )
+                    .await;
+                    Ok(())
+                }
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err("permission request readiness channel closed".to_string()),
+            }
+        };
+        let (permission_result, publish_result) =
+            tokio::join!(permission_request, publish_waiting_item);
+        let (decision, scope) = match permission_result {
             Ok(decision) => decision,
             Err(error) => {
+                if let Some(persisted) = &persisted_approval {
+                    self.persist_resolved_approval_item(
+                        session_id,
+                        turn_id,
+                        &request,
+                        &available_scopes,
+                        devo_protocol::native::item::ApprovalDecisionKind::Cancelled,
+                        devo_protocol::native::item::ApprovalScope::Once,
+                        devo_protocol::native::item::ApprovalDecisionSource::ExternalPolicy,
+                        persisted,
+                    )
+                    .await;
+                }
+                if publish_result.is_ok() {
+                    let mut decision_payload = serde_json::to_value(ApprovalDecisionPayload {
+                        approval_id: approval_id.clone().into(),
+                        decision: "cancel".to_string(),
+                        scope: "once".to_string(),
+                        decision_source: Some(
+                            devo_protocol::native::item::ApprovalDecisionSource::ExternalPolicy,
+                        ),
+                    })
+                    .expect("serialize cancelled approval decision payload");
+                    if let Some(payload) = decision_payload.as_object_mut() {
+                        payload.insert("revision".into(), serde_json::json!(2));
+                        payload.insert(
+                            "action_summary".into(),
+                            serde_json::json!(request.action_summary.clone()),
+                        );
+                        payload.insert(
+                            "justification".into(),
+                            serde_json::json!(request.justification.clone().unwrap_or_default()),
+                        );
+                        payload.insert(
+                            "resource".into(),
+                            serde_json::json!(format!("{:?}", request.resource)),
+                        );
+                        payload.insert(
+                            "available_scopes".into(),
+                            serde_json::json!(available_scopes),
+                        );
+                        payload.insert("path".into(), serde_json::json!(request.path.clone()));
+                        payload.insert("host".into(), serde_json::json!(request.host.clone()));
+                        payload.insert("target".into(), serde_json::json!(request.target.clone()));
+                        payload.insert(
+                            "command_pattern".into(),
+                            serde_json::json!(request.command_pattern.clone()),
+                        );
+                        payload.insert(
+                            "command_prefix".into(),
+                            serde_json::json!(request.command_prefix.clone()),
+                        );
+                    }
+                    self.emit_item_completed(
+                        session_id,
+                        turn_id,
+                        approval_item_id,
+                        Some(approval_item_seq),
+                        ItemKind::ApprovalDecision,
+                        decision_payload,
+                    )
+                    .await;
+                }
                 self.session_interactive
                     .remove_pending_approval(host_session_id, &approval_id)
                     .await;
                 return Err(format!("permission request failed: {error}"));
             }
         };
+        publish_result.map_err(|error| format!("permission request failed: {error}"))?;
         let (outcome, reason) = match &decision {
             ApprovalDecisionValue::Approve => ("allow", None),
             ApprovalDecisionValue::Deny => ("deny", Some("rejected by user")),
@@ -889,6 +985,14 @@ impl ServerRuntime {
             payload.insert("path".into(), serde_json::json!(request.path.clone()));
             payload.insert("host".into(), serde_json::json!(request.host.clone()));
             payload.insert("target".into(), serde_json::json!(request.target.clone()));
+            payload.insert(
+                "command_pattern".into(),
+                serde_json::json!(request.command_pattern.clone()),
+            );
+            payload.insert(
+                "command_prefix".into(),
+                serde_json::json!(request.command_prefix.clone()),
+            );
         }
         self.emit_item_completed(
             session_id,

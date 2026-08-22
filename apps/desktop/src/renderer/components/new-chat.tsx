@@ -345,7 +345,7 @@ export function NewChat() {
 	const handleBranchChanged = useCallback(
 		(_branch: string) => {
 			// VCS hook polls every 30s, but we want immediate UI update.
-			// The ACP vcs.branch.updated event will also fire eventually.
+			// The Native vcs.branch.updated event will also fire eventually.
 			reloadVcs()
 		},
 		[reloadVcs],

@@ -117,7 +117,7 @@ fn initial_permission_preset(
         .projects
         .get(project_key)
         .and_then(|config| config.permission_preset)
-        .unwrap_or(PermissionPreset::Default);
+        .unwrap_or(PermissionPreset::AutoReview);
 
     if dangerously_skip_permissions {
         permission_preset = PermissionPreset::FullAccess;
@@ -143,7 +143,7 @@ fn initial_sandbox_profile(
     }
     let preset = project
         .and_then(|config| config.permission_preset)
-        .unwrap_or(PermissionPreset::Default);
+        .unwrap_or(PermissionPreset::AutoReview);
     Some(
         match preset {
             PermissionPreset::FullAccess => "off",
@@ -322,6 +322,19 @@ mod tests {
             provider,
             ..AppConfig::default()
         }
+    }
+
+    #[test]
+    fn initial_permission_preset_defaults_to_auto_review_when_unset() {
+        let app_config = AppConfig::default();
+        assert_eq!(
+            initial_permission_preset(
+                &app_config,
+                "project-key",
+                /*dangerously_skip_permissions*/ false,
+            ),
+            PermissionPreset::AutoReview,
+        );
     }
 
     #[test]

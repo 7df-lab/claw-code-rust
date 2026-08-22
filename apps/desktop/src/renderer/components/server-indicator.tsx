@@ -57,7 +57,7 @@ export function ServerIndicator() {
 				</div>
 				<div className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm">
 					<TerminalIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-					<span className="min-w-0 flex-1 truncate">ACP stdio</span>
+					<span className="min-w-0 flex-1 truncate">Native stdio</span>
 					<span
 						className={`size-1.5 shrink-0 rounded-full ${connected ? "bg-green-500" : "bg-red-500"}`}
 					/>

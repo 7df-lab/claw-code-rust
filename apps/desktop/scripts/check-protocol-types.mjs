@@ -17,7 +17,7 @@ try {
 			"-p",
 			"devo-protocol",
 			"--bin",
-			"generate-acp-ts",
+			"generate-native-ts",
 			"--",
 			tempDir
 		],

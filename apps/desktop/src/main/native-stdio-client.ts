@@ -5,10 +5,10 @@ import { homedir } from "node:os"
 import path from "node:path"
 import type { NetworkProxySettings } from "../preload/api"
 import { normalizeNoProxy, normalizeProxyUrl } from "../shared/network-proxy"
-import type { AcpTrafficLogRecord, AcpTrafficLogger } from "./acp-traffic-log"
+import type { NativeTrafficLogRecord, NativeTrafficLogger } from "./native-traffic-log"
 import { createLogger } from "./logger"
 
-const log = createLogger("acp-stdio-client")
+const log = createLogger("native-stdio-client")
 export const DESKTOP_NETWORK_PROXY_MODE_ENV = "DEVO_DESKTOP_NETWORK_PROXY_MODE"
 export const DESKTOP_NETWORK_PROXY_URL_ENV = "DEVO_DESKTOP_NETWORK_PROXY_URL"
 export const DESKTOP_NETWORK_NO_PROXY_ENV = "DEVO_DESKTOP_NETWORK_NO_PROXY"
@@ -29,38 +29,42 @@ export type JsonRpcId = number | string
 type PendingRequest = {
 	resolve: (value: unknown) => void
 	reject: (error: Error) => void
+	timer: ReturnType<typeof setTimeout>
 }
 
-export type AcpIncomingMessage =
+const REQUEST_TIMEOUT_MS = 10_000
+
+export type NativeIncomingMessage =
 	| { type: "response"; id: JsonRpcId; message: Record<string, unknown> }
 	| { type: "notification"; method: string; params: unknown; message: Record<string, unknown> }
 	| { type: "request"; id: JsonRpcId; method: string; params: unknown; message: Record<string, unknown> }
 	| { type: "invalid"; error: string; line: string }
 
-export type AcpTransportEvent =
+export type NativeTransportEvent =
 	| { type: "notification"; method: string; params: unknown }
 	| { type: "request"; id: JsonRpcId; method: string; params: unknown }
 	| { type: "closed"; error?: string }
 
-export type AcpTransportListener = (event: AcpTransportEvent) => void
+export type NativeTransportListener = (event: NativeTransportEvent) => void
 
-export interface AcpTransport {
+export interface NativeTransport {
 	request(method: string, params?: unknown, directory?: string): Promise<unknown>
 	notify(method: string, params?: unknown, directory?: string): Promise<void>
 	respond(id: JsonRpcId, result: unknown): Promise<void>
-	subscribe(listener: AcpTransportListener): () => void
+	subscribe(listener: NativeTransportListener): () => void
 	connected(): boolean
 	pid(): number | null
 	stop(): void
 }
 
-export interface StdioAcpClientOptions {
+export interface StdioNativeClientOptions {
 	program?: string
 	args?: string[]
 	cwd?: string
 	env?: NodeJS.ProcessEnv
 	networkProxy?: NetworkProxySettings
-	trafficLogger?: AcpTrafficLogger
+	trafficLogger?: NativeTrafficLogger
+	requestTimeoutMs?: number
 }
 
 export interface BuildServerProcessEnvOptions {
@@ -129,7 +133,7 @@ function applyDesktopNetworkProxyEnv(
 	}
 }
 
-export function routeAcpLine(line: string): AcpIncomingMessage {
+export function routeNativeLine(line: string): NativeIncomingMessage {
 	let message: Record<string, unknown>
 	try {
 		message = JSON.parse(line) as Record<string, unknown>
@@ -169,7 +173,7 @@ export function routeAcpLine(line: string): AcpIncomingMessage {
 const DIRECTORY_SCOPED_METHODS = new Set([
 	"session/list",
 	"skill/list",
-	"reference/search/start",
+	"search/start",
 	"command/exec",
 ])
 
@@ -180,7 +184,7 @@ function scopeRequestParams(method: string, params: unknown, directory?: string)
 	return { ...params, cwd: directory }
 }
 
-export class StdioAcpClient implements AcpTransport {
+export class StdioNativeClient implements NativeTransport {
 	private child: ChildProcessWithoutNullStreams | null = null
 	private nextId = 1
 	private pending = new Map<JsonRpcId, PendingRequest>()
@@ -190,7 +194,7 @@ export class StdioAcpClient implements AcpTransport {
 	private initializeResult: unknown | undefined
 	private initializeInFlight: Promise<unknown> | null = null
 
-	constructor(private readonly options: StdioAcpClientOptions = {}) {}
+	constructor(private readonly options: StdioNativeClientOptions = {}) {}
 
 	start(): void {
 		if (this.child) return
@@ -206,7 +210,7 @@ export class StdioAcpClient implements AcpTransport {
 		const args = this.options.args ?? ["server", "--transport", "stdio"]
 		const cwd = this.options.cwd ?? homedir()
 
-		log.info("Spawning Devo ACP stdio server", {
+		log.info("Spawning Devo Native stdio server", {
 			program,
 			args,
 			cwd,
@@ -230,18 +234,18 @@ export class StdioAcpClient implements AcpTransport {
 
 		child.stdin.on("error", (error) => {
 			const reason = toError(error)
-			log.warn("Devo ACP stdio stdin failed", reason)
+			log.warn("Devo Native stdio stdin failed", reason)
 			this.close(reason)
 		})
 
 		child.on("error", (error) => {
-			log.error("Devo ACP stdio process failed", error)
+			log.error("Devo Native stdio process failed", error)
 			this.close(error)
 		})
 
 		child.on("exit", (code, signal) => {
 			if (this.stopped) return
-			const reason = `Devo ACP stdio process exited with code ${code ?? "null"} signal ${signal ?? "null"}`
+			const reason = `Devo Native stdio process exited with code ${code ?? "null"} signal ${signal ?? "null"}`
 			log.warn(reason)
 			this.close(new Error(reason))
 		})
@@ -281,7 +285,12 @@ export class StdioAcpClient implements AcpTransport {
 		const scopedParams = scopeRequestParams(method, params, directory)
 		const payload = { jsonrpc: "2.0", id, method, params: scopedParams }
 		const response = new Promise<unknown>((resolve, reject) => {
-			this.pending.set(id, { resolve, reject })
+			const timer = setTimeout(() => {
+				if (!this.pending.delete(id)) return
+				this.pendingMethods.delete(id)
+				reject(new Error(`${method} request ${id} timed out`))
+			}, this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS)
+			this.pending.set(id, { resolve, reject, timer })
 		})
 		this.pendingMethods.set(id, method)
 		try {
@@ -295,6 +304,8 @@ export class StdioAcpClient implements AcpTransport {
 			})
 		} catch (error) {
 			const reason = toError(error)
+			const pending = this.pending.get(id)
+			if (pending) clearTimeout(pending.timer)
 			this.pending.delete(id)
 			this.pendingMethods.delete(id)
 			this.close(reason)
@@ -341,7 +352,7 @@ export class StdioAcpClient implements AcpTransport {
 		}
 	}
 
-	subscribe(listener: AcpTransportListener): () => void {
+	subscribe(listener: NativeTransportListener): () => void {
 		this.events.on("event", listener)
 		return () => this.events.off("event", listener)
 	}
@@ -359,11 +370,11 @@ export class StdioAcpClient implements AcpTransport {
 		const child = this.child
 		this.child = null
 		if (child && !child.killed) child.kill()
-		this.close(new Error("Devo ACP stdio client stopped"))
+		this.close(new Error("Devo Native stdio client stopped"))
 	}
 
 	private handleLine(line: string): void {
-		const routed = routeAcpLine(line)
+		const routed = routeNativeLine(line)
 		switch (routed.type) {
 			case "response": {
 				const method = this.pendingMethods.get(routed.id)
@@ -378,9 +389,10 @@ export class StdioAcpClient implements AcpTransport {
 				const pending = this.pending.get(routed.id)
 				if (!pending) return
 				this.pending.delete(routed.id)
+				clearTimeout(pending.timer)
 				const error = routed.message.error as { message?: string } | undefined
 				if (error) {
-					pending.reject(new Error(error.message ?? "Devo ACP request failed"))
+					pending.reject(new Error(error.message ?? "Devo Native request failed"))
 				} else {
 					pending.resolve(routed.message.result)
 				}
@@ -397,7 +409,7 @@ export class StdioAcpClient implements AcpTransport {
 					type: "notification",
 					method: routed.method,
 					params: routed.params,
-				} satisfies AcpTransportEvent)
+				} satisfies NativeTransportEvent)
 				break
 			case "request":
 				this.recordTraffic({
@@ -412,7 +424,7 @@ export class StdioAcpClient implements AcpTransport {
 					id: routed.id,
 					method: routed.method,
 					params: routed.params,
-				} satisfies AcpTransportEvent)
+				} satisfies NativeTransportEvent)
 				break
 			case "invalid":
 				this.recordTraffic({
@@ -420,7 +432,7 @@ export class StdioAcpClient implements AcpTransport {
 					kind: "invalid",
 					payload: { error: routed.error, line: routed.line },
 				})
-				log.warn("Ignoring invalid ACP stdio line", { error: routed.error, line: routed.line })
+				log.warn("Ignoring invalid Native stdio line", { error: routed.error, line: routed.line })
 				break
 		}
 	}
@@ -428,7 +440,7 @@ export class StdioAcpClient implements AcpTransport {
 	private writeJson(child: ChildProcessWithoutNullStreams, value: unknown): Promise<void> {
 		const line = `${JSON.stringify(value)}\n`
 		if (child.stdin.destroyed || child.stdin.writableEnded || !child.stdin.writable) {
-			return Promise.reject(new Error("Devo ACP stdio stdin is closed"))
+			return Promise.reject(new Error("Devo Native stdio stdin is closed"))
 		}
 
 		return new Promise((resolve, reject) => {
@@ -440,7 +452,7 @@ export class StdioAcpClient implements AcpTransport {
 						resolve()
 					}
 				})) {
-					log.debug("ACP stdio stdin applying backpressure")
+					log.debug("Native stdio stdin applying backpressure")
 				}
 			} catch (error) {
 				reject(toError(error))
@@ -449,7 +461,7 @@ export class StdioAcpClient implements AcpTransport {
 	}
 
 	private requireChild(): ChildProcessWithoutNullStreams {
-		if (!this.child) throw new Error("Devo ACP stdio process is not running")
+		if (!this.child) throw new Error("Devo Native stdio process is not running")
 		return this.child
 	}
 
@@ -463,18 +475,19 @@ export class StdioAcpClient implements AcpTransport {
 			payload: { error: error.message },
 		})
 		for (const pending of this.pending.values()) {
+			clearTimeout(pending.timer)
 			pending.reject(error)
 		}
 		this.pending.clear()
 		this.pendingMethods.clear()
-		this.events.emit("event", { type: "closed", error: error.message } satisfies AcpTransportEvent)
+		this.events.emit("event", { type: "closed", error: error.message } satisfies NativeTransportEvent)
 	}
 
-	private recordTraffic(entry: AcpTrafficLogRecord): void {
+	private recordTraffic(entry: NativeTrafficLogRecord): void {
 		try {
 			this.options.trafficLogger?.record(entry)
 		} catch (error) {
-			log.warn("Failed to record ACP traffic", error)
+			log.warn("Failed to record Native traffic", error)
 		}
 	}
 }

@@ -33,7 +33,6 @@ pub(super) async fn execute_turn_in_actor(
     } = request;
 
     let spawn_snapshot = Arc::new(state.spawn_snapshot());
-    eprintln!("dbg turn: register snapshot");
     runtime
         .register_turn_spawn_snapshot(session_id, turn.turn_id, Arc::clone(&spawn_snapshot))
         .await;
@@ -42,12 +41,10 @@ pub(super) async fn execute_turn_in_actor(
         let mut stream = state.stream.lock().await;
         stream.turn_inline = Some(super::turn_inline::TurnInlineState::new(state, &turn));
     }
-    eprintln!("dbg turn: register stream");
     runtime
         .register_active_stream(session_id, Arc::clone(&state.stream))
         .await;
 
-    eprintln!("dbg turn: prepare");
     runtime
         .prepare_turn_execution_for_actor(
             state,
@@ -56,7 +53,6 @@ pub(super) async fn execute_turn_in_actor(
             input_mode.emits_user_message(),
         )
         .await;
-    eprintln!("dbg turn: prepared");
 
     let (event_tx, event_rx) = mpsc::channel(QUERY_EVENT_CHANNEL_CAPACITY);
     let event_tool_registry = runtime.tool_registry_for_actor_state(state);
@@ -90,7 +86,6 @@ pub(super) async fn execute_turn_in_actor(
         event_rx,
     );
 
-    eprintln!("dbg turn: query start");
     let query_outcome = runtime
         .run_turn_model_query(TurnModelQueryParams {
             state,
@@ -104,9 +99,7 @@ pub(super) async fn execute_turn_in_actor(
             event_tx,
         })
         .await;
-    eprintln!("dbg turn: query done");
     let event_summary = event_task.await.ok();
-    eprintln!("dbg turn: event task done");
 
     let turn_id = turn.turn_id;
     runtime

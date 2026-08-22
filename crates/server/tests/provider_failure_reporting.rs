@@ -161,7 +161,7 @@ async fn exhausted_provider_retries_persist_for_history_but_do_not_enter_context
                             .map(ToString::to_string),
                     });
                 }
-                Some("session/status/changed")
+                Some("session/statusChanged")
                     if value["params"]["status"] == serde_json::json!("idle") =>
                 {
                     break;

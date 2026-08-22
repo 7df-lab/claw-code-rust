@@ -6,7 +6,7 @@
 	"type": "module",
 	"exports": {
 		"./v2/client": "./src/v2/client.ts",
-		"./v2/acp-client-support": "./src/v2/acp-client-support.ts"
+		"./v2/native-client-support": "./src/v2/native-client-support.ts"
 	},
 	"dependencies": {
 		"ajv": "^8.20.0"

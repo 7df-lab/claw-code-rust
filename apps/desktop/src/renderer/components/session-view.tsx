@@ -22,7 +22,7 @@ import { useConfig, useDevoAgents, useProviders, useVcs } from "../hooks/use-dev
 import { useAgentActions } from "../hooks/use-server"
 import { useSessionChat } from "../hooks/use-session-chat"
 import { createLogger } from "../lib/logger"
-import type { Agent, FileAttachment, QuestionAnswer } from "../lib/types"
+import type { Agent, FileAttachment, PermissionResponse, QuestionAnswer } from "../lib/types"
 import { fetchSessionById } from "../services/connection-manager"
 import { AgentDetail } from "./agent-detail"
 
@@ -61,7 +61,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	// ── Fallback session fetch ──────────────────────────────────────────────
 	// Subagent sessions are excluded from the initial batch load (roots:true)
-	// and may also be missed if the ACP event stream was reconnecting when the server
+	// and may also be missed if the Native event stream was reconnecting when the server
 	// emitted session.created. If the session isn't in the Jotai store yet,
 	// attempt a direct GET via the server's session.get endpoint so the user
 	// isn't shown a dead "not found" screen.
@@ -151,7 +151,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			agent: Agent,
 			permissionSessionId: string,
 			permissionId: string,
-			response?: "once" | "always",
+			response?: PermissionResponse,
 		) => {
 			// Use permissionSessionId (not agent.sessionId) so that permissions from
 			// sub-agent child sessions are correctly routed to the child's session.

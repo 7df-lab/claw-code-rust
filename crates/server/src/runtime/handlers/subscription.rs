@@ -86,7 +86,7 @@ pub(crate) fn event_matches_selectors(
 
 impl ServerRuntime {
     pub(crate) async fn handle_subscription_create(
-        &self,
+        self: &Arc<Self>,
         connection_id: u64,
         request_id: serde_json::Value,
         params: serde_json::Value,
@@ -161,6 +161,9 @@ impl ServerRuntime {
         connection.event_selectors = params.selectors;
         self.refresh_cwd_selector_count().await;
         drop(connections);
+        result.pending_control_requests = self
+            .reissue_pending_control_requests(connection_id, result.pending_control_requests)
+            .await;
 
         serde_json::to_value(SuccessResponse {
             id: request_id,
@@ -663,7 +666,7 @@ impl ServerRuntime {
                     request_id: approval.approval_id.clone(),
                     kind,
                     item: waiting_item_envelope(
-                        session_id,
+                        &NativeSessionId::from_legacy_uuid(Uuid::from(approval.owner_session_id)),
                         approval.turn_id,
                         approval.persisted.as_ref(),
                         Item::Approval {
@@ -675,7 +678,9 @@ impl ServerRuntime {
                                 .unwrap_or_else(|| approval.tool_name.clone()),
                             justification: String::new(),
                             resource: approval.resource.map(|resource| format!("{resource:?}")),
-                            available_scopes: Vec::new(),
+                            available_scopes: approval.available_scopes.clone(),
+                            command_pattern: approval.command_pattern.clone(),
+                            command_prefix: approval.command_prefix.clone(),
                             target,
                             decision: None,
                         },
@@ -687,7 +692,7 @@ impl ServerRuntime {
                     request_id: user_input.request_id.clone(),
                     kind: ControlRequestKind::UserInput,
                     item: waiting_item_envelope(
-                        session_id,
+                        &NativeSessionId::from_legacy_uuid(Uuid::from(user_input.owner_session_id)),
                         user_input.turn_id,
                         user_input.persisted.as_ref(),
                         Item::UserInputRequest {

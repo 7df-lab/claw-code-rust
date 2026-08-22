@@ -557,7 +557,7 @@ export const projectListAtom = (() => {
 
 		// Live sessions grouped by directory.
 		// Sessions in sandbox directories are counted under their parent project.
-		// Sub-agent sessions are excluded from sidebar counts (they arrive via ACP events
+		// Sub-agent sessions are excluded from sidebar counts (they arrive via Native events
 		// but are only relevant for message/part lookups and direct navigation).
 		//
 		// Sort key uses session timestamps only (not project.time.updated from the

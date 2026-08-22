@@ -12,7 +12,7 @@ export interface DevoServerInfo {
 	managed: boolean
 }
 
-export interface AcpTrafficLogState {
+export interface NativeTrafficLogState {
 	enabled: boolean
 	path: string | null
 }
@@ -449,7 +449,7 @@ export interface DevoAPI {
 	stopDevo: () => Promise<boolean>
 	restartDevo: () => Promise<DevoServerInfo>
 	onTerminalToggle: (callback: () => void) => () => void
-	acp: {
+	native: {
 		request: (request: {
 			method: string
 			params?: unknown
@@ -464,8 +464,8 @@ export interface DevoAPI {
 		connected: () => Promise<boolean>
 		subscribe: (callback: (event: unknown) => void) => () => void
 	}
-	acpTraffic: {
-		getState: () => Promise<AcpTrafficLogState>
+	nativeTraffic: {
+		getState: () => Promise<NativeTrafficLogState>
 	}
 	terminal: {
 		create: (options: { cwd?: string; cols?: number; rows?: number }) => Promise<TerminalSessionInfo>

@@ -5,55 +5,63 @@ import {
 } from "./protocol-validation"
 
 describe("desktop protocol runtime validation", () => {
-	test("accepts valid ACP session update notifications", () => {
+	test("accepts valid Native session creation requests", () => {
 		const payload = {
-			sessionId: "s1",
-			update: {
-				sessionUpdate: "agent_message_chunk",
-				content: { type: "text", text: "hello" },
-			},
+			cwd: "/repo",
+			idempotencyKey: "new-session-1",
 		}
 
 		expect(
 			assertValidProtocolPayload({
-				direction: "incomingNotification",
-				method: "session/update",
+				direction: "outgoingRequest",
+				method: "session/new",
 				payload,
 			}),
 		).toBe(payload)
 	})
 
-	test("rejects malformed ACP session update notifications", () => {
+	test("rejects malformed Native session creation requests", () => {
 		expect(() =>
 			assertValidProtocolPayload({
-				direction: "incomingNotification",
-				method: "session/update",
-				payload: {
-					update: {
-						sessionUpdate: "agent_message_chunk",
-						content: { type: "text", text: "hello" },
-					},
-				},
+				direction: "outgoingRequest",
+				method: "session/new",
+				payload: { idempotencyKey: "missing-cwd" },
 			}),
 		).toThrow(ProtocolValidationError)
 	})
 
-	test("rejects malformed outgoing ACP prompt params", () => {
+	test("validates Native reverse approval request and response directions", () => {
+		const request = {
+			type: "approval",
+			approvalId: "approval-1",
+			targetItemId: null,
+			actionSummary: "Run command",
+			justification: "Needed for the task",
+			resource: "ShellExec",
+			availableScopes: ["once", "commandPrefixPersist"],
+			commandPattern: ["cargo", "test"],
+			commandPrefix: ["cargo", "test"],
+			target: { kind: "command", command: "cargo test" },
+			decision: null,
+		}
+		expect(
+			assertValidProtocolPayload({
+				direction: "incomingRequest",
+				method: "approval/command/request",
+				payload: request,
+			}),
+		).toBe(request)
 		expect(() =>
 			assertValidProtocolPayload({
-				direction: "outgoingRequest",
-				method: "session/prompt",
-				payload: {
-					prompt: [{ type: "text", text: "missing session id" }],
-				},
+				direction: "outgoingResponse",
+				method: "approval/command/request",
+				payload: { requestId: "approval-1" },
 			}),
-		).toThrow(/session\/prompt/)
+		).toThrow(ProtocolValidationError)
 	})
 
-	test("validates incoming ACP results", () => {
-		const payload = {
-			sessions: [{ sessionId: "s1", cwd: "/repo" }],
-		}
+	test("validates incoming Native results", () => {
+		const payload = { data: [], nextCursor: null }
 
 		expect(
 			assertValidProtocolPayload({
@@ -66,25 +74,25 @@ describe("desktop protocol runtime validation", () => {
 			assertValidProtocolPayload({
 				direction: "incomingResult",
 				method: "session/list",
-				payload: { sessions: [{ cwd: "/repo" }] },
+				payload: { sessions: [] },
 			}),
 		).toThrow(ProtocolValidationError)
 	})
 
 	test("validates workspace changes read requests and results", () => {
 		const requestPayload = {
-			session_id: "s1",
+			sessionId: "s1",
 			scopes: ["turn"],
-			turn_id: "t1",
-			diff_detail: "full",
-			max_diff_bytes: 2_000_000,
+			turnId: "t1",
+			diffDetail: "full",
+			maxDiffBytes: 2_000_000,
 		}
 		const resultPayload = {
 			views: [
 				{
 					scope: "turn",
 					status: "ready",
-					workspace_root: "/repo",
+					workspaceRoot: "/repo",
 					base: {
 						kind: "turn_checkpoint",
 						turn_id: "t1",
@@ -93,7 +101,7 @@ describe("desktop protocol runtime validation", () => {
 					},
 					coverage: "git_visible",
 					attribution: "workspace_net",
-					change_set_status: "finalized",
+					changeSetStatus: "finalized",
 					files: [
 						{
 							path: "src/main.rs",
@@ -105,9 +113,9 @@ describe("desktop protocol runtime validation", () => {
 						},
 					],
 					stats: { files_changed: 1, additions: 2, deletions: 1 },
-					unified_diff: "diff --git a/src/main.rs b/src/main.rs\n",
+					unifiedDiff: "diff --git a/src/main.rs b/src/main.rs\n",
 					warnings: [],
-					generated_at: "2026-06-26T00:00:00Z",
+					generatedAt: "2026-06-26T00:00:00Z",
 				},
 			],
 		}
@@ -130,21 +138,45 @@ describe("desktop protocol runtime validation", () => {
 
 	test("validates workspace changes updated notifications", () => {
 		const payload = {
-			session_id: "s1",
-			turn_id: "t1",
+			sessionId: "s1",
+			turnId: "t1",
 			scope: "turn",
 			status: "ready",
 			coverage: "git_visible",
-			change_set_status: "finalized",
-			stats: { files_changed: 1, additions: 2, deletions: 1 },
+			changeSetStatus: "finalized",
+			stats: { filesChanged: 1, additions: 2, deletions: 1 },
 			version: 1,
-			generated_at: "2026-06-26T00:00:00Z",
+			generatedAt: "2026-06-26T00:00:00Z",
 		}
 
 		expect(
 			assertValidProtocolPayload({
 				direction: "incomingNotification",
 				method: "workspace/changes/updated",
+				payload,
+			}),
+		).toBe(payload)
+	})
+
+	test("validates typed Native item notifications", () => {
+		const payload = {
+			item: {
+				id: "item-1",
+				sessionId: "session-1",
+				turnId: "turn-1",
+				seq: 1,
+				revision: 1,
+				createdAt: "2026-08-22T00:00:00Z",
+				updatedAt: "2026-08-22T00:00:00Z",
+				state: "running",
+				item: { type: "assistantMessage", text: "hello" },
+			},
+		}
+
+		expect(
+			assertValidProtocolPayload({
+				direction: "incomingNotification",
+				method: "item/started",
 				payload,
 			}),
 		).toBe(payload)

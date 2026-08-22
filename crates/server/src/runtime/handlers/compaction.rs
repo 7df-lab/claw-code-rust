@@ -62,10 +62,14 @@ impl ServerRuntime {
                 "cannot compact while a turn is active or queued",
             );
         };
+        // `spawn_active_turn_task` has already registered runtime metadata.
+        // Compaction does not run `ExecuteTurn`, so the mailbox snapshot can
+        // miss the active turn (no spawn snapshot / no stream). Read the
+        // registry the same way native `turn/start` does.
         let Some(metadata) = self
-            .session_turn_reservation_snapshot(legacy_session_id)
+            .active_turns
+            .active_turn_metadata(legacy_session_id)
             .await
-            .and_then(|reservation| reservation.active_turn)
             .filter(|turn| turn.turn_id == turn_id)
         else {
             return response;
@@ -182,6 +186,10 @@ impl ServerRuntime {
         let session_id = params.session_id;
         let turn_for_task = turn.clone();
         let session_handle_for_task = session_handle.clone();
+        if let Some(spawn) = session_handle.spawn_snapshot().await {
+            self.register_turn_spawn_snapshot(session_id, turn.turn_id, Arc::new(spawn))
+                .await;
+        }
         self.spawn_active_turn_task(
             session_id,
             turn.clone(),

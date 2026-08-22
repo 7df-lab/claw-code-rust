@@ -102,18 +102,24 @@ impl CommandPopup {
 
     /// Determine the preferred height of the popup for a given width.
     /// Accounts for wrapped descriptions so that long tooltips don't overflow.
+    ///
+    /// Filtering never shrinks the panel below [`MAX_POPUP_ROWS`]. A collapsing
+    /// popup lets the composer chrome grow into the vacated rows, which hides
+    /// matches under blank space and the composer rule (L2-DES-TUI-003).
     pub(crate) fn calculate_required_height(&self, width: u16) -> u16 {
         use super::selection_popup_common::measure_rows_height;
         let rows = self.rows_from_matches(self.filtered());
-
-        measure_rows_height(&rows, &self.state, MAX_POPUP_ROWS, width)
+        let content_height = measure_rows_height(&rows, &self.state, MAX_POPUP_ROWS, width);
+        content_height.max(MAX_POPUP_ROWS as u16)
     }
 
     /// Compute exact/prefix matches over built-in commands and user prompts,
     /// paired with optional highlight indices. Preserves the original
     /// presentation order for built-ins and prompts.
     fn filtered(&self) -> Vec<(CommandItem, Option<Vec<usize>>)> {
-        let filter = self.command_filter.trim();
+        // Composer text is `/name`; keep matching against the command token even
+        // if a leading slash leaked into the filter string.
+        let filter = self.command_filter.trim().trim_start_matches('/');
         let mut out: Vec<(CommandItem, Option<Vec<usize>>)> = Vec::new();
         if filter.is_empty() {
             for (_, cmd) in self.builtins.iter() {
@@ -163,7 +169,7 @@ impl CommandPopup {
         out
     }
 
-    fn filtered_items(&self) -> Vec<CommandItem> {
+    pub(crate) fn filtered_items(&self) -> Vec<CommandItem> {
         self.filtered().into_iter().map(|(c, _)| c).collect()
     }
 
@@ -173,13 +179,15 @@ impl CommandPopup {
     ) -> Vec<GenericDisplayRow> {
         matches
             .into_iter()
-            .map(|(item, indices)| {
+            .enumerate()
+            .map(|(idx, (item, indices))| {
                 let CommandItem::Builtin(cmd) = item;
                 let name = format!("/{}", cmd.command());
                 let description = cmd.description().to_string();
+                let selected = self.state.selected_idx == Some(idx);
                 GenericDisplayRow {
                     name,
-                    name_prefix_spans: Vec::new(),
+                    name_prefix_spans: vec![if selected { "> " } else { "  " }.into()],
                     match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
                     display_shortcut: None,
                     description: Some(description),
@@ -286,6 +294,50 @@ mod tests {
             })
             .collect();
         assert_eq!(cmds, vec!["model", "mcps"]);
+    }
+
+    #[test]
+    fn prefix_filter_selects_permissions_for_p() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
+        popup.on_composer_text_change("/p".to_string());
+
+        let cmds: Vec<&str> = popup
+            .filtered_items()
+            .into_iter()
+            .map(|item| match item {
+                CommandItem::Builtin(cmd) => cmd.command(),
+            })
+            .collect();
+        assert_eq!(cmds, vec!["permissions"]);
+    }
+
+    #[test]
+    fn prefix_filter_renders_matching_command_rows() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
+        popup.on_composer_text_change("/m".to_string());
+
+        let height = popup.calculate_required_height(80);
+        let rendered = render_popup(&popup, 80, height);
+        assert!(
+            rendered.contains("/model"),
+            "expected '/m' to render /model, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("/mcps"),
+            "expected '/m' to render /mcps, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("/permissions"),
+            "expected '/m' to hide non-matching commands, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("no matches"),
+            "expected '/m' to keep matches, got:\n{rendered}"
+        );
+        assert!(
+            height >= MAX_POPUP_ROWS as u16,
+            "expected filtered slash popup to keep an 8-row panel, got {height}"
+        );
     }
 
     #[test]

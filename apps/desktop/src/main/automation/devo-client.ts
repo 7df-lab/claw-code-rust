@@ -12,7 +12,7 @@
 import type { DevoClient } from "@devo-ai/sdk/v2/client"
 import { createDevoClient } from "@devo-ai/sdk/v2/client"
 import { createLogger } from "../logger"
-import { getAcpTransport, getServerUrl } from "../devo-manager"
+import { getNativeTransport, getServerUrl } from "../devo-manager"
 
 const log = createLogger("automation-client")
 
@@ -32,13 +32,13 @@ export function createAutomationClient(directory: string): DevoClient | null {
 	log.debug("Creating automation SDK client", { url, directory })
 	return createDevoClient({
 		directory,
-		transport: getAcpTransport(),
+		transport: getNativeTransport(),
 	})
 }
 
 /**
  * Creates an unscoped (no directory) Devo SDK client.
- * Used for global operations like subscribing to ACP events.
+ * Used for global operations like subscribing to Native events.
  */
 export function createBaseAutomationClient(): DevoClient | null {
 	const url = getServerUrl()
@@ -47,5 +47,5 @@ export function createBaseAutomationClient(): DevoClient | null {
 		return null
 	}
 
-	return createDevoClient({ transport: getAcpTransport() })
+	return createDevoClient({ transport: getNativeTransport() })
 }

@@ -16,6 +16,7 @@ use serde_json::Value as JsonValue;
 use super::error::codes;
 use super::event::*;
 use super::item::ApprovalDecision;
+use super::item::Item;
 use super::item::ItemEnvelope;
 use super::page::Page;
 use super::rpc_admin::*;
@@ -679,7 +680,7 @@ pub static NATIVE_METHODS: &[MethodSpec] = &[
 pub static REVERSE_METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "approval/command/request",
-        params_schema: schema_of::<ApprovalRespondParams>,
+        params_schema: schema_of::<Item>,
         result_schema: schema_of::<ApprovalRespondParams>,
         error_codes: &[],
         required_capability: None,
@@ -687,7 +688,7 @@ pub static REVERSE_METHODS: &[MethodSpec] = &[
     },
     MethodSpec {
         name: "approval/fileChange/request",
-        params_schema: schema_of::<ApprovalRespondParams>,
+        params_schema: schema_of::<Item>,
         result_schema: schema_of::<ApprovalRespondParams>,
         error_codes: &[],
         required_capability: None,
@@ -695,7 +696,7 @@ pub static REVERSE_METHODS: &[MethodSpec] = &[
     },
     MethodSpec {
         name: "approval/permission/request",
-        params_schema: schema_of::<ApprovalRespondParams>,
+        params_schema: schema_of::<Item>,
         result_schema: schema_of::<ApprovalRespondParams>,
         error_codes: &[],
         required_capability: None,
@@ -703,7 +704,7 @@ pub static REVERSE_METHODS: &[MethodSpec] = &[
     },
     MethodSpec {
         name: "userInput/request",
-        params_schema: schema_of::<UserInputRespondParams>,
+        params_schema: schema_of::<Item>,
         result_schema: schema_of::<UserInputRespondParams>,
         error_codes: &[],
         required_capability: None,
@@ -711,7 +712,7 @@ pub static REVERSE_METHODS: &[MethodSpec] = &[
     },
     MethodSpec {
         name: "session/goal/completionApproval/request",
-        params_schema: schema_of::<ApprovalRespondParams>,
+        params_schema: schema_of::<Item>,
         result_schema: schema_of::<ApprovalRespondParams>,
         error_codes: &[],
         required_capability: None,

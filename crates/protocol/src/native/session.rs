@@ -117,11 +117,17 @@ pub enum SessionFlag {
 )]
 pub enum SessionParent {
     Fork {
+        #[schemars(rename = "sessionId")]
+        #[ts(rename = "sessionId")]
         session_id: SessionId,
+        #[schemars(rename = "atTurnId")]
+        #[ts(rename = "atTurnId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at_turn_id: Option<TurnId>,
     },
     Agent {
+        #[schemars(rename = "sessionId")]
+        #[ts(rename = "sessionId")]
         session_id: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<String>,

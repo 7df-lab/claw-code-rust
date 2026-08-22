@@ -36,6 +36,10 @@ use super::session::SessionStatus;
 use super::turn::Turn;
 use super::turn::TurnStatus;
 use super::usage::SessionUsage;
+use crate::workspace_changes::WorkspaceChangeCoverage;
+use crate::workspace_changes::WorkspaceChangeScope;
+use crate::workspace_changes::WorkspaceChangeSetStatus;
+use crate::workspace_changes::WorkspaceChangeViewStatus;
 
 // ---------------------------------------------------------------------------
 // Envelope
@@ -98,6 +102,28 @@ pub struct ItemDelta {
     pub delta: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceChangeStatsNotification {
+    pub files_changed: u64,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceChangesUpdatedNotification {
+    pub session_id: SessionId,
+    pub turn_id: TurnId,
+    pub scope: WorkspaceChangeScope,
+    pub status: WorkspaceChangeViewStatus,
+    pub coverage: WorkspaceChangeCoverage,
+    pub change_set_status: WorkspaceChangeSetStatus,
+    pub stats: WorkspaceChangeStatsNotification,
+    pub version: u64,
+    pub generated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "method", content = "params", rename_all_fields = "camelCase")]
 pub enum ServerNotification {
@@ -136,8 +162,14 @@ pub enum ServerNotification {
         session_id: SessionId,
         archived: bool,
     },
+    #[serde(rename = "session/closed")]
+    SessionClosed { session_id: SessionId },
     #[serde(rename = "session/deleted")]
-    SessionDeleted { session_id: SessionId },
+    SessionDeleted {
+        session_id: SessionId,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        deleted_session_ids: Vec<SessionId>,
+    },
     #[serde(rename = "workspace/restoreStarted")]
     WorkspaceRestoreStarted {
         session_id: SessionId,
@@ -150,6 +182,8 @@ pub enum ServerNotification {
         succeeded: bool,
         error: Option<AgentError>,
     },
+    #[serde(rename = "workspace/changes/updated")]
+    WorkspaceChangesUpdated(WorkspaceChangesUpdatedNotification),
 
     // ── Turn / Item ──
     #[serde(rename = "turn/started")]
@@ -365,9 +399,19 @@ pub struct EventCursor {
     rename_all_fields = "camelCase"
 )]
 pub enum StreamSelector {
-    SessionsByCwd { cwd: PathBuf },
-    Session { session_id: SessionId },
-    BackgroundTask { item_id: ItemId },
+    SessionsByCwd {
+        cwd: PathBuf,
+    },
+    Session {
+        #[schemars(rename = "sessionId")]
+        #[ts(rename = "sessionId")]
+        session_id: SessionId,
+    },
+    BackgroundTask {
+        #[schemars(rename = "itemId")]
+        #[ts(rename = "itemId")]
+        item_id: ItemId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
@@ -393,6 +437,8 @@ pub enum SnapshotData {
     },
     Session {
         session: Box<Session>,
+        #[schemars(rename = "activeTurn")]
+        #[ts(rename = "activeTurn")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         active_turn: Option<Box<Turn>>,
         queue: Vec<QueueEntry>,

@@ -840,31 +840,46 @@ impl ChatWidget {
                 self.commit_active_streams(DotStatus::Completed);
                 let action_summary = normalize_approval_action_summary(action_summary);
                 self.seen_approval_decisions.remove(&approval_id);
-                self.pending_approval = Some(PendingApprovalRequest {
+                let overlay_request = ApprovalOverlayRequest {
                     session_id,
                     turn_id,
                     approval_id: approval_id.clone(),
                     action_summary: action_summary.clone(),
-                });
-                self.bottom_pane
-                    .open_popup_view(Box::new(ApprovalOverlay::new(
-                        ApprovalOverlayRequest {
+                    justification,
+                    resource,
+                    available_scopes,
+                    path,
+                    host,
+                    target,
+                    command_pattern,
+                    command_prefix,
+                };
+                let duplicate = self
+                    .pending_approval
+                    .as_ref()
+                    .is_some_and(|pending| pending.approval_id == approval_id)
+                    || self
+                        .queued_approvals
+                        .iter()
+                        .any(|queued| queued.approval_id == approval_id);
+                if !duplicate {
+                    if self.pending_approval.is_none() {
+                        self.pending_approval = Some(PendingApprovalRequest {
                             session_id,
                             turn_id,
                             approval_id,
                             action_summary,
-                            justification,
-                            resource,
-                            available_scopes,
-                            path,
-                            host,
-                            target,
-                            command_pattern,
-                            command_prefix,
-                        },
-                        self.app_event_tx.clone(),
-                        self.active_accent_color(),
-                    )));
+                        });
+                        self.bottom_pane
+                            .open_popup_view(Box::new(ApprovalOverlay::new(
+                                overlay_request,
+                                self.app_event_tx.clone(),
+                                self.active_accent_color(),
+                            )));
+                    } else {
+                        self.queued_approvals.push_back(overlay_request);
+                    }
+                }
                 self.busy = true;
                 self.bottom_pane.set_task_running(false);
                 self.set_status_message("Approval required");
@@ -882,6 +897,9 @@ impl ChatWidget {
                 self.bottom_pane.set_task_running(true);
                 self.set_status_message("Input requested");
             }
+            WorkerEvent::UserInputResolved { request_id } => {
+                self.bottom_pane.dismiss_user_input(&request_id);
+            }
             WorkerEvent::ApprovalDecision {
                 approval_id,
                 decision,
@@ -889,7 +907,31 @@ impl ChatWidget {
                 tool_name,
                 rationale,
             } => {
-                self.pending_approval = None;
+                self.bottom_pane.dismiss_approval(&approval_id);
+                let resolved_active = self
+                    .pending_approval
+                    .as_ref()
+                    .is_some_and(|pending| pending.approval_id == approval_id);
+                if resolved_active {
+                    self.pending_approval = None;
+                    if let Some(next) = self.queued_approvals.pop_front() {
+                        self.pending_approval = Some(PendingApprovalRequest {
+                            session_id: next.session_id,
+                            turn_id: next.turn_id,
+                            approval_id: next.approval_id.clone(),
+                            action_summary: next.action_summary.clone(),
+                        });
+                        self.bottom_pane
+                            .open_popup_view(Box::new(ApprovalOverlay::new(
+                                next,
+                                self.app_event_tx.clone(),
+                                self.active_accent_color(),
+                            )));
+                    }
+                } else {
+                    self.queued_approvals
+                        .retain(|queued| queued.approval_id != approval_id);
+                }
                 if !self.seen_approval_decisions.insert(approval_id) {
                     self.bottom_pane.set_task_running(self.busy);
                     return;
@@ -909,7 +951,7 @@ impl ChatWidget {
                         ));
                     }
                 } else {
-                    let symbol = if decision == "approve" { "✔" } else { "✗" };
+                    let symbol = if decision == "approve" { "→ " } else { "✗" };
                     self.add_to_history(history_cell::new_info_event(
                         format!("{symbol} Permission request {decision} ({scope})"),
                         None,
@@ -978,7 +1020,12 @@ impl ChatWidget {
                 }
                 self.active_tool_calls.clear();
                 self.pending_tool_calls.clear();
+                if let Some(pending) = self.pending_approval.as_ref() {
+                    self.bottom_pane.dismiss_approval(&pending.approval_id);
+                }
                 self.pending_approval = None;
+                self.queued_approvals.clear();
+                self.bottom_pane.dismiss_all_user_inputs();
                 self.committed_server_assistant_in_turn = false;
                 self.busy = false;
                 self.active_turn_id = None;
@@ -1077,7 +1124,12 @@ impl ChatWidget {
                 }
                 self.active_tool_calls.clear();
                 self.pending_tool_calls.clear();
+                if let Some(pending) = self.pending_approval.as_ref() {
+                    self.bottom_pane.dismiss_approval(&pending.approval_id);
+                }
                 self.pending_approval = None;
+                self.queued_approvals.clear();
+                self.bottom_pane.dismiss_all_user_inputs();
                 self.committed_server_assistant_in_turn = false;
                 self.busy = false;
                 self.active_turn_id = None;
@@ -1321,6 +1373,12 @@ impl ChatWidget {
                 self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
                 self.active_tool_calls.clear();
                 self.pending_tool_calls.clear();
+                if let Some(pending) = self.pending_approval.as_ref() {
+                    self.bottom_pane.dismiss_approval(&pending.approval_id);
+                }
+                self.pending_approval = None;
+                self.queued_approvals.clear();
+                self.bottom_pane.dismiss_all_user_inputs();
                 self.active_text_items.clear();
                 self.committed_server_assistant_in_turn = false;
                 let restored_mode = InputMode::from_collaboration_mode(collaboration_mode);
@@ -1385,6 +1443,12 @@ impl ChatWidget {
                 self.session.active_agent_label = active_agent_label.clone();
                 self.bottom_pane.set_active_agent_label(active_agent_label);
                 self.reset_subagent_monitor();
+                if let Some(pending) = self.pending_approval.as_ref() {
+                    self.bottom_pane.dismiss_approval(&pending.approval_id);
+                }
+                self.pending_approval = None;
+                self.queued_approvals.clear();
+                self.bottom_pane.dismiss_all_user_inputs();
                 self.history.clear();
                 self.next_history_flush_index = 0;
                 self.seen_approval_decisions.clear();

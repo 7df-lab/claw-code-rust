@@ -240,6 +240,10 @@ impl RequestUserInputOverlay {
 }
 
 impl BottomPaneView for RequestUserInputOverlay {
+    fn user_input_request_id(&self) -> Option<&str> {
+        Some(&self.request_id)
+    }
+
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Up => {

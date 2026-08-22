@@ -59,6 +59,7 @@ pub(crate) struct ApprovalOverlayRequest {
 }
 
 pub(crate) struct ApprovalOverlay {
+    approval_id: String,
     list: ListSelectionView,
 }
 
@@ -68,13 +69,19 @@ impl ApprovalOverlay {
         app_event_tx: AppEventSender,
         accent_color: Color,
     ) -> Self {
+        let approval_id = request.approval_id.clone();
         Self {
+            approval_id,
             list: ListSelectionView::new(build_params(request), app_event_tx, accent_color),
         }
     }
 }
 
 impl BottomPaneView for ApprovalOverlay {
+    fn approval_id(&self) -> Option<&str> {
+        Some(&self.approval_id)
+    }
+
     fn handle_key_event(&mut self, key_event: crossterm::event::KeyEvent) {
         self.list.handle_key_event(key_event);
     }

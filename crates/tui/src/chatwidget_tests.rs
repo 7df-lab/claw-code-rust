@@ -64,7 +64,7 @@ fn widget_with_model_and_reasoning_effort(
         app_event_tx: AppEventSender::new(app_event_tx),
         initial_session: TuiSessionState::new(cwd, Some(model)),
         initial_reasoning_effort_selection,
-        initial_permission_preset: devo_protocol::PermissionPreset::Default,
+        initial_permission_preset: devo_protocol::PermissionPreset::AutoReview,
         initial_sandbox_profile: Some("workspace".to_string()),
         initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
@@ -106,7 +106,7 @@ fn onboarding_widget_with_model(
         app_event_tx: AppEventSender::new(app_event_tx),
         initial_session: TuiSessionState::new(cwd, Some(model)),
         initial_reasoning_effort_selection: None,
-        initial_permission_preset: devo_protocol::PermissionPreset::Default,
+        initial_permission_preset: devo_protocol::PermissionPreset::AutoReview,
         initial_sandbox_profile: Some("workspace".to_string()),
         initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
@@ -144,7 +144,7 @@ fn onboarding_widget_with_available_model_and_exit_after_onboarding(
         app_event_tx: AppEventSender::new(app_event_tx),
         initial_session: TuiSessionState::new(cwd, Some(model.clone())),
         initial_reasoning_effort_selection: None,
-        initial_permission_preset: devo_protocol::PermissionPreset::Default,
+        initial_permission_preset: devo_protocol::PermissionPreset::AutoReview,
         initial_sandbox_profile: Some("workspace".to_string()),
         initial_compaction_token_limit: None,
         initial_default_collaboration_mode: devo_protocol::CollaborationMode::Build,
@@ -1174,6 +1174,54 @@ fn approval_request_bottom_pane_menu_denies_with_n_shortcut() {
 }
 
 #[test]
+fn approval_requests_are_presented_in_fifo_order() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    let session_id = SessionId::new();
+    let turn_id = TurnId::new();
+
+    for (approval_id, action_summary) in [
+        ("approval-first", "first command"),
+        ("approval-second", "second command"),
+    ] {
+        widget.handle_worker_event(crate::events::WorkerEvent::ApprovalRequest {
+            session_id,
+            turn_id,
+            approval_id: approval_id.to_string(),
+            action_summary: action_summary.to_string(),
+            justification: String::new(),
+            resource: Some("ShellExec".to_string()),
+            available_scopes: vec!["once".to_string()],
+            path: None,
+            host: None,
+            target: Some(action_summary.to_string()),
+            command_pattern: None,
+            command_prefix: None,
+        });
+    }
+
+    let first = rendered_rows(&widget, 80, 24).join("\n");
+    assert!(first.contains("first command"), "{first}");
+    assert!(!first.contains("second command"), "{first}");
+
+    widget.handle_worker_event(crate::events::WorkerEvent::ApprovalDecision {
+        approval_id: "approval-first".to_string(),
+        decision: "approve".to_string(),
+        scope: "once".to_string(),
+        tool_name: None,
+        rationale: None,
+    });
+
+    let second = rendered_rows(&widget, 80, 24).join("\n");
+    assert!(second.contains("second command"), "{second}");
+    assert!(!second.contains("first command"), "{second}");
+}
+
+#[test]
 fn duplicate_approval_decision_renders_once() {
     let model = Model {
         slug: "test-model".to_string(),
@@ -1963,8 +2011,8 @@ fn permissions_command_opens_bottom_pane_picker_and_updates_default() {
 
     let rendered = rendered_rows(&widget, 100, 18).join("\n");
     assert!(rendered.contains("Update Permissions"));
-    assert!(rendered.contains("● 1. Ask for approval"));
-    assert!(rendered.contains("Approve for me"));
+    assert!(rendered.contains("Ask for approval"));
+    assert!(rendered.contains("● 2. Approve for me"));
     assert!(rendered.contains("Full access"));
 
     widget.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
@@ -2951,7 +2999,7 @@ fn plan_update_updates_progress_and_history() {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("  ✔ Inspect implementation"))
+            .any(|line| line.contains(" → Inspect implementation"))
     );
     assert!(lines.iter().any(|line| line.contains("  → Patch runtime")));
 }
@@ -6589,23 +6637,34 @@ fn assistant_stream_commit_tick_runs_while_reasoning_is_pending() {
     );
 }
 
-// TODO: Still buggy here, need to be fixed.
-// #[test]
-// fn slash_popup_shows_active_filter_hint() {
-//     let cwd = std::env::current_dir().expect("current directory is available");
-//     let model = Model {
-//         slug: "test-model".to_string(),
-//         display_name: "Test Model".to_string(),
-//         ..Model::default()
-//     };
-//     let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
+/// Trace: L2-DES-TUI-003
+/// Verifies: Typing a prefix after `/` keeps matching slash commands visible.
+#[test]
+fn slash_popup_filters_matching_prefix() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
 
-//     widget.handle_paste("/m".to_string());
+    widget.handle_paste("/m".to_string());
 
-//     let rendered = rendered_rows(&widget, 80, 6).join("\n");
-//     assert!(rendered.contains("filter: /m"));
-//     assert!(rendered.contains("/model"));
-// }
+    let rendered = rendered_rows(&widget, 80, 24).join("\n");
+    assert!(
+        rendered.contains("/model"),
+        "expected '/m' to keep /model visible:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("/mcps"),
+        "expected '/m' to keep /mcps visible:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("/permissions"),
+        "expected '/m' to hide non-matching commands:\n{rendered}"
+    );
+}
 
 #[test]
 fn slash_model_opens_model_picker_instead_of_printing_current_model() {

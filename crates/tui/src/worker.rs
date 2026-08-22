@@ -1100,9 +1100,10 @@ async fn run_worker_inner(
                         )
                         .await?;
 
-                        // Push the current settings first so the actor applies them
-                        // before the turn is admitted (mailbox FIFO guarantees
-                        // ordering), then start the turn via canonical `turn/start`.
+                        // Settings patches are persist-first and must not block
+                        // `turn/start`. Awaiting this RPC serialized the next
+                        // turn behind title-generation's state-change gate and
+                        // produced the TUI's 10s `turn/start` timeout.
                         let native_input = devo_client::native_turn_start_input(&input)
                             .expect("all TUI input variants have canonical turn semantics");
                         let _ = client
@@ -1128,6 +1129,79 @@ async fn run_worker_inner(
                             Ok(turn_id) => {
                                 if let Ok(turn_id) = devo_protocol::TurnId::try_from(turn_id.as_str()) {
                                     active_turn_id = Some(turn_id);
+                                }
+                            }
+                            Err(error) if error.contains("turn_already_running") => {
+                                // Native turn/start rejects while the previous
+                                // turn is still finalizing. Queue instead of
+                                // surfacing a timeout/failure to the user.
+                                let native_session = native_session_id(active_session_id);
+                                match client
+                                    .session_queue_push(
+                                        devo_protocol::native::rpc_turn::SessionQueuePushParams {
+                                            session_id: native_session.clone(),
+                                            input: crate::queue_ops::user_input_from_input_items(
+                                                &input,
+                                            ),
+                                            client_user_message_id: None,
+                                            idempotency_key: format!(
+                                                "tui-queue-{}",
+                                                SessionId::new()
+                                            ),
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(
+                                        devo_protocol::native::rpc_turn::SessionQueuePushResult::Queued {
+                                            entry,
+                                        },
+                                    ) => {
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &native_session,
+                                            devo_protocol::native::queue::QueueChange::Added,
+                                            entry.queue_item_id,
+                                            /*started_turn_id*/ None,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Ok(
+                                        devo_protocol::native::rpc_turn::SessionQueuePushResult::Started {
+                                            turn,
+                                        },
+                                    ) => {
+                                        let started_turn_id =
+                                            TurnId::try_from(turn.id.as_str()).ok();
+                                        if let Some(turn_id) = started_turn_id {
+                                            active_turn_id = Some(turn_id);
+                                        }
+                                        let _ = emit_queue_snapshot(
+                                            &mut client,
+                                            &native_session,
+                                            devo_protocol::native::queue::QueueChange::Drained,
+                                            devo_protocol::native::ids::QueueItemId::from_string(
+                                                String::new(),
+                                            ),
+                                            started_turn_id,
+                                            event_tx,
+                                        )
+                                        .await;
+                                    }
+                                    Err(queue_error) => {
+                                        let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                            message: queue_error.to_string(),
+                                            hint: None,
+                                            turn_count,
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            total_cache_read_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                            last_query_input_tokens,
+                                        });
+                                    }
                                 }
                             }
                             Err(error) => {
@@ -3330,6 +3404,81 @@ async fn run_worker_inner(
                                     }
                                     continue;
                                 }
+                                "session/created" => {
+                                    if let Ok(session) = serde_json::from_value::<
+                                        devo_protocol::native::session::Session,
+                                    >(params["session"].clone())
+                                        && let Some(agent) =
+                                            subagent_events::agent_from_native_session(&session)
+                                        && Some(agent.parent_session_id) == session_id
+                                        && child_agent_sessions.insert(agent.session_id)
+                                    {
+                                        let _ = event_tx.send(WorkerEvent::SubagentDiscovered {
+                                            agent,
+                                        });
+                                    }
+                                    continue;
+                                }
+                                "session/metadataUpdated" => {
+                                    if let Ok(session) = serde_json::from_value::<
+                                        devo_protocol::native::session::Session,
+                                    >(params["session"].clone())
+                                        && SessionId::try_from(session.id.as_str())
+                                            .ok()
+                                            .is_some_and(|id| Some(id) == session_id)
+                                        && let Some(title) = session.title
+                                    {
+                                        let _ = event_tx.send(WorkerEvent::SessionTitleUpdated {
+                                            session_id: session.id.to_string(),
+                                            title,
+                                        });
+                                    }
+                                    continue;
+                                }
+                                "session/statusChanged" => {
+                                    let changed_session_id = params["sessionId"]
+                                        .as_str()
+                                        .and_then(|id| SessionId::try_from(id).ok());
+                                    if let Some(changed_session_id) = changed_session_id
+                                        && child_agent_sessions.contains(&changed_session_id)
+                                    {
+                                        let status = match params["status"].as_str() {
+                                            Some("active") => {
+                                                devo_protocol::SessionRuntimeStatus::ActiveTurn
+                                            }
+                                            _ => devo_protocol::SessionRuntimeStatus::Idle,
+                                        };
+                                        let _ = event_tx.send(WorkerEvent::SubagentMonitor {
+                                            event: SubagentMonitorEvent::SessionStatusChanged {
+                                                session_id: changed_session_id,
+                                                status,
+                                            },
+                                        });
+                                    }
+                                    continue;
+                                }
+                                "session/deleted" => {
+                                    let deleted_current_session = params["deletedSessionIds"]
+                                        .as_array()
+                                        .is_some_and(|ids| {
+                                            ids.iter().any(|id| {
+                                                id.as_str()
+                                                    .and_then(|id| SessionId::try_from(id).ok())
+                                                    == session_id
+                                            })
+                                        });
+                                    if deleted_current_session
+                                        && let Some(session_id) = session_id
+                                    {
+                                        let _ = event_tx.send(WorkerEvent::SessionDeleted {
+                                            session_id: session_id.to_string(),
+                                        });
+                                    }
+                                    continue;
+                                }
+                                "session/archived"
+                                | "session/closed"
+                                | "workspace/changes/updated" => continue,
                                 "context/usageUpdated" => {
                                     let event_session_matches = params["sessionId"]
                                         .as_str()
@@ -3360,6 +3509,18 @@ async fn run_worker_inner(
                                             SessionId::try_from(payload.item.session_id.as_str())
                                                 .ok();
                                         if item_session_id == session_id {
+                                            if method == "item/completed"
+                                                && let devo_protocol::native::item::Item::UserInputRequest {
+                                                    request_id,
+                                                    ..
+                                                } = &payload.item.item
+                                            {
+                                                let _ = event_tx.send(
+                                                    WorkerEvent::UserInputResolved {
+                                                        request_id: request_id.clone(),
+                                                    },
+                                                );
+                                            }
                                             if method == "item/completed"
                                                 && let devo_protocol::native::item::Item::ToolResult {
                                                     output,
@@ -4673,6 +4834,109 @@ async fn subscribe_session_events(
             });
         }
     }
+    for pending in created.pending_control_requests {
+        let pending_session_id = SessionId::try_from(pending.item.session_id.as_str()).ok();
+        let pending_turn_id = TurnId::try_from(pending.item.turn_id.as_str()).ok();
+        let (Some(pending_session_id), Some(pending_turn_id)) =
+            (pending_session_id, pending_turn_id)
+        else {
+            continue;
+        };
+        match pending.item.item {
+            devo_protocol::native::item::Item::Approval {
+                approval_id,
+                action_summary,
+                justification,
+                resource,
+                available_scopes,
+                command_pattern,
+                command_prefix,
+                target,
+                decision: None,
+                ..
+            } => {
+                let (path, host, target) = match target {
+                    Some(devo_protocol::native::item::ApprovalTarget::Path { path }) => {
+                        let path = path.display().to_string();
+                        (Some(path.clone()), None, Some(path))
+                    }
+                    Some(devo_protocol::native::item::ApprovalTarget::Host { host }) => {
+                        (None, Some(host.clone()), Some(host))
+                    }
+                    Some(devo_protocol::native::item::ApprovalTarget::Command { command }) => {
+                        (None, None, Some(command))
+                    }
+                    None => (None, None, None),
+                };
+                let _ = event_tx.send(WorkerEvent::ApprovalRequest {
+                    session_id: pending_session_id,
+                    turn_id: pending_turn_id,
+                    approval_id,
+                    action_summary,
+                    justification,
+                    resource,
+                    available_scopes,
+                    path,
+                    host,
+                    target,
+                    command_pattern,
+                    command_prefix,
+                });
+            }
+            devo_protocol::native::item::Item::UserInputRequest {
+                request_id,
+                questions,
+                answers: None,
+                ..
+            } => {
+                let questions = questions
+                    .into_iter()
+                    .map(|question| devo_protocol::RequestUserInputQuestion {
+                        id: question.id,
+                        header: question.header,
+                        question: question.question,
+                        is_other: question.is_other,
+                        is_secret: question.is_secret,
+                        options: question.options.map(|options| {
+                            options
+                                .into_iter()
+                                .map(|option| devo_protocol::RequestUserInputOption {
+                                    label: option.label,
+                                    description: option.description,
+                                })
+                                .collect()
+                        }),
+                    })
+                    .collect();
+                let _ = event_tx.send(WorkerEvent::RequestUserInput {
+                    session_id: pending_session_id,
+                    turn_id: pending_turn_id,
+                    request_id,
+                    questions,
+                });
+            }
+            devo_protocol::native::item::Item::Approval {
+                decision: Some(_), ..
+            }
+            | devo_protocol::native::item::Item::UserInputRequest {
+                answers: Some(_), ..
+            }
+            | devo_protocol::native::item::Item::UserMessage { .. }
+            | devo_protocol::native::item::Item::AssistantMessage { .. }
+            | devo_protocol::native::item::Item::Reasoning { .. }
+            | devo_protocol::native::item::Item::Plan { .. }
+            | devo_protocol::native::item::Item::ToolCall { .. }
+            | devo_protocol::native::item::Item::ToolResult { .. }
+            | devo_protocol::native::item::Item::HostedToolCall { .. }
+            | devo_protocol::native::item::Item::CommandExecution { .. }
+            | devo_protocol::native::item::Item::FileChange { .. }
+            | devo_protocol::native::item::Item::SubAgent { .. }
+            | devo_protocol::native::item::Item::BackgroundTask { .. }
+            | devo_protocol::native::item::Item::ContextCompaction { .. }
+            | devo_protocol::native::item::Item::GoalProgress { .. }
+            | devo_protocol::native::item::Item::Warning { .. } => {}
+        }
+    }
     Ok(())
 }
 
@@ -5042,6 +5306,32 @@ async fn close_btw_agent(client: &mut StdioServerClient, child_session_id: Sessi
     let _ = client.agent_cancel_native(&item_id).await;
 }
 
+fn emit_approval_request_item(
+    payload: serde_json::Value,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) {
+    let Ok(payload) = serde_json::from_value::<ApprovalRequestPayload>(payload) else {
+        return;
+    };
+    let Some(turn_id) = payload.request.turn_id else {
+        return;
+    };
+    let _ = event_tx.send(WorkerEvent::ApprovalRequest {
+        session_id: payload.request.session_id,
+        turn_id,
+        approval_id: payload.approval_id.to_string(),
+        action_summary: payload.action_summary,
+        justification: payload.justification,
+        resource: payload.resource,
+        available_scopes: payload.available_scopes,
+        path: payload.path,
+        host: payload.host,
+        target: payload.target,
+        command_pattern: payload.command_pattern,
+        command_prefix: payload.command_prefix,
+    });
+}
+
 pub(crate) fn handle_started_item(
     payload: ItemEventPayload,
     event_tx: &mpsc::UnboundedSender<WorkerEvent>,
@@ -5099,13 +5389,13 @@ pub(crate) fn handle_started_item(
         ItemKind::ContextCompaction => {
             let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
         }
+        ItemKind::ApprovalRequest => emit_approval_request_item(payload, event_tx),
         ItemKind::UserMessage
         | ItemKind::ToolResult
         | ItemKind::FileChange
         | ItemKind::McpToolCall
         | ItemKind::WebSearch
         | ItemKind::ImageView
-        | ItemKind::ApprovalRequest
         | ItemKind::ApprovalDecision => {}
     }
 }
@@ -5346,28 +5636,7 @@ pub(crate) fn handle_completed_item(
             item_kind: ItemKind::ApprovalRequest,
             payload,
             ..
-        } => {
-            let Ok(payload) = serde_json::from_value::<ApprovalRequestPayload>(payload) else {
-                return;
-            };
-            let Some(turn_id) = payload.request.turn_id else {
-                return;
-            };
-            let _ = event_tx.send(WorkerEvent::ApprovalRequest {
-                session_id: payload.request.session_id,
-                turn_id,
-                approval_id: payload.approval_id.to_string(),
-                action_summary: payload.action_summary,
-                justification: payload.justification,
-                resource: payload.resource,
-                available_scopes: payload.available_scopes,
-                path: payload.path,
-                host: payload.host,
-                target: payload.target,
-                command_pattern: payload.command_pattern,
-                command_prefix: payload.command_prefix,
-            });
-        }
+        } => emit_approval_request_item(payload, event_tx),
         ItemEnvelope {
             item_kind: ItemKind::ApprovalDecision,
             payload,
@@ -6360,6 +6629,7 @@ mod tests {
     use super::btw_agent_prompt;
     use super::btw_spawn_params;
     use super::handle_completed_item;
+    use super::handle_started_item;
     use super::last_query_tokens_from_resume;
     use super::next_shell_command_exec_start;
     use super::normalize_display_output;
@@ -6383,11 +6653,14 @@ mod tests {
     use devo_core::ItemId;
     use devo_core::TurnId;
     use devo_protocol::AgentToolPolicy;
+    use devo_protocol::PendingServerRequestContext;
+    use devo_protocol::ServerRequestKind;
     use devo_protocol::SessionHistoryMetadata;
     use devo_protocol::SessionPlanStepStatus;
     use devo_protocol::SpawnAgentParams;
     use devo_protocol::ThreadGoal;
     use devo_protocol::ThreadGoalStatus;
+    use devo_server::ApprovalRequestPayload;
     use devo_server::ItemEnvelope;
     use devo_server::ItemEventPayload;
     use devo_server::ItemKind;
@@ -6742,6 +7015,67 @@ mod tests {
                 preview: "canonical".to_string(),
                 is_error: false,
                 truncated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn started_approval_request_emits_worker_event() {
+        let session_id = SessionId::new();
+        let turn_id = TurnId::new();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        handle_started_item(
+            ItemEventPayload {
+                context: devo_server::EventContext {
+                    session_id,
+                    turn_id: Some(turn_id),
+                    item_id: None,
+                    seq: 1,
+                    item_seq: None,
+                },
+                item: ItemEnvelope {
+                    item_id: ItemId::new(),
+                    item_kind: ItemKind::ApprovalRequest,
+                    payload: serde_json::to_value(ApprovalRequestPayload {
+                        request: PendingServerRequestContext {
+                            request_id: "approval-1".into(),
+                            request_kind: ServerRequestKind::ItemFileChangeRequestApproval,
+                            session_id,
+                            turn_id: Some(turn_id),
+                            item_id: None,
+                        },
+                        approval_id: "approval-1".into(),
+                        action_summary: "Write hello.txt".to_string(),
+                        justification: "Create a file".to_string(),
+                        resource: Some("FileWrite".to_string()),
+                        available_scopes: vec!["once".to_string()],
+                        path: Some(r"C:\Users\lenovo\Desktop\hello.txt".to_string()),
+                        host: None,
+                        target: None,
+                        command_pattern: None,
+                        command_prefix: None,
+                    })
+                    .expect("serialize approval request payload"),
+                },
+            },
+            &event_tx,
+        );
+
+        assert_eq!(
+            event_rx.try_recv().expect("approval request event"),
+            WorkerEvent::ApprovalRequest {
+                session_id,
+                turn_id,
+                approval_id: "approval-1".to_string(),
+                action_summary: "Write hello.txt".to_string(),
+                justification: "Create a file".to_string(),
+                resource: Some("FileWrite".to_string()),
+                available_scopes: vec!["once".to_string()],
+                path: Some(r"C:\Users\lenovo\Desktop\hello.txt".to_string()),
+                host: None,
+                target: None,
+                command_pattern: None,
+                command_prefix: None,
             }
         );
     }

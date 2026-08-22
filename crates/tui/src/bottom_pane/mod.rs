@@ -735,6 +735,33 @@ impl BottomPane {
         self.push_view(view);
     }
 
+    pub(crate) fn dismiss_approval(&mut self, approval_id: &str) {
+        let original_len = self.view_stack.len();
+        self.view_stack
+            .retain(|view| view.approval_id() != Some(approval_id));
+        if self.view_stack.len() != original_len {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn dismiss_user_input(&mut self, request_id: &str) {
+        let original_len = self.view_stack.len();
+        self.view_stack
+            .retain(|view| view.user_input_request_id() != Some(request_id));
+        if self.view_stack.len() != original_len {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn dismiss_all_user_inputs(&mut self) {
+        let original_len = self.view_stack.len();
+        self.view_stack
+            .retain(|view| view.user_input_request_id().is_none());
+        if self.view_stack.len() != original_len {
+            self.request_redraw();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn has_view_for_test(&self) -> bool {
         !self.view_stack.is_empty()

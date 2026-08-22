@@ -1068,7 +1068,7 @@ pub(crate) fn new_guardian_approved_action_request(summary: String) -> PrefixedW
         " for ".into(),
         Span::from(summary).dim(),
     ]);
-    PrefixedWrappedHistoryCell::new(line, "✔ ".green(), "  ")
+    PrefixedWrappedHistoryCell::new(line, "→ ".green(), "  ")
 }
 
 pub fn new_permission_request_cell(title: String, body: String) -> Box<dyn HistoryCell> {

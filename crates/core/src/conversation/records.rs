@@ -258,6 +258,12 @@ pub struct ApprovalRequestItem {
     /// Scope choices offered to the user.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub available_scopes: Vec<String>,
+    /// Normalized command pattern used for session-scoped approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_pattern: Option<Vec<String>>,
+    /// Suggested command prefix for persistent exec-policy approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_prefix: Option<Vec<String>>,
     /// Optional path related to the request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -907,6 +913,8 @@ mod tests {
                 justification: "need to".into(),
                 resource: Some("ShellExec".into()),
                 available_scopes: vec!["Once".into(), "Session".into()],
+                command_pattern: None,
+                command_prefix: None,
                 path: None,
                 host: None,
                 target: Some("npm install".into()),
@@ -1103,6 +1111,8 @@ mod tests {
                 "PathPrefix".into(),
                 "CommandPrefix".into(),
             ],
+            command_pattern: Some(vec!["npm".into(), "install".into()]),
+            command_prefix: Some(vec!["npm".into(), "install".into()]),
             path: Some("/workspace".into()),
             host: None,
             target: Some("npm install".into()),

@@ -490,6 +490,8 @@ impl V2InverseProjector {
                 justification,
                 resource,
                 available_scopes,
+                command_pattern,
+                command_prefix,
                 target,
                 decision,
                 ..
@@ -528,6 +530,8 @@ impl V2InverseProjector {
                     justification: justification.clone(),
                     resource: resource.clone(),
                     available_scopes: available_scopes.clone(),
+                    command_pattern: command_pattern.clone(),
+                    command_prefix: command_prefix.clone(),
                     path,
                     host,
                     target,

@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::response_item::ResponseItem;
 use crate::tools::ToolContent;
+use devo_protocol::ModelRequest;
 use devo_protocol::StopReason;
 use devo_provider::ModelProviderSDK;
 
@@ -125,6 +126,9 @@ pub struct QueryOptions {
     /// Phase 4). The query loop re-reads it once per iteration so a mid-turn
     /// settings change applies at the next model call or compaction check.
     pub live_settings: Option<SharedLiveTurnSettings>,
+    /// Slot written before each provider attempt so in-turn callers (auto-review)
+    /// can reuse the same request prefix for prompt-cache hits.
+    pub last_model_request: Option<SharedLastModelRequest>,
 }
 
 /// Live per-session settings shared with a running turn. The server writes
@@ -148,6 +152,9 @@ pub struct LiveTurnSettings {
 /// Shared handle to a turn's live settings override.
 pub type SharedLiveTurnSettings = Arc<std::sync::Mutex<LiveTurnSettings>>;
 
+/// Shared handle to the last assembled provider request for the running turn.
+pub type SharedLastModelRequest = Arc<std::sync::Mutex<Option<ModelRequest>>>;
+
 impl std::fmt::Debug for QueryOptions {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -163,6 +170,10 @@ impl std::fmt::Debug for QueryOptions {
             .field(
                 "live_settings",
                 &self.live_settings.as_ref().map(|_| "<shared>"),
+            )
+            .field(
+                "last_model_request",
+                &self.last_model_request.as_ref().map(|_| "<shared>"),
             )
             .finish()
     }

@@ -1,3 +1,4 @@
+mod approval_review_prompt;
 mod collaboration_mode_prompts;
 #[allow(dead_code)]
 mod config_resolution;
@@ -51,6 +52,7 @@ pub(crate) use tools::tool_spec;
 pub(crate) use tools::tool_summary;
 pub(crate) use tools::unified_exec;
 
+pub use approval_review_prompt::APPROVAL_REVIEW_PROMPT;
 #[allow(ambiguous_glob_reexports)]
 pub use context::*;
 #[allow(ambiguous_glob_reexports)]

@@ -234,6 +234,8 @@ fn basic_session_lines() -> Vec<RolloutLine> {
         justification: "Need to verify the fix".into(),
         resource: Some("ShellExec".into()),
         available_scopes: vec!["Once".into(), "Session".into()],
+        command_pattern: None,
+        command_prefix: None,
         path: None,
         host: None,
         target: Some("cargo test".into()),

@@ -493,6 +493,8 @@ fn live_write_lines() -> Vec<RolloutLine> {
                 justification: "listing".into(),
                 resource: Some("ShellExec".into()),
                 available_scopes: vec!["once".into()],
+                command_pattern: Some(vec!["ls".into()]),
+                command_prefix: Some(vec!["ls".into()]),
                 path: Some("/tmp/live".into()),
                 host: None,
                 target: None,

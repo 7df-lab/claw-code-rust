@@ -34,6 +34,7 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use crate::native_approval::PendingApprovals;
+use crate::native_approval::discard_approval_request;
 use crate::native_approval::handle_approval_request;
 use crate::native_approval::resolve_approval_response;
 
@@ -381,9 +382,8 @@ impl ServerClientCore {
             }
             Err(error) => {
                 self.pending.lock().await.remove(&request_id);
-                return Err(error).with_context(|| {
-                    format!("timed out waiting for server response to request {request_id}")
-                });
+                return Err(error)
+                    .with_context(|| format!("{method} request {request_id} timed out"));
             }
         };
         if response.get("error").is_some() {
@@ -1132,6 +1132,17 @@ impl ServerClientReaderState {
                 .unwrap_or_else(|| serde_json::json!({}));
             let state = self.clone();
             let method = method.to_string();
+            if matches!(
+                method.as_str(),
+                "approval/command/request"
+                    | "approval/fileChange/request"
+                    | "approval/permission/request"
+                    | "session/goal/completionApproval/request"
+                    | "userInput/request"
+            ) {
+                state.handle_client_request(id, &method, params).await;
+                return;
+            }
             // Server-initiated ACP client tools may run concurrently; each reply
             // must echo the request `id` assigned by the server.
             tokio::spawn(async move {
@@ -1152,6 +1163,8 @@ impl ServerClientReaderState {
 
     pub(crate) async fn finish_reader(&self, transport_name: &'static str) {
         let abandoned_response_count = self.pending.lock().await.drain().count();
+        self.pending_approvals.lock().await.clear();
+        self.native_pending_user_inputs.lock().await.clear();
         if abandoned_response_count == 0 {
             tracing::warn!(transport_name, "server reader stopped");
         } else {
@@ -1164,6 +1177,44 @@ impl ServerClientReaderState {
     }
 
     fn handle_notification(&self, notification: NotificationEnvelope<serde_json::Value>) {
+        if notification.method == "item/completed"
+            && notification.params.pointer("/item/item/decision").is_some()
+            && let Some(approval_id) = notification
+                .params
+                .pointer("/item/item/approvalId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        {
+            let pending_approvals = Arc::clone(&self.pending_approvals);
+            tokio::spawn(async move {
+                discard_approval_request(&pending_approvals, &approval_id).await;
+            });
+        }
+        if notification.method == "item/completed"
+            && let Some(request_id) = notification
+                .params
+                .pointer("/item/item/requestId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        {
+            let pending_user_inputs = Arc::clone(&self.native_pending_user_inputs);
+            tokio::spawn(async move {
+                pending_user_inputs.lock().await.remove(&request_id);
+            });
+        }
+        if notification.method == "serverRequest/resolved"
+            && let Some(request_id) = notification
+                .params
+                .get("requestId")
+                .or_else(|| notification.params.get("request_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        {
+            let pending_user_inputs = Arc::clone(&self.native_pending_user_inputs);
+            tokio::spawn(async move {
+                pending_user_inputs.lock().await.remove(&request_id);
+            });
+        }
         if notification.method == ACP_SESSION_UPDATE_METHOD
             && let Ok(acp_notification) =
                 serde_json::from_value::<AcpSessionNotification>(notification.params.clone())
@@ -1193,6 +1244,7 @@ impl ServerClientReaderState {
             "approval/command/request"
                 | "approval/fileChange/request"
                 | "approval/permission/request"
+                | "session/goal/completionApproval/request"
         ) {
             // Native reverse approval request (L2-DES-APP-008 DD-8): the
             // server's own item events drive the approval UI; the pending

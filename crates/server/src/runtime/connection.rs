@@ -863,12 +863,13 @@ impl ServerRuntime {
         let _ = delivered_rx.await;
     }
 
-    pub(super) async fn send_request_to_connection_cancellable(
+    pub(super) async fn send_request_to_connection_cancellable_with_enqueue_signal(
         &self,
         connection_id: u64,
         method: &str,
         params: serde_json::Value,
         cancel_token: CancellationToken,
+        enqueued_tx: tokio::sync::mpsc::UnboundedSender<()>,
     ) -> Result<serde_json::Value, String> {
         self.send_request_to_connection_inner(
             connection_id,
@@ -876,6 +877,7 @@ impl ServerRuntime {
             params,
             /*timeout_duration*/ None,
             cancel_token,
+            Some(enqueued_tx),
         )
         .await
     }
@@ -894,6 +896,7 @@ impl ServerRuntime {
             params,
             Some(timeout_duration),
             cancel_token,
+            /*enqueued_tx*/ None,
         )
         .await
     }
@@ -905,6 +908,7 @@ impl ServerRuntime {
         params: serde_json::Value,
         timeout_duration: Option<Duration>,
         cancel_token: CancellationToken,
+        enqueued_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
     ) -> Result<serde_json::Value, String> {
         let (request_id, receiver, outbound_tx, frame) = {
             let mut connections = self.connections.lock().await;
@@ -936,6 +940,9 @@ impl ServerRuntime {
         if !enqueue_outbound(&outbound_tx, frame, "connection_requests").await {
             pending_request.remove().await;
             return Err("client connection closed before request was sent".to_string());
+        }
+        if let Some(enqueued_tx) = enqueued_tx {
+            let _ = enqueued_tx.send(());
         }
         let message = match timeout_duration {
             Some(timeout_duration) => {
@@ -4597,6 +4604,138 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn native_turn_start_rejects_immediately_while_title_generation_holds_gate() -> Result<()>
+    {
+        let data_root = TempDir::new()?;
+        let provider = Arc::new(TitleCompletionStreamGatedProvider {
+            stream_open: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            stream_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            completion_open: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            completion_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        let stream_open = Arc::clone(&provider.stream_open);
+        let stream_started = Arc::clone(&provider.stream_started);
+        let completion_open = Arc::clone(&provider.completion_open);
+        let completion_requested = Arc::clone(&provider.completion_requested);
+        let runtime = build_runtime_with_provider(data_root.path(), provider);
+        let connection_id = initialized_connection(&runtime).await;
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 100,
+                    "method": "session/start",
+                    "params": {
+                        "cwd": data_root.path(),
+                        "ephemeral": false,
+                        "model": "test-model"
+                    }
+                }),
+            )
+            .await
+            .expect("session/start response");
+        let session_id =
+            serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(response)?
+                .result
+                .session
+                .session_id;
+        start_turn(&runtime, connection_id, session_id, "first prompt").await?;
+
+        for _ in 0..500 {
+            if completion_requested.load(std::sync::atomic::Ordering::SeqCst)
+                && stream_started.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            completion_requested.load(std::sync::atomic::Ordering::SeqCst),
+            "title generation should have requested its completion"
+        );
+        completion_open.store(true, std::sync::atomic::Ordering::SeqCst);
+        let session_handle = runtime.session(session_id).await.expect("session");
+        let mut gate_held = false;
+        for _ in 0..50 {
+            match tokio::time::timeout(
+                Duration::from_millis(100),
+                session_handle.lock_state_change(),
+            )
+            .await
+            {
+                Ok(guard) => {
+                    drop(guard);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(_) => {
+                    gate_held = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            gate_held,
+            "title generation should be holding state_change_gate across the actor mailbox wait"
+        );
+
+        let start_runtime = Arc::clone(&runtime);
+        let native_start = tokio::spawn(async move {
+            start_runtime
+                .handle_incoming(
+                    connection_id,
+                    serde_json::json!({
+                        "id": 301,
+                        "method": "turn/start",
+                        "params": {
+                            "sessionId": session_id.to_string(),
+                            "input": [{ "type": "text", "text": "second prompt" }],
+                            "idempotencyKey": "native-wedge-1"
+                        }
+                    }),
+                )
+                .await
+        });
+        let response = tokio::time::timeout(Duration::from_secs(2), native_start)
+            .await
+            .context("native turn/start must respond while the gate is held")??
+            .expect("turn/start response");
+        assert_eq!(
+            response["error"]["code"].as_str(),
+            Some("TurnAlreadyRunning"),
+            "busy native turn/start must reject: {response}"
+        );
+
+        let update_runtime = Arc::clone(&runtime);
+        let metadata_update = tokio::spawn(async move {
+            update_runtime
+                .handle_incoming(
+                    connection_id,
+                    serde_json::json!({
+                        "id": 302,
+                        "method": "session/metadata/update",
+                        "params": {
+                            "sessionId": session_id.to_string(),
+                            "expectedVersion": 0,
+                            "model": { "provider": "", "model": "test-model" }
+                        }
+                    }),
+                )
+                .await
+        });
+        let response = tokio::time::timeout(Duration::from_secs(2), metadata_update)
+            .await
+            .context("session/metadata/update must respond while the gate is held")??
+            .expect("metadata update response");
+        assert!(
+            response.get("error").is_none(),
+            "metadata update: {response}"
+        );
+
+        stream_open.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
     /// Same gate holder, same fix: a manual compaction task takes
     /// `state_change_gate` across the `compact_history` provider call
     /// (runtime/handlers/compaction.rs), but the compaction turn is the
@@ -5726,18 +5865,22 @@ mod tests {
         let connection_id = initialized_connection(&runtime).await;
         let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
 
-        let started = history_request(
-            &runtime,
-            connection_id,
-            7,
-            "turn/start",
-            serde_json::json!({
-                "sessionId": session_id.to_string(),
-                "input": [{ "type": "text", "text": "hello" }],
-                "idempotencyKey": "turn-1",
-            }),
+        let started = tokio::time::timeout(
+            Duration::from_secs(2),
+            history_request(
+                &runtime,
+                connection_id,
+                7,
+                "turn/start",
+                serde_json::json!({
+                    "sessionId": session_id.to_string(),
+                    "input": [{ "type": "text", "text": "hello" }],
+                    "idempotencyKey": "turn-1",
+                }),
+            ),
         )
-        .await;
+        .await
+        .context("native turn/start must return before ExecuteTurn finishes")?;
         let result: devo_protocol::native::rpc_turn::TurnStartResult =
             serde_json::from_value(started["result"].clone()).expect("native turn/start result");
         assert_eq!(result.turn.session_id.as_str(), session_id.to_string());
@@ -5790,7 +5933,12 @@ mod tests {
             "input": [{ "type": "text", "text": "hello" }],
             "idempotencyKey": "turn-replay",
         });
-        let first = history_request(&runtime, connection_id, 7, "turn/start", params.clone()).await;
+        let first = tokio::time::timeout(
+            Duration::from_secs(2),
+            history_request(&runtime, connection_id, 7, "turn/start", params.clone()),
+        )
+        .await
+        .context("native turn/start replay setup must return before ExecuteTurn finishes")?;
         let first: devo_protocol::native::rpc_turn::TurnStartResult =
             serde_json::from_value(first["result"].clone()).expect("first result");
         let replay = history_request(&runtime, connection_id, 8, "turn/start", params).await;
@@ -6480,24 +6628,29 @@ mod tests {
                 "options": [],
             }))?;
         let runtime_for_request = Arc::clone(&runtime);
+        let (request_ready_tx, request_ready_rx) = oneshot::channel();
         let request = tokio::spawn(async move {
             runtime_for_request
                 .request_permission_from_controllers(
                     session_id,
                     Some(native_connection_id),
-                    acp_params,
-                    "approval/command/request",
-                    serde_json::json!({
-                        "type": "approval",
-                        "approvalId": "call-1",
-                        "actionSummary": "run tests",
-                        "justification": "",
-                    }),
+                    super::control_requests::PermissionControllerRequest {
+                        acp_params,
+                        native_method: "approval/command/request".to_string(),
+                        native_params: serde_json::json!({
+                            "type": "approval",
+                            "approvalId": "call-1",
+                            "actionSummary": "run tests",
+                            "justification": "",
+                        }),
+                        ready: request_ready_tx,
+                    },
                     CancellationToken::new(),
                 )
                 .await
         });
 
+        assert_eq!(request_ready_rx.await?, Ok(()));
         let native_request = native_receiver.recv().await.expect("native request");
         assert_eq!(
             native_request["method"].as_str(),

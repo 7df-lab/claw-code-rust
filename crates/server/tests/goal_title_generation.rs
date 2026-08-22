@@ -307,22 +307,22 @@ async fn wait_for_title_update(
 ) -> Result<()> {
     timeout(Duration::from_secs(/*secs*/ 5), async {
         while let Some(value) = notifications_rx.recv().await {
-            let is_legacy_title_update = value.get("method")
-                == Some(&serde_json::json!("session/title/updated"))
+            let is_native_title_update = value.get("method")
+                == Some(&serde_json::json!("session/metadataUpdated"))
                 && value["params"]["session"]["title"] == serde_json::json!(expected_title);
             let is_acp_title_update = value.get("method")
                 == Some(&serde_json::json!("session/update"))
                 && value["params"]["update"]["sessionUpdate"]
                     == serde_json::json!("session_info_update")
                 && value["params"]["update"]["title"] == serde_json::json!(expected_title);
-            if is_legacy_title_update || is_acp_title_update {
+            if is_native_title_update || is_acp_title_update {
                 return Ok(());
             }
         }
-        anyhow::bail!("notification channel closed before expected session/title/updated")
+        anyhow::bail!("notification channel closed before expected session/metadataUpdated")
     })
     .await
-    .context("timed out waiting for session/title/updated")??;
+    .context("timed out waiting for session/metadataUpdated")??;
     Ok(())
 }
 

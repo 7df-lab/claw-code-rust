@@ -43,6 +43,9 @@ pub(crate) struct TurnInlineState {
     /// Live model/effort/compaction-limit overrides shared with the core
     /// query loop (L2-DES-CONV-002 Phase 4).
     pub(crate) live_turn_settings: devo_core::SharedLiveTurnSettings,
+    /// Last assembled provider request for this turn. Auto-review clones this
+    /// prefix so the reviewer shares the main-turn prompt cache.
+    pub(crate) last_model_request: devo_core::SharedLastModelRequest,
 }
 
 impl TurnInlineState {
@@ -74,6 +77,7 @@ impl TurnInlineState {
                 state.config.sandbox_profile.clone(),
             )),
             live_turn_settings: Default::default(),
+            last_model_request: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 

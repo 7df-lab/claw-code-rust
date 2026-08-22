@@ -163,10 +163,15 @@ impl ServerRuntime {
                 "session already has an active prompt turn",
             );
         };
+        // `spawn_active_turn_task` has already queued `ExecuteTurn`, so the
+        // actor mailbox is unresponsive until that turn ends. Read the
+        // runtime registry instead of `session_turn_reservation_snapshot`
+        // (mailbox) or the TUI's second `turn/start` times out while the
+        // turn continues in the background.
         let Some(metadata) = self
-            .session_turn_reservation_snapshot(legacy_session_id)
+            .active_turns
+            .active_turn_metadata(legacy_session_id)
             .await
-            .and_then(|reservation| reservation.active_turn)
             .filter(|turn| turn.turn_id == turn_id)
         else {
             return response;
@@ -211,6 +216,21 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
+        // Registry presence is mailbox-free: `spawn_active_turn_task`
+        // records the turn before `ExecuteTurn` registers a stream. Native
+        // busy clients must reject here instead of waiting on the actor.
+        if queue_policy == TurnStartQueuePolicy::RejectActive
+            && self
+                .runtime_active_turn_id(params.session_id)
+                .await
+                .is_some()
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::TurnAlreadyRunning,
+                "session already has an active prompt turn",
+            );
+        }
         // A busy session needs no state-change gate to enqueue: the queue
         // mutex is the serialization point for queue ops, and the gate can
         // be held for the rest of a turn (final title generation parking
@@ -511,6 +531,11 @@ impl ServerRuntime {
                 ProtocolErrorCode::InternalError,
                 format!("failed to persist turn start: {error}"),
             );
+        }
+
+        if let Some(spawn) = session_handle.spawn_snapshot().await {
+            self.register_turn_spawn_snapshot(params.session_id, turn.turn_id, Arc::new(spawn))
+                .await;
         }
 
         let runtime = Arc::clone(self);

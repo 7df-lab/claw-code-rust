@@ -4209,6 +4209,8 @@ mod tests {
                         justification: "listing".into(),
                         resource: Some("ShellExec".into()),
                         available_scopes: vec!["once".into()],
+                        command_pattern: None,
+                        command_prefix: None,
                         path: None,
                         host: None,
                         target: Some("ls".into()),

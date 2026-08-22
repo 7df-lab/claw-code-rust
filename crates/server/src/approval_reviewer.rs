@@ -5,11 +5,35 @@ use devo_protocol::{
     ModelRequest, RequestContent, RequestMessage, ResponseContent, SamplingControls,
 };
 
+const REVIEWER_MAX_TOKENS: usize = 512;
+const REVIEWER_JSON_SHAPE: &str = "{\"risk\":\"low|medium|high\",\"rationale\":\"short reason\"}";
+const REVIEWER_SYSTEM_PROMPT: &str = "Rate the risk of the pending tool call. Reply with JSON only. Writing outside the workspace or running a command is not automatically high; judge from the conversation. Mark high only for clearly destructive or irreversible actions such as `rm -rf *`.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReviewerRisk {
+    Low,
+    Medium,
+    High,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ReviewerDecision {
-    Approve { rationale: String },
-    Deny { rationale: String },
-    Uncertain { rationale: String },
+pub(crate) struct ReviewerAssessment {
+    pub risk: ReviewerRisk,
+    pub rationale: String,
+}
+
+impl ReviewerRisk {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub(crate) fn allows_without_user(self) -> bool {
+        matches!(self, Self::Low | Self::Medium)
+    }
 }
 
 /// Additional context provided to the auto-approval reviewer so it can make
@@ -34,17 +58,16 @@ pub(crate) fn build_approval_review_request(
     ModelRequest {
         model_slug: devo_protocol::ModelProfileKey::Generic,
         model,
-        system: Some(
-            "You are Devo's automatic approval reviewer. Decide whether a tool approval request is safe given the user's active permission profile, project rules, conversation transcript, and prior approval decisions. Respond with exactly one compact JSON object and no markdown: {\"decision\":\"approve|deny|uncertain\",\"rationale\":\"short reason\"}. Approve only when the action is clearly low risk, consistent with prior approvals, and scoped to the stated target. Deny destructive, credential, privilege escalation, or ambiguous high-impact actions. Use uncertain when more context or user intent is needed."
-                .to_string(),
-        ),
+        system: Some(format!(
+            "{REVIEWER_SYSTEM_PROMPT} JSON shape: {REVIEWER_JSON_SHAPE}."
+        )),
         messages: vec![RequestMessage {
             role: "user".to_string(),
             content: vec![RequestContent::Text {
                 text: review_prompt_for_request(request, context),
             }],
         }],
-        max_tokens: 128,
+        max_tokens: REVIEWER_MAX_TOKENS,
         tools: None,
         hosted_tools: Vec::new(),
         sampling: SamplingControls {
@@ -57,36 +80,106 @@ pub(crate) fn build_approval_review_request(
     }
 }
 
-pub(crate) fn parse_reviewer_decision(content: &[ResponseContent]) -> Option<ReviewerDecision> {
-    let raw = content.iter().find_map(|block| match block {
-        ResponseContent::Text(text) => Some(text.as_str()),
-        ResponseContent::ToolUse { .. }
-        | ResponseContent::HostedToolUse { .. }
-        | ResponseContent::ProviderReasoning { .. } => None,
-    })?;
-    parse_reviewer_text(raw)
+/// Appends a review-only tail onto the in-flight turn request so the reviewer
+/// shares that call's prompt prefix (system, tools, and leading messages).
+pub(crate) fn extend_approval_review_request(
+    mut prefix: ModelRequest,
+    request: &ToolPermissionRequest,
+    context: &ApprovalReviewContext,
+) -> ModelRequest {
+    prefix.messages.push(RequestMessage {
+        role: "user".to_string(),
+        content: vec![RequestContent::Text {
+            text: review_suffix_for_cached_prefix(request, context),
+        }],
+    });
+    prefix.max_tokens = REVIEWER_MAX_TOKENS;
+    prefix.request_thinking = Some("disabled".to_string());
+    prefix.reasoning_effort = None;
+    prefix
 }
 
-fn parse_reviewer_text(raw: &str) -> Option<ReviewerDecision> {
-    let trimmed = raw
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+pub(crate) fn parse_reviewer_decision(content: &[ResponseContent]) -> Option<ReviewerAssessment> {
+    let mut combined = String::new();
+    for block in content {
+        if let ResponseContent::Text(text) = block {
+            combined.push_str(text);
+            combined.push('\n');
+        }
+    }
+    parse_reviewer_text(&combined)
+}
+
+fn parse_reviewer_text(raw: &str) -> Option<ReviewerAssessment> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    assessment_from_json_text(trimmed)
+        .or_else(|| extract_json_object(trimmed).and_then(assessment_from_json_text))
+}
+
+fn assessment_from_json_text(raw: &str) -> Option<ReviewerAssessment> {
+    let value = serde_json::from_str(raw)
+        .or_else(|_| jsonrepair::loads(raw, &jsonrepair::Options::default()))
+        .ok()?;
+    assessment_from_value(&value)
+}
+
+fn assessment_from_value(value: &serde_json::Value) -> Option<ReviewerAssessment> {
     let rationale = value
         .get("rationale")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("")
         .trim()
         .to_string();
-    match value.get("decision").and_then(serde_json::Value::as_str)? {
-        "approve" => Some(ReviewerDecision::Approve { rationale }),
-        "deny" => Some(ReviewerDecision::Deny { rationale }),
-        "uncertain" => Some(ReviewerDecision::Uncertain { rationale }),
-        _ => None,
+    let risk = match value
+        .get("risk")
+        .and_then(serde_json::Value::as_str)?
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "low" => ReviewerRisk::Low,
+        "medium" => ReviewerRisk::Medium,
+        "high" => ReviewerRisk::High,
+        _ => return None,
+    };
+    Some(ReviewerAssessment { risk, rationale })
+}
+
+fn extract_json_object(raw: &str) -> Option<&str> {
+    let start = raw.find('{')?;
+    let bytes = raw.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    for (offset, byte) in bytes[start..].iter().enumerate() {
+        let index = start + offset;
+        let ch = *byte as char;
+        if in_string {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&raw[start..=index]);
+                }
+            }
+            _ => {}
+        }
     }
+    None
 }
 
 fn review_prompt_for_request(
@@ -94,64 +187,86 @@ fn review_prompt_for_request(
     context: &ApprovalReviewContext,
 ) -> String {
     let mut prompt = String::with_capacity(1024);
-
-    if let Some(profile) = &context.profile_summary {
-        prompt.push_str("## Permission profile\n");
-        prompt.push_str(profile);
-        prompt.push_str("\n\n");
-    }
-
-    if let Some(rules) = &context.agents_rules {
-        prompt.push_str("## Project rules (AGENTS.md)\n");
-        prompt.push_str(rules);
-        prompt.push_str("\n\n");
-    }
-
-    if !context.transcript_tail.is_empty() {
-        prompt.push_str("## Recent transcript\n");
-        for line in &context.transcript_tail {
-            prompt.push_str(line);
-            prompt.push('\n');
-        }
-        prompt.push('\n');
-    }
-
-    if !context.recent_decisions.is_empty() {
-        prompt.push_str("## Recent approval decisions\n");
-        for line in &context.recent_decisions {
-            prompt.push_str(line);
-            prompt.push('\n');
-        }
-        prompt.push('\n');
-    }
-
-    prompt.push_str("## Tool approval request\n");
-    write!(&mut prompt, "tool_name: {}", request.tool_name)
-        .expect("writing to a String cannot fail");
-    write!(&mut prompt, "\nresource: {:?}", request.resource)
-        .expect("writing to a String cannot fail");
-    write!(
+    append_section(
         &mut prompt,
+        "Permission profile",
+        context.profile_summary.as_deref(),
+    );
+    append_section(
+        &mut prompt,
+        "Project rules (AGENTS.md)",
+        context.agents_rules.as_deref(),
+    );
+    append_list_section(&mut prompt, "Recent transcript", &context.transcript_tail);
+    append_list_section(
+        &mut prompt,
+        "Recent approval decisions",
+        &context.recent_decisions,
+    );
+    append_tool_approval_request(&mut prompt, request);
+    prompt
+}
+
+fn review_suffix_for_cached_prefix(
+    request: &ToolPermissionRequest,
+    context: &ApprovalReviewContext,
+) -> String {
+    let mut prompt = String::with_capacity(1024);
+    prompt.push_str(devo_core::APPROVAL_REVIEW_PROMPT.trim_end());
+    prompt.push_str("\n\n");
+    append_section(
+        &mut prompt,
+        "Permission profile",
+        context.profile_summary.as_deref(),
+    );
+    append_tool_approval_request(&mut prompt, request);
+    prompt
+}
+
+fn append_section(prompt: &mut String, heading: &str, body: Option<&str>) {
+    let Some(body) = body else {
+        return;
+    };
+    write!(prompt, "## {heading}\n{body}\n\n").expect("writing to a String cannot fail");
+}
+
+fn append_list_section(prompt: &mut String, heading: &str, items: &[String]) {
+    if items.is_empty() {
+        return;
+    }
+    write!(prompt, "## {heading}\n").expect("writing to a String cannot fail");
+    for line in items {
+        prompt.push_str(line);
+        prompt.push('\n');
+    }
+    prompt.push('\n');
+}
+
+fn append_tool_approval_request(prompt: &mut String, request: &ToolPermissionRequest) {
+    prompt.push_str("## Tool approval request\n");
+    write!(prompt, "tool_name: {}", request.tool_name).expect("writing to a String cannot fail");
+    write!(prompt, "\nresource: {:?}", request.resource).expect("writing to a String cannot fail");
+    write!(
+        prompt,
         "\nsandbox_permissions: {:?}",
         request.sandbox_permissions
     )
     .expect("writing to a String cannot fail");
-    write!(&mut prompt, "\ncwd: {}", request.cwd.display())
-        .expect("writing to a String cannot fail");
-    write!(&mut prompt, "\naction_summary: {}", request.action_summary)
+    write!(prompt, "\ncwd: {}", request.cwd.display()).expect("writing to a String cannot fail");
+    write!(prompt, "\naction_summary: {}", request.action_summary)
         .expect("writing to a String cannot fail");
     if let Some(justification) = &request.justification {
-        write!(&mut prompt, "\njustification: {justification}")
+        write!(prompt, "\njustification: {justification}")
             .expect("writing to a String cannot fail");
     }
     if let Some(path) = &request.path {
-        write!(&mut prompt, "\npath: {}", path.display()).expect("writing to a String cannot fail");
+        write!(prompt, "\npath: {}", path.display()).expect("writing to a String cannot fail");
     }
     if let Some(host) = &request.host {
-        write!(&mut prompt, "\nhost: {host}").expect("writing to a String cannot fail");
+        write!(prompt, "\nhost: {host}").expect("writing to a String cannot fail");
     }
     if let Some(target) = &request.target {
-        write!(&mut prompt, "\ntarget: {target}").expect("writing to a String cannot fail");
+        write!(prompt, "\ntarget: {target}").expect("writing to a String cannot fail");
     }
     if let Some(command_prefix) = &request.command_prefix {
         prompt.push_str("\ncommand_prefix: ");
@@ -164,9 +279,7 @@ fn review_prompt_for_request(
             }
         }
     }
-    write!(&mut prompt, "\ninput_json: {}", request.input)
-        .expect("writing to a String cannot fail");
-    prompt
+    write!(prompt, "\ninput_json: {}", request.input).expect("writing to a String cannot fail");
 }
 
 #[cfg(test)]
@@ -177,25 +290,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_approval_reviewer_json_decision() {
+    fn parses_approval_reviewer_json_risk() {
         assert_eq!(
-            parse_reviewer_text(r#"{"decision":"approve","rationale":"scoped command"}"#),
-            Some(ReviewerDecision::Approve {
+            parse_reviewer_text(r#"{"risk":"low","rationale":"scoped command"}"#),
+            Some(ReviewerAssessment {
+                risk: ReviewerRisk::Low,
                 rationale: "scoped command".to_string(),
             })
         );
         assert_eq!(
-            parse_reviewer_text(r#"{"decision":"deny","rationale":"destructive"}"#),
-            Some(ReviewerDecision::Deny {
-                rationale: "destructive".to_string(),
+            parse_reviewer_text(r#"{"risk":"MEDIUM","rationale":"network fetch"}"#),
+            Some(ReviewerAssessment {
+                risk: ReviewerRisk::Medium,
+                rationale: "network fetch".to_string(),
             })
         );
         assert_eq!(
-            parse_reviewer_text(r#"{"decision":"uncertain","rationale":"needs user"}"#),
-            Some(ReviewerDecision::Uncertain {
-                rationale: "needs user".to_string(),
+            parse_reviewer_text(r#"{"risk":"high","rationale":"writes outside workspace"}"#),
+            Some(ReviewerAssessment {
+                risk: ReviewerRisk::High,
+                rationale: "writes outside workspace".to_string(),
             })
         );
+        assert_eq!(
+            parse_reviewer_text(r#"{"decision":"approve","rationale":"legacy"}"#),
+            None
+        );
+        assert_eq!(
+            parse_reviewer_text(r#"{"risk":"approve","rationale":"wrong label"}"#),
+            None
+        );
+        assert_eq!(
+            parse_reviewer_text(
+                "Risk assessment:\n{\"risk\":\"low\",\"rationale\":\"user asked to write on the desktop\"}\n"
+            ),
+            Some(ReviewerAssessment {
+                risk: ReviewerRisk::Low,
+                rationale: "user asked to write on the desktop".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_reviewer_text("```json\n{\"risk\": \"low\", \"rationale\": \"fenced\",}\n```"),
+            Some(ReviewerAssessment {
+                risk: ReviewerRisk::Low,
+                rationale: "fenced".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_reviewer_text("{risk: 'medium', rationale: 'unquoted keys'}"),
+            Some(ReviewerAssessment {
+                risk: ReviewerRisk::Medium,
+                rationale: "unquoted keys".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_reviewer_text("{\"risk\":\"low\",\"rationale\":\"truncated\""),
+            Some(ReviewerAssessment {
+                risk: ReviewerRisk::Low,
+                rationale: "truncated".to_string(),
+            })
+        );
+        assert_eq!(parse_reviewer_text("this is low risk but not json"), None);
+    }
+
+    #[test]
+    fn low_and_medium_risk_allow_without_user() {
+        assert!(ReviewerRisk::Low.allows_without_user());
+        assert!(ReviewerRisk::Medium.allows_without_user());
+        assert!(!ReviewerRisk::High.allows_without_user());
     }
 
     #[test]
@@ -273,5 +435,116 @@ mod tests {
         assert!(text.contains("## Recent approval decisions"));
         assert!(text.contains("allow_once shell_command: ls"));
         assert!(text.contains("## Tool approval request"));
+    }
+
+    #[test]
+    fn extend_review_request_keeps_turn_prefix() {
+        use devo_protocol::ModelProfileKey;
+        use devo_protocol::ToolDefinition;
+
+        let prefix = ModelRequest {
+            model_slug: ModelProfileKey::CatalogSlug("session-model".to_string()),
+            model: "provider-model".to_string(),
+            system: Some("locked session system".to_string()),
+            messages: vec![
+                RequestMessage {
+                    role: "user".to_string(),
+                    content: vec![RequestContent::Text {
+                        text: "environment prefix".to_string(),
+                    }],
+                },
+                RequestMessage {
+                    role: "user".to_string(),
+                    content: vec![RequestContent::Text {
+                        text: "hello".to_string(),
+                    }],
+                },
+            ],
+            max_tokens: 4096,
+            tools: Some(vec![ToolDefinition {
+                name: "mutating_tool".to_string(),
+                description: "Mutates test state.".to_string(),
+                input_schema: json!({}),
+                output_schema: None,
+            }]),
+            hosted_tools: Vec::new(),
+            sampling: SamplingControls {
+                temperature: Some(0.7),
+                ..SamplingControls::default()
+            },
+            request_thinking: Some("enabled".to_string()),
+            reasoning_effort: None,
+            extra_body: Some(json!({"keep": true})),
+        };
+        let request = ToolPermissionRequest {
+            tool_call_id: "call".to_string(),
+            tool_name: "mutating_tool".to_string(),
+            input: json!({}),
+            cwd: std::path::PathBuf::from("repo"),
+            session_id: "session".to_string(),
+            turn_id: Some("turn".to_string()),
+            resource: devo_safety::ResourceKind::FileWrite,
+            action_summary: "Write a file".to_string(),
+            justification: None,
+            path: None,
+            host: None,
+            target: None,
+            command_prefix: None,
+            command_argv: None,
+            command_pattern: None,
+            sandbox_permissions: devo_core::tools::SandboxPermissionRequest::Default,
+        };
+        let context = ApprovalReviewContext {
+            profile_summary: Some("preset: auto_review".to_string()),
+            agents_rules: Some("- duplicated in prefix".to_string()),
+            transcript_tail: vec!["user: hello".to_string()],
+            recent_decisions: vec!["allow_once mutating_tool".to_string()],
+        };
+
+        let extended = extend_approval_review_request(prefix.clone(), &request, &context);
+        assert_eq!(
+            extended.model_slug,
+            ModelProfileKey::CatalogSlug("session-model".to_string())
+        );
+        assert_eq!(extended.model, "provider-model");
+        assert_eq!(extended.system.as_deref(), Some("locked session system"));
+        assert_eq!(extended.sampling.temperature, Some(0.7));
+        assert_eq!(extended.request_thinking.as_deref(), Some("disabled"));
+        assert_eq!(extended.reasoning_effort, None);
+        assert_eq!(extended.extra_body, Some(json!({"keep": true})));
+        assert_eq!(extended.max_tokens, 512);
+        assert_eq!(
+            extended.tools.as_ref().map(|tools| tools[0].name.as_str()),
+            Some("mutating_tool")
+        );
+        assert_eq!(extended.messages.len(), 3);
+        let RequestContent::Text { text: prefix_text } = &extended.messages[0].content[0] else {
+            panic!("prefix message should remain text");
+        };
+        assert_eq!(prefix_text, "environment prefix");
+        let RequestContent::Text { text: tail } = &extended.messages[2].content[0] else {
+            panic!("review tail should be text");
+        };
+        assert!(tail.contains("Do not call tools"));
+        assert!(tail.contains("\"risk\":\"low|medium|high\""));
+        assert!(tail.contains("Do not mark **high** only because"));
+        assert!(tail.contains("`rm -rf *`"));
+        assert!(!tail.contains("You are Devo"));
+        assert!(tail.contains("## Permission profile"));
+        assert!(tail.contains("preset: auto_review"));
+        assert!(
+            !tail.contains("## Recent approval decisions"),
+            "prior approvals already live in the turn prefix"
+        );
+        assert!(!tail.contains("allow_once mutating_tool"));
+        assert!(tail.contains("## Tool approval request"));
+        assert!(
+            !tail.contains("## Project rules"),
+            "AGENTS.md already lives in the turn prefix"
+        );
+        assert!(
+            !tail.contains("## Recent transcript"),
+            "transcript already lives in the turn prefix"
+        );
     }
 }

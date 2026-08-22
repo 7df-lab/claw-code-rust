@@ -25,15 +25,3 @@ pub(crate) fn find_builtin_command(
 ) -> Option<SlashCommand> {
     SlashCommand::from_str(name).ok()
 }
-
-pub(crate) fn has_builtin_prefix(name: &str, _flags: BuiltinCommandFlags) -> bool {
-    if SlashCommand::from_str(name).is_ok() {
-        return true;
-    }
-    built_in_slash_commands()
-        .into_iter()
-        .any(|(command_name, cmd)| {
-            command_name.starts_with(name)
-                || cmd.aliases().iter().any(|alias| alias.starts_with(name))
-        })
-}

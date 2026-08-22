@@ -623,17 +623,27 @@ impl ChatComposer {
             .unwrap_or_else(|| footer_height(&footer_props));
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
-        let popup_constraint = match &self.active_popup {
-            ActivePopup::Command(popup) => {
-                Constraint::Max(popup.calculate_required_height(area.width))
-            }
-            ActivePopup::Reference(popup) => {
-                Constraint::Max(popup.calculate_required_height(area.width))
-            }
-            ActivePopup::None => Constraint::Max(footer_total_height),
+        // Split with exact heights instead of Min+Max. Flex::Start lets Min(3)
+        // grow into leftover space, which pushes a shrinking command list under
+        // blank composer rows and the bottom rule (looks like the popup vanished).
+        let wanted_popup_height = match &self.active_popup {
+            ActivePopup::Command(popup) => popup.calculate_required_height(area.width),
+            ActivePopup::Reference(popup) => popup.calculate_required_height(area.width),
+            ActivePopup::None => footer_total_height,
         };
-        let [composer_rect, popup_rect] =
-            Layout::vertical([Constraint::Min(3), popup_constraint]).areas(area);
+        let popup_h = wanted_popup_height.min(area.height.saturating_sub(3));
+        let composer_rect = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height.saturating_sub(popup_h),
+        };
+        let popup_rect = Rect {
+            x: area.x,
+            y: area.y.saturating_add(composer_rect.height),
+            width: area.width,
+            height: popup_h,
+        };
         let mut textarea_rect = composer_rect.inset(Insets::tlbr(
             /*top*/ 1,
             LIVE_PREFIX_COLS,
@@ -3055,18 +3065,23 @@ impl ChatComposer {
         Some((name, rest))
     }
 
-    /// Heuristic for whether the typed slash command looks like a valid
-    /// prefix for any known built-in command.
-    /// Empty names only count when there is no extra content after the '/'.
+    /// Whether the caret is still editing a leading `/name` token that should
+    /// keep the slash-command popup open.
+    ///
+    /// Empty names only count when there is no extra content after the `/`.
+    /// Unknown prefixes keep the popup open so `CommandPopup` can show the
+    /// filtered list (or "no matches") instead of dismissing to a blank pane.
     fn looks_like_slash_prefix(&self, name: &str, rest_after_name: &str) -> bool {
         if !self.slash_commands_enabled() {
+            return false;
+        }
+        if name.contains('/') {
             return false;
         }
         if name.is_empty() {
             return rest_after_name.is_empty();
         }
-
-        slash_commands::has_builtin_prefix(name, self.builtin_command_flags())
+        true
     }
 
     /// Synchronize `self.command_popup` with the current text in the
@@ -3377,12 +3392,7 @@ impl ChatComposer {
         let [composer_rect, remote_images_rect, textarea_rect, popup_rect] =
             self.layout_areas(area);
         match &self.active_popup {
-            ActivePopup::Command(popup) => {
-                popup.render_ref(popup_rect, buf);
-            }
-            ActivePopup::Reference(popup) => {
-                popup.render_ref(popup_rect, buf);
-            }
+            ActivePopup::Command(_) | ActivePopup::Reference(_) => {}
             ActivePopup::None => {
                 let footer_props = self.footer_props();
                 let show_cycle_hint =
@@ -3583,6 +3593,12 @@ impl ChatComposer {
             buf,
             mask_char,
         );
+        // Paint the popup after composer chrome so the bottom rule cannot cover it.
+        match &self.active_popup {
+            ActivePopup::Command(popup) => popup.render_ref(popup_rect, buf),
+            ActivePopup::Reference(popup) => popup.render_ref(popup_rect, buf),
+            ActivePopup::None => {}
+        }
     }
 
     /// Paint the composer's text input area, prompt chevron, and placeholder text.
@@ -3873,6 +3889,141 @@ mod reference_popup_tests {
             (InputResult::Command(SlashCommand::Skills), true)
         );
         assert_eq!(composer.current_text(), "");
+    }
+
+    fn popup_command_names(composer: &ChatComposer) -> Vec<&'static str> {
+        match &composer.active_popup {
+            ActivePopup::Command(popup) => popup
+                .filtered_items()
+                .into_iter()
+                .map(|item| {
+                    let CommandItem::Builtin(cmd) = item;
+                    cmd.command()
+                })
+                .collect(),
+            ActivePopup::None => panic!("expected slash-command popup, got none"),
+            ActivePopup::Reference(_) => panic!("expected slash-command popup, got reference"),
+        }
+    }
+
+    /// Trace: L2-DES-TUI-003
+    /// Verifies: Typing a letter after `/` keeps prefix matches such as `/model`.
+    #[test]
+    fn typing_slash_prefix_filters_command_popup() {
+        let (mut composer, _rx) = test_composer();
+
+        assert_eq!(
+            composer.handle_key_event(press(KeyCode::Char('/'))),
+            (InputResult::None, true)
+        );
+        assert!(!popup_command_names(&composer).is_empty());
+
+        assert_eq!(
+            composer.handle_key_event(press(KeyCode::Char('m'))),
+            (InputResult::None, true)
+        );
+        assert_eq!(composer.current_text(), "/m");
+        assert_eq!(popup_command_names(&composer), vec!["model", "mcps"]);
+
+        composer.handle_key_event(press(KeyCode::Backspace));
+        assert_eq!(
+            composer.handle_key_event(press(KeyCode::Char('p'))),
+            (InputResult::None, true)
+        );
+        assert_eq!(composer.current_text(), "/p");
+        assert_eq!(popup_command_names(&composer), vec!["permissions"]);
+    }
+
+    fn render_composer(composer: &ChatComposer, width: u16, height: u16) -> String {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        use crate::render::renderable::Renderable;
+
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        composer.render(area, &mut buf);
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|col| buf[(col, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Trace: L2-DES-TUI-003
+    /// Verifies: Filtered slash matches stay visible in the composer buffer, even
+    /// when the allocated area is taller than the popup (the previous Min+Max
+    /// split hid them under blank composer chrome).
+    #[test]
+    fn typing_slash_prefix_renders_matching_rows() {
+        let (mut composer, _rx) = test_composer();
+        composer.handle_key_event(press(KeyCode::Char('/')));
+        composer.handle_key_event(press(KeyCode::Char('m')));
+        assert_eq!(composer.current_text(), "/m");
+
+        let desired = composer.desired_height(80);
+        let tight = render_composer(&composer, 80, desired);
+        assert!(
+            tight.contains("/model") && tight.contains("/mcps"),
+            "expected '/m' to keep matches at desired height {desired}:\n{tight}"
+        );
+        assert!(
+            !tight.contains("/permissions"),
+            "expected '/m' to hide non-matching commands:\n{tight}"
+        );
+
+        let tall = render_composer(&composer, /*width*/ 80, /*height*/ 20);
+        assert!(
+            tall.contains("/model") && tall.contains("/mcps"),
+            "expected '/m' to keep matches when the composer area is taller than the popup:\n{tall}"
+        );
+
+        composer.handle_key_event(press(KeyCode::Backspace));
+        composer.handle_key_event(press(KeyCode::Char('p')));
+        let permissions = render_composer(&composer, 80, composer.desired_height(80));
+        assert!(
+            permissions.contains("/permissions"),
+            "expected '/p' to render /permissions:\n{permissions}"
+        );
+    }
+
+    /// Trace: L2-DES-TUI-003
+    /// Verifies: Uppercase letters after `/` still prefix-filter commands.
+    #[test]
+    fn uppercase_slash_prefix_filters_command_popup() {
+        let (mut composer, _rx) = test_composer();
+        set_text_at_end(&mut composer, "/");
+
+        assert_eq!(
+            composer.handle_key_event(KeyEvent {
+                code: KeyCode::Char('M'),
+                modifiers: KeyModifiers::SHIFT,
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            }),
+            (InputResult::None, true)
+        );
+        assert_eq!(composer.current_text(), "/M");
+        assert_eq!(popup_command_names(&composer), vec!["model", "mcps"]);
+    }
+
+    /// Trace: L2-DES-TUI-003
+    /// Verifies: An unknown `/` prefix keeps the popup open with an empty match list.
+    #[test]
+    fn unknown_slash_prefix_keeps_popup_open() {
+        let (mut composer, _rx) = test_composer();
+        set_text_at_end(&mut composer, "/");
+        assert!(!popup_command_names(&composer).is_empty());
+
+        assert_eq!(
+            composer.handle_key_event(press(KeyCode::Char('z'))),
+            (InputResult::None, true)
+        );
+        assert_eq!(composer.current_text(), "/z");
+        assert!(popup_command_names(&composer).is_empty());
     }
 
     /// Trace: L2-DES-CLIENT-002

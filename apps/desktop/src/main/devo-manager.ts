@@ -1,14 +1,15 @@
-import type { AcpTransport, AcpTransportEvent, AcpTransportListener, JsonRpcId } from "./acp-stdio-client"
+import { DESKTOP_INITIALIZE_PARAMS } from "@devo-ai/sdk/v2/client"
+import type { JsonRpcId, NativeTransport, NativeTransportEvent, NativeTransportListener } from "./native-stdio-client"
 import { app } from "electron"
 import {
 	DEVO_HOME_ENV,
 	PROTOCOL_TRACE_ENV,
 	PROTOCOL_TRACE_FILE_ENV,
-	createAcpTrafficLoggerFromEnv,
-	type AcpTrafficLogger,
-	type AcpTrafficLogState,
-} from "./acp-traffic-log"
-import { StdioAcpClient } from "./acp-stdio-client"
+	createNativeTrafficLoggerFromEnv,
+	type NativeTrafficLogger,
+	type NativeTrafficLogState,
+} from "./native-traffic-log"
+import { StdioNativeClient } from "./native-stdio-client"
 import { resolveDevoProgram } from "./devo-program"
 import { createLogger } from "./logger"
 import { startNotificationWatcher, stopNotificationWatcher } from "./notification-watcher"
@@ -18,7 +19,7 @@ import { waitForEnv } from "./shell-env"
 const log = createLogger("devo-manager")
 
 const STDIO_URL = "stdio://local"
-const acpTrafficLogStartupEnv = {
+const nativeTrafficLogStartupEnv = {
 	[DEVO_HOME_ENV]: process.env[DEVO_HOME_ENV],
 	[PROTOCOL_TRACE_ENV]: process.env[PROTOCOL_TRACE_ENV],
 	[PROTOCOL_TRACE_FILE_ENV]: process.env[PROTOCOL_TRACE_FILE_ENV],
@@ -31,10 +32,10 @@ export interface DevoServer {
 	managed: boolean
 }
 
-let stdioClient: StdioAcpClient | null = null
+let stdioClient: StdioNativeClient | null = null
 let server: DevoServer | null = null
 let initializing: Promise<DevoServer> | null = null
-let acpTrafficLogger: AcpTrafficLogger | null = null
+let nativeTrafficLogger: NativeTrafficLogger | null = null
 const serverReadyListeners = new Set<() => void>()
 
 export async function ensureServer(): Promise<DevoServer> {
@@ -79,7 +80,7 @@ export async function restartServer(): Promise<DevoServer> {
 	return ensureServer()
 }
 
-export async function requestAcp(
+export async function requestNative(
 	method: string,
 	params?: unknown,
 	directory?: string,
@@ -88,7 +89,7 @@ export async function requestAcp(
 	return client.request(method, params, directory)
 }
 
-export async function notifyAcp(
+export async function notifyNative(
 	method: string,
 	params?: unknown,
 	directory?: string,
@@ -97,36 +98,36 @@ export async function notifyAcp(
 	return client.notify(method, params, directory)
 }
 
-export async function respondAcp(id: JsonRpcId, result: unknown): Promise<void> {
+export async function respondNative(id: JsonRpcId, result: unknown): Promise<void> {
 	const client = await ensureClient()
 	await client.respond(id, result)
 }
 
-export function subscribeAcp(listener: AcpTransportListener): () => void {
+export function subscribeNative(listener: NativeTransportListener): () => void {
 	const client = getOrCreateClient()
 	return client.subscribe(listener)
 }
 
-export function isAcpConnected(): boolean {
+export function isNativeConnected(): boolean {
 	return stdioClient?.connected() ?? false
 }
 
-const sharedAcpTransport: AcpTransport = {
-	request: requestAcp,
-	notify: notifyAcp,
-	respond: respondAcp,
-	subscribe: subscribeAcp,
-	connected: isAcpConnected,
+const sharedNativeTransport: NativeTransport = {
+	request: requestNative,
+	notify: notifyNative,
+	respond: respondNative,
+	subscribe: subscribeNative,
+	connected: isNativeConnected,
 	pid: () => stdioClient?.pid() ?? null,
 	stop: stopServer,
 }
 
-export function getAcpTransport(): AcpTransport {
-	return sharedAcpTransport
+export function getNativeTransport(): NativeTransport {
+	return sharedNativeTransport
 }
 
-export function getAcpTrafficLogState(): AcpTrafficLogState {
-	return getAcpTrafficLogger().getState()
+export function getNativeTrafficLogState(): NativeTrafficLogState {
+	return getNativeTrafficLogger().getState()
 }
 
 async function startServer(): Promise<DevoServer> {
@@ -142,18 +143,18 @@ async function startServer(): Promise<DevoServer> {
 		pid: client.pid(),
 		managed: true,
 	}
-	startNotificationWatcher(getAcpTransport())
+	startNotificationWatcher(getNativeTransport())
 	notifyServerReady()
-	log.info("Devo ACP stdio server ready", { pid: server.pid })
+	log.info("Devo Native stdio server ready", { pid: server.pid })
 	return server
 }
 
-async function ensureClient(): Promise<StdioAcpClient> {
+async function ensureClient(): Promise<StdioNativeClient> {
 	await ensureServer()
 	return getOrCreateClient()
 }
 
-function getOrCreateClient(): StdioAcpClient {
+function getOrCreateClient(): StdioNativeClient {
 	if (!stdioClient) {
 		const program = resolveDevoProgram({
 			appPath: app.getAppPath(),
@@ -161,28 +162,28 @@ function getOrCreateClient(): StdioAcpClient {
 			isPackaged: app.isPackaged,
 			resourcesPath: process.resourcesPath,
 		})
-			stdioClient = new StdioAcpClient({
+			stdioClient = new StdioNativeClient({
 				program,
 				networkProxy: getSettings().servers.networkProxy,
-				trafficLogger: getAcpTrafficLogger(),
+				trafficLogger: getNativeTrafficLogger(),
 			})
 		stdioClient.subscribe(handleTransportEvent)
 	}
 	return stdioClient
 }
 
-function getAcpTrafficLogger(): AcpTrafficLogger {
-	if (!acpTrafficLogger) {
-		acpTrafficLogger = createAcpTrafficLoggerFromEnv({
-			env: acpTrafficLogStartupEnv,
+function getNativeTrafficLogger(): NativeTrafficLogger {
+	if (!nativeTrafficLogger) {
+		nativeTrafficLogger = createNativeTrafficLoggerFromEnv({
+			env: nativeTrafficLogStartupEnv,
 		})
 	}
-	return acpTrafficLogger
+	return nativeTrafficLogger
 }
 
-function handleTransportEvent(event: AcpTransportEvent): void {
+function handleTransportEvent(event: NativeTransportEvent): void {
 	if (event.type === "closed") {
-		log.warn("Devo ACP stdio transport closed", { error: event.error })
+		log.warn("Devo Native stdio transport closed", { error: event.error })
 		server = null
 	}
 }
@@ -197,17 +198,6 @@ function notifyServerReady(): void {
 	}
 }
 
-async function initialize(client: StdioAcpClient): Promise<void> {
-	await client.request("initialize", {
-		protocolVersion: 1,
-		clientCapabilities: {
-			fs: { readTextFile: false, writeTextFile: false },
-			terminal: false,
-		},
-		clientInfo: {
-			name: "devo-desktop",
-			title: "Devo Desktop",
-			version: "0.1.0",
-		},
-	})
+async function initialize(client: StdioNativeClient): Promise<void> {
+	await client.request("initialize", DESKTOP_INITIALIZE_PARAMS)
 }

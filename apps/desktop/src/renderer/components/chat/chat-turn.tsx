@@ -37,6 +37,7 @@ import type {
 	FilePart,
 	Part,
 	PermissionRequest,
+	PermissionResponse,
 	ReasoningPart,
 	TextPart,
 	ToolPart,
@@ -471,7 +472,7 @@ interface ChatTurnProps {
 		agent: Agent,
 		permissionSessionId: string,
 		permissionId: string,
-		response?: "once" | "always",
+		response?: PermissionResponse,
 	) => Promise<void>
 	onDenyPermission?: (
 		agent: Agent,

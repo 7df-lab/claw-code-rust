@@ -46,15 +46,15 @@ import {
 import { getOpenInTargets, openInTarget, setPreferredTarget } from "./open-in-targets"
 import {
 	ensureServer,
-	getAcpTrafficLogState,
+	getNativeTrafficLogState,
 	getServerUrl,
-	isAcpConnected,
-	notifyAcp,
-	requestAcp,
-	respondAcp,
+	isNativeConnected,
+	notifyNative,
+	requestNative,
+	respondNative,
 	restartServer,
 	stopServer,
-	subscribeAcp,
+	subscribeNative,
 } from "./devo-manager"
 import { getOpaqueWindows, getSettings, onSettingsChanged, updateSettings } from "./settings-store"
 import { desktopTerminalManager } from "./terminal-manager"
@@ -203,39 +203,39 @@ export function registerIpcHandlers(): void {
 	)
 
 	ipcMain.handle(
-		"acp:request",
+		"native:request",
 		withLogging(
-			"acp:request",
+			"native:request",
 			async (_, request: { method: string; params?: unknown; directory?: string }) =>
-				await requestAcp(request.method, request.params, request.directory),
+				await requestNative(request.method, request.params, request.directory),
 		),
 	)
 
 	ipcMain.handle(
-		"acp:notify",
+		"native:notify",
 		withLogging(
-			"acp:notify",
+			"native:notify",
 			async (_, notification: { method: string; params?: unknown; directory?: string }) =>
-				await notifyAcp(notification.method, notification.params, notification.directory),
+				await notifyNative(notification.method, notification.params, notification.directory),
 		),
 	)
 
 	ipcMain.handle(
-		"acp:respond",
+		"native:respond",
 		withLogging(
-			"acp:respond",
+			"native:respond",
 			async (_, response: { id: number | string; result: unknown }) =>
-				await respondAcp(response.id, response.result),
+				await respondNative(response.id, response.result),
 		),
 	)
 
-	ipcMain.handle("acp:connected", () => isAcpConnected())
+	ipcMain.handle("native:connected", () => isNativeConnected())
 
-	ipcMain.handle("acp-traffic-log:state", () => getAcpTrafficLogState())
+	ipcMain.handle("native-traffic-log:state", () => getNativeTrafficLogState())
 
-	subscribeAcp((event) => {
+	subscribeNative((event) => {
 		for (const win of BrowserWindow.getAllWindows()) {
-			win.webContents.send("acp:event", event)
+			win.webContents.send("native:event", event)
 		}
 	})
 

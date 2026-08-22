@@ -1,9 +1,14 @@
 // @ts-nocheck
 
-import type { DevoAcpTransport } from "./client"
-import type { AcpSessionConfigOption } from "./generated"
-
-export type AcpConfigOption = AcpSessionConfigOption
+import type { DevoNativeTransport } from "./client"
+export type SessionConfigOption = {
+	id: string
+	name?: string
+	type: string
+	currentValue?: unknown
+	options?: unknown
+	[key: string]: unknown
+}
 
 export class AsyncEventQueue<T> implements AsyncIterable<T> {
 	private values: T[] = []
@@ -51,13 +56,13 @@ export function defaultCwd(): string {
 	return process.env.HOME ?? process.cwd()
 }
 
-let sharedIpcTransport: DevoAcpTransport | null = null
+let sharedIpcTransport: DevoNativeTransport | null = null
 
-export function createIpcTransport(): DevoAcpTransport {
+export function createIpcTransport(): DevoNativeTransport {
 	if (sharedIpcTransport) return sharedIpcTransport
 
-	const api = globalThis.window?.devo?.acp
-	if (!api) throw new Error("window.devo.acp is not available")
+	const api = globalThis.window?.devo?.native
+	if (!api) throw new Error("window.devo.native is not available")
 	sharedIpcTransport = {
 		request: (method, params, directory) => api.request({ method, params, directory }),
 		notify: (method, params, directory) => api.notify({ method, params, directory }),
@@ -68,7 +73,7 @@ export function createIpcTransport(): DevoAcpTransport {
 	return sharedIpcTransport
 }
 
-export function providerDataFromConfigOptions(configOptions: AcpConfigOption[]): {
+export function providerDataFromConfigOptions(configOptions: SessionConfigOption[]): {
 	default: Record<string, string>
 	providers: any[]
 } {
@@ -111,13 +116,13 @@ export function providerDataFromConfigOptions(configOptions: AcpConfigOption[]):
 	}
 }
 
-export function configDataFromConfigOptions(configOptions: AcpConfigOption[]): any {
+export function configDataFromConfigOptions(configOptions: SessionConfigOption[]): any {
 	const modelOption = configOptions.find((option) => option.id === "model")
 	const currentValue = typeof modelOption?.currentValue === "string" ? modelOption.currentValue : undefined
 	return currentValue ? { model: `session/${currentValue}` } : {}
 }
 
-export function questionInfoFromAcp(question: unknown): any {
+export function questionInfoFromNative(question: unknown): any {
 	const value = question && typeof question === "object" ? (question as Record<string, unknown>) : {}
 	const options = Array.isArray(value.options)
 		? value.options.map((option) => {
@@ -167,18 +172,18 @@ export function toolPartFromUpdate(
 ): any {
 	const toolCallId = toolCallIdFromUpdate(update, now)
 	const messageID = `tool-${toolCallId}`
-	const acpContent = Array.isArray(update.content) ? update.content : undefined
-	const acpLocations = Array.isArray(update.locations) ? update.locations : undefined
+	const legacyContent = Array.isArray(update.content) ? update.content : undefined
+	const legacyLocations = Array.isArray(update.locations) ? update.locations : undefined
 	const input = enrichedToolInput(
 		objectFromValue(update.rawInput ?? update.input ?? existingPart?.state?.input),
-		acpContent,
+		legacyContent,
 	)
 	const tool = resolvedToolName(update, existingPart, input, toolCallId)
 	const title = resolvedToolTitle(update, existingPart, tool, toolCallId)
 	const metadata = {
 		...objectFromValue(existingPart?.state?.metadata),
-		...(acpContent ? { acpContent } : {}),
-		...(acpLocations ? { acpLocations } : {}),
+		...(legacyContent ? { legacyContent } : {}),
+		...(legacyLocations ? { legacyLocations } : {}),
 	}
 	const time = existingPart?.state?.time ?? { start: now }
 	const status = toolStateStatus(update.status, existingPart?.state?.status)
@@ -264,7 +269,7 @@ function resolvedToolName(
 	if (explicitTool) return explicitTool
 
 	const kind = stringFromValue(update.kind)
-	if (kind) return toolNameFromAcpKind(kind, input)
+	if (kind) return toolNameFromUpdateKind(kind, input)
 
 	const existingTool = stringFromValue(existingPart?.tool)
 	if (existingTool && existingTool !== toolCallId && existingTool !== existingPart?.callID) {
@@ -292,7 +297,7 @@ function resolvedToolTitle(
 	return tool
 }
 
-function toolNameFromAcpKind(kind: string, input: Record<string, unknown>): string {
+function toolNameFromUpdateKind(kind: string, input: Record<string, unknown>): string {
 	switch (kind) {
 		case "read":
 			return "read"
@@ -342,7 +347,7 @@ function rawString(value: unknown): string {
 
 function toolOutputString(update: Record<string, unknown>): string {
 	if ("rawOutput" in update) return rawString(update.rawOutput)
-	const contentOutput = outputFromAcpToolContent(update.content)
+	const contentOutput = outputFromToolContent(update.content)
 	if (contentOutput) return contentOutput
 	return textFromUpdate(update)
 }
@@ -363,7 +368,7 @@ function enrichedToolInput(
 	return input
 }
 
-function outputFromAcpToolContent(content: unknown): string {
+function outputFromToolContent(content: unknown): string {
 	if (!Array.isArray(content)) return ""
 	const textParts: string[] = []
 	for (const item of content) {
@@ -457,7 +462,7 @@ function flattenSelectOptions(options: unknown): Array<{
 	return result
 }
 
-function variantsFromConfigOption(option?: AcpConfigOption): Record<string, { name: string; description?: string }> {
+function variantsFromConfigOption(option?: SessionConfigOption): Record<string, { name: string; description?: string }> {
 	if (!option) return {}
 	return Object.fromEntries(
 		flattenSelectOptions(option.options).map((selectOption) => [

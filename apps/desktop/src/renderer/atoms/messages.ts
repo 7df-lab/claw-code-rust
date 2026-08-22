@@ -34,7 +34,7 @@ export const messagesFamily = atomFamily((_sessionId: string) => atom<Message[]>
 // ============================================================
 
 /**
- * Set messages for a session (initial fetch + merge with existing ACP event data).
+ * Set messages for a session (initial fetch + merge with existing Native event data).
  */
 export const setMessagesAtom = atom(
 	null,
@@ -59,26 +59,26 @@ export const setMessagesAtom = atom(
 			return
 		}
 
-		// Merge: fetched data fills gaps, while ACP event versions win for matching IDs.
+		// Merge: fetched data fills gaps, while Native event versions win for matching IDs.
 		const byId = new Map(args.messages.map((message) => [message.id, message]))
 		for (const message of existing) {
 			byId.set(message.id, message)
 		}
 		const merged = sortedMessages(byId.values())
 
-		// Merge parts: fetched parts fill in gaps, ACP event parts take priority
+		// Merge parts: fetched parts fill in gaps, Native event parts take priority
 		for (const [messageId, fetchedParts] of Object.entries(args.parts)) {
 			const scopedKey = partStorageKey(args.sessionId, messageId)
 			const existingScopedParts = get(partsFamily(scopedKey))
 			if (!existingScopedParts || existingScopedParts.length === 0) {
-				// No ACP event parts yet for this message — use fetched
+				// No Native event parts yet for this message — use fetched
 				set(partsFamily(scopedKey), fetchedParts)
 			}
 			const existingLegacyParts = get(partsFamily(messageId))
 			if (!existingLegacyParts || existingLegacyParts.length === 0) {
 				set(partsFamily(messageId), fetchedParts)
 			}
-			// Otherwise keep the ACP-accumulated parts (more recent)
+			// Otherwise keep the Native-event-accumulated parts (more recent)
 		}
 
 		set(messagesFamily(args.sessionId), merged)

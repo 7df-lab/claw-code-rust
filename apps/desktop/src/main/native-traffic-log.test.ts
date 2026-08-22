@@ -6,15 +6,15 @@ import {
 	DEVO_HOME_ENV,
 	PROTOCOL_TRACE_ENV,
 	PROTOCOL_TRACE_FILE_ENV,
-	createAcpTrafficLoggerFromEnv,
+	createNativeTrafficLoggerFromEnv,
 	findDevoHome,
 	formatProtocolTraceTimestamp,
 	isProtocolTraceEnabled,
 	resolveProtocolTracePath,
-} from "./acp-traffic-log"
+} from "./native-traffic-log"
 
 function withTempDir<T>(run: (dir: string) => T): T {
-	const dir = mkdtempSync(path.join(tmpdir(), "devo-acp-traffic-log-"))
+	const dir = mkdtempSync(path.join(tmpdir(), "devo-native-traffic-log-"))
 	try {
 		return run(dir)
 	} finally {
@@ -45,7 +45,7 @@ describe("protocol trace env trigger", () => {
 
 	test("does not create or write a log when DEVO_PROTOCOL_TRACE is unset or empty", () => {
 		withTempDir((dir) => {
-			const logger = createAcpTrafficLoggerFromEnv({
+			const logger = createNativeTrafficLoggerFromEnv({
 				env: { [DEVO_HOME_ENV]: dir },
 				clock: fixedClock,
 				pid: 42,
@@ -69,7 +69,7 @@ describe("protocol trace env trigger", () => {
 		})
 
 		withTempDir((dir) => {
-			const logger = createAcpTrafficLoggerFromEnv({
+			const logger = createNativeTrafficLoggerFromEnv({
 				env: {
 					[DEVO_HOME_ENV]: dir,
 					[PROTOCOL_TRACE_ENV]: " ",
@@ -96,7 +96,7 @@ describe("protocol trace env trigger", () => {
 
 	test("ignores removed desktop-specific triggers", () => {
 		withTempDir((dir) => {
-			const logger = createAcpTrafficLoggerFromEnv({
+			const logger = createNativeTrafficLoggerFromEnv({
 				env: {
 					[DEVO_HOME_ENV]: dir,
 					DEVO_DESKTOP_ACP_TRAFFIC_LOG: "1",
@@ -128,7 +128,7 @@ describe("protocol trace env trigger", () => {
 	test("writes JSONL to DEVO_HOME/traces when DEVO_PROTOCOL_TRACE is enabled", () => {
 		withTempDir((dir) => {
 			const expectedPath = path.join(dir, "traces", "protocol-42-20260627T010203Z.ndjsonl")
-			const logger = createAcpTrafficLoggerFromEnv({
+			const logger = createNativeTrafficLoggerFromEnv({
 				env: {
 					[DEVO_HOME_ENV]: dir,
 					[PROTOCOL_TRACE_ENV]: "1",
@@ -162,7 +162,7 @@ describe("protocol trace env trigger", () => {
 	test("writes JSONL to DEVO_PROTOCOL_TRACE_FILE when provided", () => {
 		withTempDir((dir) => {
 			const logPath = path.join(dir, "custom", "trace.ndjsonl")
-			const logger = createAcpTrafficLoggerFromEnv({
+			const logger = createNativeTrafficLoggerFromEnv({
 				env: {
 					[DEVO_HOME_ENV]: dir,
 					[PROTOCOL_TRACE_ENV]: "true",

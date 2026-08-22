@@ -2,14 +2,14 @@
 
 import {
 	AsyncEventQueue,
-	type AcpConfigOption,
+	type SessionConfigOption,
 	configDataFromConfigOptions,
 	createIpcTransport,
 	defaultCwd,
 	permissionOptionId,
 	partTime,
 	providerDataFromConfigOptions,
-	questionInfoFromAcp,
+	questionInfoFromNative,
 	requestUserInputFromOriginalEvent,
 	sessionErrorEvent,
 	stableId,
@@ -17,19 +17,7 @@ import {
 	textFromUpdate,
 	toolCallIdFromUpdate,
 	toolPartFromUpdate,
-} from "./acp-client-support"
-import type {
-	AcpDeleteSessionParams,
-	AcpListSessionsResult,
-	AcpLoadSessionResult,
-	AcpNewSessionResult,
-	AcpPromptParams,
-	AcpRequestPermissionParams,
-	AcpSessionInfo,
-	AcpSessionNotification,
-	AcpSetConfigOptionParams,
-	AcpSetConfigOptionResult,
-} from "./generated"
+} from "./native-client-support"
 import type {
 	ProviderValidateParams,
 	ProviderValidateResult,
@@ -48,7 +36,7 @@ import type {
 	WorkspaceChangesUpdatedPayload,
 	WorkspaceDiffDetail,
 	SessionInterruptParams,
-} from "./generated/protocol"
+} from "./generated/native"
 import {
 	ProtocolValidationError,
 	assertValidProtocolPayload,
@@ -65,7 +53,20 @@ export type {
 
 export type JsonRpcId = number | string
 
-export interface DevoAcpTransportEvent {
+type LegacySessionInfo = {
+	sessionId: string
+	cwd: string
+	title?: string
+	updatedAt?: string
+	_meta?: Record<string, unknown>
+}
+type LegacySessionNotification = {
+	sessionId: string
+	update: Record<string, unknown>
+	_meta?: Record<string, unknown>
+}
+
+export interface DevoNativeTransportEvent {
 	type: "notification" | "request" | "closed"
 	id?: JsonRpcId
 	method?: string
@@ -73,11 +74,11 @@ export interface DevoAcpTransportEvent {
 	error?: string
 }
 
-export interface DevoAcpTransport {
+export interface DevoNativeTransport {
 	request(method: string, params?: unknown, directory?: string): Promise<unknown>
 	notify?(method: string, params?: unknown, directory?: string): Promise<void>
 	respond(id: JsonRpcId, result: unknown): Promise<void>
-	subscribe(listener: (event: DevoAcpTransportEvent) => void): () => void
+	subscribe(listener: (event: DevoNativeTransportEvent) => void): () => void
 	connected(): boolean
 }
 
@@ -85,7 +86,7 @@ export interface CreateDevoClientOptions {
 	baseUrl?: string
 	directory?: string
 	fetch?: typeof fetch
-	transport?: DevoAcpTransport
+	transport?: DevoNativeTransport
 }
 
 export type Agent = any
@@ -119,6 +120,17 @@ export type PermissionActionConfig = any
 export type PermissionConfig = any
 export type PermissionObjectConfig = any
 export type PermissionRequest = any
+export type PermissionResponse =
+	| "once"
+	| "turn"
+	| "session"
+	| "pathPrefix"
+	| "host"
+	| "tool"
+	| "commandPrefix"
+	| "commandPrefixPersist"
+	| "always"
+	| "reject"
 export type PermissionRule = any
 export type PermissionRuleConfig = any
 export type PermissionRuleset = any
@@ -187,7 +199,7 @@ export type {
 	WorkspaceChangesReadResult,
 	WorkspaceChangesUpdatedPayload,
 	WorkspaceDiffDetail,
-} from "./generated/protocol"
+} from "./generated/native"
 
 export type WorkspaceChangesReadOptions = {
 	sessionID: string
@@ -222,14 +234,18 @@ interface GlobalEvent {
 
 type PendingQuestion = {
 	id?: JsonRpcId
+	method?: string
 	sessionId: string
 	questions: QuestionInfo[]
 }
 
 type PendingPermission = {
 	id: JsonRpcId
-	sessionId: string
+	method: string
+	sessionId?: string
 	options: Array<{ optionId: string; kind: string }>
+	availableScopes?: string[]
+	native?: boolean
 }
 
 function partCacheKey(sessionId: string, messageId: string): string {
@@ -399,15 +415,15 @@ function legacyModelBindingFromCanonical(binding: Record<string, unknown>): Prov
 	availableEfforts?: Array<{ value: string; label: string; description?: string }>
 }
 
-/** Canonical model preferences → the ACP select options the config UI renders. */
-function acpConfigOptionsFromModelPreferences(preferences: ModelPreferencesWire): AcpConfigOption[] {
+/** Canonical model preferences → the select options the config UI renders. */
+function sessionConfigOptionsFromModelPreferences(preferences: ModelPreferencesWire): SessionConfigOption[] {
 	const toSelectOptions = (entries?: Array<{ value: string; label: string; description?: string }>) =>
 		(entries ?? []).map((entry) => ({
 			value: entry.value,
 			name: entry.label,
 			...(entry.description !== undefined ? { description: entry.description } : {}),
 		}))
-	const options: AcpConfigOption[] = []
+	const options: SessionConfigOption[] = []
 	if (preferences.model !== undefined || (preferences.availableModels?.length ?? 0) > 0) {
 		options.push({
 			type: "select",
@@ -417,7 +433,7 @@ function acpConfigOptionsFromModelPreferences(preferences: ModelPreferencesWire)
 			category: "model",
 			currentValue: preferences.model ?? "",
 			options: toSelectOptions(preferences.availableModels),
-		} as AcpConfigOption)
+		} as SessionConfigOption)
 	}
 	if (preferences.reasoningEffort !== undefined || (preferences.availableEfforts?.length ?? 0) > 0) {
 		options.push({
@@ -428,7 +444,7 @@ function acpConfigOptionsFromModelPreferences(preferences: ModelPreferencesWire)
 			category: "thought_level",
 			currentValue: preferences.reasoningEffort ?? "",
 			options: toSelectOptions(preferences.availableEfforts),
-		} as AcpConfigOption)
+		} as SessionConfigOption)
 	}
 	return options
 }
@@ -613,20 +629,22 @@ function sessionCompactionFromOriginalEvent(
 function workspaceChangesUpdatedEventProperties(
 	payload: WorkspaceChangesUpdatedPayload,
 ): WorkspaceChangesUpdatedEventProperties {
+	const value = payload as unknown as Record<string, unknown>
+	const stats = objectRecord(value.stats) ?? {}
 	return {
-		sessionID: payload.session_id,
-		turnID: payload.turn_id,
+		sessionID: value.sessionId ?? value.session_id,
+		turnID: value.turnId ?? value.turn_id,
 		scope: payload.scope,
 		status: payload.status,
 		coverage: payload.coverage,
-		changeSetStatus: payload.change_set_status,
+		changeSetStatus: value.changeSetStatus ?? value.change_set_status,
 		stats: {
-			filesChanged: numberFromProtocol(payload.stats.files_changed),
-			additions: numberFromProtocol(payload.stats.additions),
-			deletions: numberFromProtocol(payload.stats.deletions),
+			filesChanged: numberFromProtocol(stats.filesChanged ?? stats.files_changed),
+			additions: numberFromProtocol(stats.additions),
+			deletions: numberFromProtocol(stats.deletions),
 		},
 		version: numberFromProtocol(payload.version),
-		generatedAt: payload.generated_at,
+		generatedAt: value.generatedAt ?? value.generated_at,
 	}
 }
 
@@ -773,10 +791,11 @@ function sortedMessages(messages: Message[]): Message[] {
 	return [...messages].sort(compareMessages)
 }
 
-const initializePromises = new WeakMap<DevoAcpTransport, Promise<void>>()
+const initializePromises = new WeakMap<DevoNativeTransport, Promise<void>>()
 
-const DESKTOP_INITIALIZE_PARAMS = {
+export const DESKTOP_INITIALIZE_PARAMS = {
 	protocolVersion: 1,
+	_meta: { devo: { protocol: "native", typedItems: true } },
 	clientCapabilities: {
 		fs: { readTextFile: false, writeTextFile: false },
 		terminal: false,
@@ -798,8 +817,8 @@ function recentMessages(messages: Message[], limit: number | undefined): Message
 	return sorted.slice(start)
 }
 
-class AcpClient {
-	private transport: DevoAcpTransport | null = null
+class NativeClient {
+	private transport: DevoNativeTransport | null = null
 	private openPromise: Promise<void> | null = null
 	private initialized = false
 	private events = new AsyncEventQueue<GlobalEvent>()
@@ -812,10 +831,15 @@ class AcpClient {
 	private lastUserMessageBySession = new Map<string, string>()
 	private userMessageByTurn = new Map<string, string>()
 	private messageTurnIds = new Map<string, string>()
-	private configOptionsBySession = new Map<string, AcpConfigOption[]>()
-	private configOptionsByDirectory = new Map<string, AcpConfigOption[]>()
+	private configOptionsBySession = new Map<string, SessionConfigOption[]>()
+	private configOptionsByDirectory = new Map<string, SessionConfigOption[]>()
 	private pendingPermissions = new Map<string, PendingPermission>()
 	private pendingQuestions = new Map<string, PendingQuestion>()
+	private subscriptions = new Map<string, { subscriptionId: string; cursors: Array<{ streamId: string; seq: number }> }>()
+	private subscriptionCursors = new Map<string, Array<{ streamId: string; seq: number }>>()
+	private renderedNativeItems = new Set<string>()
+	private turnSessions = new Map<string, string>()
+	private nativeItemCallIds = new Map<string, string>()
 	private sessionDiscovery = new Map<string, Promise<Session | undefined>>()
 	private lastEventTime = 0
 	private referenceSearchSession: ReferenceSearchSession | null = null
@@ -838,41 +862,6 @@ class AcpClient {
 			variant?: string
 			collaborationMode?: string
 		}) => {
-			// Plan mode uses turn/start which supports collaboration_mode
-			if (params.collaborationMode === "plan") {
-				const result = await this.turn.start({
-					sessionID: params.sessionID,
-					parts: params.parts,
-					model: params.model,
-					variant: params.variant,
-					collaborationMode: "plan",
-				})
-				return result
-			}
-			const model = params.model as { modelID?: string } | undefined
-			if (model?.modelID) await this.setSessionConfigOption(params.sessionID, "model", model.modelID)
-			if (params.variant) await this.setSessionConfigOption(params.sessionID, "thought_level", params.variant)
-			const text = params.parts
-				.map((part) => (part.type === "text" ? (part.text ?? "") : ""))
-				.join("\n")
-				.trim()
-			const prompt = []
-			if (text || params.parts.every((part) => part.type !== "file")) {
-				prompt.push({ type: "text", text })
-			}
-			for (const part of params.parts) {
-				if (part.type !== "file" || !part.url) continue
-				prompt.push({
-					type: "resource_link",
-					uri: part.url,
-					name: part.filename ?? part.url,
-					...(part.mime || part.mediaType ? { mimeType: part.mime ?? part.mediaType } : {}),
-				})
-			}
-			const promptParams: AcpPromptParams = {
-				sessionId: params.sessionID,
-				prompt,
-			}
 			const directory = this.sessionDirectories.get(params.sessionID) ?? this.options.directory ?? defaultCwd()
 			this.lastUserMessageBySession.delete(params.sessionID)
 			const promptStartedAt = Math.max(Date.now(), this.lastEventTime + 1)
@@ -882,7 +871,13 @@ class AcpClient {
 				type: "session.status",
 				properties: { sessionID: params.sessionID, status: busyStatus },
 			})
-			void this.request("session/prompt", promptParams)
+			void this.turn.start({
+				sessionID: params.sessionID,
+				parts: params.parts,
+				model: params.model,
+				variant: params.variant,
+				collaborationMode: params.collaborationMode,
+			})
 				.then(() => {
 					this.completeOpenAssistantMessages(params.sessionID, directory, promptStartedAt)
 					const idleStatus = { type: "idle" }
@@ -917,35 +912,12 @@ class AcpClient {
 				expectedVersion: 0,
 				title: params.title,
 			})) as { session?: Record<string, unknown> }
-			const metadata = result.session ?? {}
-			const usage = objectRecord(metadata.usage)
-			const usageTotals = objectRecord(usage?.total)
-			// `rememberSession` folds the legacy snake-shaped devo/session
-			// metadata; rebuild it from the canonical Session so downstream
-			// session fields (timestamps, token totals) keep their meaning.
-			const legacyMeta: Record<string, unknown> = {
-				session_id: String(metadata.id ?? params.sessionID),
-				cwd: metadata.cwd,
-				created_at: metadata.createdAt,
-				updated_at: metadata.lastActivityAt,
-				last_activity_at: metadata.lastActivityAt,
-				title: metadata.title,
-				ephemeral: metadata.ephemeral ?? false,
-				status: metadata.status,
-				total_input_tokens: usageTotals?.inputTokens ?? 0,
-				total_output_tokens: usageTotals?.outputTokens ?? 0,
-				total_tokens: usageTotals?.totalTokens ?? 0,
-				total_cache_creation_tokens: usageTotals?.cacheCreationInputTokens ?? 0,
-				total_cache_read_tokens: usageTotals?.cacheReadInputTokens ?? 0,
-				prompt_token_estimate: usageTotals?.inputTokens ?? 0,
+			const metadata = {
+				...(result.session ?? {}),
+				id: String(result.session?.id ?? params.sessionID),
+				title: result.session?.title ?? params.title,
 			}
-			const session = this.rememberSession({
-				sessionId: String(metadata.id ?? params.sessionID),
-				cwd: String(metadata.cwd ?? this.sessionDirectories.get(params.sessionID) ?? this.options.directory ?? defaultCwd()),
-				title: typeof metadata.title === "string" ? metadata.title : params.title,
-				updatedAt: typeof metadata.lastActivityAt === "string" ? metadata.lastActivityAt : undefined,
-				_meta: { "devo/session": legacyMeta },
-			})
+			const session = this.rememberNativeSession(metadata)
 			this.emit(session.directory ?? this.options.directory ?? defaultCwd(), {
 				type: "session.updated",
 				properties: { info: session, session },
@@ -953,15 +925,27 @@ class AcpClient {
 			return { data: session }
 		},
 		delete: async (params: { sessionID: string }) => {
-			const deleteParams: AcpDeleteSessionParams = { sessionId: params.sessionID }
-			await this.request("session/delete", deleteParams)
+			await this.requestCanonical("session/delete", { sessionId: params.sessionID })
 			const { directory } = this.forgetSession(params.sessionID)
 			this.emitSessionDeleted(params.sessionID, directory)
 		},
 		get: async (params: { sessionID: string }) => ({
 			data: await this.getSessionById(params.sessionID),
 		}),
-		diff: async (_params: { sessionID: string }) => ({ data: [] }),
+		diff: async (params: { sessionID: string }) => {
+			const result = (await this.requestCanonical("workspace/changes/read", {
+				sessionId: params.sessionID,
+				scopes: ["uncommitted"],
+				diffDetail: "full",
+				maxDiffBytes: 2_000_000,
+			})) as { views?: Array<Record<string, unknown>> }
+			return {
+				data: (result.views ?? [])
+					.map((view) => view.unifiedDiff)
+					.filter((diff): diff is string => typeof diff === "string" && diff.length > 0)
+					.map((diff) => ({ diff })),
+			}
+		},
 		revert: async (params: { sessionID: string }) => ({
 			data: this.sessions.get(params.sessionID),
 		}),
@@ -1001,15 +985,13 @@ class AcpClient {
 			const model = params.model as { modelID?: string } | undefined
 			if (model?.modelID) await this.setSessionConfigOption(params.sessionID, "model", model.modelID)
 			if (params.variant) await this.setSessionConfigOption(params.sessionID, "thought_level", params.variant)
-			const result = (await this.request("turn/start", {
-				session_id: params.sessionID,
+			if (params.collaborationMode) await this.setSessionConfigOption(params.sessionID, "mode", params.collaborationMode)
+			await this.ensureSessionSubscription(params.sessionID)
+			const result = (await this.requestCanonical("turn/start", {
+				sessionId: params.sessionID,
 				input: inputItemsFromPromptParts(params.parts),
-				model_binding_id: model?.modelID ?? null,
-				sandbox: null,
-				approval_policy: null,
-				cwd: params.cwd ?? null,
-				collaboration_mode: params.collaborationMode ?? "build",
-			})) as TurnStartResult
+				idempotencyKey: crypto.randomUUID(),
+			})) as { turn: unknown }
 			return { data: result }
 		},
 	}
@@ -1027,11 +1009,11 @@ class AcpClient {
 		respond: async (params: {
 			sessionID: string
 			permissionID: string
-			response: "once" | "always" | "reject"
+			response: PermissionResponse
 		}) => {
 			await this.respondToPermission(params.permissionID, params.response)
 		},
-		reply: async (params: { requestID: string; reply?: "once" | "always" | "reject" }) => {
+		reply: async (params: { requestID: string; reply?: PermissionResponse }) => {
 			await this.respondToPermission(params.requestID, params.reply ?? "reject")
 		},
 	}
@@ -1043,7 +1025,7 @@ class AcpClient {
 	global = {
 		dispose: async () => {},
 		event: async () => {
-			await this.ensureInitialized()
+			await this.ensureKnownSessionSubscriptions()
 			return { stream: this.events }
 		},
 		config: {
@@ -1053,7 +1035,7 @@ class AcpClient {
 
 	event = {
 		subscribe: async () => {
-			await this.ensureInitialized()
+			await this.ensureKnownSessionSubscriptions()
 			return { stream: this.events }
 		},
 	}
@@ -1182,7 +1164,29 @@ class AcpClient {
 
 	app = {
 		agents: async () => ({ data: [] }),
-		skills: async () => ({ data: [] }),
+		skills: async () => {
+			const result = (await this.requestCanonical("skill/list", {
+				...(this.options.directory ? { cwd: this.options.directory } : {}),
+				forceReload: false,
+			})) as { skills?: unknown[] }
+			return { data: result.skills ?? [] }
+		},
+	}
+
+	mcp = {
+		list: async () => {
+			const result = (await this.requestCanonical("mcp/list", {})) as { servers?: unknown[] }
+			return { data: result.servers ?? [] }
+		},
+		tools: async (params: { name: string }) => {
+			const result = (await this.requestCanonical("mcp/tools", { name: params.name })) as {
+				tools?: unknown[]
+			}
+			return { data: result.tools ?? [] }
+		},
+		setEnabled: async (params: { name: string; enabled: boolean }) => ({
+			data: await this.requestCanonical("mcp/set_enabled", params),
+		}),
 	}
 
 	provider = {
@@ -1288,11 +1292,13 @@ class AcpClient {
 		const sessions: Session[] = []
 		let cursor: string | undefined
 		do {
-			const result = (await this.request("session/list", {
-				cwd: this.options.directory,
+			const result = (await this.requestCanonical("session/list", {
+				cwds: this.options.directory ? [this.options.directory] : [],
+				...(params?.search ? { search: params.search } : {}),
 				...(cursor ? { cursor } : {}),
-			})) as AcpListSessionsResult
-			sessions.push(...(result.sessions ?? []).map((info) => this.rememberSession(info)))
+				...(params?.limit ? { limit: params.limit } : {}),
+			})) as { data?: Array<Record<string, unknown>>; nextCursor?: string | null }
+			sessions.push(...(result.data ?? []).map((info) => this.rememberNativeSession(info)))
 			cursor = result.nextCursor ?? undefined
 			if (params?.limit && !params.search && sessions.length >= params.limit) break
 			if (params?.limit && params.search) {
@@ -1313,13 +1319,12 @@ class AcpClient {
 	private async createSession(): Promise<Session> {
 		await this.ensureInitialized()
 		const cwd = this.options.directory ?? defaultCwd()
-		const result = (await this.request("session/new", {
+		const result = (await this.requestCanonical("session/new", {
 			cwd,
-			additionalDirectories: [],
-			mcpServers: [],
-		})) as AcpNewSessionResult
-		const session = this.rememberSession({ sessionId: result.sessionId, cwd })
-		this.rememberConfigOptions(session.id, cwd, result.configOptions)
+			idempotencyKey: crypto.randomUUID(),
+		})) as { session: Record<string, unknown> }
+		const session = this.rememberNativeSession(result.session)
+		await this.ensureSessionSubscription(session.id)
 		this.emit(session.directory ?? cwd, {
 			type: "session.created",
 			properties: { info: session, session },
@@ -1341,18 +1346,21 @@ class AcpClient {
 		const session = await this.getSessionById(sessionId)
 		const cwd = session?.directory ?? this.sessionDirectories.get(sessionId)
 		if (!cwd) throw new Error(`session ${sessionId} not found`)
-		const result = (await this.request("session/load", {
+		const resumed = (await this.requestCanonical("session/resume", {
 			sessionId,
-			cwd,
-			additionalDirectories: [],
-			mcpServers: [],
-		})) as AcpLoadSessionResult
-		// Electron forwards replay notifications over a separate IPC event channel.
-		// Let that channel drain before callers snapshot this client's message store.
-		await new Promise((resolve) => setTimeout(resolve, 0))
-		this.rememberConfigOptions(sessionId, cwd, result.configOptions)
-		// ACP session/load must replay the complete conversation. Apply any
-		// caller-requested window locally after the replay has been received.
+		})) as { session: Record<string, unknown> }
+		this.rememberNativeSession(resumed.session)
+		await this.ensureSessionSubscription(sessionId)
+		let cursor: string | undefined
+		do {
+			const page = (await this.requestCanonical("session/items/list", {
+				sessionId,
+				...(cursor ? { cursor } : {}),
+				limit: 500,
+			})) as { data?: Array<Record<string, unknown>>; nextCursor?: string | null }
+			for (const item of page.data ?? []) this.handleNativeItemEnvelope(item, "item/completed")
+			cursor = page.nextCursor ?? undefined
+		} while (cursor)
 		this.loadedSessionLimits.set(sessionId, null)
 	}
 
@@ -1374,7 +1382,7 @@ class AcpClient {
 		return discovery
 	}
 
-	private rememberSession(info: AcpSessionInfo): Session {
+	private rememberSession(info: LegacySessionInfo): Session {
 		const existing = this.sessions.get(info.sessionId)
 		const meta = sessionMeta(info._meta)
 		const metadataStatus = sessionStatusFromMetadata(info._meta)
@@ -1412,10 +1420,39 @@ class AcpClient {
 		return session
 	}
 
+	private rememberNativeSession(info: Record<string, unknown>): Session {
+		const id = String(info.id ?? "")
+		if (!id) throw new Error("Native session is missing id")
+		const existing = this.sessions.get(id)
+		const usage = objectRecord(info.usage)
+		const total = objectRecord(usage?.total)
+		const created = parseTimestampMs(info.createdAt) ?? existing?.time.created ?? Date.now()
+		const updated = parseTimestampMs(info.lastActivityAt) ?? existing?.time.updated ?? created
+		const parent = objectRecord(info.parent)
+		const session: Session = {
+			id,
+			title: typeof info.title === "string" ? info.title : existing?.title ?? "New session",
+			parentID: typeof parent?.sessionId === "string" ? parent.sessionId : existing?.parentID,
+			time: { created, updated, lastActivity: updated },
+			directory: String(info.cwd ?? existing?.directory ?? this.options.directory ?? defaultCwd()),
+			totalInputTokens: Number(total?.inputTokens ?? existing?.totalInputTokens ?? 0),
+			totalOutputTokens: Number(total?.outputTokens ?? existing?.totalOutputTokens ?? 0),
+			totalTokens: Number(total?.totalTokens ?? existing?.totalTokens ?? 0),
+			totalCacheCreationTokens: Number(total?.cacheCreationInputTokens ?? existing?.totalCacheCreationTokens ?? 0),
+			totalCacheReadTokens: Number(total?.cacheReadInputTokens ?? existing?.totalCacheReadTokens ?? 0),
+			promptTokenEstimate: Number(total?.inputTokens ?? existing?.promptTokenEstimate ?? 0),
+			lastQueryTotalTokens: existing?.lastQueryTotalTokens ?? 0,
+		}
+		this.sessions.set(id, session)
+		this.sessionDirectories.set(id, session.directory ?? defaultCwd())
+		this.sessionStatuses.set(id, String(info.status).toLowerCase() === "active" ? { type: "busy" } : { type: "idle" })
+		return session
+	}
+
 	private async ensureInitialized(): Promise<void> {
 		if (this.initialized) return
 		await this.open()
-		if (!this.transport) throw new Error("Devo ACP transport is not connected")
+		if (!this.transport) throw new Error("Devo Native transport is not connected")
 		if (this.initialized) return
 
 		let promise = initializePromises.get(this.transport)
@@ -1443,7 +1480,7 @@ class AcpClient {
 
 	private async request(method: string, params: unknown): Promise<unknown> {
 		await this.open()
-		if (!this.transport) throw new Error("Devo ACP transport is not connected")
+		if (!this.transport) throw new Error("Devo Native transport is not connected")
 		const validParams = assertValidProtocolPayload({
 			method,
 			direction: "outgoingRequest",
@@ -1457,16 +1494,9 @@ class AcpClient {
 		})
 	}
 
-	/**
-	 * Canonical protocol RPCs (L2-DES-APP-008): served on every connection
-	 * surface via the server's dual-shape dispatch, so the desktop client can
-	 * migrate call-by-call while it stays on the ACP surface. Not yet in the
-	 * generated schema bundle — the server validates the wire shape.
-	 */
+	/** Native RPC path shared by all first-party Desktop consumers. */
 	private async requestCanonical(method: string, params: unknown): Promise<unknown> {
-		await this.open()
-		if (!this.transport) throw new Error("Devo ACP transport is not connected")
-		return this.transport.request(method, params, this.options.directory)
+		return this.request(method, params)
 	}
 
 	private ensureReferenceSearchSession(): ReferenceSearchSession {
@@ -1480,24 +1510,24 @@ class AcpClient {
 		return this.referenceSearchSession
 	}
 
-	private handleTransportEvent(event: DevoAcpTransportEvent): void {
+	private handleTransportEvent(event: DevoNativeTransportEvent): void {
 		if (event.type === "closed") {
 			if (this.transport) {
 				initializePromises.delete(this.transport)
 			}
 			this.initialized = false
 			this.events.close()
+			this.events = new AsyncEventQueue<GlobalEvent>()
+			this.pendingPermissions.clear()
+			this.pendingQuestions.clear()
+			this.subscriptions.clear()
+			this.turnSessions.clear()
+			this.nativeItemCallIds.clear()
+			this.referenceSearchSession = null
 			return
 		}
-		if (event.type === "notification" && event.method === "session/update" && event.params) {
-			const notification = this.validateTransportPayload<AcpSessionNotification>(
-				event.method,
-				"incomingNotification",
-				event.params,
-			)
-			if (!notification) return
-			this.handleSessionUpdate(notification)
-			return
+		if (event.type === "notification" && event.method && event.params) {
+			if (this.handleNativeNotification(event.method, event.params)) return
 		}
 		if (
 			event.type === "notification" &&
@@ -1507,24 +1537,8 @@ class AcpClient {
 		) {
 			return
 		}
-		if (
-			event.type === "notification" &&
-			event.method === "workspace/changes/updated" &&
-			event.params
-		) {
-			const payload = this.validateTransportPayload<WorkspaceChangesUpdatedPayload>(
-				event.method,
-				"incomingNotification",
-				event.params,
-			)
-			if (!payload) return
-			this.handleWorkspaceChangesUpdated(payload)
-			return
-		}
 		if (event.type === "request" && event.id !== undefined && event.method) {
-			const params = this.validateTransportPayload(event.method, "incomingRequest", event.params)
-			if (!params) return
-			this.handleServerRequest(event.id, event.method, params)
+			this.handleNativeServerRequest(event.id, event.method, event.params)
 		}
 	}
 
@@ -1543,72 +1557,401 @@ class AcpClient {
 		}
 	}
 
-	private handleServerRequest(id: JsonRpcId, method: string, params: unknown): void {
-		if (method !== "session/request_permission") return
-		const value = params as AcpRequestPermissionParams
-		const sessionId = String(value.sessionId ?? "")
-		if (!sessionId) return
-		const permissionId = `acp-permission-${String(id)}`
-		const options = Array.isArray(value.options)
-			? value.options.map((option) => ({
-					optionId: String(option.optionId),
-					kind: String(option.kind),
-				}))
-			: []
-		this.pendingPermissions.set(permissionId, { id, sessionId, options })
+	private handleNativeServerRequest(id: JsonRpcId, method: string, params: unknown): boolean {
+		if (
+			method === "approval/command/request" ||
+			method === "approval/fileChange/request" ||
+			method === "approval/permission/request" ||
+			method === "session/goal/completionApproval/request"
+		) {
+			const value = objectRecord(
+				this.validateTransportPayload(method, "incomingRequest", params),
+			) ?? {}
+			const approvalId = String(value.approvalId ?? value.requestId ?? "")
+			if (!approvalId) return true
+			this.pendingPermissions.set(approvalId, {
+				id,
+				method,
+				options: [],
+				availableScopes: Array.isArray(value.availableScopes)
+					? value.availableScopes.map(String)
+					: ["once"],
+				native: true,
+			})
+			return true
+		}
+		if (method === "userInput/request") {
+			const value = objectRecord(
+				this.validateTransportPayload(method, "incomingRequest", params),
+			) ?? {}
+			const requestId = String(value.requestId ?? "")
+			if (!requestId) return true
+			this.pendingQuestions.set(requestId, {
+				id,
+				method,
+				sessionId: "",
+				questions: (Array.isArray(value.questions) ? value.questions : []).map(questionInfoFromNative),
+			})
+			return true
+		}
+		return false
+	}
 
-		const toolCall = (value.toolCall ?? {}) as Record<string, unknown>
-		const permission = String(toolCall.title ?? "Agent requested permission")
-		const rawInput = toolCall.rawInput
-		const command =
-			rawInput && typeof rawInput === "object" && "command" in rawInput
-				? String((rawInput as { command: unknown }).command)
-				: undefined
+	private handleNativeNotification(method: string, params: unknown): boolean {
+		const value = objectRecord(params) ?? {}
+		if (method === "session/created" || method === "session/metadataUpdated") {
+			const sessionValue = objectRecord(value.session)
+			if (sessionValue) {
+				const session = this.rememberNativeSession(sessionValue)
+				this.emit(session.directory ?? defaultCwd(), {
+					type: method === "session/created" ? "session.created" : "session.updated",
+					properties: { info: session, session },
+				})
+			}
+			return true
+		}
+		if (method === "session/statusChanged") {
+			const sessionId = String(value.sessionId ?? "")
+			if (!sessionId) return true
+			const status = { type: String(value.status) === "active" ? "busy" : "idle" }
+			this.sessionStatuses.set(sessionId, status)
+			this.emit(this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd(), {
+				type: "session.status",
+				properties: { sessionID: sessionId, status },
+			})
+			return true
+		}
+		if (method === "session/cwdChanged") {
+			const sessionId = String(value.sessionId ?? "")
+			const cwd = String(value.cwd ?? "")
+			if (sessionId && cwd) this.sessionDirectories.set(sessionId, cwd)
+			return true
+		}
+		if (method === "session/deleted") {
+			const deletedIds = Array.isArray(value.deletedSessionIds)
+				? value.deletedSessionIds.map(String)
+				: [String(value.sessionId ?? "")]
+			for (const sessionId of deletedIds) {
+				if (!sessionId) continue
+				const { directory } = this.forgetSession(sessionId)
+				this.emitSessionDeleted(sessionId, directory)
+			}
+			return true
+		}
+		if (method === "session/archived") {
+			const sessionId = String(value.sessionId ?? "")
+			if (sessionId && value.archived === true) {
+				this.sessionStatuses.set(sessionId, { type: "idle" })
+			}
+			return true
+		}
+		if (method === "session/closed") {
+			const sessionId = String(value.sessionId ?? "")
+			if (sessionId) {
+				this.pendingQuestions.forEach((pending, requestId) => {
+					if (pending.sessionId === sessionId) this.pendingQuestions.delete(requestId)
+				})
+				this.pendingPermissions.forEach((pending, approvalId) => {
+					if (pending.sessionId === sessionId) this.pendingPermissions.delete(approvalId)
+				})
+				this.subscriptions.delete(sessionId)
+			}
+			return true
+		}
+		if (method === "turn/started" || method === "turn/statusChanged" || method === "turn/completed") {
+			const turn = objectRecord(value.turn)
+			const turnId = String(turn?.id ?? value.turnId ?? "")
+			const sessionId = String(turn?.sessionId ?? this.turnSessions.get(turnId) ?? "")
+			if (!sessionId) return true
+			if (turnId) this.turnSessions.set(turnId, sessionId)
+			const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
+			const turnStatus = String(turn?.status ?? value.status ?? "")
+			const terminal = method === "turn/completed" || ["completed", "interrupted", "failed"].includes(turnStatus)
+			const status = { type: terminal ? "idle" : "busy" }
+			this.sessionStatuses.set(sessionId, status)
+			this.emit(directory, { type: "session.status", properties: { sessionID: sessionId, status } })
+			if (terminal) {
+				this.pendingQuestions.forEach((pending, requestId) => {
+					if (pending.sessionId === sessionId) this.pendingQuestions.delete(requestId)
+				})
+				this.pendingPermissions.forEach((pending, approvalId) => {
+					if (pending.sessionId === sessionId) this.pendingPermissions.delete(approvalId)
+				})
+			}
+			return true
+		}
+		if (method === "item/started" || method === "item/updated" || method === "item/completed") {
+			const item = objectRecord(value.item)
+			if (item) this.handleNativeItemEnvelope(item, method)
+			return true
+		}
+		if (method === "item/assistantMessage/delta" || method === "item/reasoning/delta") {
+			const sessionId = String(value.sessionId ?? "")
+			const itemId = String(value.itemId ?? "")
+			const delta = String(value.delta ?? "")
+			if (sessionId && itemId && delta) {
+				const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
+				this.appendText(sessionId, directory, "assistant", method.includes("reasoning") ? "reasoning" : "text", {
+					messageId: itemId,
+					content: { text: delta },
+				})
+			}
+			return true
+		}
+		if (method === "item/commandExecution/outputDelta") {
+			const sessionId = String(value.sessionId ?? "")
+			const itemId = String(value.itemId ?? "")
+			const delta = String(value.delta ?? "")
+			if (sessionId && itemId && delta) {
+				this.appendTool(sessionId, this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd(), {
+					toolCallId: this.nativeItemCallIds.get(itemId) ?? itemId,
+					title: "Command",
+					kind: "execute",
+					status: "in_progress",
+					rawOutput: delta,
+				})
+			}
+			return true
+		}
+		if (method === "item/tool/requestUserInput") {
+			const payload = objectRecord(value.RequestUserInput) ?? value
+			const request = objectRecord(payload.request) ?? {}
+			const sessionId = String(request.session_id ?? request.sessionId ?? "")
+			const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
+			this.handleRequestUserInput(sessionId, directory, payload)
+			return true
+		}
+		if (method === "serverRequest/resolved") {
+			const payload = objectRecord(value.ServerRequestResolved) ?? value
+			const requestId = String(payload.request_id ?? payload.requestId ?? "")
+			const pending = this.pendingQuestions.get(requestId)
+			if (pending) {
+				this.pendingQuestions.delete(requestId)
+				const directory = this.sessionDirectories.get(pending.sessionId) ?? this.options.directory ?? defaultCwd()
+				this.emit(directory, { type: "question.replied", properties: { sessionID: pending.sessionId, requestID: requestId } })
+			}
+			return true
+		}
+		if (method === "permission/decision") {
+			const approvalId = String(value.approvalId ?? "")
+			const pending = this.pendingPermissions.get(approvalId)
+			if (pending) {
+				this.pendingPermissions.delete(approvalId)
+				this.emit(this.sessionDirectories.get(pending.sessionId ?? "") ?? this.options.directory ?? defaultCwd(), {
+					type: "permission.replied",
+					properties: { sessionID: pending.sessionId ?? String(value.sessionId ?? ""), requestID: approvalId },
+				})
+			}
+			return true
+		}
+		if (method === "turn/usage/updated" || method === "session/usage/updated") {
+			const sessionId = String(value.sessionId ?? "")
+			const usage = objectRecord(value.usage) ?? {}
+			const total = objectRecord(usage.total) ?? usage
+			if (sessionId) {
+				this.emit(this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd(), {
+					type: "session.usage.updated",
+					properties: {
+						sessionID: sessionId,
+						used: Number(total.totalTokens ?? value.lastQueryInputTokens ?? 0),
+						size: Number(value.contextWindow ?? 0),
+						cost: 0,
+					},
+				})
+			}
+			return true
+		}
+		if (method === "model/queryRetrying") {
+			const sessionId = String(value.sessionId ?? "")
+			const error = objectRecord(value.error) ?? {}
+			if (sessionId) {
+				this.emit(this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd(), {
+					type: "turn.provider_retry_status",
+					properties: {
+						sessionID: sessionId,
+						turnID: String(value.turnId ?? ""),
+						attempt: Number(value.attempt ?? 0),
+						backoffMs: Number(value.nextDelayMs ?? 0),
+						provider: String(value.provider ?? ""),
+						model: String(value.model ?? ""),
+						phase: String(value.phase ?? "scheduled"),
+						message: String(error.message ?? "Provider request retrying"),
+					},
+				})
+			}
+			return true
+		}
+		if (method === "workspace/changes/updated") {
+			const payload = objectRecord(value.WorkspaceChangesUpdated) ?? value
+			this.handleWorkspaceChangesUpdated(payload as WorkspaceChangesUpdatedPayload)
+			return true
+		}
+		return false
+	}
+
+	private handleNativeItemEnvelope(envelope: Record<string, unknown>, method: string): void {
+		const id = String(envelope.id ?? "")
+		const sessionId = String(envelope.sessionId ?? "")
+		const item = objectRecord(envelope.item)
+		if (!id || !sessionId || !item) return
+		const itemType = String(item.type ?? "")
 		const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
-		this.emit(directory, {
-			type: "permission.asked",
-			properties: {
-				id: permissionId,
-				requestID: permissionId,
-				sessionID: sessionId,
-				permission,
-				metadata: {
-					tool: toolCall.kind,
-					command,
-				},
-			},
-		})
+		const completed = method === "item/completed"
+		if (completed && this.renderedNativeItems.has(id)) return
+
+		if (itemType === "approval") {
+			const approvalId = String(item.approvalId ?? "")
+			const pending = this.pendingPermissions.get(approvalId)
+			if (pending) {
+				pending.sessionId = sessionId
+				pending.availableScopes = Array.isArray(item.availableScopes) ? item.availableScopes.map(String) : pending.availableScopes
+			}
+			if (item.decision) {
+				this.pendingPermissions.delete(approvalId)
+				this.emit(directory, { type: "permission.replied", properties: { sessionID: sessionId, requestID: approvalId } })
+			} else if (pending) {
+				const target = objectRecord(item.target)
+				const targetKind = String(target?.kind ?? "")
+				this.emit(directory, {
+					type: "permission.asked",
+					properties: {
+						id: approvalId,
+						requestID: approvalId,
+						sessionID: sessionId,
+						permission: String(item.actionSummary ?? "Agent requested permission"),
+						metadata: {
+							tool: item.resource,
+							command: targetKind === "command" ? target?.command : undefined,
+							path: targetKind === "path" ? target?.path : undefined,
+							host: targetKind === "host" ? target?.host : undefined,
+							justification: item.justification,
+							resource: item.resource,
+							target: target?.command ?? target?.path ?? target?.host,
+							availableScopes: pending.availableScopes,
+							commandPattern: item.commandPattern,
+							commandPrefix: item.commandPrefix,
+						},
+					},
+				})
+			}
+			return
+		}
+		if (itemType === "userInputRequest") {
+			const requestId = String(item.requestId ?? "")
+			const pending = this.pendingQuestions.get(requestId)
+			if (item.answers || completed) {
+				this.pendingQuestions.delete(requestId)
+				if (pending) {
+					this.emit(directory, {
+						type: "question.replied",
+						properties: { sessionID: pending.sessionId || sessionId, requestID: requestId },
+					})
+				}
+			} else if (pending) {
+				pending.sessionId = sessionId
+				pending.questions = (Array.isArray(item.questions) ? item.questions : []).map(questionInfoFromNative)
+				this.emit(directory, { type: "question.asked", properties: { id: requestId, requestID: requestId, sessionID: sessionId, questions: pending.questions } })
+			}
+			return
+		}
+		if (itemType === "assistantMessage" || itemType === "reasoning") {
+			const partType = itemType === "reasoning" ? "reasoning" : "text"
+			const existing = this.parts.get(partCacheKey(sessionId, id))?.some((part) => part.type === partType)
+			if (!existing) this.appendText(sessionId, directory, "assistant", partType, { messageId: id, content: { text: String(item.text ?? "") } })
+		} else if (itemType === "userMessage") {
+			const text = (Array.isArray(item.content) ? item.content : []).map((part) => objectRecord(part)).filter(Boolean).filter((part) => part?.type === "text").map((part) => String(part?.text ?? "")).join("\n")
+			this.appendText(sessionId, directory, "user", "text", { messageId: id, content: { text } })
+		} else if (itemType === "toolCall" || itemType === "commandExecution" || itemType === "toolResult") {
+			if (item.callId) this.nativeItemCallIds.set(id, String(item.callId))
+			this.appendTool(sessionId, directory, {
+				toolCallId: item.callId,
+				title: item.toolName ?? item.command ?? "Tool",
+				kind: item.toolName ?? (itemType === "commandExecution" ? "execute" : "other"),
+				status: completed ? (item.isError ? "failed" : "completed") : "in_progress",
+				rawInput: item.input,
+				rawOutput: item.output,
+			})
+		}
+		if (completed) this.renderedNativeItems.add(id)
+	}
+
+	private async ensureSessionSubscription(sessionId: string): Promise<void> {
+		if (this.subscriptions.has(sessionId)) return
+		const after = this.subscriptionCursors.get(sessionId) ?? []
+		const result = (await this.requestCanonical("subscription/create", {
+			selectors: [{ kind: "session", sessionId }],
+			includeSnapshot: true,
+			after,
+		})) as {
+			subscriptionId: string
+			snapshots?: Array<Record<string, unknown>>
+			replay?: Array<Record<string, unknown>>
+			cursors?: Array<{ streamId: string; seq: number }>
+			pendingControlRequests?: Array<Record<string, unknown>>
+		}
+		const cursors = result.cursors ?? []
+		this.subscriptions.set(sessionId, { subscriptionId: result.subscriptionId, cursors })
+		this.subscriptionCursors.set(sessionId, cursors)
+		for (const snapshot of result.snapshots ?? []) {
+			const data = objectRecord(snapshot.data)
+			const session = objectRecord(data?.session)
+			if (session) this.rememberNativeSession(session)
+		}
+		for (const envelope of result.replay ?? []) {
+			const notification = objectRecord(envelope.notification)
+			if (notification && typeof notification.method === "string") {
+				this.handleNativeNotification(notification.method, notification.params)
+			}
+		}
+		for (const pending of result.pendingControlRequests ?? []) {
+			const item = objectRecord(pending.item)
+			if (item) this.handleNativeItemEnvelope(item, "item/started")
+		}
+		if (cursors.length > 0) {
+			await this.requestCanonical("subscription/ack", { subscriptionId: result.subscriptionId, cursors })
+		}
+	}
+
+	private async ensureKnownSessionSubscriptions(): Promise<void> {
+		const sessions = await this.listSessions()
+		for (const session of sessions) await this.ensureSessionSubscription(session.id)
 	}
 
 	private async respondToPermission(
 		permissionId: string,
-		response: "once" | "always" | "reject",
+		response: PermissionResponse,
 	): Promise<void> {
 		await this.open()
-		if (!this.transport) throw new Error("Devo ACP transport is not connected")
+		if (!this.transport) throw new Error("Devo Native transport is not connected")
 		const pending = this.pendingPermissions.get(permissionId)
 		if (!pending) return
 		this.pendingPermissions.delete(permissionId)
-		const result = {
-			outcome: {
-				outcome: "selected",
-				optionId: permissionOptionId(pending.options, response),
+		const scopes = pending.availableScopes ?? ["once"]
+		const requestedScope = response === "always"
+			? ["commandPrefixPersist", "commandPrefix", "pathPrefix", "host", "tool", "session", "turn", "once"]
+				.find((candidate) => scopes.includes(candidate)) ?? "once"
+			: response === "reject" ? "once" : response
+		const scope = scopes.includes(requestedScope) ? requestedScope : "once"
+		const result = assertValidProtocolPayload({
+			method: pending.method,
+			direction: "outgoingResponse",
+			payload: {
+				requestId: permissionId,
+				decision: {
+					decision: response === "reject" ? "denied" : "approved",
+					scope,
+					decisionSource: "user",
+					decidedAt: new Date().toISOString(),
+				},
 			},
-		}
-		await this.transport.respond(
-			pending.id,
-			assertValidProtocolPayload({
-				method: "session/request_permission",
-				direction: "outgoingResponse",
-				payload: result,
-			}),
-		)
+		})
+		await this.transport.respond(pending.id, result)
 		this.emit(
-			this.sessionDirectories.get(pending.sessionId) ?? this.options.directory ?? defaultCwd(),
+			this.sessionDirectories.get(pending.sessionId ?? "") ?? this.options.directory ?? defaultCwd(),
 			{
 				type: "permission.replied",
 				properties: {
-					sessionID: pending.sessionId,
+					sessionID: pending.sessionId ?? "",
 					requestID: permissionId,
 				},
 			},
@@ -1636,11 +1979,16 @@ class AcpClient {
 			throw new Error("pending user-input request has no JSON-RPC request id")
 		}
 		await this.open()
-		if (!this.transport) throw new Error("Devo ACP transport is not connected")
-		await this.transport.respond(pending.id, {
-			requestId,
-			answers: responseAnswers,
+		if (!this.transport) throw new Error("Devo Native transport is not connected")
+		const result = assertValidProtocolPayload({
+			method: pending.method ?? "userInput/request",
+			direction: "outgoingResponse",
+			payload: {
+				requestId,
+				answers: responseAnswers,
+			},
 		})
+		await this.transport.respond(pending.id, result)
 		this.pendingQuestions.delete(requestId)
 		this.emit(this.sessionDirectories.get(pending.sessionId) ?? this.options.directory ?? defaultCwd(), {
 			type: eventType,
@@ -1651,7 +1999,7 @@ class AcpClient {
 		})
 	}
 
-	private handleSessionUpdate(notification: AcpSessionNotification): void {
+	private handleSessionUpdate(notification: LegacySessionNotification): void {
 		const sessionId = notification.sessionId
 		const deletedSessionIds = deletedSessionIdsFromOriginalEvent(
 			notification._meta?.["devo/originalEvent"],
@@ -1745,7 +2093,7 @@ class AcpClient {
 			case "config_option_update":
 			case "configOptionUpdate":
 				if (Array.isArray(update.configOptions) && update.configOptions.length > 0) {
-					this.rememberConfigOptions(sessionId, directory, update.configOptions as AcpConfigOption[])
+					this.rememberConfigOptions(sessionId, directory, update.configOptions as SessionConfigOption[])
 				}
 				this.emit(directory, {
 					type: "session.config.updated",
@@ -1794,7 +2142,7 @@ class AcpClient {
 	private handleOriginalEvent(
 		sessionId: string,
 		directory: string,
-		notification: AcpSessionNotification,
+		notification: LegacySessionNotification,
 	): void {
 		const original = notification._meta?.["devo/originalEvent"]
 		if (!original || typeof original !== "object") return
@@ -1954,10 +2302,11 @@ class AcpClient {
 		if (!requestId) return
 		const requestSessionId = String(request.session_id ?? request.sessionId ?? sessionId)
 		const rawQuestions = Array.isArray(payload.questions) ? payload.questions : []
-		const questions = rawQuestions.map(questionInfoFromAcp)
+		const questions = rawQuestions.map(questionInfoFromNative)
 		const existing = this.pendingQuestions.get(requestId)
 		this.pendingQuestions.set(requestId, {
 			id: existing?.id,
+			method: existing?.method,
 			sessionId: requestSessionId,
 			questions,
 		})
@@ -2264,7 +2613,7 @@ class AcpClient {
 	private rememberConfigOptions(
 		sessionId: string,
 		directory: string,
-		configOptions?: AcpConfigOption[],
+		configOptions?: SessionConfigOption[],
 	): void {
 		if (!Array.isArray(configOptions)) return
 		this.configOptionsBySession.set(sessionId, configOptions)
@@ -2273,7 +2622,7 @@ class AcpClient {
 
 	private rememberDirectoryConfigOptions(
 		directory: string,
-		configOptions?: AcpConfigOption[] | null,
+		configOptions?: SessionConfigOption[] | null,
 	): void {
 		if (!Array.isArray(configOptions)) return
 		this.configOptionsByDirectory.set(directory, configOptions)
@@ -2284,20 +2633,26 @@ class AcpClient {
 		configId: string,
 		value: string,
 	): Promise<void> {
-		const setConfigParams: AcpSetConfigOptionParams = {
+		const update: Record<string, unknown> = {
 			sessionId,
-			configId,
-			value,
+			expectedVersion: 0,
 		}
-		const result = (await this.request("session/set_config_option", setConfigParams)) as AcpSetConfigOptionResult
-		const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
-		this.rememberConfigOptions(sessionId, directory, result.configOptions)
+		if (configId === "model") {
+			update.model = { provider: "", model: value }
+		} else if (configId === "thought_level") {
+			update.settings = { reasoningEffort: value }
+		} else if (configId === "mode") {
+			update.settings = { mode: value }
+		} else {
+			throw new Error(`unknown session config option '${configId}'`)
+		}
+		await this.requestCanonical("session/metadata/update", update)
 	}
 
 	private async setDefaultConfigOption(
 		configId: string,
 		value: string,
-	): Promise<AcpConfigOption[]> {
+	): Promise<SessionConfigOption[]> {
 		await this.ensureInitialized()
 		const directory = this.options.directory ?? defaultCwd()
 		// Canonical model/preferences/write (ratified #12): configId maps to
@@ -2312,12 +2667,12 @@ class AcpClient {
 		const result = (await this.requestCanonical("model/preferences/write", params)) as {
 			preferences?: ModelPreferencesWire
 		}
-		const options = acpConfigOptionsFromModelPreferences(result.preferences ?? {})
+		const options = sessionConfigOptionsFromModelPreferences(result.preferences ?? {})
 		this.rememberDirectoryConfigOptions(directory, options)
 		return this.currentConfigOptions()
 	}
 
-	private cachedConfigOptions(): AcpConfigOption[] | undefined {
+	private cachedConfigOptions(): SessionConfigOption[] | undefined {
 		if (this.options.directory) {
 			const byDirectory = this.configOptionsByDirectory.get(this.options.directory)
 			if (byDirectory) return byDirectory
@@ -2325,7 +2680,7 @@ class AcpClient {
 		return this.configOptionsBySession.values().next().value
 	}
 
-	private currentConfigOptions(): AcpConfigOption[] {
+	private currentConfigOptions(): SessionConfigOption[] {
 		return this.cachedConfigOptions() ?? []
 	}
 
@@ -2334,7 +2689,7 @@ class AcpClient {
 		this.configOptionsByDirectory.clear()
 	}
 
-	private async ensureCurrentConfigOptions(): Promise<AcpConfigOption[]> {
+	private async ensureCurrentConfigOptions(): Promise<SessionConfigOption[]> {
 		const cached = this.cachedConfigOptions()
 		if (cached) return cached
 
@@ -2345,7 +2700,7 @@ class AcpClient {
 		const result = (await this.requestCanonical("model/preferences/read", params)) as {
 			preferences?: ModelPreferencesWire
 		}
-		this.rememberDirectoryConfigOptions(directory, acpConfigOptionsFromModelPreferences(result.preferences ?? {}))
+		this.rememberDirectoryConfigOptions(directory, sessionConfigOptionsFromModelPreferences(result.preferences ?? {}))
 		return this.currentConfigOptions()
 	}
 
@@ -2372,7 +2727,7 @@ class AcpClient {
 export type DevoClient = any
 
 export function createDevoClient(options: CreateDevoClientOptions = {}): DevoClient {
-	return new AcpClient(options)
+	return new NativeClient(options)
 }
 
 function sessionIdFromPayload(payload: unknown): string | null {

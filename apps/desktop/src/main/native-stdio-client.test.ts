@@ -1,11 +1,11 @@
 import path from "node:path"
 import { describe, expect, test } from "bun:test"
-import { StdioAcpClient, buildServerProcessEnv, routeAcpLine } from "./acp-stdio-client"
+import { StdioNativeClient, buildServerProcessEnv, routeNativeLine } from "./native-stdio-client"
 
-describe("routeAcpLine", () => {
+describe("routeNativeLine", () => {
 	test("routes JSON-RPC responses, notifications, and server requests", () => {
 		const responseMessage = { jsonrpc: "2.0", id: 7, result: { ok: true } }
-		const response = routeAcpLine(JSON.stringify(responseMessage))
+		const response = routeNativeLine(JSON.stringify(responseMessage))
 		expect(response).toEqual({
 			type: "response",
 			id: 7,
@@ -14,14 +14,14 @@ describe("routeAcpLine", () => {
 
 		const notificationMessage = {
 			jsonrpc: "2.0",
-			method: "session/update",
-			params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk" } },
+			method: "item/started",
+			params: { item: { id: "item-1", sessionId: "s1" } },
 		}
-		const notification = routeAcpLine(JSON.stringify(notificationMessage))
+		const notification = routeNativeLine(JSON.stringify(notificationMessage))
 		expect(notification).toEqual({
 			type: "notification",
-			method: "session/update",
-			params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk" } },
+			method: "item/started",
+			params: { item: { id: "item-1", sessionId: "s1" } },
 			message: notificationMessage,
 		})
 
@@ -31,7 +31,7 @@ describe("routeAcpLine", () => {
 			method: "userInput/request",
 			params: { requestId: "request-1", questions: [] },
 		}
-		const request = routeAcpLine(JSON.stringify(requestMessage))
+		const request = routeNativeLine(JSON.stringify(requestMessage))
 		expect(request).toEqual({
 			type: "request",
 			id: 9,
@@ -42,7 +42,7 @@ describe("routeAcpLine", () => {
 	})
 })
 
-describe("StdioAcpClient", () => {
+describe("StdioNativeClient", () => {
 	test("builds server env with bin dir first while preserving caller env", () => {
 		const env = buildServerProcessEnv({
 			baseEnv: { PATH: "/usr/bin", KEEP: "base" },
@@ -152,7 +152,7 @@ describe("StdioAcpClient", () => {
 	})
 
 	test("rejects and clears pending requests when stdin write fails", async () => {
-		const client = new StdioAcpClient()
+		const client = new StdioNativeClient()
 		const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" })
 		;(client as unknown as { child: unknown }).child = {
 			killed: false,
@@ -172,9 +172,31 @@ describe("StdioAcpClient", () => {
 		expect(client.connected()).toBe(false)
 	})
 
+	test("times out ordinary RPCs with the method and request id", async () => {
+		const client = new StdioNativeClient({ requestTimeoutMs: 5 })
+		;(client as unknown as { child: unknown }).child = {
+			killed: false,
+			pid: 123,
+			stdin: {
+				destroyed: false,
+				writable: true,
+				writableEnded: false,
+				write: (_line: string, callback: (error?: Error) => void) => {
+					callback()
+					return true
+				},
+			},
+		}
+
+		await expect(client.request("session/list", {})).rejects.toThrow(
+			"session/list request 1 timed out",
+		)
+		expect((client as unknown as { pending: Map<unknown, unknown> }).pending.size).toBe(0)
+	})
+
 	test("records outgoing requests and incoming responses with raw payloads", async () => {
 		const records: unknown[] = []
-		const client = new StdioAcpClient({
+		const client = new StdioNativeClient({
 			trafficLogger: {
 				getState: () => ({ enabled: true, path: null }),
 				record: (entry) => records.push(entry),
@@ -227,7 +249,7 @@ describe("StdioAcpClient", () => {
 	test("reuses the first initialize result for later initialize calls", async () => {
 		const records: unknown[] = []
 		let writeCount = 0
-		const client = new StdioAcpClient({
+		const client = new StdioNativeClient({
 			trafficLogger: {
 				getState: () => ({ enabled: true, path: null }),
 				record: (entry) => records.push(entry),
@@ -270,7 +292,7 @@ describe("StdioAcpClient", () => {
 
 	test("scopes outgoing requests with the project directory", async () => {
 		const records: unknown[] = []
-		const client = new StdioAcpClient({
+		const client = new StdioNativeClient({
 			trafficLogger: {
 				getState: () => ({ enabled: true, path: null }),
 				record: (entry) => records.push(entry),
@@ -309,7 +331,7 @@ describe("StdioAcpClient", () => {
 
 	test("does not add project directory to unscoped requests", async () => {
 		const records: unknown[] = []
-		const client = new StdioAcpClient({
+		const client = new StdioNativeClient({
 			trafficLogger: {
 				getState: () => ({ enabled: true, path: null }),
 				record: (entry) => records.push(entry),
@@ -329,7 +351,7 @@ describe("StdioAcpClient", () => {
 			},
 		}
 
-		const response = client.request("session/prompt", { sessionId: "s1", prompt: [] }, "/repo/project")
+		const response = client.request("turn/start", { sessionId: "s1", input: [] }, "/repo/project")
 		await Promise.resolve()
 		;(client as unknown as { handleLine: (line: string) => void }).handleLine(
 			JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }),
@@ -339,16 +361,16 @@ describe("StdioAcpClient", () => {
 		expect(records[0]).toMatchObject({
 			direction: "desktop-to-server",
 			kind: "request",
-			method: "session/prompt",
+			method: "turn/start",
 			payload: {
-				params: { sessionId: "s1", prompt: [] },
+				params: { sessionId: "s1", input: [] },
 			},
 		})
 	})
 
 	test("records server requests, notifications, invalid lines, and closed events", () => {
 		const records: unknown[] = []
-		const client = new StdioAcpClient({
+		const client = new StdioNativeClient({
 			trafficLogger: {
 				getState: () => ({ enabled: true, path: null }),
 				record: (entry) => records.push(entry),
@@ -369,8 +391,8 @@ describe("StdioAcpClient", () => {
 		handleLine(
 			JSON.stringify({
 				jsonrpc: "2.0",
-				method: "session/update",
-				params: { sessionId: "s1" },
+				method: "session/statusChanged",
+				params: { sessionId: "s1", status: "idle", flags: [], activeTurnId: null },
 			}),
 		)
 		handleLine("{not json")
@@ -392,11 +414,11 @@ describe("StdioAcpClient", () => {
 			{
 				direction: "server-to-desktop",
 				kind: "notification",
-				method: "session/update",
+				method: "session/statusChanged",
 				payload: {
 					jsonrpc: "2.0",
-					method: "session/update",
-					params: { sessionId: "s1" },
+					method: "session/statusChanged",
+					params: { sessionId: "s1", status: "idle", flags: [], activeTurnId: null },
 				},
 			},
 			{
@@ -410,7 +432,7 @@ describe("StdioAcpClient", () => {
 			{
 				direction: "system",
 				kind: "closed",
-				payload: { error: "Devo ACP stdio client stopped" },
+				payload: { error: "Devo Native stdio client stopped" },
 			},
 		])
 	})

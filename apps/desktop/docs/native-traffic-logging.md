@@ -1,13 +1,13 @@
-# ACP stdio traffic logging
+# Native stdio traffic logging
 
-The desktop app talks to the local Devo server over **ACP** (Agent Client Protocol) on **stdio**: JSON-RPC messages on the child process stdin/stdout. To debug that wire protocol, the main process can append every message to a **JSONL** file.
+The desktop app talks to the local Devo server over the **Native protocol** on **stdio**: JSON-RPC messages on the child process stdin/stdout. To debug that wire protocol, the main process can append every message to a **JSONL** file.
 
 This uses the same enable switch and default output location as the CLI **Protocol Trace** (see [`docs/protocol-trace.md`](../../../docs/protocol-trace.md)).
 
 Implementation lives in:
 
-- `src/main/acp-traffic-log.ts` — logger, `DEVO_PROTOCOL_TRACE`, and path resolution
-- `src/main/acp-stdio-client.ts` — records each stdin/stdout message
+- `src/main/native-traffic-log.ts` — logger, `DEVO_PROTOCOL_TRACE`, and path resolution
+- `src/main/native-stdio-client.ts` — records each stdin/stdout message
 - `src/main/devo-manager.ts` — wires the logger into the stdio client at startup
 
 ## Enabling
@@ -53,9 +53,9 @@ If `DEVO_HOME` cannot be resolved, the trace falls back to `<temp_dir>/devo-trac
 
 ## View the log path in the UI
 
-When logging is enabled, open **Settings → Server**. Under **Developer options**, expand **ACP traffic log** to see the active file path.
+When logging is enabled, open **Settings → Server**. Under **Developer options**, expand **Native traffic log** to see the active file path.
 
-The renderer loads this via `window.devo.acpTraffic.getState()` (`acp-traffic-log:state` IPC).
+The renderer loads this via `window.devo.nativeTraffic.getState()` (`native-traffic-log:state` IPC).
 
 ## Log format
 
@@ -67,7 +67,7 @@ Each line is one JSON object (JSONL). Fields:
 | `direction` | `desktop-to-server`, `server-to-desktop`, or `system` |
 | `kind` | `request`, `response`, `notification`, `invalid`, or `closed` |
 | `id` | JSON-RPC id when present |
-| `method` | ACP method name when present |
+| `method` | Native method name when present |
 | `payload` | Full JSON-RPC message or system metadata |
 
 Example line:
@@ -76,11 +76,11 @@ Example line:
 {"timestamp":"2026-06-27T01:02:03.004Z","direction":"desktop-to-server","kind":"request","id":1,"method":"initialize","payload":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}}
 ```
 
-The CLI protocol trace records raw wire lines (`seq`, `dir`, `bytes`, `line`). The desktop trace records parsed ACP messages with direction and kind, which is easier to filter when debugging the managed runtime.
+The CLI protocol trace records raw wire lines (`seq`, `dir`, `bytes`, `line`). The desktop trace records parsed Native messages with direction and kind, which is easier to filter when debugging the managed runtime.
 
 ### What is recorded
 
-`StdioAcpClient` logs:
+`StdioNativeClient` logs:
 
 - **desktop → server**: outbound requests and responses (e.g. permission replies)
 - **server → desktop**: inbound responses, notifications, and server-initiated requests
@@ -88,7 +88,7 @@ The CLI protocol trace records raw wire lines (`seq`, `dir`, `bytes`, `line`). T
 
 ### What is not recorded
 
-- **Server stderr** is not written to the traffic log. Non-empty stderr lines are emitted to the main-process console as `[main:acp-stdio-client]` warnings (`[stderr] …`).
+- **Server stderr** is not written to the traffic log. Non-empty stderr lines are emitted to the main-process console as `[main:native-stdio-client]` warnings (`[stderr] …`).
 - **Renderer ↔ main IPC** is not included; only the stdio link to `devo server --transport stdio`.
 
 ## Inspect the log
@@ -108,7 +108,7 @@ jq -c '{ts: .timestamp, dir: .direction, kind, method, id}' ~/.devo/traces/proto
 **Filter by method**
 
 ```bash
-jq 'select(.method == "session/prompt")' ~/.devo/traces/protocol-*.ndjsonl
+jq 'select(.method == "turn/start")' ~/.devo/traces/protocol-*.ndjsonl
 ```
 
 ## Security
@@ -125,4 +125,4 @@ These are **ignored**:
 
 ## Related debugging
 
-For general main-process diagnostics (spawn errors, slow IPC handlers, transport close), watch the terminal where Electron runs. Log lines are tagged `[main:<module>]`, e.g. `[main:acp-stdio-client]` and `[main:devo-manager]`.
+For general main-process diagnostics (spawn errors, slow IPC handlers, transport close), watch the terminal where Electron runs. Log lines are tagged `[main:<module>]`, e.g. `[main:native-stdio-client]` and `[main:devo-manager]`.

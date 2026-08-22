@@ -54,7 +54,7 @@ describe("desktop protocol type generation", () => {
 				"-p",
 				"devo-protocol",
 				"--bin",
-				"generate-acp-ts",
+				"generate-native-ts",
 				"--",
 				"packages/devo-ai-sdk/src/v2/generated",
 			],

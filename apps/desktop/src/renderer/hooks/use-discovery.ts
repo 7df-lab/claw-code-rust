@@ -37,13 +37,13 @@ function setPhase(phase: import("../atoms/discovery").DiscoveryPhase): void {
  * On mount:
  * 1. Resolves the active server URL (starts the local stdio runtime)
  * 2. Resolves auth credentials if the server requires them
- * 3. Connects to the Devo server (ACP events for all projects)
+ * 3. Connects to the Devo server (Native events for all projects)
  * 4. Lists all projects from the API via `client.project.list()`
  * 5. Loads sessions for the top few most-recently-active projects
  *    (enough to populate "Recent" and "Active Now" sections)
  *
  * Remaining project sessions are loaded lazily when expanded in the sidebar.
- * Active sessions also arrive in real-time via ACP events.
+ * Active sessions also arrive in real-time via Native events.
  */
 export function useDiscovery() {
 	const discovery = useAtomValue(discoveryAtom)
@@ -77,7 +77,7 @@ export function useDiscovery() {
 				// --- Step 2: Resolve auth if needed ---
 				const authHeader = await resolveAuthHeader(activeServer)
 
-				// --- Step 3: Connect to the server (starts ACP event loop) ---
+				// --- Step 3: Connect to the server (starts Native event loop) ---
 				setPhase("connecting")
 				log.info("Connecting to Devo server", {
 					url,

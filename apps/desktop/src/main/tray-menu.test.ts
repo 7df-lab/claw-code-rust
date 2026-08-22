@@ -20,7 +20,7 @@ describe("buildDevoTrayMenuTemplate", () => {
 				"s1",
 				{
 					status: "busy",
-					title: "修复 desktop ACP 渲染和回复问题",
+					title: "修复 desktop Native 渲染和回复问题",
 					directory: "/Users/tsiao/Desktop/devo_feat_desktop",
 				},
 			],
@@ -28,7 +28,7 @@ describe("buildDevoTrayMenuTemplate", () => {
 		const sessions = [
 			{
 				id: "s1",
-				title: "修复 desktop ACP 渲染和回复问题",
+				title: "修复 desktop Native 渲染和回复问题",
 				directory: "/Users/tsiao/Desktop/devo_feat_desktop",
 				time: { created: 1000, updated: 5000 },
 				totalInputTokens: 18_000,
@@ -90,7 +90,7 @@ describe("buildDevoTrayMenuTemplate", () => {
 		expect(menuShape(template)).toEqual([
 			{ label: "Running", sublabel: undefined, enabled: false, type: undefined, click: false, submenu: undefined },
 			{
-				label: "修复 desktop ACP 渲染和回复问题",
+				label: "修复 desktop Native 渲染和回复问题",
 				sublabel: "devo_feat_desktop",
 				enabled: undefined,
 				type: undefined,

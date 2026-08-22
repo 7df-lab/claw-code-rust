@@ -5,7 +5,7 @@
  * 1. Creates a worktree (if useWorktree is enabled)
  * 2. Creates an Devo session with the appropriate permission ruleset
  * 3. Sends the automation prompt (with memory file context)
- * 4. Monitors ACP events until session goes idle or times out
+ * 4. Monitors Native events until session goes idle or times out
  * 5. Captures results (summary, branch, diffs) and updates the run record
  * 6. Auto-archives if the agent reports nothing actionable
  *
@@ -14,10 +14,11 @@
 
 import fs from "node:fs"
 import path from "node:path"
-import type { DevoClient, PermissionRuleset } from "@devo-ai/sdk/v2/client"
+import type { DevoClient } from "@devo-ai/sdk/v2/client"
 import { createLogger } from "../logger"
 import { createAutomationClient } from "./devo-client"
 import { getConfigDir } from "./paths"
+import { buildPermissionRuleset } from "./permission-policy"
 import type { AutomationConfig, PermissionPreset } from "./types"
 
 const log = createLogger("automation-executor")
@@ -48,56 +49,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 // ============================================================
 // Permission presets
 // ============================================================
-
-/**
- * Maps a PermissionPreset to a PermissionRuleset array.
- *
- * All presets start from a base of "allow everything" and then layer
- * specific denies on top. Automations run unattended -- if any permission
- * lands in "ask" state the monitor would immediately reject it and fail
- * the run. Interactive prompts (question, plan_enter, plan_exit) are always
- * denied since there's no human to respond.
- *
- * - "default": Allow all tools (except interactive prompts).
- * - "allow-all": Identical to default, explicit for clarity.
- * - "read-only": Deny edit/write/bash on top of the allow-all base.
- *
- * NOTE: Ruleset evaluation uses findLast -- later rules override earlier
- * ones. Denies must come after the wildcard allow in the array.
- */
-function buildPermissionRuleset(preset: PermissionPreset): PermissionRuleset {
-	// Base rules: allow all permissions by default, then deny interactive
-	// prompts last so they take precedence (ruleset uses findLast evaluation).
-	// Automations run unattended -- blocking on any permission would cause
-	// the monitor to auto-reject and fail the run.
-	const baseRules: PermissionRuleset = [
-		{ permission: "*", pattern: "*", action: "allow" },
-		{ permission: "question", pattern: "*", action: "deny" },
-		{ permission: "plan_enter", pattern: "*", action: "deny" },
-		{ permission: "plan_exit", pattern: "*", action: "deny" },
-	]
-
-	switch (preset) {
-		case "allow-all":
-			return [
-				...baseRules,
-				{ permission: "edit", pattern: "*", action: "allow" },
-				{ permission: "bash", pattern: "*", action: "allow" },
-				{ permission: "webfetch", pattern: "*", action: "allow" },
-				{ permission: "external_directory", pattern: "*", action: "allow" },
-			]
-		case "read-only":
-			return [
-				...baseRules,
-				{ permission: "edit", pattern: "*", action: "deny" },
-				{ permission: "bash", pattern: "*", action: "deny" },
-				{ permission: "webfetch", pattern: "*", action: "allow" },
-			]
-		default:
-			// "default" or any unknown value: inherit project config, only deny interactive prompts
-			return baseRules
-	}
-}
 
 // ============================================================
 // Memory file
@@ -164,7 +115,7 @@ export interface ExecutionResult {
 }
 
 /**
- * Monitors ACP events for a session until it goes idle, errors, or times out.
+ * Monitors Native events for a session until it goes idle, errors, or times out.
  *
  * Returns collected text output and error information.
  */
@@ -173,6 +124,7 @@ async function monitorSession(
 	sessionId: string,
 	timeoutMs: number,
 	signal: AbortSignal,
+	permissionPreset: PermissionPreset,
 ): Promise<{ text: string; error: string | null }> {
 	const textParts: string[] = []
 	let error: string | null = null
@@ -184,13 +136,13 @@ async function monitorSession(
 
 	const eventPromise = (async (): Promise<"done"> => {
 		try {
-			log.debug("Subscribing to ACP events", { sessionId })
+			log.debug("Subscribing to Native events", { sessionId })
 			const result = await client.event.subscribe()
-			log.debug("ACP event stream connected", { sessionId })
+			log.debug("Native event stream connected", { sessionId })
 			for await (const event of result.stream) {
 				if (signal.aborted) break
 
-				// biome-ignore lint/suspicious/noExplicitAny: ACP events have dynamic types not fully covered by SDK
+				// biome-ignore lint/suspicious/noExplicitAny: Native events have dynamic types not fully covered by SDK
 				const evt = event as any
 
 				// Capture text output from the assistant
@@ -219,9 +171,10 @@ async function monitorSession(
 					}
 				}
 
-				// Auto-reject permission requests (the permission ruleset should prevent
-				// most, but catch any that slip through)
-				if (evt.type === "permission.asked") {
+				// A configured restrictive policy may reject a request. The default
+				// policy remains waiting for an external controller instead of silently
+				// changing the user's effective permissions.
+				if (evt.type === "permission.asked" && permissionPreset === "read-only") {
 					if (evt.properties?.sessionID === sessionId) {
 						log.warn("Auto-rejecting permission request during automation", {
 							sessionId,
@@ -238,20 +191,6 @@ async function monitorSession(
 					}
 				}
 
-				// Auto-reject question requests
-				if (evt.type === "question.asked") {
-					if (evt.properties?.sessionID === sessionId) {
-						log.warn("Auto-rejecting question during automation", { sessionId })
-						try {
-							await client.question.reject({
-								requestID: evt.properties.id,
-							})
-						} catch (rejectErr) {
-							log.warn("Failed to reject question", rejectErr)
-						}
-					}
-				}
-
 				// Session went idle -- we're done
 				if (
 					evt.type === "session.status" &&
@@ -263,10 +202,10 @@ async function monitorSession(
 			}
 		} catch (err) {
 			if (!signal.aborted) {
-				log.error("ACP event monitoring error", err)
+				log.error("Native event monitoring error", err)
 				error = error
-					? `${error}\nACP event error: ${err instanceof Error ? err.message : String(err)}`
-					: `ACP event error: ${err instanceof Error ? err.message : String(err)}`
+					? `${error}\nNative event error: ${err instanceof Error ? err.message : String(err)}`
+					: `Native event error: ${err instanceof Error ? err.message : String(err)}`
 			}
 		}
 		return "done"
@@ -516,6 +455,7 @@ export async function executeRun(
 			sessionId,
 			config.execution.timeout * 1000,
 			abortController.signal,
+			config.execution.permissionPreset ?? "default",
 		)
 		log.info("Monitor completed", {
 			automationId: config.id,

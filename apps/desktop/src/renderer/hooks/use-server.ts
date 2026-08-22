@@ -11,6 +11,7 @@ import type {
 	FilePart,
 	FilePartInput,
 	QuestionAnswer,
+	PermissionResponse,
 	Session,
 	TextPart,
 	UserMessage,
@@ -216,7 +217,7 @@ export function useAgentActions() {
 			directory: string,
 			sessionId: string,
 			permissionId: string,
-			response: "once" | "always" | "reject",
+			response: PermissionResponse,
 		) => {
 			const client = getProjectClient(directory)
 			if (!client) throw new Error("Not connected to Devo server")

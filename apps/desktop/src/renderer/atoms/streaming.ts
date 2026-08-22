@@ -111,7 +111,7 @@ export function getStreamingPartsForSession(
 
 /**
  * Write a part to the streaming buffer.
- * Called by connection-manager on every text/reasoning ACP event.
+ * Called by connection-manager on every text/reasoning Native event.
  */
 export function updateStreamingPart(part: Part): void {
 	const { messageID, sessionID } = part

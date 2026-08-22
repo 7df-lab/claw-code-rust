@@ -13,7 +13,7 @@ import { getSessionDiff } from "../services/devo"
 
 /**
  * Hook that fetches session diffs and subscribes to real-time updates
- * via the ACP event processor (which writes to sessionDiffFamily).
+ * via the Native event processor (which writes to sessionDiffFamily).
  *
  * Returns the current diffs, loading state, aggregate stats, and a refetch function.
  */
@@ -37,7 +37,7 @@ export function useSessionDiff(sessionId: string, directory: string) {
 			const result = await getSessionDiff(client, sessionId)
 			setDiffs({ sessionId, diffs: result })
 		} catch {
-			// Silently fail, diffs will update via ACP events
+			// Silently fail, diffs will update via Native events
 		} finally {
 			loadingRef.current = false
 			setInitialFetchDone(true)

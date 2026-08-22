@@ -18,7 +18,7 @@
 		"sync:version": "bun scripts/sync-cargo-version.ts",
 		"brand:electron-dev": "bun scripts/brand-electron-dev.mjs",
 		"dev:cli": "cargo build --manifest-path ../../Cargo.toml -p devo-cli --bin devo",
-		"gen:protocol-types": "cargo run --manifest-path ../../Cargo.toml -p devo-protocol --bin generate-acp-ts -- packages/devo-ai-sdk/src/v2/generated",
+		"gen:protocol-types": "cargo run --manifest-path ../../Cargo.toml -p devo-protocol --bin generate-native-ts -- packages/devo-ai-sdk/src/v2/generated",
 		"gen:acp-types": "bun run gen:protocol-types",
 		"gen:protocol-types:check": "bun scripts/check-protocol-types.mjs",
 		"gen:acp-types:check": "bun run gen:protocol-types:check",

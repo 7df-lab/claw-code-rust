@@ -1,4 +1,4 @@
-import { createDevoClient, type DevoAcpTransport } from "@devo-ai/sdk/v2/client"
+import { createDevoClient, type DevoNativeTransport } from "@devo-ai/sdk/v2/client"
 import { createLogger } from "./logger"
 import { setPermissionResponder, showNotification, updateBadgeCount } from "./notifications"
 
@@ -36,13 +36,13 @@ const changeListeners = new Set<() => void>()
 // ============================================================
 
 /**
- * Start watching the Devo server's ACP event stream
+ * Start watching the Devo server's Native event stream
  * for notification-worthy events.
  *
  * This runs in the main process (Node.js) and is never throttled
  * by Chromium's background tab restrictions or macOS App Nap.
  */
-export function startNotificationWatcher(transport: DevoAcpTransport): void {
+export function startNotificationWatcher(transport: DevoNativeTransport): void {
 	if (abortController) {
 		log.debug("Stopping existing watcher before restart")
 		abortController.abort()
@@ -112,7 +112,7 @@ export function onStateChanged(listener: () => void): () => void {
 }
 
 // ============================================================
-// ACP Connection + Retry Loop
+// Native Connection + Retry Loop
 // ============================================================
 
 async function connectWithRetry(client: ReturnType<typeof createDevoClient>, signal: AbortSignal): Promise<void> {
@@ -120,14 +120,14 @@ async function connectWithRetry(client: ReturnType<typeof createDevoClient>, sig
 
 	while (!signal.aborted) {
 		try {
-			await consumeAcpEvents(client, signal)
+			await consumeNativeEvents(client, signal)
 			// Stream ended normally (server closed connection)
 			if (!signal.aborted) {
-				log.warn("ACP event stream ended, reconnecting...")
+				log.warn("Native event stream ended, reconnecting...")
 			}
 		} catch (err) {
 			if (signal.aborted) break
-			log.error("ACP event stream error, reconnecting", { retryDelay }, err)
+			log.error("Native event stream error, reconnecting", { retryDelay }, err)
 		}
 
 		if (signal.aborted) break
@@ -138,9 +138,9 @@ async function connectWithRetry(client: ReturnType<typeof createDevoClient>, sig
 	}
 }
 
-async function consumeAcpEvents(client: ReturnType<typeof createDevoClient>, signal: AbortSignal): Promise<void> {
+async function consumeNativeEvents(client: ReturnType<typeof createDevoClient>, signal: AbortSignal): Promise<void> {
 	const result = await client.event.subscribe()
-	log.info("ACP event stream connected")
+	log.info("Native event stream connected")
 	for await (const globalEvent of result.stream) {
 		if (signal.aborted) break
 		processGlobalEvent(globalEvent)
@@ -151,7 +151,7 @@ async function consumeAcpEvents(client: ReturnType<typeof createDevoClient>, sig
 // Event Processing — only notification-relevant events
 // ============================================================
 
-interface GlobalAcpEvent {
+interface GlobalNativeEvent {
 	directory?: string
 	payload?: {
 		type: string
@@ -159,7 +159,7 @@ interface GlobalAcpEvent {
 	}
 }
 
-function processGlobalEvent(globalEvent: GlobalAcpEvent): void {
+function processGlobalEvent(globalEvent: GlobalNativeEvent): void {
 	const event = globalEvent.payload
 	if (!event) return
 

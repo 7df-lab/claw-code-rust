@@ -56,25 +56,25 @@ contextBridge.exposeInMainWorld("devo", {
 		}
 	},
 
-	acp: {
+	native: {
 		request: (request: { method: string; params?: unknown; directory?: string }) =>
-			ipcRenderer.invoke("acp:request", request),
+			ipcRenderer.invoke("native:request", request),
 		notify: (notification: { method: string; params?: unknown; directory?: string }) =>
-			ipcRenderer.invoke("acp:notify", notification),
+			ipcRenderer.invoke("native:notify", notification),
 		respond: (response: { id: number | string; result: unknown }) =>
-			ipcRenderer.invoke("acp:respond", response),
-		connected: () => ipcRenderer.invoke("acp:connected"),
+			ipcRenderer.invoke("native:respond", response),
+		connected: () => ipcRenderer.invoke("native:connected"),
 		subscribe: (callback: (event: unknown) => void) => {
 			const listener = (_event: unknown, value: unknown) => callback(value)
-			ipcRenderer.on("acp:event", listener)
+			ipcRenderer.on("native:event", listener)
 			return () => {
-				ipcRenderer.removeListener("acp:event", listener)
+				ipcRenderer.removeListener("native:event", listener)
 			}
 		},
 	},
 
-	acpTraffic: {
-		getState: () => ipcRenderer.invoke("acp-traffic-log:state"),
+	nativeTraffic: {
+		getState: () => ipcRenderer.invoke("native-traffic-log:state"),
 	},
 
 	terminal: {

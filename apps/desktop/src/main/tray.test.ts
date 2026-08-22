@@ -12,7 +12,7 @@ let serverUrl: string | null = null
 let discoveredSessions: unknown[] = []
 let sessionListGate: Promise<void> | null = null
 
-const fakeAcpTransport = {
+const fakeNativeTransport = {
 	request: async (method: string, params?: unknown) => {
 		if (method === "initialize") {
 			return {
@@ -94,7 +94,7 @@ mock.module("electron", () => ({
 }))
 
 mock.module("./devo-manager", () => ({
-	getAcpTransport: () => fakeAcpTransport,
+	getNativeTransport: () => fakeNativeTransport,
 	getServerUrl: () => serverUrl,
 	onServerReady: (listener: () => void) => {
 		serverReadyListeners.push(listener)

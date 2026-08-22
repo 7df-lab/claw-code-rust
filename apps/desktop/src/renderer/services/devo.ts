@@ -6,8 +6,8 @@ import type {
 	WorkspaceDiffDetail,
 } from "@devo-ai/sdk/v2/client"
 import { createDevoClient } from "@devo-ai/sdk/v2/client"
-import { stableId } from "@devo-ai/sdk/v2/acp-client-support"
-import type { Event, DevoProject, QuestionAnswer, Session, SessionStatus } from "../lib/types"
+import { stableId } from "@devo-ai/sdk/v2/native-client-support"
+import type { Event, DevoProject, PermissionResponse, QuestionAnswer, Session, SessionStatus } from "../lib/types"
 import { createLogger } from "../lib/logger"
 import { workspacePatchFilesFromView } from "../lib/workspace-diff"
 
@@ -34,7 +34,7 @@ export interface ConnectOptions {
 }
 
 /**
- * Creates a Devo client over the preload ACP bridge.
+ * Creates a Devo client over the preload Native bridge.
  */
 export function connectToServer(url: string, options?: ConnectOptions): DevoClient {
 	void url
@@ -253,7 +253,7 @@ export async function respondToPermission(
 	client: DevoClient,
 	sessionId: string,
 	permissionId: string,
-	response: "once" | "always" | "reject",
+	response: PermissionResponse,
 ): Promise<void> {
 	await client.permission.respond({
 		sessionID: sessionId,
@@ -283,7 +283,7 @@ export async function rejectQuestion(client: DevoClient, requestId: string): Pro
 /**
  * Dispose a specific project instance on the Devo server.
  * This forces the server to re-read all config, agents, skills, etc. from disk
- * for that project. The resulting `server.instance.disposed` ACP event triggers
+ * for that project. The resulting `server.instance.disposed` Native event triggers
  * automatic query invalidation in the UI.
  */
 export async function disposeInstance(client: DevoClient): Promise<void> {
@@ -294,14 +294,14 @@ export async function disposeInstance(client: DevoClient): Promise<void> {
  * Dispose all instances on the Devo server (global reload).
  * Forces re-initialization of all project instances, re-reading all config
  * files, agents, skills, commands, etc. from disk. The resulting
- * `global.disposed` ACP event triggers automatic query invalidation in the UI.
+ * `global.disposed` Native event triggers automatic query invalidation in the UI.
  */
 export async function disposeAllInstances(client: DevoClient): Promise<void> {
 	await client.global.dispose()
 }
 
 /**
- * Global event from the /global/event ACP event stream.
+ * Global event from the Native event stream.
  * Wraps each Event with the directory it belongs to.
  */
 export interface GlobalEvent {
@@ -310,7 +310,7 @@ export interface GlobalEvent {
 }
 
 /**
- * Subscribe to global ACP events from the server.
+ * Subscribe to global Native events from the server.
  * Uses `/global/event` which streams events from ALL projects,
  * each tagged with their directory. This avoids the per-directory
  * scoping issue where `/event` only returns events for one Instance.

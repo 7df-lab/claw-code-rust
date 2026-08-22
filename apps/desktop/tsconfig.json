@@ -19,7 +19,7 @@
 			"@devo/configconv/*": ["./packages/configconv/src/*"],
 			"@devo/ui/*": ["./packages/ui/src/*"],
 			"@devo-ai/sdk/v2/client": ["./packages/devo-ai-sdk/src/v2/client.ts"],
-			"@devo-ai/sdk/v2/acp-client-support": ["./packages/devo-ai-sdk/src/v2/acp-client-support.ts"]
+			"@devo-ai/sdk/v2/native-client-support": ["./packages/devo-ai-sdk/src/v2/native-client-support.ts"]
 		}
 	},
 	"include": [

@@ -1,14 +1,36 @@
 import { describe, expect, test } from "bun:test"
 import { processEvent } from "./actions/event-processor"
 import { partsFamily, partStorageKey } from "./parts"
-import { sessionAcpFamily } from "./session-acp"
+import { sessionNativeFamily } from "./session-native"
 import { sessionFamily, upsertSessionAtom } from "./sessions"
 import { appStore } from "./store"
 import { streamingVersionFamily } from "./streaming"
 
-describe("ACP session renderer state", () => {
+describe("Native session renderer state", () => {
+	test("deduplicates replayed Native approvals by approval id", () => {
+		const sessionID = "session-native-approval-dedup"
+		appStore.set(upsertSessionAtom, {
+			session: { id: sessionID, title: "Approval replay" },
+			directory: "/repo",
+		})
+		const event = {
+			type: "permission.asked",
+			properties: {
+				id: "approval-1",
+				requestID: "approval-1",
+				sessionID,
+				permission: "Run command",
+			},
+		} as const
+
+		processEvent(event)
+		processEvent(event)
+
+		expect(appStore.get(sessionFamily(sessionID))?.permissions).toEqual([event.properties])
+	})
+
 	test("stores command, config, mode, and usage updates from events", () => {
-		const sessionID = "session-acp-state"
+		const sessionID = "session-native-state"
 
 		processEvent({
 			type: "session.commands.updated",
@@ -41,7 +63,7 @@ describe("ACP session renderer state", () => {
 			},
 		})
 
-		expect(appStore.get(sessionAcpFamily(sessionID))).toEqual({
+		expect(appStore.get(sessionNativeFamily(sessionID))).toEqual({
 			commands: [{ name: "compact", description: "Compact session" }],
 			configOptions: [{ id: "model", currentValue: "test-model" }],
 			modeID: "plan",

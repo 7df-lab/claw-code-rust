@@ -35,7 +35,7 @@ import type {
 } from "../hooks/use-devo-data"
 import type { ChatTurn } from "../hooks/use-session-chat"
 import { formatShortcut } from "../lib/shortcut-display"
-import type { Agent, FileAttachment, QuestionAnswer } from "../lib/types"
+import type { Agent, FileAttachment, PermissionResponse, QuestionAnswer } from "../lib/types"
 import { workspaceChangeStats } from "../lib/workspace-diff"
 import {
 	fetchOpenInTargets,
@@ -88,7 +88,7 @@ interface AgentDetailProps {
 		agent: Agent,
 		permissionSessionId: string,
 		permissionId: string,
-		response?: "once" | "always",
+		response?: PermissionResponse,
 	) => Promise<void>
 	onDeny?: (agent: Agent, permissionSessionId: string, permissionId: string) => Promise<void>
 	onReplyQuestion?: (agent: Agent, requestId: string, answers: QuestionAnswer[]) => Promise<void>

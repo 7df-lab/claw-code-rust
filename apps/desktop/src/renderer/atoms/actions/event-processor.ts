@@ -17,7 +17,7 @@ import {
 	setSessionStatusAtom,
 	upsertSessionAtom,
 } from "../sessions"
-import { sessionAcpFamily } from "../session-acp"
+import { sessionNativeFamily } from "../session-native"
 import { appStore } from "../store"
 import { isStreamingField, streamingVersionFamily } from "../streaming"
 import { todosFamily } from "../todos"
@@ -49,7 +49,7 @@ function invalidateAllQueries(): void {
 }
 
 /**
- * Central ACP event dispatcher.
+ * Central Native event dispatcher.
  * A standalone function that writes to Jotai atoms via the store API.
  * Called by the event batcher in connection-manager.
  */
@@ -265,8 +265,8 @@ export function processEvent(event: Event): void {
 		case "session.commands.updated": {
 			const sessionID = event.properties.sessionID
 			if (!sessionID) break
-			const current = appStore.get(sessionAcpFamily(sessionID))
-			set(sessionAcpFamily(sessionID), {
+			const current = appStore.get(sessionNativeFamily(sessionID))
+			set(sessionNativeFamily(sessionID), {
 				...current,
 				commands: event.properties.commands ?? [],
 			})
@@ -276,8 +276,8 @@ export function processEvent(event: Event): void {
 		case "session.config.updated": {
 			const sessionID = event.properties.sessionID
 			if (!sessionID) break
-			const current = appStore.get(sessionAcpFamily(sessionID))
-			set(sessionAcpFamily(sessionID), {
+			const current = appStore.get(sessionNativeFamily(sessionID))
+			set(sessionNativeFamily(sessionID), {
 				...current,
 				configOptions: event.properties.configOptions ?? [],
 			})
@@ -287,8 +287,8 @@ export function processEvent(event: Event): void {
 		case "session.mode.updated": {
 			const sessionID = event.properties.sessionID
 			if (!sessionID) break
-			const current = appStore.get(sessionAcpFamily(sessionID))
-			set(sessionAcpFamily(sessionID), {
+			const current = appStore.get(sessionNativeFamily(sessionID))
+			set(sessionNativeFamily(sessionID), {
 				...current,
 				modeID: event.properties.modeID,
 			})
@@ -298,8 +298,8 @@ export function processEvent(event: Event): void {
 		case "session.usage.updated": {
 			const sessionID = event.properties.sessionID
 			if (!sessionID) break
-			const current = appStore.get(sessionAcpFamily(sessionID))
-			set(sessionAcpFamily(sessionID), {
+			const current = appStore.get(sessionNativeFamily(sessionID))
+			set(sessionNativeFamily(sessionID), {
 				...current,
 				usage: {
 					used: event.properties.used,

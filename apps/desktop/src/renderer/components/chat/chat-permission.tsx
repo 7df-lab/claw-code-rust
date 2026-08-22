@@ -7,7 +7,18 @@ import {
 } from "@devo/ui/components/dropdown-menu"
 import { ChevronDownIcon, Loader2Icon, ShieldCheckIcon, ZapIcon } from "lucide-react"
 import { memo, useState } from "react"
-import type { Agent, PermissionRequest } from "../../lib/types"
+import type { Agent, PermissionRequest, PermissionResponse } from "../../lib/types"
+
+const scopeLabels: Partial<Record<PermissionResponse, string>> = {
+	once: "Allow once",
+	turn: "Allow for this turn",
+	session: "Allow for this session",
+	pathPrefix: "Allow this path",
+	host: "Allow this host",
+	tool: "Allow this tool",
+	commandPrefix: "Allow this command prefix",
+	commandPrefixPersist: "Always allow this command prefix",
+}
 
 interface PermissionItemProps {
 	agent: Agent
@@ -16,7 +27,7 @@ interface PermissionItemProps {
 		agent: Agent,
 		permissionSessionId: string,
 		permissionId: string,
-		response?: "once" | "always",
+		response?: PermissionResponse,
 	) => Promise<void>
 	onDeny?: (agent: Agent, permissionSessionId: string, permissionId: string) => Promise<void>
 	isConnected?: boolean
@@ -40,7 +51,7 @@ export const PermissionItem = memo(function PermissionItem({
 }: PermissionItemProps) {
 	const [responding, setResponding] = useState(false)
 
-	async function handleApprove(response: "once" | "always" = "once") {
+	async function handleApprove(response: PermissionResponse = "once") {
 		if (!onApprove || responding) return
 		setResponding(true)
 		try {
@@ -64,6 +75,12 @@ export const PermissionItem = memo(function PermissionItem({
 
 	const tool = permission.metadata?.tool as string | undefined
 	const command = permission.metadata?.command as string | undefined
+	const availableScopes: PermissionResponse[] = Array.isArray(permission.metadata?.availableScopes)
+		? permission.metadata.availableScopes.filter(
+				(scope: unknown): scope is PermissionResponse => typeof scope === "string" && scope in scopeLabels,
+			)
+		: ["once" as const]
+	const primaryScope = availableScopes.includes("once") ? "once" : availableScopes[0] ?? "once"
 
 	return (
 		<div className="mb-2 rounded-xl border border-border bg-card">
@@ -98,7 +115,7 @@ export const PermissionItem = memo(function PermissionItem({
 				<div className="flex items-center">
 					<Button
 						size="sm"
-						onClick={() => handleApprove("once")}
+						onClick={() => handleApprove(primaryScope)}
 						disabled={!isConnected || responding}
 						className="h-7 rounded-r-none px-2.5 text-xs"
 					>
@@ -119,10 +136,11 @@ export const PermissionItem = memo(function PermissionItem({
 							<ChevronDownIcon className="size-3" aria-hidden="true" />
 						</DropdownMenuTrigger>
 						<DropdownMenuContent align="end">
-							<DropdownMenuItem onClick={() => handleApprove("once")}>Allow once</DropdownMenuItem>
-							<DropdownMenuItem onClick={() => handleApprove("always")}>
-								Always allow
-							</DropdownMenuItem>
+							{availableScopes.map((scope) => (
+								<DropdownMenuItem key={scope} onClick={() => handleApprove(scope)}>
+									{scopeLabels[scope]}
+								</DropdownMenuItem>
+							))}
 						</DropdownMenuContent>
 					</DropdownMenu>
 				</div>

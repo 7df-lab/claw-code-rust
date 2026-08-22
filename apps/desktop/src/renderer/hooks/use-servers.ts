@@ -1,7 +1,7 @@
 /**
  * Local-only server configuration hook.
  *
- * Desktop v1 owns a single main-process ACP stdio connection. Remote URL,
+ * Desktop v1 owns a single main-process Native stdio connection. Remote URL,
  * service discovery, password, and SSH server switching are intentionally disabled.
  */
 

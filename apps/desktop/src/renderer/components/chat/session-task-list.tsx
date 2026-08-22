@@ -20,7 +20,7 @@ import type { Todo } from "../../lib/types"
  * Derives the latest todo list for a session.
  *
  * Priority order:
- * 1. Store `todos[sessionId]` — set by `todo.updated` ACP events (real-time)
+ * 1. Store `todos[sessionId]` — set by `todo.updated` Native events (real-time)
  * 2. Fallback: extract from the last `todowrite` tool part in messages (for page loads)
  */
 function useSessionTodos(sessionId: string | null): Todo[] {
@@ -29,7 +29,7 @@ function useSessionTodos(sessionId: string | null): Todo[] {
 	const streamingVersion = useAtomValue(streamingVersionFamily(sessionId ?? ""))
 
 	return useMemo(() => {
-		// If we have ACP-pushed todos, prefer those — they're the most up-to-date
+		// If we have Native-pushed todos, prefer those — they're the most up-to-date
 		if (storeTodos && storeTodos.length > 0) return storeTodos
 
 		// Fallback: walk messages backwards to find the last todowrite part

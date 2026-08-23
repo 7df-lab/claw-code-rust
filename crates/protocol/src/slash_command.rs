@@ -203,22 +203,24 @@ impl FromStr for SlashCommand {
 }
 
 pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
+    // Presentation order for the TUI popup. Do not alphabetize: keep frequently used
+    // commands first so useful actions remain visible without scrolling.
     vec![
         ("model", SlashCommand::Model),
-        ("skills", SlashCommand::Skills),
-        ("mcps", SlashCommand::Mcp),
-        ("compact", SlashCommand::Compact),
-        ("resume", SlashCommand::Resume),
-        ("new", SlashCommand::New),
-        ("rename", SlashCommand::Rename),
-        ("delete", SlashCommand::Delete),
-        ("status", SlashCommand::Status),
-        ("settings", SlashCommand::Settings),
         ("permissions", SlashCommand::Permissions),
-        ("show-reasoning", SlashCommand::ShowReasoning),
+        ("status", SlashCommand::Status),
+        ("new", SlashCommand::New),
+        ("resume", SlashCommand::Resume),
+        ("compact", SlashCommand::Compact),
         ("diff", SlashCommand::Diff),
         ("goal", SlashCommand::Goal),
         ("btw", SlashCommand::Btw),
+        ("skills", SlashCommand::Skills),
+        ("mcps", SlashCommand::Mcp),
+        ("settings", SlashCommand::Settings),
+        ("rename", SlashCommand::Rename),
+        ("delete", SlashCommand::Delete),
+        ("show-reasoning", SlashCommand::ShowReasoning),
         ("exit", SlashCommand::Exit),
     ]
 }

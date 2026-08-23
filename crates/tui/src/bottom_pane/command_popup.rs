@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn popup_lists_only_supported_commands() {
+    fn popup_lists_supported_commands_by_usage_frequency() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
         popup.on_composer_text_change("/".to_string());
 
@@ -409,20 +409,20 @@ mod tests {
             cmds,
             vec![
                 "model",
-                "skills",
-                "mcps",
-                "compact",
-                "resume",
-                "new",
-                "rename",
-                "delete",
-                "status",
-                "settings",
                 "permissions",
-                "show-reasoning",
+                "status",
+                "new",
+                "resume",
+                "compact",
                 "diff",
                 "goal",
                 "btw",
+                "skills",
+                "mcps",
+                "settings",
+                "rename",
+                "delete",
+                "show-reasoning",
                 "exit",
             ]
         );

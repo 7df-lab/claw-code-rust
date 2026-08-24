@@ -30,6 +30,12 @@ let isQuitting = false
 app.setName(appName)
 process.title = appName
 
+// Windows taskbar / jump-list identity. Without this, Windows may group the app
+// with other Electron apps and keep showing the default Electron icon.
+if (process.platform === "win32") {
+	app.setAppUserModelId(app.isPackaged ? "com.devo.desktop" : "com.devo.desktop.dev")
+}
+
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -282,15 +288,21 @@ async function createWindow(): Promise<BrowserWindow> {
 	// Resolve the window icon for Linux/Windows. macOS uses the .app bundle icon.
 	// Linux: use 256x256 icon — GTK's GdkPixbuf can choke on the full 1024x1024
 	// icon on Wayland, causing GDK_IS_PIXBUF assertion failures.
+	// Windows: prefer .ico for best taskbar / title-bar visual quality.
 	const windowIcon = isMac
 		? undefined
 		: app.isPackaged
-			? path.join(process.resourcesPath, "icon.png")
+			? path.join(
+					process.resourcesPath,
+					process.platform === "win32" ? "icon.ico" : "icon.png",
+				)
 			: path.join(
 					__dirname,
 					process.platform === "linux"
 						? "../../resources/linux-icons/256x256.png"
-						: "../../resources/icon.png",
+						: process.platform === "win32"
+							? "../../resources/icon.ico"
+							: "../../resources/icon.png",
 				)
 
 	const win = new BrowserWindow({
@@ -320,6 +332,15 @@ async function createWindow(): Promise<BrowserWindow> {
 		},
 	})
 
+	if (windowIcon) {
+		const image = nativeImage.createFromPath(windowIcon)
+		if (image.isEmpty()) {
+			log.warn("Failed to load window icon", { windowIcon })
+		} else {
+			win.setIcon(image)
+		}
+	}
+
 	win.on("close", (event) => {
 		if (process.platform !== "win32" || isQuitting) return
 
@@ -330,6 +351,10 @@ async function createWindow(): Promise<BrowserWindow> {
 	// Show the window once the renderer has painted — avoids a flash of
 	// transparent/blank content while the page loads.
 	win.once("ready-to-show", () => {
+		if (windowIcon) {
+			const image = nativeImage.createFromPath(windowIcon)
+			if (!image.isEmpty()) win.setIcon(image)
+		}
 		win.show()
 	})
 

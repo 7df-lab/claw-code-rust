@@ -11,6 +11,7 @@ import { BookOpenIcon, RefreshCwIcon } from "lucide-react"
 import { serverConnectedAtom } from "../../atoms/connection"
 import { discoveryAtom } from "../../atoms/discovery"
 import { getBaseClient, getProjectClient } from "../../services/connection-manager"
+import { SettingsHeader } from "./settings-header"
 import { SettingsRow } from "./settings-row"
 import { SettingsSection } from "./settings-section"
 
@@ -91,17 +92,19 @@ export function SkillSettings({
 	})
 
 	return (
-		<div className={embedded ? "space-y-6 px-8 py-8" : "space-y-8"}>
+		<div className={embedded ? "space-y-6 px-8 py-8" : "space-y-10"}>
 			{!embedded && (
-			<div>
-				<h2 className="text-[22px] font-medium tracking-tight">Skills</h2>
-				<p className="mt-1 text-sm text-muted-foreground">
-					Skills are discovered from user, workspace, plugin, and system roots. Disable a skill to
-					keep it off this machine. Insert one in chat with{" "}
-					<code className="rounded bg-muted px-1 py-0.5 text-xs">/skills</code> or{" "}
-					<code className="rounded bg-muted px-1 py-0.5 text-xs">@</code>.
-				</p>
-			</div>
+				<SettingsHeader
+					title="Skills"
+					description={
+						<>
+							Skills are discovered from user, workspace, plugin, and system roots. Disable a skill to
+							keep it off this machine. Insert one in chat with{" "}
+							<code className="rounded bg-muted px-1 py-0.5 text-[13px]">/skills</code> or{" "}
+							<code className="rounded bg-muted px-1 py-0.5 text-[13px]">@</code>.
+						</>
+					}
+				/>
 			)}
 
 			<SettingsSection title="Installed skills">

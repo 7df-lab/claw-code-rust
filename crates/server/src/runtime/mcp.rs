@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use devo_core::McpServerId;
+use devo_core::McpServerStatus;
 use devo_core::McpStartupState;
 use devo_core::tools::ToolPlanConfig;
 use devo_core::tools::handlers;
@@ -74,22 +75,8 @@ impl ServerRuntime {
         let server_id = McpServerId(name.to_string());
         let manager = &self.deps.process_context.mcp_manager;
 
-        let needs_refresh = match manager.statuses().await {
-            Ok(statuses) => {
-                let status = statuses.iter().find(|status| status.server_id == server_id);
-                match status {
-                    None => true,
-                    Some(status) => {
-                        matches!(
-                            status.startup_state,
-                            McpStartupState::NotStarted
-                                | McpStartupState::Stopped
-                                | McpStartupState::Failed
-                        ) || status.tools.is_empty()
-                            && !matches!(status.startup_state, McpStartupState::Disabled)
-                    }
-                }
-            }
+        let statuses = match manager.statuses().await {
+            Ok(statuses) => statuses,
             Err(error) => {
                 return self.error_response(
                     request_id,
@@ -98,45 +85,55 @@ impl ServerRuntime {
                 );
             }
         };
+        let existing = statuses
+            .iter()
+            .find(|status| status.server_id == server_id)
+            .cloned();
 
-        if needs_refresh && let Err(error) = manager.refresh(&server_id).await {
-            // Still try to return whatever tools we have after a failed refresh.
-            tracing::warn!(server = %server_id, error = %error, "mcp/tools refresh failed");
-        }
-
-        match manager.statuses().await {
-            Ok(statuses) => {
-                let Some(status) = statuses
-                    .into_iter()
-                    .find(|status| status.server_id == server_id)
-                else {
+        let status = if mcp_tools_need_refresh(existing.as_ref()) {
+            match manager.refresh(&server_id).await {
+                Ok(status) => status,
+                Err(error) => {
+                    tracing::warn!(server = %server_id, error = %error, "mcp/tools refresh failed");
+                    match existing {
+                        Some(status) => status,
+                        None => {
+                            return self.error_response(
+                                request_id,
+                                ProtocolErrorCode::InvalidParams,
+                                format!("mcp server `{name}` not found"),
+                            );
+                        }
+                    }
+                }
+            }
+        } else {
+            match existing {
+                Some(status) => status,
+                None => {
                     return self.error_response(
                         request_id,
                         ProtocolErrorCode::InvalidParams,
                         format!("mcp server `{name}` not found"),
                     );
-                };
-                let mut tools = status
-                    .tools
-                    .into_iter()
-                    .map(|tool| McpToolEntry {
-                        name: tool.name,
-                        description: tool.description,
-                    })
-                    .collect::<Vec<_>>();
-                tools.sort_by(|left, right| left.name.cmp(&right.name));
-                serde_json::to_value(SuccessResponse {
-                    id: request_id,
-                    result: McpToolsResult { tools },
-                })
-                .expect("serialize mcp/tools response")
+                }
             }
-            Err(error) => self.error_response(
-                request_id,
-                ProtocolErrorCode::InternalError,
-                format!("failed to list mcp tools: {error}"),
-            ),
-        }
+        };
+
+        let mut tools = status
+            .tools
+            .into_iter()
+            .map(|tool| McpToolEntry {
+                name: tool.name,
+                description: tool.description,
+            })
+            .collect::<Vec<_>>();
+        tools.sort_by(|left, right| left.name.cmp(&right.name));
+        serde_json::to_value(SuccessResponse {
+            id: request_id,
+            result: McpToolsResult { tools },
+        })
+        .expect("serialize mcp/tools response")
     }
 
     pub(super) async fn handle_mcp_set_enabled(
@@ -316,5 +313,64 @@ fn startup_state_label(state: &McpStartupState) -> &'static str {
         McpStartupState::AuthRequired => "auth_required",
         McpStartupState::Degraded => "degraded",
         McpStartupState::Stopped => "stopped",
+    }
+}
+
+fn mcp_tools_need_refresh(status: Option<&McpServerStatus>) -> bool {
+    let Some(status) = status else {
+        return true;
+    };
+    match status.startup_state {
+        McpStartupState::Disabled => false,
+        McpStartupState::NotStarted | McpStartupState::Stopped | McpStartupState::Failed => true,
+        McpStartupState::Starting
+        | McpStartupState::Ready
+        | McpStartupState::AuthRequired
+        | McpStartupState::Degraded => status.tools.is_empty(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+    use devo_core::McpAuthState;
+    use devo_core::McpToolDescriptor;
+
+    fn status_with(startup_state: McpStartupState, tool_count: usize) -> McpServerStatus {
+        McpServerStatus {
+            server_id: McpServerId("docs".to_string()),
+            startup_state,
+            auth_state: McpAuthState::NotRequired,
+            tools: (0..tool_count)
+                .map(|index| McpToolDescriptor {
+                    server_id: McpServerId("docs".to_string()),
+                    name: format!("tool_{index}"),
+                    description: String::new(),
+                    input_schema: serde_json::json!({}),
+                })
+                .collect(),
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            last_refreshed_at: None,
+        }
+    }
+
+    /// Trace: L2-DES-MCP-001
+    /// Verifies: mcp/tools does not start a disabled server and does start idle enabled ones.
+    #[test]
+    fn mcp_tools_refresh_skips_disabled_and_filled_ready_servers() {
+        assert_eq!(
+            [
+                mcp_tools_need_refresh(None),
+                mcp_tools_need_refresh(Some(&status_with(McpStartupState::Disabled, 0))),
+                mcp_tools_need_refresh(Some(&status_with(McpStartupState::NotStarted, 0))),
+                mcp_tools_need_refresh(Some(&status_with(McpStartupState::Ready, 0))),
+                mcp_tools_need_refresh(Some(&status_with(McpStartupState::Ready, 2))),
+                mcp_tools_need_refresh(Some(&status_with(McpStartupState::Failed, 0))),
+            ],
+            [true, false, true, true, false, true]
+        );
     }
 }

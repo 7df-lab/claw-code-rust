@@ -11,7 +11,7 @@ import {
 	SettingsIcon,
 	SlidersHorizontalIcon,
 } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { activeServerConfigAtom } from "../../atoms/connection"
 import { sandboxMappingsAtom } from "../../atoms/derived/agents"
 import { automationsEnabledAtom } from "../../atoms/feature-flags"
@@ -36,6 +36,7 @@ import {
 import { AddProjectMenu, SidebarMainMenu } from "./sidebar-menus"
 import { sidebarPreferencesAtom } from "./sidebar-preferences"
 import { ProjectRow, SessionRow } from "./sidebar-rows"
+import { TopActionRow, sidebarPrimaryIconClass } from "./sidebar-top-action"
 
 interface AppSidebarContentProps {
 	agents: Agent[]
@@ -47,38 +48,6 @@ interface AppSidebarContentProps {
 	onRenameSession?: (agent: Agent, title: string) => Promise<void>
 	onDeleteSession?: (agent: Agent) => Promise<void>
 	onForkSession?: (agent: Agent) => Promise<void>
-}
-
-const sidebarPrimaryIconClass = "size-[15px] stroke-[1.5]"
-
-function TopActionRow({
-	children,
-	icon,
-	onClick,
-	isActive,
-}: {
-	children: ReactNode
-	icon: ReactNode
-	onClick: () => void
-	isActive?: boolean
-}) {
-	return (
-		<button
-			type="button"
-			onClick={onClick}
-			className={cn(
-				"flex h-8 w-full items-center gap-2.5 rounded-lg px-1.5 text-left text-[13px] font-normal transition-colors",
-				isActive
-					? "bg-black/[0.06] text-sidebar-foreground dark:bg-white/[0.08]"
-					: "text-sidebar-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06]",
-			)}
-		>
-			<span className="flex size-4 shrink-0 items-center justify-center text-sidebar-foreground/90">
-				{icon}
-			</span>
-			<span className="min-w-0 flex-1 truncate">{children}</span>
-		</button>
-	)
 }
 
 function ProjectSection({

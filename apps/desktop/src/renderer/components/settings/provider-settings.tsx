@@ -15,6 +15,7 @@ import { useCallback, useState } from "react"
 import { useProviderVendors } from "../../hooks/use-devo-data"
 import { ProviderIcon } from "./provider-icon"
 import { ProviderVendorDialog } from "./provider-vendor-dialog"
+import { SettingsHeader } from "./settings-header"
 import { SettingsSection } from "./settings-section"
 
 interface ProviderSettingsViewProps {
@@ -68,9 +69,9 @@ export function ProviderSettingsView({
 
 	if (error) {
 		return (
-			<div className="flex flex-col gap-8">
+			<div className="flex flex-col gap-10">
 				<ProviderSettingsHeader onAddProvider={openAddDialog} />
-				<div className="flex items-center gap-3 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+				<div className="flex items-center gap-3 rounded-[18px] border border-destructive/40 bg-destructive/10 px-5 py-3.5 text-[15px] text-destructive">
 					<AlertCircleIcon className="size-4 shrink-0" aria-hidden="true" />
 					<span>Failed to load providers: {error}</span>
 					<Button variant="outline" size="sm" className="ml-auto" onClick={onReload}>
@@ -83,22 +84,24 @@ export function ProviderSettingsView({
 	}
 
 	return (
-		<div className="flex flex-col gap-8">
+		<div className="flex flex-col gap-10">
 			<ProviderSettingsHeader onAddProvider={openAddDialog} />
 
 			{providerVendors.length === 0 ? (
-				<Empty className="border">
+				<Empty className="rounded-[18px] border border-border/60 bg-background shadow-[0_8px_32px_rgba(0,0,0,0.05)]">
 					<EmptyHeader>
 						<EmptyMedia variant="icon">
 							<PlugZapIcon aria-hidden="true" />
 						</EmptyMedia>
-						<EmptyTitle>No providers configured</EmptyTitle>
-						<EmptyDescription>
+						<EmptyTitle className="text-[22px] font-normal tracking-[-0.03em]">
+							No providers configured
+						</EmptyTitle>
+						<EmptyDescription className="text-[15px] leading-6">
 							Add a provider endpoint and model binding to make it available in Desktop.
 						</EmptyDescription>
 					</EmptyHeader>
 					<EmptyContent>
-						<Button onClick={openAddDialog}>
+						<Button className="h-9 rounded-full px-4" onClick={openAddDialog}>
 							<PlusIcon data-icon="inline-start" />
 							Add Provider
 						</Button>
@@ -130,26 +133,28 @@ export function ProviderSettingsView({
 
 function ProviderSettingsHeader({ onAddProvider }: { onAddProvider: () => void }) {
 	return (
-		<div className="flex items-start justify-between gap-4">
-			<div>
-				<h2 className="text-[22px] font-medium tracking-tight">Providers</h2>
-				<p className="mt-1 text-sm text-muted-foreground">
+		<SettingsHeader
+			title="Providers"
+			action={
+				<Button variant="secondary" className="h-9 rounded-full px-4" onClick={onAddProvider}>
+					<PlusIcon data-icon="inline-start" />
+					Add Provider
+				</Button>
+			}
+			description={
+				<>
 					Connect AI providers to use their models.{" "}
 					<a
 						href="https://devo.ai/docs/providers/"
 						target="_blank"
 						rel="noopener noreferrer"
-						className="text-primary hover:underline"
+						className="text-foreground/80 underline-offset-4 hover:underline"
 					>
 						Learn more &rsaquo;
 					</a>
-				</p>
-			</div>
-			<Button onClick={onAddProvider}>
-				<PlusIcon data-icon="inline-start" />
-				Add Provider
-			</Button>
-		</div>
+				</>
+			}
+		/>
 	)
 }
 
@@ -164,21 +169,21 @@ function ProviderVendorRow({
 	const endpoint = providerVendor.base_url ?? "Provider default endpoint"
 
 	return (
-		<div className="flex items-center gap-3 px-4 py-3">
+		<div className="flex items-center gap-3 px-5 py-3.5">
 			<ProviderIcon id={providerVendor.name} name={providerVendor.name} />
 			<div className="min-w-0 flex-1">
 				<div className="flex flex-wrap items-center gap-2">
-					<span className="text-sm font-medium">{providerVendor.name}</span>
+					<span className="text-[15px] font-normal tracking-[-0.01em]">{providerVendor.name}</span>
 					<Badge variant={providerVendor.enabled ? "secondary" : "outline"}>
 						{providerVendor.enabled ? "Enabled" : "Disabled"}
 					</Badge>
 				</div>
-				<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+				<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
 					<span>{endpoint}</span>
 					<span>{wireApis}</span>
 				</div>
 			</div>
-			<Button variant="outline" size="sm" onClick={onEdit}>
+			<Button variant="outline" size="sm" className="rounded-full" onClick={onEdit}>
 				<PencilIcon data-icon="inline-start" />
 				Edit
 			</Button>
@@ -188,11 +193,11 @@ function ProviderVendorRow({
 
 function ProviderSettingsLoading() {
 	return (
-		<div className="flex flex-col gap-8">
+		<div className="flex flex-col gap-10">
 			<ProviderSettingsHeader onAddProvider={() => {}} />
 			<SettingsSection title="Configured Providers">
 				{[0, 1, 2].map((index) => (
-					<div key={index} className="flex items-center gap-3 px-4 py-3">
+					<div key={index} className="flex items-center gap-3 px-5 py-3.5">
 						<Skeleton className="size-8 rounded-full" />
 						<div className="flex flex-1 flex-col gap-2">
 							<Skeleton className="h-4 w-32" />

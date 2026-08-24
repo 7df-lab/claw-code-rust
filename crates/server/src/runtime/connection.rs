@@ -1527,6 +1527,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_tools_for_disabled_bundled_server_returns_empty() {
+        let temp = TempDir::new().expect("temp dir");
+        let runtime = build_runtime(temp.path());
+        let connection_id = initialized_connection(&runtime).await;
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": 7,
+                    "method": "mcp/tools",
+                    "params": { "name": "code_search" }
+                }),
+            )
+            .await
+            .expect("mcp/tools response");
+        let result: SuccessResponse<devo_protocol::native::rpc_admin::McpToolsResult> =
+            serde_json::from_value(response).expect("deserialize mcp/tools");
+        assert_eq!(
+            result.result,
+            devo_protocol::native::rpc_admin::McpToolsResult { tools: Vec::new() }
+        );
+    }
+
+    #[tokio::test]
     async fn mcp_list_includes_bundled_disabled_code_search() {
         let temp = TempDir::new().expect("temp dir");
         let runtime = build_runtime(temp.path());

@@ -11,6 +11,7 @@ import { toast } from "sonner"
 import type { RuleFileInfo } from "../../../preload/api"
 import { desktopFoldersAtom } from "../../atoms/desktop-folders"
 import { discoveryAtom } from "../../atoms/discovery"
+import { SettingsHeader } from "../settings/settings-header"
 import { SettingsRow } from "../settings/settings-row"
 import { SettingsSection } from "../settings/settings-section"
 
@@ -87,17 +88,21 @@ export function RuleSettings({
 	})
 
 	return (
-		<div className={embedded ? "space-y-6 px-8 py-8" : "space-y-8"}>
+		<div className={embedded ? "space-y-6 px-8 py-8" : "space-y-10"}>
 			{!embedded && (
-			<div>
-				<h2 className="text-[22px] font-medium tracking-tight">Rules</h2>
-				<p className="mt-1 text-sm text-muted-foreground">
-					Agent instructions live in <code className="rounded bg-muted px-1 py-0.5 text-xs">AGENTS.md</code>.
-					Devo also reads <code className="rounded bg-muted px-1 py-0.5 text-xs">AGENTS.override.md</code>,{" "}
-					<code className="rounded bg-muted px-1 py-0.5 text-xs">CLAUDE.md</code>, and{" "}
-					<code className="rounded bg-muted px-1 py-0.5 text-xs">PROMPT.md</code>.
-				</p>
-			</div>
+				<SettingsHeader
+					title="Rules"
+					description={
+						<>
+							Agent instructions live in{" "}
+							<code className="rounded bg-muted px-1 py-0.5 text-[13px]">AGENTS.md</code>. Devo also
+							reads{" "}
+							<code className="rounded bg-muted px-1 py-0.5 text-[13px]">AGENTS.override.md</code>,{" "}
+							<code className="rounded bg-muted px-1 py-0.5 text-[13px]">CLAUDE.md</code>, and{" "}
+							<code className="rounded bg-muted px-1 py-0.5 text-[13px]">PROMPT.md</code>.
+						</>
+					}
+				/>
 			)}
 
 			<SettingsSection title="Instruction files">

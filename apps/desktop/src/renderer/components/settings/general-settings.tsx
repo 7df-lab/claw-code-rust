@@ -14,6 +14,7 @@ import { useDisplayMode, useHideThinkingWhileWorking, useSetDisplayMode, useSetH
 import { useColorScheme, useSetColorScheme } from "../../hooks/use-theme"
 import type { ColorScheme } from "../../lib/themes"
 import { fetchOpenInTargets, setOpenInPreferred } from "../../services/backend"
+import { SettingsHeader } from "./settings-header"
 import { SettingsRow } from "./settings-row"
 import { SettingsSection } from "./settings-section"
 
@@ -21,14 +22,10 @@ const isElectron = typeof window !== "undefined" && "devo" in window
 
 export function GeneralSettings() {
 	return (
-		<div className="space-y-8">
-			<div>
-				<h2 className="text-[22px] font-medium tracking-tight">General</h2>
-			</div>
+		<div className="space-y-10">
+			<SettingsHeader title="General" />
 
-			<SettingsSection>
-				<OpenDestinationRow />
-			</SettingsSection>
+			<OpenDestinationRow />
 
 			<SettingsSection title="Appearance">
 				<ThemeRow />
@@ -63,28 +60,30 @@ function OpenDestinationRow() {
 	if (targets.length === 0) return null
 
 	return (
-		<SettingsRow
-			label="Default open destination"
-			description="Where files and folders open by default"
-		>
-			<Select
-				value={preferred ?? undefined}
-				onValueChange={(v) => {
-					if (v !== null) handleChange(v)
-				}}
+		<SettingsSection>
+			<SettingsRow
+				label="Default open destination"
+				description="Where files and folders open by default"
 			>
-				<SelectTrigger className="min-w-[180px]">
-					<SelectValue placeholder="Select..." />
-				</SelectTrigger>
-				<SelectContent>
-					{targets.map((t) => (
-						<SelectItem key={t.id} value={t.id}>
-							{t.label}
-						</SelectItem>
-					))}
-				</SelectContent>
-			</Select>
-		</SettingsRow>
+				<Select
+					value={preferred ?? undefined}
+					onValueChange={(v) => {
+						if (v !== null) handleChange(v)
+					}}
+				>
+					<SelectTrigger className="min-w-[180px]">
+						<SelectValue placeholder="Select..." />
+					</SelectTrigger>
+					<SelectContent>
+						{targets.map((t) => (
+							<SelectItem key={t.id} value={t.id}>
+								{t.label}
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
+			</SettingsRow>
+		</SettingsSection>
 	)
 }
 
@@ -100,7 +99,7 @@ function ThemeRow() {
 
 	return (
 		<SettingsRow label="Theme" description="Use light, dark, or match your system">
-			<div className="flex items-center rounded-md border border-border">
+			<div className="flex items-center rounded-md border border-border/40">
 				{options.map((opt) => {
 					const Icon = opt.icon
 					const isActive = colorScheme === opt.value
@@ -109,13 +108,13 @@ function ThemeRow() {
 							key={opt.value}
 							type="button"
 							onClick={() => setColorScheme(opt.value)}
-							className={`flex items-center gap-1.5 px-3 py-1.5 text-sm transition-colors first:rounded-l-md last:rounded-r-md ${
+							className={`flex items-center gap-1.5 px-2.5 py-1 text-[13px] transition-colors first:rounded-l-md last:rounded-r-md ${
 								isActive
-									? "bg-accent text-accent-foreground font-medium"
-									: "text-muted-foreground hover:text-foreground"
+									? "bg-muted/80 text-foreground"
+									: "text-muted-foreground/60 hover:text-muted-foreground"
 							}`}
 						>
-							<Icon aria-hidden="true" className="size-3.5" />
+							<Icon aria-hidden="true" className="size-3.5 stroke-[1.5]" />
 							{opt.label}
 						</button>
 					)

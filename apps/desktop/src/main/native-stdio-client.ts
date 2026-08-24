@@ -33,6 +33,15 @@ type PendingRequest = {
 }
 
 const REQUEST_TIMEOUT_MS = 10_000
+/** MCP admin RPCs may start a lazy server before listing tools. */
+export const MCP_ADMIN_REQUEST_TIMEOUT_MS = 60_000
+
+export function requestTimeoutMsForMethod(method: string, fallbackMs: number): number {
+	if (method === "mcp/tools" || method === "mcp/set_enabled") {
+		return Math.max(fallbackMs, MCP_ADMIN_REQUEST_TIMEOUT_MS)
+	}
+	return fallbackMs
+}
 
 export type NativeIncomingMessage =
 	| { type: "response"; id: JsonRpcId; message: Record<string, unknown> }
@@ -290,7 +299,7 @@ export class StdioNativeClient implements NativeTransport {
 				if (!this.pending.delete(id)) return
 				this.pendingMethods.delete(id)
 				reject(new Error(`${method} request ${id} timed out`))
-			}, this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS)
+			}, requestTimeoutMsForMethod(method, this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS))
 			this.pending.set(id, { resolve, reject, timer })
 		})
 		this.pendingMethods.set(id, method)

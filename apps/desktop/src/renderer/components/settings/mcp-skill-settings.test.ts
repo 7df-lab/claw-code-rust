@@ -10,6 +10,8 @@ const sidebarSource = readFileSync(new URL("../sidebar/app-sidebar-content.tsx",
 const layoutSource = readFileSync(new URL("../sidebar-layout.tsx", import.meta.url), "utf8")
 const routerSource = readFileSync(new URL("../../router.tsx", import.meta.url), "utf8")
 const menuSource = readFileSync(new URL("../../../main/index.ts", import.meta.url), "utf8")
+const ipcSource = readFileSync(new URL("../../../main/ipc-handlers.ts", import.meta.url), "utf8")
+const preloadSource = readFileSync(new URL("../../../preload/index.ts", import.meta.url), "utf8")
 
 describe("Desktop MCP and Skills settings", () => {
 	test("registers MCP and Skills settings tabs and routes", () => {
@@ -17,21 +19,32 @@ describe("Desktop MCP and Skills settings", () => {
 			mcpTab: settingsPageSource.includes('id: "mcp"') && settingsPageSource.includes('label: "MCP"'),
 			skillsTab:
 				settingsPageSource.includes('id: "skills"') && settingsPageSource.includes('label: "Skills"'),
+			settingsNavUsesTopActionRow:
+				settingsPageSource.includes("TopActionRow") &&
+				settingsPageSource.includes("sidebarPrimaryIconClass") &&
+				!settingsPageSource.includes("SidebarMenuButton"),
 			mcpRoute: routerSource.includes('path: "mcp"') && routerSource.includes("McpSettings"),
 			skillsRoute: routerSource.includes('path: "skills"') && routerSource.includes("SkillSettings"),
 			listsMcp: mcpSource.includes("client.mcp.list()"),
 			togglesMcp: mcpSource.includes("client.mcp.setEnabled"),
 			listsMcpTools: mcpSource.includes("client.mcp.tools"),
+			hidesToolsWhenDisabled: mcpSource.includes("mcpServerEnabled") && mcpSource.includes("{enabled && ("),
+			opensMcpConfig: mcpSource.includes("openMcpConfigFile()"),
+			addsMcpButton: mcpSource.includes('aria-label="Add MCP"'),
 			listsSkills: skillSource.includes("client.app.skills()"),
 			togglesSkills: skillSource.includes("setSkillEnabled"),
 		}).toEqual({
 			mcpTab: true,
 			skillsTab: true,
+			settingsNavUsesTopActionRow: true,
 			mcpRoute: true,
 			skillsRoute: true,
 			listsMcp: true,
 			togglesMcp: true,
 			listsMcpTools: true,
+			hidesToolsWhenDisabled: true,
+			opensMcpConfig: true,
+			addsMcpButton: true,
 			listsSkills: true,
 			togglesSkills: true,
 		})
@@ -47,6 +60,10 @@ describe("Desktop MCP and Skills settings", () => {
 				customizeSource.includes('id: "rules"'),
 			listsRules: ruleSource.includes("window.devo.rules.list"),
 			createsRules: ruleSource.includes("window.devo.rules.create"),
+			opensMcpConfigIpc:
+				ipcSource.includes("mcp:open-config") &&
+				preloadSource.includes("mcp:open-config") &&
+				ipcSource.includes("MCP_CONFIG_OPEN_PATH"),
 			popsFileSubmenu: menuSource.includes("explicitSubmenu") && menuSource.includes("activePopupMenu"),
 		}).toEqual({
 			sidebarEntry: true,
@@ -54,6 +71,7 @@ describe("Desktop MCP and Skills settings", () => {
 			customizeTabs: true,
 			listsRules: true,
 			createsRules: true,
+			opensMcpConfigIpc: true,
 			popsFileSubmenu: true,
 		})
 	})

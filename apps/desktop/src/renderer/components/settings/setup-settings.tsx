@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useState } from "react"
 import type { DevoCheckResult } from "../../../preload/api"
 import { onboardingStateAtom } from "../../atoms/onboarding"
+import { SettingsHeader } from "./settings-header"
 import { SettingsRow } from "./settings-row"
 import { SettingsSection } from "./settings-section"
 
@@ -33,10 +34,8 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 export function SetupSettings() {
 	return (
-		<div className="space-y-8">
-			<div>
-				<h2 className="text-[22px] font-medium tracking-tight">Setup</h2>
-			</div>
+		<div className="space-y-10">
+			<SettingsHeader title="Setup" />
 
 			<DevoStatusSection />
 			<MigrationSection />
@@ -106,7 +105,7 @@ function DevoStatusSection() {
 			</SettingsRow>
 
 			{result && !result.compatible && result.message && (
-				<div className="px-4 py-2 text-xs text-amber-500">{result.message}</div>
+				<div className="px-5 py-2.5 text-[13px] text-amber-500">{result.message}</div>
 			)}
 		</SettingsSection>
 	)

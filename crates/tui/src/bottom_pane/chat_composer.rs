@@ -3886,7 +3886,7 @@ mod reference_popup_tests {
 
         assert_eq!(
             composer.handle_key_event(press(KeyCode::Enter)),
-            (InputResult::Command(SlashCommand::Skills), true)
+            (InputResult::Command(SlashCommand::Permissions), true)
         );
         assert_eq!(composer.current_text(), "");
     }

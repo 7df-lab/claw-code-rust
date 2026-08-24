@@ -41,4 +41,23 @@ describe("sidebar layout window controls", () => {
 			usesCompactPanelIcon: true,
 		})
 	})
+
+	test("windows app menu includes File actions", async () => {
+		const source = await readFile(sourcePath, "utf8")
+		expect({
+			fileMenu: source.includes('{ id: "file", label: "File" }'),
+			handlesNewAgent: source.includes('action === "new-agent"'),
+			routesNewAgentWithProject: source.includes("navigateToNewChat(navigate, projects, projectSlug, lastProjectDirectory)"),
+			handlesOpenFolder: source.includes('action === "open-folder"'),
+			handlesNewTerminal: source.includes('action === "new-terminal"'),
+			opensTerminal: source.includes("openNewTerminal()"),
+		}).toEqual({
+			fileMenu: true,
+			handlesNewAgent: true,
+			routesNewAgentWithProject: true,
+			handlesOpenFolder: true,
+			handlesNewTerminal: true,
+			opensTerminal: true,
+		})
+	})
 })

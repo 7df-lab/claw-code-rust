@@ -75,7 +75,7 @@
  */
 
 :root {
-  --radius: 0.75rem;
+  --radius: 0.625rem;
 
   /* Motion — named easing curves */
   --ease-enter: cubic-bezier(0.19, 1, 0.22, 1);       /* aggressive decelerate — dialogs, overlays */
@@ -97,14 +97,14 @@
   --primary-foreground: #ffffff;
   --secondary: #f9f9f9;
   --secondary-foreground: #0d0d0d;
-  --muted: #f9f9f9;
-  --muted-foreground: #414141;
-  --accent: #ededed;
+  --muted: #f7f7f7;
+  --muted-foreground: #737373;
+  --accent: #f0f0f0;
   --accent-foreground: #0d0d0d;
   --destructive: #fa423e;
   --destructive-foreground: #ffffff;
-  --border: #ededed;
-  --input: #ededed;
+  --border: #ececec;
+  --input: #ececec;
   --ring: #0080bd;              /* devo-blue-600 */
   --chart-1: #05bdf5;           /* devo-blue-400 */
   --chart-2: #04b84c;
@@ -112,12 +112,12 @@
   --chart-4: #924ff7;
   --chart-5: #ffc300;
   --sidebar: #ffffff;
-  --sidebar-foreground: #212121;
+  --sidebar-foreground: #3f3f3f;
   --sidebar-primary: #0d0d0d;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #a8ddf7;    /* devo-blue-200 */
+  --sidebar-accent: #ececec;
   --sidebar-accent-foreground: #0d0d0d;
-  --sidebar-border: #ededed;
+  --sidebar-border: #ececec;
   --sidebar-ring: #0080bd;      /* devo-blue-600 */
 
   /* Diff colors */
@@ -139,9 +139,9 @@
   --primary-foreground: #0d0d0d;
   --secondary: #212121;
   --secondary-foreground: #ffffff;
-  --muted: #282828;
-  --muted-foreground: #afafaf;
-  --accent: #282828;
+  --muted: #242424;
+  --muted-foreground: #8c8c8c;
+  --accent: #2a2a2a;
   --accent-foreground: #ffffff;
   --destructive: #fa423e;
   --destructive-foreground: #ffffff;
@@ -154,12 +154,12 @@
   --chart-4: #ad7bf9;
   --chart-5: #ffd240;
   --sidebar: #0d0d0d;
-  --sidebar-foreground: #ffffff;
+  --sidebar-foreground: #d4d4d4;
   --sidebar-primary: #ffffff;
   --sidebar-primary-foreground: #0d0d0d;
-  --sidebar-accent: #001a2b;    /* devo-blue-950 */
+  --sidebar-accent: #242424;
   --sidebar-accent-foreground: #ffffff;
-  --sidebar-border: #ffffff;
+  --sidebar-border: #2e2e2e;
   --sidebar-ring: #6fcbf3;      /* devo-blue-300 */
 
   /* Diff colors */

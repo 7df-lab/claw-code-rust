@@ -35,7 +35,7 @@ export function SetupSettings() {
 	return (
 		<div className="space-y-8">
 			<div>
-				<h2 className="text-xl font-semibold">Setup</h2>
+				<h2 className="text-[22px] font-medium tracking-tight">Setup</h2>
 			</div>
 
 			<DevoStatusSection />

@@ -115,7 +115,7 @@ export function MigrationPreviewStep({
 			<div className="mx-auto w-full max-w-3xl space-y-4">
 				{/* Header */}
 				<div className="text-center">
-					<h2 className="text-xl font-semibold text-foreground">{label} Migration Preview</h2>
+					<h2 className="text-[22px] font-medium tracking-tight text-foreground">{label} Migration Preview</h2>
 					<p className="mt-1 text-sm text-muted-foreground">
 						{preview.fileCount} file(s) will be created. Review the changes below.
 					</p>

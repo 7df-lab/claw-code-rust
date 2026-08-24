@@ -37,7 +37,7 @@ export function NewChatProjectPicker({
 	selectedProject: SidebarProject | undefined
 	selectedDirectory: string
 	onSelectProject: (project: SidebarProject) => void
-	onClearProject: () => void
+	onClearProject?: () => void
 	onStartFromScratch?: () => void | Promise<void>
 	onUseExistingFolder?: () => Promise<void>
 }) {
@@ -69,24 +69,26 @@ export function NewChatProjectPicker({
 				<NotebookTextIcon className="size-4 shrink-0 text-muted-foreground transition-opacity group-hover:opacity-0" />
 				<span className="min-w-0 truncate">{displayName}</span>
 			</PopoverTrigger>
-			<Tooltip>
-				<TooltipTrigger
-					render={
-						<button
-							type="button"
-							aria-label="Clear project"
-							className="absolute left-2 flex size-5 items-center justify-center rounded-full bg-muted-foreground text-background opacity-0 transition-opacity group-hover:opacity-100"
-							onClick={(event) => {
-								event.stopPropagation()
-								onClearProject()
-							}}
-						/>
-					}
-				>
-					<XIcon className="size-3" />
-				</TooltipTrigger>
-				<TooltipContent>Change project</TooltipContent>
-			</Tooltip>
+			{onClearProject ? (
+				<Tooltip>
+					<TooltipTrigger
+						render={
+							<button
+								type="button"
+								aria-label="Clear project"
+								className="absolute left-2 flex size-5 items-center justify-center rounded-full bg-muted-foreground text-background opacity-0 transition-opacity group-hover:opacity-100"
+								onClick={(event) => {
+									event.stopPropagation()
+									onClearProject()
+								}}
+							/>
+						}
+					>
+						<XIcon className="size-3" />
+					</TooltipTrigger>
+					<TooltipContent>Change project</TooltipContent>
+				</Tooltip>
+			) : null}
 		</div>
 	) : (
 		<PopoverTrigger

@@ -13,13 +13,13 @@ export function SettingsSection({ title, description, children }: SettingsSectio
 		<section className="space-y-3" aria-labelledby={title ? sectionId : undefined}>
 			{title && (
 				<div>
-					<h3 id={sectionId} className="text-sm font-medium">
+					<h3 id={sectionId} className="text-[13px] font-medium tracking-wide text-muted-foreground">
 						{title}
 					</h3>
-					{description && <p className="text-sm text-muted-foreground">{description}</p>}
+					{description && <p className="mt-1 text-[13px] leading-5 text-muted-foreground">{description}</p>}
 				</div>
 			)}
-			<div className="divide-y divide-border rounded-lg border border-border">{children}</div>
+			<div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border/70">{children}</div>
 		</section>
 	)
 }

@@ -1,5 +1,6 @@
 import type { MenuItemConstructorOptions } from "electron"
 import type { Project, Session } from "@devo-ai/sdk/v2/client"
+import { isWorkingSessionStatus } from "./notification-policy"
 import type { SessionState } from "./notification-watcher"
 
 const MAX_RUNNING_INLINE = 3
@@ -103,7 +104,7 @@ function buildRunningSection(
 ): MenuItemConstructorOptions[] {
 	const discoveryById = new Map(discoverySessions.map((session) => [session.id, session]))
 	const runningSessions = Array.from(liveSessions.entries())
-		.filter(([, state]) => !state.parentID)
+		.filter(([, state]) => !state.parentID && isWorkingSessionStatus(state.status))
 		.map(([sessionId, state]) => {
 			const discovered = discoveryById.get(sessionId)
 			return {
@@ -117,12 +118,7 @@ function buildRunningSection(
 				totalCacheReadTokens: discovered?.totalCacheReadTokens ?? 0,
 			}
 		})
-		.sort((left, right) => {
-			const leftBusy = runningPriority(liveSessions.get(left.id)?.status)
-			const rightBusy = runningPriority(liveSessions.get(right.id)?.status)
-			if (leftBusy !== rightBusy) return leftBusy - rightBusy
-			return right.updatedAt - left.updatedAt
-		})
+		.sort((left, right) => right.updatedAt - left.updatedAt)
 
 	if (runningSessions.length === 0) return []
 
@@ -139,9 +135,13 @@ function buildRecentSection(
 	discoverySessions: TraySession[],
 	onNavigateToSession: (sessionId: string) => void,
 ): MenuItemConstructorOptions[] {
-	const liveSessionIds = new Set(liveSessions.keys())
+	const runningSessionIds = new Set(
+		Array.from(liveSessions.entries())
+			.filter(([, state]) => !state.parentID && isWorkingSessionStatus(state.status))
+			.map(([sessionId]) => sessionId),
+	)
 	const recentSessions = discoverySessions
-		.filter((session) => !liveSessionIds.has(session.id))
+		.filter((session) => !runningSessionIds.has(session.id))
 		.filter((session) => !session.parentId)
 		.sort((left, right) => right.updatedAt - left.updatedAt)
 
@@ -262,20 +262,6 @@ function truncateTitle(title: string): string {
 function projectNameFromDir(directory: string): string {
 	const parts = directory.split(/[\\/]/).filter(Boolean)
 	return parts.at(-1) ?? "/"
-}
-
-function runningPriority(status: string | undefined): number {
-	switch (status) {
-		case "busy":
-		case "retry":
-			return 0
-		case "idle":
-			return 1
-		case undefined:
-			return 2
-		default:
-			return 2
-	}
 }
 
 function formatTokenCount(tokens: number): string {

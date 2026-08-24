@@ -36,4 +36,21 @@ describe("Terminal", () => {
 			hasFixedCursor: false,
 		})
 	})
+
+	test("keeps committed streaming lines append-only so output does not remount", () => {
+		const source = require("node:fs").readFileSync(
+			new URL("./terminal.tsx", import.meta.url),
+			"utf8",
+		) as string
+		expect({
+			splitsCommittedLines:
+				source.includes("committedCount") && source.includes("lines.slice(0, committedCount)"),
+			keysCommittedLines: source.includes("key={index}"),
+			memosAnsiLines: source.includes("const AnsiLine = memo"),
+		}).toEqual({
+			splitsCommittedLines: true,
+			keysCommittedLines: true,
+			memosAnsiLines: true,
+		})
+	})
 })

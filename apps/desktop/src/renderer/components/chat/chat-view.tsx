@@ -18,7 +18,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@devo/ui/components/tooltip"
 import { cn } from "@devo/ui/lib/utils"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { useAtomValue, useSetAtom } from "jotai"
+import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import {
 	ArrowUpToLineIcon,
 	GitForkIcon,
@@ -43,6 +43,7 @@ import {
 	useRef,
 	useState,
 } from "react"
+import { collaborationModeFamily } from "../../atoms/collaboration-mode"
 import { compactionStatusFamily } from "../../atoms/compaction"
 import { messagesFamily } from "../../atoms/messages"
 import { projectModelsAtom, setProjectModelAtom } from "../../atoms/preferences"
@@ -116,6 +117,7 @@ import {
 } from "./prompt-mentions"
 import { PromptToolbar } from "./prompt-toolbar"
 import { SessionTaskList } from "./session-task-list"
+import { SkillPickerDialog } from "./skill-picker-dialog"
 import { SlashCommandPopover, type SlashCommandPopoverHandle } from "./slash-command-popover"
 
 type ComposerTrigger = "goal" | "plan"
@@ -1016,6 +1018,17 @@ export function ChatView({
 						: undefined
 				}
 				onDeletePart={onDeletePart}
+				onImplementPlan={
+					onSendMessage
+						? () => {
+								appStore.set(collaborationModeFamily(agent.sessionId), "build")
+								void onSendMessage(agent, "Implement Plan", { collaborationMode: "build" })
+							}
+						: undefined
+				}
+				onRevisePlan={() => {
+					appStore.set(collaborationModeFamily(agent.sessionId), "plan")
+				}}
 			/>
 			)
 		},
@@ -1030,6 +1043,7 @@ export function ChatView({
 			onDeletePart,
 			onForkFromTurn,
 			onRevertToMessage,
+			onSendMessage,
 			retryStatus,
 			turns,
 		],
@@ -1057,9 +1071,9 @@ export function ChatView({
 					<ScrollBridge scrollRef={scrollRef} />
 					<ConversationContent
 						scrollClassName="scrollbar-comfort"
-						className="gap-10 px-6 pt-2 pb-[calc(var(--chat-composer-inset)+1rem)] sm:px-8 sm:pt-6 sm:pb-[calc(var(--chat-composer-inset)+1.5rem)] lg:px-10"
+						className="gap-12 px-6 pt-4 pb-[calc(var(--chat-composer-inset)+1rem)] sm:px-10 sm:pt-8 sm:pb-[calc(var(--chat-composer-inset)+1.5rem)] lg:px-12"
 					>
-						<div className={cn(contentWidthClass, "space-y-10")}>
+						<div className={cn(contentWidthClass, "space-y-12")}>
 							<LoadEarlierOnScroll
 								hasEarlierMessages={hasEarlierMessages}
 								loadingEarlier={loadingEarlier}
@@ -1201,12 +1215,10 @@ function ChatInputSection({
 	const [activeTrigger, setActiveTrigger] = useState<ComposerTrigger | null>(null)
 	const [activeGoal, setActiveGoal] = useState<ComposerGoal | null>(null)
 	const [goalAction, setGoalAction] = useState<ComposerGoalAction | null>(null)
-	const [collaborationMode, setCollaborationMode] = useState<"build" | "plan">("build")
-
-	// Reset collaboration mode when session changes
-	useEffect(() => {
-		setCollaborationMode("build")
-	}, [agent.sessionId])
+	const [skillPickerOpen, setSkillPickerOpen] = useState(false)
+	const [collaborationMode, setCollaborationMode] = useAtom(
+		collaborationModeFamily(agent.sessionId),
+	)
 
 	// User requirement: the /goal footer chip is only an input trigger;
 	// the composer-adjacent status row reflects the real session goal state.
@@ -1563,6 +1575,10 @@ function ChatInputSection({
 					return true
 				case "plan":
 					setActiveTrigger("plan")
+					setCollaborationMode("plan")
+					return true
+				case "skills":
+					setSkillPickerOpen(true)
 					return true
 				case "research":
 					return false
@@ -1570,7 +1586,7 @@ function ChatInputSection({
 					return false
 			}
 		},
-		[agent.directory, agent.sessionId, effectiveModel],
+		[agent.directory, agent.sessionId, effectiveModel, setCollaborationMode],
 	)
 
 	const submitTriggeredPrompt = useCallback(
@@ -1712,6 +1728,7 @@ function ChatInputSection({
 			scrollRef,
 			diffComments,
 			setDiffComments,
+			collaborationMode,
 		],
 	)
 
@@ -1851,7 +1868,7 @@ function ChatInputSection({
 				e.preventDefault()
 				handleSlashClose()
 				handleMentionClose()
-				setActiveTrigger((current) => (current === "plan" ? null : "plan"))
+				setCollaborationMode((current) => (current === "plan" ? "build" : "plan"))
 				return
 			}
 
@@ -1866,7 +1883,7 @@ function ChatInputSection({
 				handleEscapeAbort()
 			}
 		},
-		[handleEscapeAbort, handleSlashClose, handleMentionClose],
+		[handleEscapeAbort, handleSlashClose, handleMentionClose, setCollaborationMode],
 	)
 
 	// Width constraint class: remove max-w when review panel is open
@@ -1968,7 +1985,7 @@ function ChatInputSection({
 								/>
 								<PromptInput
 									className={cn(
-										"devo-composer bg-background/95 shadow-[0_18px_52px_rgba(0,0,0,0.10)] dark:shadow-[0_18px_58px_rgba(0,0,0,0.34)]",
+										"devo-composer bg-background/95 shadow-[0_8px_32px_rgba(0,0,0,0.05)] dark:shadow-[0_10px_36px_rgba(0,0,0,0.28)]",
 										activeGoal && "rounded-t-none border-t-border/70",
 									)}
 									accept="image/png,image/jpeg,image/gif,image/webp,application/pdf"
@@ -2018,6 +2035,23 @@ function ChatInputSection({
 												onSelectVariant={handleVariantSelect}
 												disabled={!isConnected}
 											/>
+											<button
+												type="button"
+												onClick={() =>
+													setCollaborationMode(collaborationMode === "plan" ? "build" : "plan")
+												}
+												disabled={!isConnected}
+												className={cn(
+													"flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors",
+													collaborationMode === "plan"
+														? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+														: "text-muted-foreground hover:bg-muted hover:text-foreground",
+												)}
+												title="Toggle plan mode"
+											>
+												<ListTodoIcon className="size-3.5 stroke-[1.5]" aria-hidden="true" />
+												<span className="capitalize">{collaborationMode}</span>
+											</button>
 											{activeTrigger && (
 												<ComposerTriggerChip
 													trigger={activeTrigger}
@@ -2046,6 +2080,18 @@ function ChatInputSection({
 
 				</div>
 			</div>
+			<SkillPickerDialog
+				directory={agent.directory}
+				onOpenChange={setSkillPickerOpen}
+				onSelect={(skillName) => {
+					const ctrl = slashCommandRef.current
+					if (!ctrl) return
+					const current = ctrl.getText()
+					const insertion = `$${skillName} `
+					ctrl.setText(current.trim() ? `${current.replace(/\/skills\s*$/i, "").trimEnd()} ${insertion}` : insertion)
+				}}
+				open={skillPickerOpen}
+			/>
 
 		</>
 	)

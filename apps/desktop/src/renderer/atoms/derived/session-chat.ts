@@ -51,6 +51,27 @@ function protocolTurnIdForTurn(
 // Turn grouping with structural sharing
 // ============================================================
 
+function toolOutputFingerprint(part: {
+	state: {
+		status: string
+		output?: string
+		error?: string
+		metadata?: { output?: unknown }
+		raw?: unknown
+	}
+}): number {
+	if (part.state.status === "completed") return part.state.output.length
+	if (part.state.status === "error") return part.state.error.length
+	if (part.state.status === "running") {
+		const output = part.state.metadata?.output
+		return typeof output === "string" ? output.length : 0
+	}
+	if (part.state.status === "pending") {
+		return typeof part.state.raw === "string" ? part.state.raw.length : 0
+	}
+	return 0
+}
+
 function messageFingerprint(entry: ChatMessageEntry): string {
 	const lastPart = entry.parts.at(-1)
 	const completed = entry.info.role === "assistant" ? (entry.info.time.completed ?? 0) : 0
@@ -67,15 +88,18 @@ function messageFingerprint(entry: ChatMessageEntry): string {
 						`${part.id}:${metadata[DEVO_ITEM_KIND_META]}:${metadata[DEVO_RESEARCH_ARTIFACT_TITLE_META] ?? ""}`,
 					)
 				}
+				if (
+					metadata?.[DEVO_ITEM_KIND_META] === "context_compaction" ||
+					metadata?.[DEVO_ITEM_KIND_META] === "proposed_plan" ||
+					metadata?.[DEVO_ITEM_KIND_META] === "plan"
+				) {
+					textMetadataSegments.push(
+						`${part.id}:${metadata[DEVO_ITEM_KIND_META]}:${metadata["devo/compactionStatus"] ?? ""}:${part.text.length}`,
+					)
+				}
 			}
 		} else if (part.type === "tool") {
-			const outLen =
-				part.state.status === "completed"
-					? part.state.output.length
-					: part.state.status === "error"
-						? part.state.error.length
-						: 0
-			toolSegments.push(`${part.id}:${part.state.status}:${outLen}`)
+			toolSegments.push(`${part.id}:${part.state.status}:${toolOutputFingerprint(part)}`)
 		}
 	}
 	return `${entry.info.id}:${completed}:${entry.parts.length}:${lastPart?.id ?? ""}:${textLen}:${textMetadataSegments.join(",")}:${toolSegments.join(",")}`

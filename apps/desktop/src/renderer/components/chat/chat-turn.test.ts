@@ -45,7 +45,7 @@ const sharedReasoningSource = readFileSync(
   "utf8",
 );
 const responseActionsProps =
-  source.match(/\{responseText && \([\s\S]*?<MessageActions([^>]*)>/)?.[1] ??
+  source.match(/\{!working && responseText && \([\s\S]*?<MessageActions([^>]*)>/)?.[1] ??
   "";
 const footerMetadataSource =
   source.match(
@@ -73,7 +73,8 @@ describe("ChatTurnComponent transcript controls", () => {
       footerDoesNotRenderDuration: !footerMetadataSource.includes(
         "{duration && <span>{duration}</span>}",
       ),
-      usesAlwaysVisibleActions: responseActionsProps.trim() === "",
+      usesAlwaysVisibleActions:
+        responseActionsProps.includes('className="-ml-1"'),
       usesHoverHiddenActions:
         responseActionsProps.includes("opacity-0") ||
         responseActionsProps.includes("group-hover/turn:opacity-100"),
@@ -258,6 +259,28 @@ describe("ChatTurnComponent transcript controls", () => {
       timelineRendersSeparateThoughtRows: processTimelineViewSource.includes(
         'item.kind === "thought"',
       ),
+      disclosureDoesNotShiftLeft:
+        !transcriptDisclosureSource.includes("-mx-1.5") &&
+        transcriptDisclosureSource.includes("px-0 py-0.5"),
+      thoughtHasNoLeadingSpacer: !thoughtRowSource.includes(
+        'leading={<span aria-hidden="true" className="size-3.5 shrink-0" />}',
+      ),
+      assistantColumnHasNoProcessIndent: !source.includes("pl-10"),
+      hoverShowsExpandChevron:
+        transcriptDisclosureSource.includes("group-hover/row:opacity-100") &&
+        transcriptDisclosureSource.includes("group/row"),
+      expandChevronFollowsLabel:
+        transcriptDisclosureSource.includes("{label}</span>") &&
+        transcriptDisclosureSource.includes("{chevron}") &&
+        transcriptDisclosureSource.indexOf("{label}</span>") <
+          transcriptDisclosureSource.indexOf("{chevron}"),
+      toolsOmitLeadingIcons: !chatToolCallSource.includes("leading={"),
+      completedWriteHidesSpinner: processTimelineViewSource.includes(
+        "turnWorking={working}",
+      ),
+      gatesActionsUntilTurnFinishes: source.includes(
+        "{!working && responseText && (",
+      ),
     }).toEqual({
       definesThoughtRow: true,
       usesTranscriptDisclosureTrigger: true,
@@ -270,6 +293,14 @@ describe("ChatTurnComponent transcript controls", () => {
       toolsUseTranscriptDisclosure: true,
       toolsOmitDurationTrailing: true,
       timelineRendersSeparateThoughtRows: true,
+      disclosureDoesNotShiftLeft: true,
+      thoughtHasNoLeadingSpacer: true,
+      assistantColumnHasNoProcessIndent: true,
+      hoverShowsExpandChevron: true,
+      expandChevronFollowsLabel: true,
+      toolsOmitLeadingIcons: true,
+      completedWriteHidesSpinner: true,
+      gatesActionsUntilTurnFinishes: true,
     });
   });
 
@@ -291,7 +322,7 @@ describe("ChatTurnComponent transcript controls", () => {
         compactionDividerSource.includes("BubblesIcon") &&
         compactionDividerSource.includes("PackageCheckIcon"),
       usesRequestedLabels:
-        compactionDividerSource.includes("Compaction started") &&
+        compactionDividerSource.includes("Compacting context") &&
         compactionDividerSource.includes("Context compacted"),
       keepsIconStyleConsistent:
         compactionDividerSource.includes("size-3.5") &&
@@ -304,7 +335,9 @@ describe("ChatTurnComponent transcript controls", () => {
         clientSource.includes("sessionCompactionFromOriginalEvent") &&
         clientSource.includes("sessionIdFromCompactionPayload") &&
         clientSource.includes("SessionCompactionCompleted") &&
-        clientSource.includes("session.compaction.${compaction.status}"),
+        clientSource.includes("session.compaction.${compaction.status}") &&
+        clientSource.includes("upsertCompaction") &&
+        clientSource.includes("contextCompaction"),
     }).toEqual({
       filtersStartedTextFromAssistantResponse: true,
       rendersDividerAfterResponse: true,
@@ -330,6 +363,15 @@ describe("ChatTurnComponent transcript controls", () => {
       verboseUsesDisplayModeOnly: source.includes(
         'const showVerboseTools = displayMode === "verbose"',
       ),
+      keepsWorkExpandedWhileRunning: source.includes(
+        "(working && processTimelineItems.length > 0)",
+      ),
+      collapsesWorkWhenIdle: source.includes(
+        "(!working && hasCompletedProcessDetails && completedProcessExpanded)",
+      ),
+      keepsInnerRowsCollapsed:
+        !source.includes("isProcessItemStreaming") &&
+        source.includes("setExpandedRowIds(new Set())"),
     }).toEqual({
       noMergedTurnThinkingSection: true,
       noReasoningProcessGroups: true,
@@ -337,6 +379,29 @@ describe("ChatTurnComponent transcript controls", () => {
       endsThinkingWhenAssistantTextStarts: true,
       keepsWorkedForOnReasoningOnlyTurns: true,
       verboseUsesDisplayModeOnly: true,
+      keepsWorkExpandedWhileRunning: true,
+      collapsesWorkWhenIdle: true,
+      keepsInnerRowsCollapsed: true,
+    });
+  });
+
+  test("renders plan items with a dedicated plan card and actions", () => {
+    const planBlockSource = readFileSync(
+      new URL("./plan-block.tsx", import.meta.url),
+      "utf8",
+    );
+    expect({
+      planBlock: planBlockSource.includes("Proposed Plan") && planBlockSource.includes("Implement Plan"),
+      chatTurnUsesPlanBlock: source.includes("<PlanBlock") || source.includes("<AssistantTextBlock"),
+      chatViewImplement: chatViewSource.includes('collaborationMode: "build"') && chatViewSource.includes("Implement Plan"),
+      modeToggle: chatViewSource.includes("Toggle plan mode"),
+      skillsSlash: chatViewSource.includes('case "skills":'),
+    }).toEqual({
+      planBlock: true,
+      chatTurnUsesPlanBlock: true,
+      chatViewImplement: true,
+      modeToggle: true,
+      skillsSlash: true,
     });
   });
 });

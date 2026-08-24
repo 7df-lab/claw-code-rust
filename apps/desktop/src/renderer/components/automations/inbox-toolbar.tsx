@@ -16,7 +16,7 @@ interface InboxToolbarProps {
 export function InboxToolbar({ onNewClick }: InboxToolbarProps) {
 	return (
 		<div className="flex items-center gap-2 border-b border-border/50 px-4 py-3">
-			<h1 className="text-sm font-semibold">Automations</h1>
+			<h1 className="text-[13px] font-medium tracking-tight">Automations</h1>
 
 			<div className="ml-auto flex items-center gap-1">
 				<Tooltip>

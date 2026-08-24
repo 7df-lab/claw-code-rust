@@ -11,7 +11,9 @@ import { Toaster } from "sonner"
 import { discoveryPhaseAtom } from "../atoms/discovery"
 import { onboardingStateAtom } from "../atoms/onboarding"
 import { terminalPanelOpenAtom } from "../atoms/terminal"
-import { useAgents, useCommandPaletteOpen, useSetCommandPaletteOpen } from "../hooks/use-agents"
+import { lastProjectDirectoryAtom } from "../atoms/preferences"
+import { customizeOpenAtom } from "../atoms/ui"
+import { useAgents, useCommandPaletteOpen, useProjectList, useSetCommandPaletteOpen } from "../hooks/use-agents"
 import { useChromeTier } from "../hooks/use-chrome-tier"
 import { useDesktopSettingsSync } from "../hooks/use-desktop-settings-sync"
 import { useDiscovery } from "../hooks/use-discovery"
@@ -22,6 +24,7 @@ import { useServerSettingsSync } from "../hooks/use-servers"
 import { useSystemAccentColor } from "../hooks/use-system-accent-color"
 import { useThemeEffect } from "../hooks/use-theme"
 import { useWaitingIndicator } from "../hooks/use-waiting-indicator"
+import { navigateToNewChat } from "../lib/project-selection"
 import { isTerminalToggleShortcut } from "../lib/terminal-shortcut"
 import { AppBarProvider } from "./app-bar-context"
 import { CommandPalette } from "./command-palette"
@@ -51,6 +54,9 @@ export function RootLayout() {
 	useSystemAccentColor()
 
 	const agents = useAgents()
+	const projects = useProjectList()
+	const lastProjectDirectory = useAtomValue(lastProjectDirectoryAtom)
+	const setCustomizeOpen = useSetAtom(customizeOpenAtom)
 	const { forkSession } = useAgentActions()
 	const commandPaletteOpen = useCommandPaletteOpen()
 	const setCommandPaletteOpen = useSetCommandPaletteOpen()
@@ -58,9 +64,10 @@ export function RootLayout() {
 	const navigate = useNavigate()
 	const params = useParams({ strict: false })
 	const sessionId = (params as Record<string, string | undefined>).sessionId
+	const projectSlug = (params as Record<string, string | undefined>).projectSlug
 
 	// Native OS notifications: badge sync, click-to-navigate, auto-dismiss
-	useNotifications(navigate, sessionId)
+	useNotifications(navigate, sessionId, projectSlug)
 
 	// ========== Command palette: fork session ==========
 
@@ -126,7 +133,8 @@ export function RootLayout() {
 
 			if ((e.metaKey || e.ctrlKey) && e.key === "n") {
 				e.preventDefault()
-				navigate({ to: "/" })
+				setCustomizeOpen(false)
+				navigateToNewChat(navigate, projects, projectSlug, lastProjectDirectory)
 				return
 			}
 
@@ -136,7 +144,7 @@ export function RootLayout() {
 				return
 			}
 		},
-		[sessionId, visibleAgents, navigate, setCommandPaletteOpen, setTerminalPanelOpen],
+		[lastProjectDirectory, navigate, projectSlug, projects, sessionId, setCommandPaletteOpen, setCustomizeOpen, setTerminalPanelOpen, visibleAgents],
 	)
 
 	useEffect(() => {

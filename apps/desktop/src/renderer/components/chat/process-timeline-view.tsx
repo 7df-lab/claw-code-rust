@@ -1,7 +1,7 @@
 import { Loader2Icon } from "lucide-react"
 import { memo, useCallback, type ReactNode } from "react"
 import type { ToolPart } from "../../lib/types"
-import { ChatToolCall, describeToolGroup, getToolInfo, isGroupRunning } from "./chat-tool-call"
+import { ChatToolCall, describeToolGroup, isGroupRunning } from "./chat-tool-call"
 import {
 	buildProcessTimeline,
 	isReasoningPartActivelyStreaming,
@@ -26,6 +26,7 @@ const TranscriptToolGroupRow = memo(function TranscriptToolGroupRow({
 	defaultOpen = false,
 	open,
 	onOpenChange,
+	turnWorking = true,
 }: {
 	category: ToolCategory
 	tools: ToolPart[]
@@ -33,23 +34,14 @@ const TranscriptToolGroupRow = memo(function TranscriptToolGroupRow({
 	defaultOpen?: boolean
 	open?: boolean
 	onOpenChange?: (open: boolean) => void
+	turnWorking?: boolean
 }) {
 	const description = describeToolGroup(category, tools, projectRoot)
-	const running = isGroupRunning(tools)
-	const { icon: GroupIcon } = getToolInfo(tools[0].tool)
+	const running = isGroupRunning(tools, turnWorking)
 
 	return (
 		<TranscriptDisclosure defaultOpen={defaultOpen} open={open} onOpenChange={onOpenChange}>
 			<TranscriptDisclosureTrigger
-				leading={
-					<GroupIcon
-						className={`size-3.5 shrink-0 stroke-[1.5] ${
-							running
-								? "animate-pulse text-muted-foreground"
-								: "text-muted-foreground/50"
-						}`}
-					/>
-				}
 				label={<span>{description}</span>}
 				trailing={
 					running ? (
@@ -63,6 +55,7 @@ const TranscriptToolGroupRow = memo(function TranscriptToolGroupRow({
 						key={tool.id}
 						part={tool}
 						projectRoot={projectRoot}
+						turnWorking={turnWorking}
 					/>
 				))}
 			</TranscriptDisclosureContent>
@@ -142,6 +135,7 @@ export const ProcessTimelineView = memo(function ProcessTimelineView({
 							part={item.part}
 							projectRoot={projectRoot}
 							turnHasError={turnHasError}
+							turnWorking={working}
 						/>
 					)
 				}
@@ -155,6 +149,7 @@ export const ProcessTimelineView = memo(function ProcessTimelineView({
 						open={expandedRowIds ? expandedRowIds.has(rowId) : undefined}
 						projectRoot={projectRoot}
 						tools={item.tools}
+						turnWorking={working}
 					/>
 				)
 			})}

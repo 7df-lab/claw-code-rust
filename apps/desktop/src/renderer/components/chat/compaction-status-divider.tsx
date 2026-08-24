@@ -2,10 +2,29 @@ import { cn } from "@devo/ui/lib/utils";
 import { BubblesIcon, PackageCheckIcon } from "lucide-react";
 import type { SessionCompactionStatus } from "../../atoms/compaction";
 
-export const COMPACTION_STARTED_TEXT = "Session compaction started.";
+export const COMPACTION_STARTED_TEXT = "Compacting context";
+export const COMPACTION_COMPLETED_TEXT = "Context compacted";
+const LEGACY_COMPACTION_STARTED_TEXT = "Session compaction started.";
+
+export const DEVO_ITEM_KIND_META = "devo/itemKind";
+export const DEVO_COMPACTION_STATUS_META = "devo/compactionStatus";
 
 export function isCompactionStatusText(text: string): boolean {
-  return text.trim() === COMPACTION_STARTED_TEXT;
+  const trimmed = text.trim();
+  return (
+    trimmed === COMPACTION_STARTED_TEXT ||
+    trimmed === COMPACTION_COMPLETED_TEXT ||
+    trimmed === LEGACY_COMPACTION_STARTED_TEXT
+  );
+}
+
+export function compactionStatusFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+): SessionCompactionStatus | null {
+  if (metadata?.[DEVO_ITEM_KIND_META] !== "context_compaction") return null;
+  return metadata[DEVO_COMPACTION_STATUS_META] === "completed"
+    ? "completed"
+    : "started";
 }
 
 export function CompactionStatusDivider({
@@ -17,7 +36,7 @@ export function CompactionStatusDivider({
 }) {
   const isCompleted = status === "completed";
   const Icon = isCompleted ? PackageCheckIcon : BubblesIcon;
-  const label = isCompleted ? "Context compacted" : "Compaction started";
+  const label = isCompleted ? COMPACTION_COMPLETED_TEXT : COMPACTION_STARTED_TEXT;
 
   return (
     <div

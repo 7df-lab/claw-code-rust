@@ -41,10 +41,36 @@ const __dirname = path.dirname(__filename)
 // full PATH (e.g., spawning devo) call waitForEnv() before proceeding.
 startEnvResolution()
 
+function sendAppMenuAction(action: "new-agent" | "open-folder" | "new-terminal"): void {
+	const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+	win?.webContents.send("app-menu:action", action)
+}
+
 // Minimal menu — required on macOS for Cmd+C/V/X/A to work in web contents.
 // A null menu kills native Edit shortcuts on macOS. This minimal template is
 // negligible overhead compared to the full default menu.
 const appMenuItems = {
+	file: {
+		label: "File",
+		submenu: [
+			{
+				label: "New Agent",
+				accelerator: "CmdOrCtrl+N",
+				click: () => sendAppMenuAction("new-agent"),
+			},
+			{
+				label: "Open Folder",
+				accelerator: "CmdOrCtrl+O",
+				click: () => sendAppMenuAction("open-folder"),
+			},
+			{ type: "separator" as const },
+			{
+				label: "New Terminal",
+				accelerator: "CmdOrCtrl+Shift+J",
+				click: () => sendAppMenuAction("new-terminal"),
+			},
+		],
+	},
 	edit: { role: "editMenu" as const },
 	view: { role: "viewMenu" as const },
 	window: { role: "windowMenu" as const },
@@ -53,16 +79,26 @@ const appMenuItems = {
 type AppMenuId = keyof typeof appMenuItems
 
 function isAppMenuId(value: unknown): value is AppMenuId {
-	return value === "edit" || value === "view" || value === "window"
+	return value === "file" || value === "edit" || value === "view" || value === "window"
+}
+
+function menuItemSubmenu(
+	item: Electron.MenuItemConstructorOptions,
+): Electron.MenuItemConstructorOptions[] | null {
+	return Array.isArray(item.submenu) ? item.submenu : null
 }
 
 const menuTemplate: Electron.MenuItemConstructorOptions[] = [
 	...(process.platform === "darwin" ? [{ role: "appMenu" as const }] : []),
+	appMenuItems.file,
 	appMenuItems.edit,
 	appMenuItems.view,
 	appMenuItems.window,
 ]
 Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate))
+
+// Electron GC's menus that aren't retained; keep the last popup alive until the next one.
+let activePopupMenu: Electron.Menu | null = null
 
 ipcMain.handle(
 	"app-menu:popup",
@@ -76,11 +112,20 @@ ipcMain.handle(
 			return { success: false }
 		}
 
-		const menuItem = Menu.buildFromTemplate([appMenuItems[request.id]]).items[0]
-		const submenu = menuItem?.submenu
-		if (!submenu) {
+		const item = appMenuItems[request.id]
+		const explicitSubmenu = menuItemSubmenu(item)
+		let menu: Electron.Menu | undefined
+		if (explicitSubmenu) {
+			menu = Menu.buildFromTemplate(explicitSubmenu)
+		} else {
+			const wrapper = Menu.buildFromTemplate([item])
+			menu = wrapper.items[0]?.submenu
+			if (menu) activePopupMenu = wrapper
+		}
+		if (!menu) {
 			return { success: false }
 		}
+		if (explicitSubmenu) activePopupMenu = menu
 
 		const popupOptions: Electron.PopupOptions = { window: win }
 		if (typeof request.x === "number" && typeof request.y === "number") {
@@ -88,7 +133,7 @@ ipcMain.handle(
 			popupOptions.y = Math.round(request.y)
 		}
 
-		submenu.popup(popupOptions)
+		menu.popup(popupOptions)
 		return { success: true }
 	},
 )

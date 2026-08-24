@@ -52,7 +52,15 @@ function useSkills(directory: string | null, enabled: boolean) {
 			const client = getProjectClient(directory!)
 			if (!client) return []
 			const result = await client.app.skills()
-			return (result.data ?? []) as Skill[]
+			return ((result.data ?? []) as Array<Record<string, unknown>>)
+				.filter((skill) => skill.enabled !== false)
+				.map((skill) => ({
+					name: String(skill.name ?? ""),
+					description: String(
+						skill.shortDescription ?? skill.short_description ?? skill.description ?? "",
+					),
+					location: String(skill.path ?? skill.location ?? ""),
+				})) as Skill[]
 		},
 		enabled: !!directory && enabled,
 		staleTime: 30_000,

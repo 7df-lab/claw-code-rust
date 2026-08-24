@@ -1,8 +1,10 @@
 import { useAtomValue } from "jotai"
 import { useCallback, useEffect } from "react"
-import { agentFamily } from "../atoms/derived/agents"
+import { agentFamily, projectListAtom } from "../atoms/derived/agents"
 import { pendingCountAtom } from "../atoms/derived/waiting"
+import { lastProjectDirectoryAtom } from "../atoms/preferences"
 import { appStore } from "../atoms/store"
+import { navigateToNewChat } from "../lib/project-selection"
 
 const isElectron = typeof window !== "undefined" && "devo" in window
 
@@ -14,8 +16,9 @@ const isElectron = typeof window !== "undefined" && "devo" in window
  * 4. Auto-dismisses notifications when the user navigates to a session
  */
 export function useNotifications(
-	navigate: (opts: { to: string; params: Record<string, string> }) => void,
+	navigate: (opts: { to: string; params?: Record<string, string> }) => void,
 	currentSessionId: string | undefined,
+	currentProjectSlug?: string,
 ) {
 	// --- Badge sync ---
 	const pendingCount = useAtomValue(pendingCountAtom)
@@ -50,8 +53,15 @@ export function useNotifications(
 
 	useEffect(() => {
 		if (!isElectron) return
-		return window.devo.onTrayNewChat(() => navigate({ to: "/", params: {} }))
-	}, [navigate])
+		return window.devo.onTrayNewChat(() => {
+			navigateToNewChat(
+				navigate,
+				appStore.get(projectListAtom),
+				currentProjectSlug,
+				appStore.get(lastProjectDirectoryAtom),
+			)
+		})
+	}, [currentProjectSlug, navigate])
 
 	// --- Auto-dismiss when viewing a session ---
 	useEffect(() => {

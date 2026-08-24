@@ -20,6 +20,7 @@ import {
 	updateStreamingPart,
 } from "../atoms/streaming"
 import { createLogger } from "../lib/logger"
+import { directoriesMatch } from "../lib/directory-path"
 import type { Event, Session } from "../lib/types"
 import {
 	connectToServer,
@@ -104,19 +105,14 @@ function clearDiscoverySessionCache(): void {
 	discoveredSessions = null
 }
 
-function normalizeDirectoryPath(value: string): string {
-	return value.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
-}
-
 function filterDiscoveredSessions(
 	sessions: Session[],
 	directory: string,
 	options?: { limit?: number; roots?: boolean; search?: string },
 ): Session[] {
-	const target = normalizeDirectoryPath(directory)
 	let filtered = sessions.filter((session) => {
 		if (!session.directory) return false
-		return normalizeDirectoryPath(session.directory) === target
+		return directoriesMatch(session.directory, directory)
 	})
 	if (options?.roots) {
 		filtered = filtered.filter((session) => !session.parentID)
@@ -138,31 +134,18 @@ async function hydrateProjectSessionsFromCache(
 	sandboxDirs: Set<string> | undefined,
 	options: { limit?: number; roots?: boolean; search?: string } | undefined,
 ): Promise<boolean> {
+	// Paginated sidebar loads must go to session/list with that project's cwd.
+	// The unscoped discovery snapshot is newest-first across every project, so
+	// hydrating from it hides older projects and cannot refill after deletes.
+	if (options?.limit !== undefined) return false
 	if (!discoveredSessions) return false
 
 	const baseClient = getBaseClient()
 	if (!baseClient) return false
 
-	const allMatchingSessions = filterDiscoveredSessions(discoveredSessions, directory, {
-		...options,
-		limit: undefined,
-	})
-	const sessions =
-		options?.limit === undefined
-			? allMatchingSessions
-			: allMatchingSessions.slice(0, options.limit)
+	const sessions = filterDiscoveredSessions(discoveredSessions, directory, options)
 	const statuses = await getSessionStatuses(baseClient)
 	appStore.set(setSessionsAtom, { sessions, statuses, directory, sandboxDirs })
-
-	if (options?.limit !== undefined) {
-		appStore.set(updateProjectPaginationAtom, {
-			directory,
-			fetchedCount: sessions.length,
-			limit: options.limit,
-			hasMore: allMatchingSessions.length > options.limit,
-		})
-	}
-
 	return true
 }
 
@@ -248,6 +231,21 @@ export async function loadAllProjects() {
 	}
 }
 
+async function fetchProjectSessionPage(
+	client: DevoClient,
+	options: { limit?: number; roots?: boolean; search?: string },
+): Promise<{ sessions: Session[]; hasMore: boolean }> {
+	if (options.limit === undefined) {
+		return { sessions: await listSessions(client, options), hasMore: false }
+	}
+	const fetched = await listSessions(client, { ...options, limit: options.limit + 1 })
+	const hasMore = fetched.length > options.limit
+	return {
+		sessions: hasMore ? fetched.slice(0, options.limit) : fetched,
+		hasMore,
+	}
+}
+
 /**
  * Load sessions for a specific project directory from the server.
  * Merges them into the Jotai store.
@@ -279,7 +277,7 @@ export async function loadProjectSessions(
 	if (!client) return
 
 	try {
-		const sessions = await listSessions(client, options)
+		const { sessions, hasMore } = await fetchProjectSessionPage(client, options ?? {})
 		const statuses = await getSessionStatuses(client)
 		log.info("Loaded sessions for project", {
 			directory,
@@ -289,12 +287,12 @@ export async function loadProjectSessions(
 		})
 		appStore.set(setSessionsAtom, { sessions, statuses, directory, sandboxDirs })
 
-		// Update pagination state if a limit was specified
 		if (options?.limit) {
 			appStore.set(updateProjectPaginationAtom, {
 				directory,
 				fetchedCount: sessions.length,
 				limit: options.limit,
+				hasMore,
 			})
 		}
 	} catch (err) {
@@ -345,7 +343,10 @@ export async function loadMoreProjectSessions(
 	}
 
 	try {
-		const sessions = await listSessions(client, { limit: nextLimit, roots: true })
+		const { sessions, hasMore } = await fetchProjectSessionPage(client, {
+			limit: nextLimit,
+			roots: true,
+		})
 		const statuses = await getSessionStatuses(client)
 		log.info("Loaded more sessions for project", {
 			directory,
@@ -357,6 +358,7 @@ export async function loadMoreProjectSessions(
 			directory,
 			fetchedCount: sessions.length,
 			limit: nextLimit,
+			hasMore,
 		})
 	} catch (err) {
 		log.error("Failed to load more sessions", { directory }, err)

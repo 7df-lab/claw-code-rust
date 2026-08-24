@@ -14,8 +14,16 @@ contextBridge.exposeInMainWorld("devo", {
 	getAppInfo: () => ipcRenderer.invoke("app:info"),
 
 	appMenu: {
-		popup: (id: "edit" | "view" | "window", position?: { x: number; y: number }) =>
+		popup: (id: "file" | "edit" | "view" | "window", position?: { x: number; y: number }) =>
 			ipcRenderer.invoke("app-menu:popup", { id, ...position }),
+		onAction: (callback: (action: "new-agent" | "open-folder" | "new-terminal") => void) => {
+			const listener = (_event: unknown, action: "new-agent" | "open-folder" | "new-terminal") =>
+				callback(action)
+			ipcRenderer.on("app-menu:action", listener)
+			return () => {
+				ipcRenderer.removeListener("app-menu:action", listener)
+			}
+		},
 	},
 
 	// --- Window chrome / liquid glass ---
@@ -213,6 +221,12 @@ contextBridge.exposeInMainWorld("devo", {
 
 	/** Opens a native folder picker dialog. Returns the selected path, or null if cancelled. */
 	pickDirectory: () => ipcRenderer.invoke("dialog:open-directory"),
+
+	rules: {
+		list: (directories: string[]) => ipcRenderer.invoke("rules:list", directories),
+		open: (filePath: string) => ipcRenderer.invoke("rules:open", filePath),
+		create: (directory: string) => ipcRenderer.invoke("rules:create", directory),
+	},
 
 	desktopFolders: {
 		stat: (directories: string[]) => ipcRenderer.invoke("desktop-folders:stat", directories),

@@ -1,4 +1,7 @@
 import { describe, expect, mock, test } from "bun:test"
+import { readFile } from "node:fs/promises"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { renderToStaticMarkup } from "react-dom/server"
 import type { Agent, SidebarProject } from "../../lib/types"
 
@@ -59,13 +62,17 @@ describe("SessionRow", () => {
 			hasLightHoverBackground: markup.includes("hover:bg-black/[0.04]"),
 			hasDarkHoverBackground: markup.includes("dark:hover:bg-white/[0.06]"),
 			hidesStatusOnHover: markup.includes("group-hover/sidebar-row:opacity-0"),
+			hidesStatusWhenMenuOpen: markup.includes("group-has-[[data-popup-open]]/sidebar-row:opacity-0"),
 			showsActionsOnHover: markup.includes("group-hover/sidebar-row:opacity-100"),
+			showsActionsWhenMenuOpen: markup.includes("group-has-[[data-popup-open]]/sidebar-row:opacity-100"),
 		}).toEqual({
 			hasSelectedBackground: true,
 			hasLightHoverBackground: false,
 			hasDarkHoverBackground: false,
 			hidesStatusOnHover: true,
+			hidesStatusWhenMenuOpen: true,
 			showsActionsOnHover: true,
+			showsActionsWhenMenuOpen: true,
 		})
 	})
 
@@ -84,12 +91,16 @@ describe("SessionRow", () => {
 			hasLightHoverBackground: markup.includes("hover:bg-black/[0.04]"),
 			hasDarkHoverBackground: markup.includes("dark:hover:bg-white/[0.06]"),
 			hidesStatusOnHover: markup.includes("group-hover/sidebar-row:opacity-0"),
+			hidesStatusWhenMenuOpen: markup.includes("group-has-[[data-popup-open]]/sidebar-row:opacity-0"),
 			showsActionsOnHover: markup.includes("group-hover/sidebar-row:opacity-100"),
+			fadesStatusAndMenu: markup.includes("transition-[background-color,color,opacity] duration-150"),
 		}).toEqual({
 			hasLightHoverBackground: true,
 			hasDarkHoverBackground: true,
 			hidesStatusOnHover: true,
+			hidesStatusWhenMenuOpen: true,
 			showsActionsOnHover: true,
+			fadesStatusAndMenu: false,
 		})
 	})
 
@@ -283,6 +294,23 @@ describe("SessionRow", () => {
 			projectUnavailableData: true,
 			sessionAriaDisabled: true,
 			sessionUnavailableData: true,
+		})
+	})
+
+	test("rename field inherits the session title typeface", async () => {
+		const source = await readFile(
+			join(dirname(fileURLToPath(import.meta.url)), "sidebar-rows.tsx"),
+			"utf8",
+		)
+
+		expect({
+			sharesTitleTextClass: source.includes("sessionTitleTextClass"),
+			inheritsFont: source.includes('className="min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 [font:inherit] text-inherit outline-none"'),
+			avoidsSharedInput: !source.includes('from "@devo/ui/components/input"'),
+		}).toEqual({
+			sharesTitleTextClass: true,
+			inheritsFont: true,
+			avoidsSharedInput: true,
 		})
 	})
 })

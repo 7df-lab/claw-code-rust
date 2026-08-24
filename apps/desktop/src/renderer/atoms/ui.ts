@@ -28,6 +28,9 @@ export const settingsBackgroundSessionAtom = atom<SettingsBackgroundSession | nu
 /** Whether the Settings overlay is covering the main content (set by SidebarLayout). */
 export const settingsOverlayOpenAtom = atom(false)
 
+/** Whether Customize is showing in the main content pane (does not change the route). */
+export const customizeOpenAtom = atom(false)
+
 /** Last known scrollTop for a session's chat view (used when returning from Settings). */
 export const sessionScrollTopFamily = atomFamily((_sessionId: string) => atom<number | null>(null))
 

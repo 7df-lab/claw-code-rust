@@ -1,5 +1,5 @@
 :root {
-	--devo-chrome-background: #f5f5f5;
+	--devo-chrome-background: #f6f6f6;
 	--devo-transcript-background: var(--background);
 }
 
@@ -207,12 +207,14 @@
 
 .devo-composer,
 .devo-composer-shell {
-	border-radius: var(--devo-composer-radius, 16px);
+	border-radius: var(--devo-composer-radius, 18px);
 }
 
 .devo-composer {
 	background: var(--background) !important;
 	background-color: var(--background) !important;
+	border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.04);
 }
 
 .devo-composer-shell {

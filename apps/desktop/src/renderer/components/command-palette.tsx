@@ -36,9 +36,10 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { sessionMetricsFamily } from "../atoms/derived/session-metrics"
 import { automationsEnabledAtom, toggleAutomationsAtom } from "../atoms/feature-flags"
 import { isMockModeAtom, toggleMockModeAtom } from "../atoms/mock-mode"
-import { opaqueWindowsAtom } from "../atoms/preferences"
+import { lastProjectDirectoryAtom, opaqueWindowsAtom } from "../atoms/preferences"
 import { isReactScanAtom, toggleReactScanAtom } from "../atoms/react-scan"
 import { useSessionRevert } from "../hooks/use-commands"
+import { useProjectList } from "../hooks/use-agents"
 import {
 	useAvailableThemes,
 	useColorScheme,
@@ -48,6 +49,7 @@ import {
 } from "../hooks/use-theme"
 import { createLogger } from "../lib/logger"
 import { formatShortcut } from "../lib/shortcut-display"
+import { navigateToNewChat } from "../lib/project-selection"
 import type { ColorScheme } from "../lib/themes"
 import type { Agent } from "../lib/types"
 import { reloadConfig } from "../services/connection-manager"
@@ -66,6 +68,9 @@ export function CommandPalette({ open, onOpenChange, agents, onForkSession }: Co
 	const navigate = useNavigate()
 	const params = useParams({ strict: false })
 	const sessionId = (params as Record<string, string | undefined>).sessionId ?? null
+	const projectSlug = (params as Record<string, string | undefined>).projectSlug
+	const projects = useProjectList()
+	const lastProjectDirectory = useAtomValue(lastProjectDirectoryAtom)
 
 	// Resolve the active session's directory for undo/redo
 	const activeAgent = useMemo(
@@ -157,7 +162,7 @@ export function CommandPalette({ open, onOpenChange, agents, onForkSession }: Co
 				<CommandGroup heading="Actions">
 					<CommandItem
 						onSelect={() => {
-							navigate({ to: "/" })
+							navigateToNewChat(navigate, projects, projectSlug, lastProjectDirectory)
 							onOpenChange(false)
 						}}
 					>

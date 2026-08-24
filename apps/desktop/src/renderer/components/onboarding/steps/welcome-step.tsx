@@ -64,12 +64,12 @@ export function WelcomeStep({ onContinue }: WelcomeStepProps) {
 							</svg>
 						</div>
 					</div>
-					<h2 className="text-2xl font-semibold text-foreground">Devo</h2>
+					<h2 className="text-[28px] font-medium tracking-tight text-foreground">Devo</h2>
 				</div>
 
 				{/* Description */}
 				<div className="space-y-3">
-					<p className="text-lg text-muted-foreground">Your desktop companion for Devo.</p>
+					<p className="text-[15px] leading-6 text-muted-foreground">Your desktop companion for Devo.</p>
 					<p className="text-sm leading-relaxed text-muted-foreground/70">
 						Devo gives you a native experience for managing Devo sessions across all your
 						projects, with real-time streaming, native notifications, and multi-session support.

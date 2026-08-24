@@ -108,6 +108,12 @@ export const projectModelsAtom = atomWithStorage<Record<string, PersistedModelRe
 	{},
 )
 
+/** Last project directory used for New chat / composer context. */
+export const lastProjectDirectoryAtom = atomWithStorage<string | null>(
+	"devo:last-project-directory",
+	null,
+)
+
 /**
  * Whether the user has dismissed the automations permissions info banner.
  * Once dismissed, the banner never reappears.

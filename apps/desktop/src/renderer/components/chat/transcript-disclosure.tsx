@@ -89,7 +89,7 @@ export const TranscriptDisclosure = memo(function TranscriptDisclosure({
 })
 
 const triggerClassName =
-	"flex w-full max-w-full items-center gap-1.5 -mx-1.5 rounded border-0 bg-transparent px-1.5 py-0.5 m-0 text-left text-sm text-muted-foreground/70 transition-colors hover:text-foreground"
+	"group/row flex w-full max-w-full items-center gap-1.5 rounded-md border-0 bg-transparent px-0 py-0.5 m-0 text-left text-[13px] leading-5 text-muted-foreground transition-colors hover:text-foreground"
 
 export interface TranscriptDisclosureTriggerProps {
 	label: ReactNode
@@ -109,23 +109,35 @@ export const TranscriptDisclosureTrigger = memo(function TranscriptDisclosureTri
 	const { isOpen, expandable } = useTranscriptDisclosure()
 	const ChevronIcon = isOpen ? ChevronDownIcon : ChevronRightIcon
 
-	// Leading chevron keeps the disclosure affordance at a fixed position;
-	// non-expandable rows render a same-width spacer so icons stay aligned.
+	// Chevron sits immediately after the label. Hidden until hover, keyboard
+	// focus, or the row is already open.
 	const chevron = expandable ? (
-		<ChevronIcon aria-hidden="true" className="size-3.5 shrink-0 transition-transform" />
-	) : (
-		<span aria-hidden="true" className="size-3.5 shrink-0" />
-	)
-	const trailingSlot = trailing ? (
-		<span className="ml-auto flex shrink-0 items-center">{trailing}</span>
+		<ChevronIcon
+			aria-hidden="true"
+			className={cn(
+				"size-3.5 shrink-0 text-muted-foreground/70 transition-opacity",
+				isOpen
+					? "opacity-100"
+					: "opacity-0 group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+			)}
+		/>
 	) : null
+	const trailingSlot = trailing ? (
+		<span className="flex shrink-0 items-center">{trailing}</span>
+	) : null
+
+	const labelCluster = (
+		<span className="flex min-w-0 items-center gap-0.5">
+			{leading}
+			<span className="min-w-0 truncate">{label}</span>
+			{chevron}
+		</span>
+	)
 
 	if (!expandable) {
 		return (
 			<div className={cn(triggerClassName, className)} aria-label={ariaLabel}>
-				{chevron}
-				{leading}
-				<span className="min-w-0 truncate">{label}</span>
+				{labelCluster}
 				{trailingSlot}
 			</div>
 		)
@@ -133,12 +145,10 @@ export const TranscriptDisclosureTrigger = memo(function TranscriptDisclosureTri
 
 	return (
 		<CollapsibleTrigger
-			className={cn(triggerClassName, "hover:bg-muted/40", className)}
+			className={cn(triggerClassName, className)}
 			aria-label={ariaLabel}
 		>
-			{chevron}
-			{leading}
-			<span className="min-w-0 truncate">{label}</span>
+			{labelCluster}
 			{trailingSlot}
 		</CollapsibleTrigger>
 	)
@@ -160,7 +170,7 @@ export const TranscriptDisclosureContent = memo(function TranscriptDisclosureCon
 		<CollapsibleContent
 			className={cn(
 				"outline-none data-closed:mt-0 data-closed:mb-0 data-closed:h-0 data-closed:overflow-hidden data-open:mt-1.5",
-				rail && "ml-[7px] border-l border-border/40 pl-3",
+				rail && "border-l border-border/40 pl-3",
 				className,
 			)}
 			keepMounted={false}

@@ -81,6 +81,11 @@ const CLIENT_COMMANDS: SlashCommand[] = [
 		insertText: "/plan ",
 	},
 	{
+		name: "skills",
+		description: "Browse and insert a skill",
+		icon: SparklesIcon,
+	},
+	{
 		name: "research",
 		description: "Run deep research on a question",
 		icon: MicroscopeIcon,

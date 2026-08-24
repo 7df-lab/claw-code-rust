@@ -167,4 +167,113 @@ describe("buildDevoTrayMenuTemplate", () => {
 			{ label: "Quit Devo", sublabel: undefined, enabled: undefined, type: undefined, click: true, submenu: undefined },
 		])
 	})
+
+	test("keeps idle live sessions out of Running and lists them under Recent", () => {
+		const liveSessions = new Map([
+			[
+				"s1",
+				{
+					status: "idle",
+					title: "Idle live session",
+					directory: "/Users/tsiao/Desktop/devo_feat_desktop",
+				},
+			],
+			[
+				"s2",
+				{
+					status: "busy",
+					title: "Still working",
+					directory: "/Users/tsiao/Desktop/devo_feat_desktop",
+				},
+			],
+		])
+		const sessions = [
+			{
+				id: "s1",
+				title: "Idle live session",
+				directory: "/Users/tsiao/Desktop/devo_feat_desktop",
+				time: { created: 1000, updated: 5000 },
+			},
+			{
+				id: "s2",
+				title: "Still working",
+				directory: "/Users/tsiao/Desktop/devo_feat_desktop",
+				time: { created: 1000, updated: 4000 },
+			},
+			{
+				id: "s3",
+				title: "Older idle chat",
+				directory: "/Users/tsiao/Desktop/devo_simplify_0623",
+				time: { created: 1000, updated: 3000 },
+			},
+		]
+
+		const template = buildDevoTrayMenuTemplate({
+			liveSessions,
+			discovery: {
+				projects: [],
+				sessions,
+			},
+			onNavigateToSession: () => {},
+			onNewChat: () => {},
+			onOpenDevo: () => {},
+			onQuitDevo: () => {},
+			pendingCount: 0,
+		})
+
+		expect(menuShape(template)).toEqual([
+			{ label: "Running", sublabel: undefined, enabled: false, type: undefined, click: false, submenu: undefined },
+			{
+				label: "Still working",
+				sublabel: "devo_feat_desktop",
+				enabled: undefined,
+				type: undefined,
+				click: true,
+				submenu: undefined,
+			},
+			{ label: undefined, sublabel: undefined, enabled: undefined, type: "separator", click: false, submenu: undefined },
+			{ label: "Recent", sublabel: undefined, enabled: false, type: undefined, click: false, submenu: undefined },
+			{
+				label: "Idle live session",
+				sublabel: "devo_feat_desktop",
+				enabled: undefined,
+				type: undefined,
+				click: true,
+				submenu: undefined,
+			},
+			{
+				label: "Older idle chat",
+				sublabel: "devo_simplify_0623",
+				enabled: undefined,
+				type: undefined,
+				click: true,
+				submenu: undefined,
+			},
+			{ label: undefined, sublabel: undefined, enabled: undefined, type: "separator", click: false, submenu: undefined },
+			{ label: "Usage", sublabel: undefined, enabled: false, type: undefined, click: false, submenu: undefined },
+			{ label: "Tokens 0", sublabel: undefined, enabled: false, type: undefined, click: false, submenu: undefined },
+			{
+				label: "Input 0 · Output 0",
+				sublabel: undefined,
+				enabled: false,
+				type: undefined,
+				click: false,
+				submenu: undefined,
+			},
+			{
+				label: "Cache read 0",
+				sublabel: undefined,
+				enabled: false,
+				type: undefined,
+				click: false,
+				submenu: undefined,
+			},
+			{ label: undefined, sublabel: undefined, enabled: undefined, type: "separator", click: false, submenu: undefined },
+			{ label: "New Chat", sublabel: undefined, enabled: undefined, type: undefined, click: true, submenu: undefined },
+			{ label: undefined, sublabel: undefined, enabled: undefined, type: "separator", click: false, submenu: undefined },
+			{ label: "Open Devo", sublabel: undefined, enabled: undefined, type: undefined, click: true, submenu: undefined },
+			{ label: undefined, sublabel: undefined, enabled: undefined, type: "separator", click: false, submenu: undefined },
+			{ label: "Quit Devo", sublabel: undefined, enabled: undefined, type: undefined, click: true, submenu: undefined },
+		])
+	})
 })

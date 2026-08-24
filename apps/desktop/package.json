@@ -103,7 +103,7 @@
 		"@types/semver": "^7.7.1",
 		"@vitejs/plugin-react": "^5.1.4",
 		"drizzle-kit": "^1.0.0-beta.15-859cf75",
-		"electron": "40.2.1",
+		"electron": "^43.4.1",
 		"electron-builder": "^26.0.0",
 		"electron-vite": "^5.0.0",
 		"shiki": "^3.22.0",

@@ -194,7 +194,12 @@ describe("connection manager project event bridge", () => {
 			title: `Session ${index + 1}`,
 			time: { created: 6 - index, updated: 6 - index },
 		}))
-		listSessionsImpl = async () => sessions
+		const deletedIds = new Set<string>()
+		listSessionsImpl = async (_client, options) => {
+			const remaining = sessions.filter((session) => !deletedIds.has(session.id))
+			const limit = (options as { limit?: number } | undefined)?.limit
+			return limit === undefined ? remaining : remaining.slice(0, limit)
+		}
 
 		const manager = await import(`./connection-manager?case=${Date.now()}`)
 		activeManager = manager
@@ -204,6 +209,7 @@ describe("connection manager project event bridge", () => {
 
 		expect(appStore.get(sessionFamily(sessions[5].id))).toBeNull()
 
+		deletedIds.add(sessions[0].id)
 		await manager.refillProjectSessionsAfterDelete(directory, sessions[0].id)
 
 		expect({
@@ -219,6 +225,44 @@ describe("connection manager project event bridge", () => {
 				hasMore: false,
 				loading: false,
 			},
+		})
+	})
+
+	test("loads another project's sessions even when discovery only returned one project", async () => {
+		const projectA = "/repo/alpha"
+		const projectB = "/repo/beta"
+		const sessionA: Session = {
+			id: "alpha-session",
+			directory: projectA,
+			title: "Alpha",
+			time: { created: 2, updated: 2 },
+		}
+		const sessionB: Session = {
+			id: "beta-session",
+			directory: projectB,
+			title: "Beta",
+			time: { created: 1, updated: 1 },
+		}
+		listSessionsImpl = async (client) => {
+			const directory = (client as { directory?: string }).directory
+			if (directory === "__base__") return [sessionA]
+			if (directory === projectB) return [sessionB]
+			if (directory === projectA) return [sessionA]
+			return []
+		}
+
+		const manager = await import(`./connection-manager?case=${Date.now()}`)
+		activeManager = manager
+		await manager.connectToDevo("devo://stdio")
+		await manager.loadAllProjects()
+		await manager.loadProjectSessions(projectB, undefined, { limit: 5, roots: true })
+
+		expect({
+			otherProject: appStore.get(sessionFamily(sessionB.id))?.session,
+			discoveryOnly: appStore.get(sessionFamily(sessionA.id)),
+		}).toEqual({
+			otherProject: sessionB,
+			discoveryOnly: null,
 		})
 	})
 })

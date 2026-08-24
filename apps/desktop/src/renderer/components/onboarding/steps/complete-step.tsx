@@ -97,7 +97,7 @@ export function CompleteStep({
 					transition={{ delay: 0.3, duration: 0.3 }}
 					className="space-y-2"
 				>
-					<h2 className="text-2xl font-semibold text-foreground">You're all set.</h2>
+					<h2 className="text-[28px] font-medium tracking-tight text-foreground">You're all set.</h2>
 					<p className="text-sm text-muted-foreground">
 						{devoVersion
 							? `Devo is connected to Devo ${formatVersion(devoVersion)}`

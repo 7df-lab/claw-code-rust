@@ -166,9 +166,25 @@ describe("ChatToolCall memo comparison", () => {
 		expect({
 			comparesOpen: chatToolCallSource.includes("prev.open !== next.open"),
 			comparesTurnError: chatToolCallSource.includes("prev.turnHasError !== next.turnHasError"),
+			comparesTurnWorking: chatToolCallSource.includes("prev.turnWorking !== next.turnWorking"),
+			hidesSpinnerWhenTurnIdle: chatToolCallSource.includes(
+				"turnWorking && (status === \"running\" || status === \"pending\")",
+			),
 		}).toEqual({
 			comparesOpen: true,
 			comparesTurnError: true,
+			comparesTurnWorking: true,
+			hidesSpinnerWhenTurnIdle: true,
+		})
+	})
+
+	test("labels MCP tools with the server prefix instead of a generic wrench", () => {
+		expect({
+			mcpPrefix: chatToolCallSource.includes('tool.startsWith("mcp__")'),
+			mcpTitle: chatToolCallSource.includes("`MCP · ${label}`"),
+		}).toEqual({
+			mcpPrefix: true,
+			mcpTitle: true,
 		})
 	})
 })

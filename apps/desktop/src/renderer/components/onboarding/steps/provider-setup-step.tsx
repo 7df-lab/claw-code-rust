@@ -92,7 +92,7 @@ export function ProviderSetupStep({ onComplete, onSkip }: ProviderSetupStepProps
 			<div className="flex h-full flex-col items-center justify-center space-y-6 text-center">
 				<div className="flex flex-col items-center space-y-2">
 					<Spinner className="size-8 text-muted-foreground" />
-					<h2 className="text-xl font-semibold">Waiting for Devo server...</h2>
+					<h2 className="text-[22px] font-medium tracking-tight">Waiting for Devo server...</h2>
 					<p className="max-w-md text-sm text-muted-foreground">
 						Devo is connecting to the Devo background process. This should only take a moment.
 					</p>

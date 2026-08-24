@@ -175,4 +175,41 @@ describe("sidebar project list", () => {
 		expect(directories).toContain("/repo/alpha")
 		expect(directories).toContain("/repo/beta")
 	})
+
+	test("drops a directory from the sidebar when it leaves both desktop folders and discovery", () => {
+		const directory = "/repo/remove-folder"
+		appStore.set(desktopFoldersAtom, [
+			{ id: "desktop-folder-remove", directory, name: "remove-folder", addedAt: 1 },
+		])
+		appStore.set(discoveryAtom, {
+			loaded: true,
+			loading: false,
+			error: null,
+			phase: "ready",
+			projects: [
+				{
+					id: "remove-id",
+					name: "remove-folder",
+					worktree: directory,
+					path: { root: directory },
+					time: { created: 1, updated: 1 },
+					sandboxes: [],
+				},
+			],
+		})
+
+		expect(appStore.get(projectListAtom).map((item) => item.directory)).toContain(directory)
+
+		appStore.set(desktopFoldersAtom, [])
+		expect(appStore.get(projectListAtom).map((item) => item.directory)).toContain(directory)
+
+		appStore.set(discoveryAtom, {
+			loaded: true,
+			loading: false,
+			error: null,
+			phase: "ready",
+			projects: [],
+		})
+		expect(appStore.get(projectListAtom).map((item) => item.directory)).not.toContain(directory)
+	})
 })

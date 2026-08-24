@@ -8,6 +8,7 @@ import {
 import { Switch } from "@devo/ui/components/switch"
 import { useCallback } from "react"
 import { useSettings } from "../../hooks/use-settings"
+import { SettingsHeader } from "./settings-header"
 import { SettingsRow } from "./settings-row"
 import { SettingsSection } from "./settings-section"
 
@@ -26,10 +27,8 @@ export function NotificationSettings() {
 		typeof window !== "undefined" && "devo" in window && window.devo.platform === "darwin"
 
 	return (
-		<div className="space-y-8">
-			<div>
-				<h2 className="text-[22px] font-medium tracking-tight">Notifications</h2>
-			</div>
+		<div className="space-y-10">
+			<SettingsHeader title="Notifications" />
 
 			<SettingsSection>
 				<SettingsRow

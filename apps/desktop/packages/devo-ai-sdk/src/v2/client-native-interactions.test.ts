@@ -38,6 +38,10 @@ class FakeNativeTransport implements DevoNativeTransport {
 				return { skills: [{ ...nativeSkill, enabled: false }] }
 			case "mcp/list":
 				return { servers: [{ name: "docs", status: "connected", toolCount: 2 }] }
+			case "mcp/tools":
+				return {
+					tools: [{ name: "get_time", description: "Current time" }],
+				}
 			case "workspace/changes/read":
 				return { views: [nativeWorkspaceView] }
 			case "turn/start":
@@ -272,6 +276,9 @@ describe("Native desktop SDK interactions", () => {
 		expect((await client.mcp.list()).data).toEqual([
 			{ name: "docs", status: "connected", toolCount: 2 },
 		])
+		expect((await client.mcp.tools({ name: "docs" })).data).toEqual([
+			{ name: "get_time", description: "Current time" },
+		])
 		expect((await client.app.setSkillEnabled({ path: "/skills/review", enabled: false })).data).toEqual([
 			{ ...nativeSkill, enabled: false },
 		])
@@ -285,6 +292,7 @@ describe("Native desktop SDK interactions", () => {
 				directory: "/repo",
 			},
 			{ method: "mcp/list", params: {}, directory: "/repo" },
+			{ method: "mcp/tools", params: { name: "docs" }, directory: "/repo" },
 			{
 				method: "skill/set_enabled",
 				params: { path: "/skills/review", enabled: false, cwd: "/repo" },

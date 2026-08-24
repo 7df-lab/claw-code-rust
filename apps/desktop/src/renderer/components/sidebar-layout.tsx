@@ -40,6 +40,7 @@ import { isSettingsRoute } from "../lib/app-navigation"
 import type { Agent, SidebarProject } from "../lib/types"
 import { createDesktopFolder, pickDirectory, statDesktopFolders } from "../services/backend"
 import {
+	deleteProjectSessions,
 	loadProjectSessions,
 	refillProjectSessionsAfterDelete,
 } from "../services/connection-manager"
@@ -520,6 +521,7 @@ export function SidebarLayout() {
 
 	const handleRemoveFolder = useCallback(
 		async (project: SidebarProject) => {
+			await deleteProjectSessions(project.directory)
 			const nextFolders = removeDesktopFolder(desktopFolders, project.directory)
 			await persistDesktopFolders(nextFolders)
 			setFolderStatuses((previous) => {

@@ -198,6 +198,7 @@ contextBridge.exposeInMainWorld("devo", {
 		open: (directory: string, targetId: string, persistPreferred?: boolean) =>
 			ipcRenderer.invoke("open-in:open", directory, targetId, persistPreferred),
 		setPreferred: (targetId: string) => ipcRenderer.invoke("open-in:set-preferred", targetId),
+		openMcpConfig: () => ipcRenderer.invoke("mcp:open-config"),
 	},
 
 	// --- Native theme (syncs OS chrome to app color scheme) ---
@@ -226,6 +227,10 @@ contextBridge.exposeInMainWorld("devo", {
 		list: (directories: string[]) => ipcRenderer.invoke("rules:list", directories),
 		open: (filePath: string) => ipcRenderer.invoke("rules:open", filePath),
 		create: (directory: string) => ipcRenderer.invoke("rules:create", directory),
+	},
+
+	mcp: {
+		openConfig: () => ipcRenderer.invoke("mcp:open-config"),
 	},
 
 	desktopFolders: {

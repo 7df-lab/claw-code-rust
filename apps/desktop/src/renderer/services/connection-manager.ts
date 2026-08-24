@@ -1,11 +1,15 @@
 import type { DevoClient } from "@devo-ai/sdk/v2/client"
 import { processEvent } from "../atoms/actions/event-processor"
 import { authHeaderAtom, serverConnectedAtom, serverUrlAtom } from "../atoms/connection"
+import { discoveryAtom } from "../atoms/discovery"
 import { batchUpsertPartsAtom } from "../atoms/parts"
 import {
 	SESSIONS_PAGE_SIZE,
 	projectPaginationFamily,
 	removeSessionAtom,
+	resetProjectPaginationAtom,
+	sessionFamily,
+	sessionIdsAtom,
 	setProjectPaginationLoadingAtom,
 	setSessionsAtom,
 	updateProjectPaginationAtom,
@@ -24,6 +28,7 @@ import { directoriesMatch } from "../lib/directory-path"
 import type { Event, Session } from "../lib/types"
 import {
 	connectToServer,
+	deleteSession,
 	disposeAllInstances,
 	getSession,
 	getSessionStatuses,
@@ -402,6 +407,51 @@ export async function refillProjectSessionsAfterDelete(
 			error,
 		})
 	}
+}
+
+/**
+ * Permanently delete every listed session for a project directory.
+ * Used when removing a folder from Devo Desktop; the folder on disk is left untouched.
+ */
+export async function deleteProjectSessions(projectDirectory: string): Promise<void> {
+	const client = getProjectClient(projectDirectory)
+	if (!client) throw new Error("Not connected to Devo server")
+
+	const sessions = await listSessions(client, { roots: true })
+	log.info("Deleting all sessions for project", {
+		directory: projectDirectory,
+		count: sessions.length,
+	})
+
+	for (const session of sessions) {
+		await deleteSession(client, session.id)
+	}
+
+	if (discoveredSessions) {
+		const deletedIds = new Set(sessions.map((session) => session.id))
+		discoveredSessions = discoveredSessions.filter((session) => {
+			if (deletedIds.has(session.id)) return false
+			return !session.directory || !directoriesMatch(session.directory, projectDirectory)
+		})
+	}
+
+	for (const sessionId of [...appStore.get(sessionIdsAtom)]) {
+		const entry = appStore.get(sessionFamily(sessionId))
+		if (entry && directoriesMatch(entry.directory, projectDirectory)) {
+			appStore.set(removeSessionAtom, sessionId)
+		}
+	}
+
+	const discovery = appStore.get(discoveryAtom)
+	appStore.set(discoveryAtom, {
+		...discovery,
+		projects: discovery.projects.filter((project) => {
+			if (!project.worktree) return true
+			return !directoriesMatch(project.worktree, projectDirectory)
+		}),
+	})
+
+	appStore.set(resetProjectPaginationAtom, [projectDirectory])
 }
 
 /**

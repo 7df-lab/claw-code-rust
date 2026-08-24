@@ -17,7 +17,7 @@ const project: SidebarProject = {
 }
 
 describe("sidebar folder dialogs", () => {
-	test("explains remove only affects Devo Desktop and not disk", () => {
+	test("explains remove deletes all sessions in the folder, not the disk folder", () => {
 		const markup = renderToStaticMarkup(
 			<FolderRemoveDialogBody
 				project={project}
@@ -30,12 +30,14 @@ describe("sidebar folder dialogs", () => {
 
 		expect({
 			title: markup.includes("Remove folder from Devo Desktop"),
-			desktopOnly: markup.includes("only removes it from the Desktop sidebar"),
-			notDisk: markup.includes("does not delete anything from disk"),
+			deletesSessions: markup.includes("permanently deletes all sessions in this folder"),
+			cannotUndo: markup.includes("cannot be undone"),
+			keepsDiskFolder: markup.includes("The folder on disk will not be deleted"),
 		}).toEqual({
 			title: true,
-			desktopOnly: true,
-			notDisk: true,
+			deletesSessions: true,
+			cannotUndo: true,
+			keepsDiskFolder: true,
 		})
 	})
 
@@ -53,9 +55,11 @@ describe("sidebar folder dialogs", () => {
 		expect({
 			title: markup.includes("Folder no longer exists"),
 			removeQuestion: markup.includes("Remove it from Devo Desktop"),
+			deletesSessions: markup.includes("permanently deletes all sessions in this folder"),
 		}).toEqual({
 			title: true,
 			removeQuestion: true,
+			deletesSessions: true,
 		})
 	})
 })

@@ -16,6 +16,7 @@ import { GitForkIcon, Loader2Icon, RotateCcwIcon, TrashIcon } from "lucide-react
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useProjectList } from "../../hooks/use-agents"
 import { listWorktrees, removeWorktree, resetWorktree } from "../../services/worktree-service"
+import { SettingsHeader } from "./settings-header"
 import { SettingsSection } from "./settings-section"
 
 // ============================================================
@@ -134,19 +135,17 @@ export function WorktreeSettings() {
 	const projectCount = projects.length
 
 	return (
-		<div className="space-y-8">
-			<div>
-				<h2 className="text-[22px] font-medium tracking-tight">Worktrees</h2>
-				<p className="mt-1 text-sm text-muted-foreground">
-					Manage git worktrees created for isolated agent sessions.
-				</p>
-			</div>
+		<div className="space-y-10">
+			<SettingsHeader
+				title="Worktrees"
+				description="Manage git worktrees created for isolated agent sessions."
+			/>
 
 			{/* Summary */}
 			<SettingsSection title="Overview">
-				<div className="flex items-center gap-2 px-4 py-3">
+				<div className="flex items-center gap-2 px-5 py-3.5">
 					<GitForkIcon className="size-4 text-muted-foreground" aria-hidden="true" />
-					<span className="text-sm">
+					<span className="text-[15px] font-normal tracking-[-0.01em]">
 						{worktrees.length} worktree{worktrees.length !== 1 ? "s" : ""}
 						{projectCount > 0 && (
 							<span className="text-muted-foreground">
@@ -164,10 +163,10 @@ export function WorktreeSettings() {
 					<Loader2Icon className="size-5 animate-spin text-muted-foreground" />
 				</div>
 			) : worktrees.length === 0 ? (
-				<div className="rounded-lg border border-dashed border-border py-8 text-center">
+				<div className="rounded-[18px] border border-dashed border-border/60 py-10 text-center">
 					<GitForkIcon className="mx-auto size-8 text-muted-foreground/30" aria-hidden="true" />
-					<p className="mt-2 text-sm text-muted-foreground">No worktrees</p>
-					<p className="text-xs text-muted-foreground/60">
+					<p className="mt-3 text-[15px] font-normal tracking-[-0.01em] text-muted-foreground">No worktrees</p>
+					<p className="mt-1 text-[13px] text-muted-foreground/60">
 						Worktrees will appear here when you create sessions in worktree mode.
 					</p>
 				</div>
@@ -207,14 +206,16 @@ function WorktreeRow({
 	onReset: () => void
 }) {
 	return (
-		<div className="flex items-center gap-3 px-4 py-3">
+		<div className="flex items-center gap-3 px-5 py-3.5">
 			<GitForkIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
 
 			<div className="min-w-0 flex-1">
 				<div className="flex items-center gap-2">
-					<span className="truncate text-sm font-medium">{dirName(worktree.directory)}</span>
+					<span className="truncate text-[15px] font-normal tracking-[-0.01em]">
+						{dirName(worktree.directory)}
+					</span>
 				</div>
-				<div className="flex items-center gap-2 text-xs text-muted-foreground/60">
+				<div className="flex items-center gap-2 text-[13px] text-muted-foreground/60">
 					<span>{worktree.projectName}</span>
 					<span>-</span>
 					<span className="truncate">{worktree.directory}</span>

@@ -1,6 +1,11 @@
 import path from "node:path"
 import { describe, expect, test } from "bun:test"
-import { StdioNativeClient, buildServerProcessEnv, routeNativeLine } from "./native-stdio-client"
+import {
+	StdioNativeClient,
+	buildServerProcessEnv,
+	requestTimeoutMsForMethod,
+	routeNativeLine,
+} from "./native-stdio-client"
 
 describe("routeNativeLine", () => {
 	test("routes JSON-RPC responses, notifications, and server requests", () => {
@@ -170,6 +175,18 @@ describe("StdioNativeClient", () => {
 		await expect(client.request("initialize")).rejects.toThrow("write EPIPE")
 		expect((client as unknown as { pending: Map<unknown, unknown> }).pending.size).toBe(0)
 		expect(client.connected()).toBe(false)
+	})
+
+	test("gives MCP admin RPCs a longer timeout than ordinary requests", () => {
+		expect({
+			sessionList: requestTimeoutMsForMethod("session/list", 10_000),
+			mcpTools: requestTimeoutMsForMethod("mcp/tools", 10_000),
+			mcpSetEnabled: requestTimeoutMsForMethod("mcp/set_enabled", 5),
+		}).toEqual({
+			sessionList: 10_000,
+			mcpTools: 60_000,
+			mcpSetEnabled: 60_000,
+		})
 	})
 
 	test("times out ordinary RPCs with the method and request id", async () => {

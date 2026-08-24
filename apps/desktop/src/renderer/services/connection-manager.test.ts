@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import type { DevoClient } from "@devo-ai/sdk/v2/client"
 import type { Event, Session } from "../lib/types"
+import { discoveryAtom } from "../atoms/discovery"
 import { partsFamily, partStorageKey } from "../atoms/parts"
 import { projectPaginationFamily, sessionFamily, upsertSessionAtom } from "../atoms/sessions"
 import { appStore } from "../atoms/store"
@@ -47,6 +48,7 @@ class FakeEventStream {
 const streams = new Map<string, FakeEventStream>()
 let activeManager: typeof import("./connection-manager") | null = null
 let listSessionsImpl: (client: DevoClient, options?: unknown) => Promise<Session[]> = async () => []
+let deleteSessionImpl: (client: DevoClient, sessionId: string) => Promise<void> = async () => {}
 let getSessionStatusesImpl: () => Promise<Record<string, { type: string }>> = async () => ({})
 
 function streamFor(directory: string): FakeEventStream {
@@ -67,6 +69,7 @@ mock.module("./devo", () => ({
 	listProjects: async () => [],
 	projectsFromSessions: (sessions: Session[]) => sessions,
 	listSessions: async (client: DevoClient, options?: unknown) => listSessionsImpl(client, options),
+	deleteSession: async (client: DevoClient, sessionId: string) => deleteSessionImpl(client, sessionId),
 	subscribeToGlobalEvents: async (client: DevoClient) =>
 		streamFor(((client as unknown as { directory?: string }).directory) ?? "__base__"),
 }))
@@ -75,6 +78,7 @@ describe("connection manager project event bridge", () => {
 	beforeEach(() => {
 		streams.clear()
 		listSessionsImpl = async () => []
+		deleteSessionImpl = async () => {}
 		getSessionStatusesImpl = async () => ({})
 		;(globalThis as unknown as { window: Record<string, unknown> }).window = {}
 		;(globalThis as unknown as { requestAnimationFrame: (callback: FrameRequestCallback) => number }).requestAnimationFrame =
@@ -263,6 +267,105 @@ describe("connection manager project event bridge", () => {
 		}).toEqual({
 			otherProject: sessionB,
 			discoveryOnly: null,
+		})
+	})
+
+	test("deletes every listed session when a project folder is removed", async () => {
+		const directory = "/repo/remove-folder"
+		const otherDirectory = "/repo/keep-folder"
+		const sessions: Session[] = [
+			{
+				id: "keep-1",
+				directory: otherDirectory,
+				title: "Keep",
+				time: { created: 3, updated: 3 },
+			},
+			{
+				id: "remove-1",
+				directory,
+				title: "Remove 1",
+				time: { created: 2, updated: 2 },
+			},
+			{
+				id: "remove-2",
+				directory,
+				title: "Remove 2",
+				time: { created: 1, updated: 1 },
+			},
+		]
+		const deletedIds: string[] = []
+		let listOptions: unknown
+		const remainingIds = new Set(sessions.map((session) => session.id))
+		listSessionsImpl = async (client, options) => {
+			listOptions = options
+			const clientDirectory = (client as { directory?: string }).directory
+			return sessions.filter((session) => {
+				if (!remainingIds.has(session.id)) return false
+				if (clientDirectory === "__base__") return true
+				return session.directory === clientDirectory
+			})
+		}
+		deleteSessionImpl = async (_client, sessionId) => {
+			deletedIds.push(sessionId)
+			remainingIds.delete(sessionId)
+		}
+
+		const manager = await import(`./connection-manager?case=${Date.now()}`)
+		activeManager = manager
+		await manager.connectToDevo("devo://stdio")
+		await manager.loadAllProjects()
+		for (const session of sessions) {
+			appStore.set(upsertSessionAtom, { session, directory: session.directory ?? "" })
+		}
+		appStore.set(discoveryAtom, {
+			loaded: true,
+			loading: false,
+			error: null,
+			phase: "ready",
+			projects: [
+				{
+					id: "remove-project",
+					name: "remove-folder",
+					worktree: directory,
+					path: { root: directory },
+					time: { created: 1, updated: 1 },
+					sandboxes: [],
+				},
+				{
+					id: "keep-project",
+					name: "keep-folder",
+					worktree: otherDirectory,
+					path: { root: otherDirectory },
+					time: { created: 1, updated: 1 },
+					sandboxes: [],
+				},
+			],
+		})
+
+		await manager.deleteProjectSessions(directory)
+		await manager.loadProjectSessions(directory)
+
+		expect({
+			listOptions,
+			deletedIds,
+			removedFirst: appStore.get(sessionFamily("remove-1")),
+			removedSecond: appStore.get(sessionFamily("remove-2")),
+			kept: appStore.get(sessionFamily("keep-1"))?.session,
+			pagination: appStore.get(projectPaginationFamily(directory)),
+			discoveredWorktrees: appStore.get(discoveryAtom).projects.map((project) => project.worktree),
+		}).toEqual({
+			listOptions: { roots: true },
+			deletedIds: ["remove-1", "remove-2"],
+			removedFirst: null,
+			removedSecond: null,
+			kept: sessions[0],
+			pagination: {
+				loaded: false,
+				currentLimit: 5,
+				hasMore: true,
+				loading: false,
+			},
+			discoveredWorktrees: [otherDirectory],
 		})
 	})
 })

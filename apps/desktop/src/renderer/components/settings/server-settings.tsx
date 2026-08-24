@@ -18,6 +18,7 @@ import type { NativeTrafficLogState, NetworkProxyMode } from "../../../preload/a
 import { normalizeProxyUrl } from "../../../shared/network-proxy"
 import { serverConnectedAtom, serverUrlAtom } from "../../atoms/connection"
 import { useSettings } from "../../hooks/use-settings"
+import { SettingsHeader } from "./settings-header"
 import { SettingsRow } from "./settings-row"
 import { SettingsSection } from "./settings-section"
 
@@ -65,13 +66,11 @@ export function ServerSettings({ initialNativeTrafficLogState = null }: ServerSe
 	}
 
 	return (
-		<div className="space-y-8">
-			<div>
-				<h2 className="text-[22px] font-medium tracking-tight">Server</h2>
-				<p className="mt-1 text-sm text-muted-foreground">
-					Devo Desktop manages a private local stdio Native process.
-				</p>
-			</div>
+		<div className="space-y-10">
+			<SettingsHeader
+				title="Server"
+				description="Devo Desktop manages a private local stdio Native process."
+			/>
 
 			<SettingsSection>
 				<SettingsRow
@@ -227,16 +226,16 @@ export function NativeTrafficLogStatus({
 				</Button>
 			</SettingsRow>
 			{expanded && (
-				<div className="space-y-2 px-4 py-3">
-					<div className="text-sm font-medium">Current log file</div>
+				<div className="space-y-2 px-5 py-3.5">
+					<div className="text-[15px] font-normal tracking-[-0.01em]">Current log file</div>
 					{state.path ? (
-						<code className="block truncate rounded bg-muted px-2 py-1.5 text-xs text-muted-foreground">
+						<code className="block truncate rounded-md bg-muted px-2 py-1.5 text-[13px] text-muted-foreground">
 							{state.path}
 						</code>
 					) : (
-						<p className="text-sm text-muted-foreground">No log file path is available.</p>
+						<p className="text-[13px] text-muted-foreground">No log file path is available.</p>
 					)}
-					<p className="text-xs text-muted-foreground">
+					<p className="text-[13px] leading-5 text-muted-foreground">
 						Traces are written under DEVO_HOME/traces/ (default ~/.devo/traces/). The log may
 						include prompts, paths, tool arguments, and provider details.
 					</p>

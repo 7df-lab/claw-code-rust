@@ -21,11 +21,20 @@ mock.module("@devo/ui/components/select", () => ({
 	SelectContent: ({ children }: { children: React.ReactNode }) => (
 		<div data-slot="select-content">{children}</div>
 	),
+	SelectGroup: ({ children }: { children: React.ReactNode }) => (
+		<div data-slot="select-group">{children}</div>
+	),
 	SelectItem: ({ children, value }: { children: React.ReactNode; value: string }) => (
 		<div data-slot="select-item" data-value={value}>
 			{children}
 		</div>
 	),
+	SelectLabel: ({ children }: { children: React.ReactNode }) => (
+		<div data-slot="select-label">{children}</div>
+	),
+	SelectScrollDownButton: () => null,
+	SelectScrollUpButton: () => null,
+	SelectSeparator: () => <hr />,
 	SelectTrigger: ({ children }: { children: React.ReactNode }) => (
 		<button type="button" data-slot="select-trigger">
 			{children}
@@ -54,6 +63,7 @@ describe("GeneralSettings", () => {
 			hasVerboseMode: markup.includes(">Verbose</div>") || markup.includes(">Verbose<"),
 			hasConversation: markup.includes(">Conversation</h3>"),
 			hasHideThinking: markup.includes(">Hide thinking while working</label>"),
+			hasHomepageTitle: markup.includes("text-[32px] font-normal leading-tight tracking-[-0.03em]"),
 		}).toEqual({
 			hasAppearance: true,
 			hasTheme: true,
@@ -62,6 +72,7 @@ describe("GeneralSettings", () => {
 			hasVerboseMode: true,
 			hasConversation: true,
 			hasHideThinking: true,
+			hasHomepageTitle: true,
 		})
 	})
 })

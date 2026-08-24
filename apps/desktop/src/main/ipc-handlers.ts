@@ -44,7 +44,9 @@ import {
 	restoreMigrationBackup,
 	scanProvider,
 } from "./onboarding"
+import { openUserMcpConfigFile } from "./mcp-config"
 import { getOpenInTargets, openInTarget, setPreferredTarget } from "./open-in-targets"
+import { MCP_CONFIG_OPEN_PATH } from "../shared/mcp-config"
 import {
 	ensureServer,
 	getNativeTrafficLogState,
@@ -446,6 +448,11 @@ export function registerIpcHandlers(): void {
 		withLogging("rules:create", (_, directory: string) => createProjectAgentsMd(directory)),
 	)
 
+	ipcMain.handle(
+		"mcp:open-config",
+		withLogging("mcp:open-config", async () => await openUserMcpConfigFile()),
+	)
+
 	// --- Fetch proxy (bypasses Chromium connection limits) ---
 
 	ipcMain.handle("fetch:request", withLogging("fetch:request", handleFetchProxy))
@@ -458,8 +465,12 @@ export function registerIpcHandlers(): void {
 		"open-in:open",
 		withLogging(
 			"open-in:open",
-			async (_, directory: string, targetId: string, persistPreferred?: boolean) =>
-				await openInTarget(directory, targetId, { persistPreferred }),
+			async (_, directory: string, targetId: string, persistPreferred?: boolean) => {
+				if (directory === MCP_CONFIG_OPEN_PATH) {
+					return await openUserMcpConfigFile()
+				}
+				await openInTarget(directory, targetId, { persistPreferred })
+			},
 		),
 	)
 

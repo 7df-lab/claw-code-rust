@@ -536,6 +536,7 @@ export interface DevoAPI {
 		getTargets: () => Promise<OpenInTargetsResult>
 		open: (directory: string, targetId: string, persistPreferred?: boolean) => Promise<void>
 		setPreferred: (targetId: string) => Promise<{ success: boolean }>
+		openMcpConfig?: () => Promise<{ path: string }>
 	}
 
 	// Native theme (syncs OS chrome to app color scheme)
@@ -554,6 +555,9 @@ export interface DevoAPI {
 		list: (directories: string[]) => Promise<RuleFileInfo[]>
 		open: (filePath: string) => Promise<void>
 		create: (directory: string) => Promise<RuleFileInfo>
+	}
+	mcp?: {
+		openConfig: () => Promise<{ path: string }>
 	}
 	desktopFolders: {
 		stat: (directories: string[]) => Promise<DesktopFolderStat[]>

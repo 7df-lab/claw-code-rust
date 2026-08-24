@@ -182,6 +182,27 @@ describe("desktop protocol runtime validation", () => {
 		).toBe(payload)
 	})
 
+	test("validates mcp tools requests and results", () => {
+		const requestPayload = { name: "docs" }
+		const resultPayload = {
+			tools: [{ name: "get_time", description: "Current time" }],
+		}
+		expect(
+			assertValidProtocolPayload({
+				direction: "outgoingRequest",
+				method: "mcp/tools",
+				payload: requestPayload,
+			}),
+		).toBe(requestPayload)
+		expect(
+			assertValidProtocolPayload({
+				direction: "incomingResult",
+				method: "mcp/tools",
+				payload: resultPayload,
+			}),
+		).toBe(resultPayload)
+	})
+
 	test("rejects unknown protocol methods", () => {
 		expect(() =>
 			assertValidProtocolPayload({

@@ -57,8 +57,8 @@ export function FolderRemoveDialogBody({
 				<p className="text-sm text-muted-foreground">
 					Remove{" "}
 					<span className="font-medium text-foreground">{project?.name || "this folder"}</span>{" "}
-					from Devo Desktop? This only removes it from the Desktop sidebar and does not
-					delete anything from disk.
+					from Devo Desktop? This permanently deletes all sessions in this folder and cannot
+					be undone. The folder on disk will not be deleted.
 				</p>
 			</div>
 			{error && (
@@ -135,7 +135,8 @@ export function MissingFolderDialogBody({
 				</h2>
 				<p className="text-sm text-muted-foreground">
 					<span className="font-medium text-foreground">{project?.name || "This folder"}</span>{" "}
-					cannot be found on disk. Remove it from Devo Desktop?
+					cannot be found on disk. Remove it from Devo Desktop? This permanently deletes all
+					sessions in this folder and cannot be undone.
 				</p>
 			</div>
 			{error && (

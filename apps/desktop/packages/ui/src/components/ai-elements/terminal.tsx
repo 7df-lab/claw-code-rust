@@ -5,7 +5,7 @@ import { cn } from "@devo/ui/lib/utils"
 import Ansi from "ansi-to-react"
 import { CheckIcon, CopyIcon, TerminalIcon, Trash2Icon } from "lucide-react"
 import type { ComponentProps, HTMLAttributes } from "react"
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 
 import { Shimmer } from "./shimmer"
 
@@ -215,6 +215,38 @@ export const TerminalClearButton = ({
 
 export type TerminalContentProps = HTMLAttributes<HTMLDivElement>
 
+/**
+ * Renders ANSI output as append-only committed lines plus a live tail.
+ * Re-parsing the full blob on every streaming chunk remounts the ANSI tree
+ * and makes the shell tool view flash in the Desktop transcript.
+ */
+function TerminalAnsiOutput({ output, isStreaming }: { output: string; isStreaming: boolean }) {
+	const lines = output.split("\n")
+	const committedCount = isStreaming ? Math.max(0, lines.length - 1) : lines.length
+	const tail = isStreaming ? (lines[lines.length - 1] ?? "") : null
+
+	return (
+		<pre className="whitespace-pre-wrap break-words">
+			{lines.slice(0, committedCount).map((line, index) => (
+				<AnsiLine key={index} text={line} />
+			))}
+			{tail !== null && <AnsiLine live text={tail} />}
+			{isStreaming && (
+				<span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-foreground" />
+			)}
+		</pre>
+	)
+}
+
+const AnsiLine = memo(function AnsiLine({ live = false, text }: { live?: boolean; text: string }) {
+	return (
+		<span>
+			<Ansi>{text}</Ansi>
+			{live ? null : "\n"}
+		</span>
+	)
+})
+
 export const TerminalContent = ({ className, children, ...props }: TerminalContentProps) => {
 	const { output, isStreaming, autoScroll } = useContext(TerminalContext)
 	const containerRef = useRef<HTMLDivElement>(null)
@@ -231,14 +263,7 @@ export const TerminalContent = ({ className, children, ...props }: TerminalConte
 			ref={containerRef}
 			{...props}
 		>
-			{children ?? (
-				<pre className="whitespace-pre-wrap break-words">
-					<Ansi>{output}</Ansi>
-					{isStreaming && (
-						<span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-foreground" />
-					)}
-				</pre>
-			)}
+			{children ?? <TerminalAnsiOutput isStreaming={isStreaming} output={output} />}
 		</div>
 	)
 }

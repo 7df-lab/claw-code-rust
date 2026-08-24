@@ -132,7 +132,7 @@ function ProviderSettingsHeader({ onAddProvider }: { onAddProvider: () => void }
 	return (
 		<div className="flex items-start justify-between gap-4">
 			<div>
-				<h2 className="text-xl font-semibold">Providers</h2>
+				<h2 className="text-[22px] font-medium tracking-tight">Providers</h2>
 				<p className="mt-1 text-sm text-muted-foreground">
 					Connect AI providers to use their models.{" "}
 					<a

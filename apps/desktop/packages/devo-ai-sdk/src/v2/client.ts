@@ -256,6 +256,22 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
 }
 
+function fileChangeInput(item: Record<string, unknown>): Record<string, unknown> | undefined {
+	const changes = Array.isArray(item.changes) ? item.changes : []
+	const first = objectRecord(changes[0])
+	if (!first) return undefined
+	const path = typeof first.path === "string" ? first.path : undefined
+	const change = objectRecord(first.change)
+	const content =
+		typeof change?.content === "string"
+			? change.content
+			: typeof first.content === "string"
+				? first.content
+				: undefined
+	if (!path && content == null) return undefined
+	return { filePath: path, path, content }
+}
+
 function sessionMeta(value: unknown): Record<string, unknown> | undefined {
 	const meta = objectRecord(value)
 	return objectRecord(meta?.["devo/session"])
@@ -664,6 +680,9 @@ const DEVO_TURN_DURATION_MS_META = "devo/turnDurationMs"
 const DEVO_ITEM_KIND_META = "devo/itemKind"
 const DEVO_RESEARCH_ARTIFACT_TYPE_META = "devo/researchArtifactType"
 const DEVO_RESEARCH_ARTIFACT_TITLE_META = "devo/researchArtifactTitle"
+const DEVO_COMPACTION_STATUS_META = "devo/compactionStatus"
+const COMPACTION_STARTED_LABEL = "Compacting context"
+const COMPACTION_COMPLETED_LABEL = "Context compacted"
 
 type PromptPartInput = {
 	type: string
@@ -759,6 +778,17 @@ function textPartMetadataFromUpdate(
 			metadata[DEVO_RESEARCH_ARTIFACT_TITLE_META] = title
 		}
 	}
+	if (meta?.[DEVO_ITEM_KIND_META] === "context_compaction") {
+		metadata[DEVO_ITEM_KIND_META] = "context_compaction"
+		const status = meta[DEVO_COMPACTION_STATUS_META]
+		if (typeof status === "string" && status) {
+			metadata[DEVO_COMPACTION_STATUS_META] = status
+		}
+	}
+	if (meta?.[DEVO_ITEM_KIND_META] === "proposed_plan" || meta?.[DEVO_ITEM_KIND_META] === "plan") {
+		metadata[DEVO_ITEM_KIND_META] = meta[DEVO_ITEM_KIND_META]
+		if (meta.planEntries !== undefined) metadata.planEntries = meta.planEntries
+	}
 	return Object.keys(metadata).length > 0 ? metadata : undefined
 }
 
@@ -825,6 +855,7 @@ class NativeClient {
 	private sessions = new Map<string, Session>()
 	private sessionDirectories = new Map<string, string>()
 	private sessionStatuses = new Map<string, SessionStatus>()
+	private promptStartedAtBySession = new Map<string, number>()
 	private messages = new Map<string, Message[]>()
 	private parts = new Map<string, Part[]>()
 	private loadedSessionLimits = new Map<string, LoadedSessionLimit>()
@@ -865,38 +896,34 @@ class NativeClient {
 			const directory = this.sessionDirectories.get(params.sessionID) ?? this.options.directory ?? defaultCwd()
 			this.lastUserMessageBySession.delete(params.sessionID)
 			const promptStartedAt = Math.max(Date.now(), this.lastEventTime + 1)
+			this.promptStartedAtBySession.set(params.sessionID, promptStartedAt)
 			const busyStatus = { type: "busy" }
 			this.sessionStatuses.set(params.sessionID, busyStatus)
 			this.emit(directory, {
 				type: "session.status",
 				properties: { sessionID: params.sessionID, status: busyStatus },
 			})
-			void this.turn.start({
-				sessionID: params.sessionID,
-				parts: params.parts,
-				model: params.model,
-				variant: params.variant,
-				collaborationMode: params.collaborationMode,
-			})
-				.then(() => {
-					this.completeOpenAssistantMessages(params.sessionID, directory, promptStartedAt)
-					const idleStatus = { type: "idle" }
-					this.sessionStatuses.set(params.sessionID, idleStatus)
-					this.emit(directory, {
-						type: "session.status",
-						properties: { sessionID: params.sessionID, status: idleStatus },
-					})
+			// turn/start returns when the turn is accepted, not when it finishes.
+			// Stay busy until turn/completed (or a failed start below).
+			try {
+				await this.turn.start({
+					sessionID: params.sessionID,
+					parts: params.parts,
+					model: params.model,
+					variant: params.variant,
+					collaborationMode: params.collaborationMode,
 				})
-				.catch((error) => {
-					this.completeOpenAssistantMessages(params.sessionID, directory, promptStartedAt)
-					const idleStatus = { type: "idle" }
-					this.sessionStatuses.set(params.sessionID, idleStatus)
-					this.emit(directory, sessionErrorEvent(params.sessionID, error))
-					this.emit(directory, {
-						type: "session.status",
-						properties: { sessionID: params.sessionID, status: idleStatus },
-					})
+			} catch (error) {
+				this.promptStartedAtBySession.delete(params.sessionID)
+				this.completeOpenAssistantMessages(params.sessionID, directory, promptStartedAt)
+				const idleStatus = { type: "idle" }
+				this.sessionStatuses.set(params.sessionID, idleStatus)
+				this.emit(directory, sessionErrorEvent(params.sessionID, error))
+				this.emit(directory, {
+					type: "session.status",
+					properties: { sessionID: params.sessionID, status: idleStatus },
 				})
+			}
 		},
 		abort: async (params: { sessionID: string }) => {
 			const interruptParams: SessionInterruptParams = {
@@ -1168,6 +1195,14 @@ class NativeClient {
 			const result = (await this.requestCanonical("skill/list", {
 				...(this.options.directory ? { cwd: this.options.directory } : {}),
 				forceReload: false,
+			})) as { skills?: unknown[] }
+			return { data: result.skills ?? [] }
+		},
+		setSkillEnabled: async (params: { path: string; enabled: boolean }) => {
+			const result = (await this.requestCanonical("skill/set_enabled", {
+				path: params.path,
+				enabled: params.enabled,
+				...(this.options.directory ? { cwd: this.options.directory } : {}),
 			})) as { skills?: unknown[] }
 			return { data: result.skills ?? [] }
 		},
@@ -1496,6 +1531,7 @@ class NativeClient {
 
 	/** Native RPC path shared by all first-party Desktop consumers. */
 	private async requestCanonical(method: string, params: unknown): Promise<unknown> {
+		await this.ensureInitialized()
 		return this.request(method, params)
 	}
 
@@ -1671,6 +1707,9 @@ class NativeClient {
 			this.sessionStatuses.set(sessionId, status)
 			this.emit(directory, { type: "session.status", properties: { sessionID: sessionId, status } })
 			if (terminal) {
+				const startedAt = this.promptStartedAtBySession.get(sessionId) ?? 0
+				this.promptStartedAtBySession.delete(sessionId)
+				this.completeOpenAssistantMessages(sessionId, directory, startedAt)
 				this.pendingQuestions.forEach((pending, requestId) => {
 					if (pending.sessionId === sessionId) this.pendingQuestions.delete(requestId)
 				})
@@ -1794,9 +1833,34 @@ class NativeClient {
 		const sessionId = String(envelope.sessionId ?? "")
 		const item = objectRecord(envelope.item)
 		if (!id || !sessionId || !item) return
+		const completed =
+			method === "item/completed" ||
+			envelope.state === "completed" ||
+			envelope.state === "failed" ||
+			envelope.state === "interrupted"
 		const itemType = String(item.type ?? "")
 		const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
-		const completed = method === "item/completed"
+		if (itemType === "contextCompaction" || itemType === "context_compaction") {
+			const envelopeState = String(envelope.state ?? "")
+			const failed = envelopeState === "failed" || item.status === "failed"
+			const status = failed ? "failed" : completed || envelopeState === "completed" ? "completed" : "started"
+			this.emit(directory, {
+				type: `session.compaction.${status}`,
+				properties: { sessionID: sessionId },
+			})
+			this.upsertCompaction(sessionId, directory, {
+				itemId: id,
+				status,
+				turnId: String(envelope.turnId ?? ""),
+			})
+			if (completed) this.renderedNativeItems.add(id)
+			return
+		}
+		if (itemType === "plan") {
+			this.upsertPlan(sessionId, directory, id, item, String(envelope.turnId ?? ""))
+			if (completed) this.renderedNativeItems.add(id)
+			return
+		}
 		if (completed && this.renderedNativeItems.has(id)) return
 
 		if (itemType === "approval") {
@@ -1860,15 +1924,26 @@ class NativeClient {
 			if (!existing) this.appendText(sessionId, directory, "assistant", partType, { messageId: id, content: { text: String(item.text ?? "") } })
 		} else if (itemType === "userMessage") {
 			const text = (Array.isArray(item.content) ? item.content : []).map((part) => objectRecord(part)).filter(Boolean).filter((part) => part?.type === "text").map((part) => String(part?.text ?? "")).join("\n")
-			this.appendText(sessionId, directory, "user", "text", { messageId: id, content: { text } })
-		} else if (itemType === "toolCall" || itemType === "commandExecution" || itemType === "toolResult") {
+			const existing = this.parts.get(partCacheKey(sessionId, id))?.some((part) => part.type === "text")
+			if (!existing) this.appendText(sessionId, directory, "user", "text", { messageId: id, content: { text } })
+		} else if (
+			itemType === "toolCall" ||
+			itemType === "commandExecution" ||
+			itemType === "toolResult" ||
+			itemType === "fileChange" ||
+			itemType === "hostedToolCall"
+		) {
 			if (item.callId) this.nativeItemCallIds.set(id, String(item.callId))
 			this.appendTool(sessionId, directory, {
 				toolCallId: item.callId,
-				title: item.toolName ?? item.command ?? "Tool",
-				kind: item.toolName ?? (itemType === "commandExecution" ? "execute" : "other"),
-				status: completed ? (item.isError ? "failed" : "completed") : "in_progress",
-				rawInput: item.input,
+				title: item.toolName ?? item.command ?? (itemType === "fileChange" ? "Write" : "Tool"),
+				...(item.toolName
+					? { kind: item.toolName }
+					: itemType === "commandExecution"
+						? { kind: "execute" }
+						: {}),
+				status: completed ? (item.isError || envelope.state === "failed" ? "failed" : "completed") : "in_progress",
+				rawInput: item.input ?? fileChangeInput(item),
 				rawOutput: item.output,
 			})
 		}
@@ -2191,20 +2266,12 @@ class NativeClient {
 					...(compaction.message ? { message: compaction.message } : {}),
 				},
 			})
-			if (compaction.status === "started" && compaction.itemId) {
-				const messageId = `compaction-${compaction.itemId}`
-				const markerExists = this.parts
-					.get(partCacheKey(sessionId, messageId))
-					?.some((part) => part.type === "text" && part.text === "Session compaction started.")
-				if (!markerExists) {
-					this.appendText(sessionId, directory, "assistant", "text", {
-						content: { text: "Session compaction started." },
-						messageId,
-						...(compaction.turnId
-							? { _meta: { [DEVO_TURN_ID_META]: compaction.turnId } }
-							: {}),
-					})
-				}
+			if (compaction.itemId && compaction.status !== "failed") {
+				this.upsertCompaction(sessionId, directory, {
+					itemId: compaction.itemId,
+					status: compaction.status,
+					turnId: compaction.turnId,
+				})
 			}
 			return
 		}
@@ -2260,6 +2327,7 @@ class NativeClient {
 			this.messages.has(sessionId)
 		this.sessions.delete(sessionId)
 		this.sessionStatuses.delete(sessionId)
+		this.promptStartedAtBySession.delete(sessionId)
 		this.sessionDirectories.delete(sessionId)
 		this.loadedSessionLimits.delete(sessionId)
 		this.messages.delete(sessionId)
@@ -2443,6 +2511,121 @@ class NativeClient {
 		}
 	}
 
+	private upsertCompaction(
+		sessionId: string,
+		directory: string,
+		update: {
+			itemId: string
+			status: "started" | "completed" | "failed"
+			turnId?: string
+		},
+	): void {
+		if (update.status === "failed") return
+		const messageId = `compaction-${update.itemId}`
+		const label = update.status === "completed" ? COMPACTION_COMPLETED_LABEL : COMPACTION_STARTED_LABEL
+		this.replaceText(sessionId, directory, "assistant", {
+			messageId,
+			content: { text: label },
+			_meta: {
+				[DEVO_ITEM_KIND_META]: "context_compaction",
+				[DEVO_COMPACTION_STATUS_META]: update.status,
+				...(update.turnId ? { [DEVO_TURN_ID_META]: update.turnId } : {}),
+			},
+		})
+	}
+
+	private upsertPlan(
+		sessionId: string,
+		directory: string,
+		itemId: string,
+		item: Record<string, unknown>,
+		turnId: string,
+	): void {
+		const entries = Array.isArray(item.entries) ? item.entries : []
+		const mapped = entries.map((entry) => {
+			const value = objectRecord(entry) ?? {}
+			return {
+				content: String(value.step ?? value.content ?? value.title ?? ""),
+				status: String(value.status ?? "pending"),
+			}
+		})
+		if (mapped.length === 0) return
+		this.emit(directory, {
+			type: "todo.updated",
+			properties: { sessionID: sessionId, todos: mapped },
+		})
+		const proposed = mapped.length === 1 && mapped[0].content.includes("\n")
+		this.replaceText(sessionId, directory, "assistant", {
+			messageId: itemId,
+			content: {
+				text: proposed
+					? mapped[0].content
+					: mapped.map((entry) => `- [${entry.status}] ${entry.content}`).join("\n"),
+			},
+			_meta: {
+				[DEVO_ITEM_KIND_META]: proposed ? "proposed_plan" : "plan",
+				planEntries: mapped,
+				...(turnId ? { [DEVO_TURN_ID_META]: turnId } : {}),
+			},
+		})
+	}
+
+	private replaceText(
+		sessionId: string,
+		directory: string,
+		role: "assistant" | "user",
+		update: Record<string, unknown>,
+	): void {
+		const text = textFromUpdate(update)
+		if (!text) return
+		const now = this.nextEventTime()
+		const messageId =
+			typeof update.messageId === "string" ? update.messageId : `${role}-${sessionId}-${now}`
+		const existingMessage = this.messages.get(sessionId)?.find((message) => message.id === messageId)
+		const parentID =
+			role === "assistant" ? this.parentMessageIdForUpdate(sessionId, update, existingMessage) : undefined
+		const created = this.messageCreatedAtForUpdate(
+			sessionId,
+			role,
+			messageId,
+			update,
+			existingMessage,
+			now,
+		)
+		const turnId = this.turnIdForUpdate(update)
+		const message = {
+			...(existingMessage ?? {}),
+			id: messageId,
+			sessionID: sessionId,
+			role,
+			...(parentID ? { parentID } : {}),
+			...(turnId ? { turnID: turnId } : {}),
+			time: { ...(existingMessage?.time ?? {}), created },
+		} as Message
+		this.appendMessage(sessionId, message)
+		if (role === "user") this.lastUserMessageBySession.set(sessionId, messageId)
+		this.emit(directory, { type: "message.updated", properties: { info: message, message } })
+		this.rememberMessageTurn(sessionId, directory, messageId, role, update)
+
+		const partId = `${messageId}-text`
+		const existingPart = this.parts
+			.get(partCacheKey(sessionId, messageId))
+			?.find((part) => part.id === partId)
+		const partEventTime = updateHistoryCreatedAt(update) ?? now
+		const metadata = textPartMetadataFromUpdate(update, existingPart)
+		const part = {
+			id: partId,
+			sessionID: sessionId,
+			messageID: messageId,
+			type: "text",
+			text,
+			...(metadata ? { metadata } : {}),
+			time: partTime(existingPart, partEventTime),
+		} as TextPart
+		this.appendPart(sessionId, messageId, part)
+		this.emit(directory, { type: "message.part.updated", properties: { part } })
+	}
+
 	private appendText(
 		sessionId: string,
 		directory: string,
@@ -2492,6 +2675,13 @@ class NativeClient {
 			messageId.startsWith("history-") || typeof existingPart?.[field] !== "string"
 				? ""
 				: existingPart[field]
+		const nextText =
+			role === "user" && existingText && (existingText === text || existingText.endsWith(text))
+				? existingText
+				: role === "user" && existingText && text.startsWith(existingText)
+					? text
+					: `${existingText}${text}`
+		if (existingPart && nextText === existingText) return
 		const partEventTime = updateHistoryCreatedAt(update) ?? now
 		const metadata = textPartMetadataFromUpdate(update, existingPart)
 		const part = {
@@ -2499,7 +2689,7 @@ class NativeClient {
 			sessionID: sessionId,
 			messageID: messageId,
 			type: partType,
-			[field]: `${existingText}${text}`,
+			[field]: nextText,
 			...(metadata ? { metadata } : {}),
 			time: partTime(existingPart, partEventTime),
 		} as TextPart | ReasoningPart
@@ -2577,6 +2767,37 @@ class NativeClient {
 			} as Message
 			messages[index] = updated
 			this.emit(directory, { type: "message.updated", properties: { info: updated, message: updated } })
+			this.completeInFlightToolParts(sessionId, directory, updated.id, completedAt)
+		}
+	}
+
+	private completeInFlightToolParts(
+		sessionId: string,
+		directory: string,
+		messageId: string,
+		completedAt: number,
+	): void {
+		const parts = this.parts.get(partCacheKey(sessionId, messageId))
+		if (!parts) return
+		for (let index = 0; index < parts.length; index++) {
+			const part = parts[index]
+			if (part.type !== "tool") continue
+			if (part.state.status !== "running" && part.state.status !== "pending") continue
+			const runningOutput =
+				part.state.status === "running" && typeof part.state.metadata?.output === "string"
+					? part.state.metadata.output
+					: ""
+			const next = {
+				...part,
+				state: {
+					...part.state,
+					status: "completed",
+					output: runningOutput,
+					time: { ...part.state.time, end: part.state.time.end ?? completedAt },
+				},
+			} as ToolPart
+			parts[index] = next
+			this.emit(directory, { type: "message.part.updated", properties: { part: next } })
 		}
 	}
 

@@ -17,14 +17,14 @@ import {
 import { SlashCommandPopover, type SlashCommandPopoverHandle } from "./chat/slash-command-popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@devo/ui/components/tooltip"
 import { useNavigate, useParams } from "@tanstack/react-router"
-import { useAtomValue } from "jotai"
+import { useAtom, useAtomValue } from "jotai"
 import {
 	GitForkIcon,
 	MonitorIcon,
 	PlusIcon,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { projectModelsAtom, setProjectModelAtom } from "../atoms/preferences"
+import { projectModelsAtom, lastProjectDirectoryAtom, setProjectModelAtom } from "../atoms/preferences"
 import {
 	removeSessionAtom,
 	setSessionBranchAtom,
@@ -49,7 +49,7 @@ import {
 } from "../hooks/use-devo-data"
 import { useAgentActions } from "../hooks/use-server"
 import { persistRuntimeModelConfigOption, persistRuntimeModelSelection } from "../lib/model-config-options"
-import { resolveSelectedProjectDirectory } from "../lib/project-selection"
+import { resolveSelectedProjectDirectory, navigateToNewChat } from "../lib/project-selection"
 import type { FileAttachment } from "../lib/types"
 import { createWorktree, randomWorktreeName } from "../services/worktree-service"
 import { BranchPicker } from "./branch-picker"
@@ -219,8 +219,9 @@ export function NewChat() {
 	const { createSession, sendPrompt } = useAgentActions()
 	const navigate = useNavigate()
 	const { startFromScratch, useExistingFolder } = useDesktopProjectActions()
+	const [lastProjectDirectory, setLastProjectDirectory] = useAtom(lastProjectDirectoryAtom)
 
-	const [selectedDirectory, setSelectedDirectory] = useState<string>("")
+	const [selectedDirectory, setSelectedDirectory] = useState<string>(() => lastProjectDirectory ?? "")
 	const [launching, setLaunching] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 	const [worktreeMode, setWorktreeMode] = useState<"local" | "worktree">("local")
@@ -277,19 +278,14 @@ export function NewChat() {
 		(project: (typeof projects)[number]) => {
 			manuallySelectedDirectoryRef.current = project.directory
 			setSelectedDirectory(project.directory)
+			setLastProjectDirectory(project.directory)
 			navigate({
 				to: "/project/$projectSlug",
 				params: { projectSlug: project.slug },
 			})
 		},
-		[navigate],
+		[navigate, setLastProjectDirectory],
 	)
-
-	const handleClearProject = useCallback(() => {
-		manuallySelectedDirectoryRef.current = null
-		setSelectedDirectory("")
-		if (projectSlug) navigate({ to: "/" })
-	}, [navigate, projectSlug])
 
 	const handleUseExistingFolder = useCallback(async () => {
 		const folder = await useExistingFolder?.()
@@ -472,9 +468,15 @@ export function NewChat() {
 					!!manuallySelectedDirectoryRef.current &&
 					manuallySelectedDirectoryRef.current === currentDirectory,
 				unavailableDirectories: projectSlug ? undefined : unavailableProjectDirectories,
+				lastUsedDirectory: lastProjectDirectory,
 			}),
 		)
-	}, [projectSlug, projects, unavailableProjectDirectories])
+	}, [projectSlug, projects, unavailableProjectDirectories, lastProjectDirectory])
+
+	useEffect(() => {
+		if (!selectedDirectory) return
+		setLastProjectDirectory(selectedDirectory)
+	}, [selectedDirectory, setLastProjectDirectory])
 
 	// ---
 	// Launch helpers
@@ -630,7 +632,7 @@ export function NewChat() {
 					// Remove the stub and navigate back to new chat
 					appStore.set(removeSessionAtom, stubId)
 					setError(`Worktree setup failed: ${err instanceof Error ? err.message : "Unknown error"}`)
-					navigate({ to: "/" })
+					navigateToNewChat(navigate, projects, selectedProject?.slug, lastProjectDirectory)
 				}
 			}
 
@@ -647,6 +649,9 @@ export function NewChat() {
 			persistProjectModel,
 			navigateToSession,
 			navigate,
+			projects,
+			selectedProject,
+			lastProjectDirectory,
 		],
 	)
 
@@ -679,13 +684,13 @@ export function NewChat() {
 		<div className="relative flex h-full flex-col items-center justify-center px-0 py-8 sm:px-8">
 			<div className="w-full max-w-3xl">
 				<div className="mb-6 text-center">
-					<h1 className="select-none text-[34px] font-normal leading-tight tracking-normal text-foreground">
+					<h1 className="select-none text-[32px] font-normal leading-tight tracking-[-0.03em] text-foreground">
 						What should we work on?
 					</h1>
 				</div>
 
 				<div
-					className="devo-composer-shell bg-muted/30 shadow-[0_12px_48px_rgba(0,0,0,0.07)]"
+					className="devo-composer-shell bg-background shadow-[0_8px_32px_rgba(0,0,0,0.05)]"
 					data-popover-open={slashOpen || mentionOpen ? "true" : undefined}
 				>
 					<PromptInputProvider key={draftKey} initialInput={draft}>
@@ -777,7 +782,6 @@ export function NewChat() {
 								selectedProject={selectedProject}
 								selectedDirectory={selectedDirectory}
 								onSelectProject={handleSelectProject}
-								onClearProject={handleClearProject}
 								onStartFromScratch={startFromScratch}
 								onUseExistingFolder={useExistingFolder ? handleUseExistingFolder : undefined}
 							/>

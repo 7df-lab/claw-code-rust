@@ -1,6 +1,6 @@
 import { SidebarContent, SidebarFooter } from "@devo/ui/components/sidebar"
 import { cn } from "@devo/ui/lib/utils"
-import { useNavigate, useParams } from "@tanstack/react-router"
+import { useNavigate, useParams, useRouterState } from "@tanstack/react-router"
 import { useAtom, useAtomValue } from "jotai"
 import {
 	Clock3Icon,
@@ -9,20 +9,24 @@ import {
 	PenLineIcon,
 	SearchIcon,
 	SettingsIcon,
+	SlidersHorizontalIcon,
 } from "lucide-react"
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { activeServerConfigAtom } from "../../atoms/connection"
 import { sandboxMappingsAtom } from "../../atoms/derived/agents"
 import { automationsEnabledAtom } from "../../atoms/feature-flags"
+import { lastProjectDirectoryAtom } from "../../atoms/preferences"
 import { projectPaginationFamily } from "../../atoms/sessions"
 import { appStore } from "../../atoms/store"
-import { sessionScrollTopFamily } from "../../atoms/ui"
+import { customizeOpenAtom, sessionScrollTopFamily } from "../../atoms/ui"
 import type { Agent, SidebarProject } from "../../lib/types"
 import { freezeSessionScroll } from "../../lib/settings-scroll-freeze"
+import { navigateToNewChat } from "../../lib/project-selection"
 import { openInTarget } from "../../services/backend"
 import { loadMoreProjectSessions, loadProjectSessions } from "../../services/connection-manager"
 import {
 	buildSidebarItems,
+	groupAgentsByProject,
 	type SidebarDisplayItem,
 } from "./sidebar-data"
 import {
@@ -45,37 +49,29 @@ interface AppSidebarContentProps {
 	onForkSession?: (agent: Agent) => Promise<void>
 }
 
-function groupAgentsByProject(agents: Agent[]): Map<string, Agent[]> {
-	const grouped = new Map<string, Agent[]>()
-	for (const agent of agents) {
-		if (agent.parentId) continue
-		const directory = agent.projectDirectory || agent.directory
-		const existing = grouped.get(directory)
-		if (existing) {
-			existing.push(agent)
-		} else {
-			grouped.set(directory, [agent])
-		}
-	}
-	return grouped
-}
-
-const sidebarPrimaryIconClass = "size-4 stroke-[1.6]"
+const sidebarPrimaryIconClass = "size-[15px] stroke-[1.5]"
 
 function TopActionRow({
 	children,
 	icon,
 	onClick,
+	isActive,
 }: {
 	children: ReactNode
 	icon: ReactNode
 	onClick: () => void
+	isActive?: boolean
 }) {
 	return (
 		<button
 			type="button"
 			onClick={onClick}
-			className="flex h-8 w-full items-center gap-2.5 rounded-lg px-1.5 text-left text-sm font-normal text-sidebar-foreground transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+			className={cn(
+				"flex h-8 w-full items-center gap-2.5 rounded-lg px-1.5 text-left text-[13px] font-normal transition-colors",
+				isActive
+					? "bg-black/[0.06] text-sidebar-foreground dark:bg-white/[0.08]"
+					: "text-sidebar-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06]",
+			)}
 		>
 			<span className="flex size-4 shrink-0 items-center justify-center text-sidebar-foreground/90">
 				{icon}
@@ -117,6 +113,19 @@ function ProjectSection({
 	const canShowSessions = true
 	const isUnavailable = item.project.folderStatus ? item.project.folderStatus !== "available" : false
 
+	useEffect(() => {
+		if (isCollapsed || isUnavailable) return
+		if (pagination.loaded || pagination.loading) return
+		loadProjectSessions(item.project.directory, sandboxDirs, { limit: 5, roots: true })
+	}, [
+		isCollapsed,
+		isUnavailable,
+		item.project.directory,
+		pagination.loaded,
+		pagination.loading,
+		sandboxDirs,
+	])
+
 	const handleProjectSelect = useCallback(() => {
 		if (isUnavailable) {
 			onMissingFolder(item.project)
@@ -147,6 +156,7 @@ function ProjectSection({
 			onMissingFolder(item.project)
 			return
 		}
+		appStore.set(customizeOpenAtom, false)
 		navigate({
 			to: "/project/$projectSlug",
 			params: { projectSlug: item.project.slug },
@@ -215,7 +225,10 @@ function ProjectSection({
 									Loading
 								</div>
 							)}
-							{item.sessions.map((agent) => (
+							{(pagination.loaded
+								? item.sessions.slice(0, pagination.currentLimit)
+								: item.sessions
+							).map((agent) => (
 								<SessionRow
 									key={agent.id}
 									agent={agent}
@@ -227,14 +240,16 @@ function ProjectSection({
 									onUnavailableProject={() => onMissingFolder(item.project)}
 								/>
 							))}
-							{pagination.loaded && pagination.hasMore && item.sessions.length > 0 && (
+							{pagination.loaded &&
+								(pagination.hasMore || item.sessions.length > pagination.currentLimit) &&
+								item.sessions.length > 0 && (
 								<button
 									type="button"
 									onClick={handleLoadMore}
 									disabled={pagination.loading}
-									className="h-8 rounded-lg py-1 pr-1.5 pl-7 text-left text-[13px] font-normal text-muted-foreground transition-colors hover:bg-black/[0.03] hover:text-muted-foreground/90 disabled:opacity-60 dark:hover:bg-white/[0.05]"
+									className="h-8 rounded-lg py-1 pr-1.5 pl-[34px] text-left text-[13px] font-normal text-muted-foreground transition-colors hover:bg-black/[0.03] hover:text-muted-foreground/90 disabled:opacity-60 dark:hover:bg-white/[0.05]"
 								>
-									{pagination.loading ? "Loading..." : "Show more"}
+									{pagination.loading ? "Loading..." : "More"}
 								</button>
 							)}
 						</div>
@@ -258,6 +273,7 @@ export function AppSidebarContent({
 }: AppSidebarContentProps) {
 	const navigate = useNavigate()
 	const routeParams = useParams({ strict: false }) as { projectSlug?: string; sessionId?: string }
+	const pathname = useRouterState({ select: (state) => state.location.pathname })
 	const selectedSessionId = routeParams.sessionId ?? null
 	const [preferences, setPreferences] = useAtom(sidebarPreferencesAtom)
 	const [collapsedProjectDirs, setCollapsedProjectDirs] = useState<Set<string>>(() => new Set())
@@ -267,6 +283,7 @@ export function AppSidebarContent({
 	const [folderActionError, setFolderActionError] = useState<string | null>(null)
 	const { parentToSandboxes } = useAtomValue(sandboxMappingsAtom)
 	const automationsEnabled = useAtomValue(automationsEnabledAtom)
+	const [customizeOpen, setCustomizeOpen] = useAtom(customizeOpenAtom)
 	const activeServer = useAtomValue(activeServerConfigAtom)
 	const isLocalServer = activeServer.type === "local"
 	const canRevealInFinder = typeof window !== "undefined" && "devo" in window
@@ -283,8 +300,8 @@ export function AppSidebarContent({
 		return order
 	}, [projects])
 	const projectSessionsByDirectory = useMemo(
-		() => groupAgentsByProject(visibleAgents),
-		[visibleAgents],
+		() => groupAgentsByProject(visibleAgents, projects),
+		[visibleAgents, projects],
 	)
 	const sidebarItems = useMemo(
 		() =>
@@ -306,16 +323,11 @@ export function AppSidebarContent({
 
 	const hasContent = sidebarItems.length > 0
 
+	const lastProjectDirectory = useAtomValue(lastProjectDirectoryAtom)
 	const handleNewChat = useCallback(() => {
-		if (routeParams.projectSlug) {
-			navigate({
-				to: "/project/$projectSlug",
-				params: { projectSlug: routeParams.projectSlug },
-			})
-			return
-		}
-		navigate({ to: "/" })
-	}, [navigate, routeParams.projectSlug])
+		setCustomizeOpen(false)
+		navigateToNewChat(navigate, projects, routeParams.projectSlug, lastProjectDirectory)
+	}, [lastProjectDirectory, navigate, projects, routeParams.projectSlug, setCustomizeOpen])
 
 	const handleToggleProjectCollapsed = useCallback((directory: string) => {
 		setCollapsedProjectDirs((previous) => {
@@ -396,15 +408,26 @@ export function AppSidebarContent({
 					{automationsEnabled && isLocalServer && (
 						<TopActionRow
 							icon={<Clock3Icon className={sidebarPrimaryIconClass} />}
-							onClick={() => navigate({ to: "/automations" })}
+							onClick={() => {
+								setCustomizeOpen(false)
+								navigate({ to: "/automations" })
+							}}
+							isActive={pathname === "/automations" || pathname.startsWith("/automations/")}
 						>
 							Automations
 						</TopActionRow>
 					)}
+					<TopActionRow
+						icon={<SlidersHorizontalIcon className={sidebarPrimaryIconClass} />}
+						onClick={() => setCustomizeOpen(true)}
+						isActive={customizeOpen}
+					>
+						Customize
+					</TopActionRow>
 				</div>
 
 				<div className="group/projects-header flex h-9 shrink-0 items-center gap-1 px-4">
-					<div className="flex min-w-0 flex-1 items-center gap-1 text-sm font-normal text-muted-foreground/60 transition-colors group-hover/projects-header:text-muted-foreground/75 group-focus-within/projects-header:text-muted-foreground/75">
+					<div className="flex min-w-0 flex-1 items-center gap-1 text-[12px] font-medium tracking-wide text-muted-foreground/55 transition-colors group-hover/projects-header:text-muted-foreground/70 group-focus-within/projects-header:text-muted-foreground/70">
 						<span className="truncate">Projects</span>
 					</div>
 					<div className="flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover/projects-header:opacity-100 group-focus-within/projects-header:opacity-100">
@@ -469,6 +492,7 @@ export function AppSidebarContent({
 				<button
 					type="button"
 					onClick={() => {
+						setCustomizeOpen(false)
 						if (selectedSessionId) {
 							const scrollTop = appStore.get(sessionScrollTopFamily(selectedSessionId))
 							if (scrollTop != null) {
@@ -478,7 +502,7 @@ export function AppSidebarContent({
 						navigate({ to: "/settings" })
 					}}
 					className={cn(
-						"flex h-8 w-full items-center gap-2.5 rounded-lg px-1.5 text-left text-sm font-normal text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-sidebar-foreground dark:hover:bg-white/[0.06]",
+						"flex h-8 w-full items-center gap-2.5 rounded-lg px-1.5 text-left text-[13px] font-normal text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-sidebar-foreground dark:hover:bg-white/[0.06]",
 					)}
 				>
 					<SettingsIcon className={sidebarPrimaryIconClass} />

@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import type { Session, SidebarProject } from "../../lib/types"
+import { desktopFoldersAtom } from "../desktop-folders"
+import { discoveryAtom } from "../discovery"
 import { setSessionStatusAtom, upsertSessionAtom } from "../sessions"
 import { appStore } from "../store"
 import {
 	agentFamily,
 	formatRelativeTime,
 	projectDisplayName,
+	projectListAtom,
 	projectNameFromDir,
 	sortSidebarProjectsForDefaultList,
 } from "./agents"
@@ -100,11 +103,13 @@ describe("relative session time formatting", () => {
 
 		expect({
 			now: formatRelativeTime(now - 30_000, now),
+			oneMinute: formatRelativeTime(now - 60_000, now),
 			minutes: formatRelativeTime(now - 42 * 60_000, now),
 			hours: formatRelativeTime(now - 2 * 60 * 60_000, now),
 			days: formatRelativeTime(now - 3 * 24 * 60 * 60_000, now),
 		}).toEqual({
-			now: "now",
+			now: "1m",
+			oneMinute: "1m",
 			minutes: "42m",
 			hours: "2h",
 			days: "3d",
@@ -135,5 +140,39 @@ describe("agent status derivation", () => {
 		})
 
 		expect(derived).toEqual(statuses.map(([, expected]) => expected))
+	})
+})
+
+describe("sidebar project list", () => {
+	test("includes discovered worktrees even without desktop folders", () => {
+		appStore.set(desktopFoldersAtom, [])
+		appStore.set(discoveryAtom, {
+			loaded: true,
+			loading: false,
+			error: null,
+			phase: "ready",
+			projects: [
+				{
+					id: "alpha-id",
+					name: "alpha",
+					worktree: "/repo/alpha",
+					path: { root: "/repo/alpha" },
+					time: { created: 1, updated: 1 },
+					sandboxes: [],
+				},
+				{
+					id: "beta-id",
+					name: "beta",
+					worktree: "/repo/beta",
+					path: { root: "/repo/beta" },
+					time: { created: 1, updated: 1 },
+					sandboxes: [],
+				},
+			],
+		})
+
+		const directories = appStore.get(projectListAtom).map((item) => item.directory)
+		expect(directories).toContain("/repo/alpha")
+		expect(directories).toContain("/repo/beta")
 	})
 })

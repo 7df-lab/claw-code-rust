@@ -351,12 +351,12 @@ function SessionPanelHeader({
 	return (
 		<div
 			data-slot="session-panel-header"
-			className="flex h-[46px] w-full min-w-0 shrink-0 items-center gap-2.5 border-b border-border/50 px-4"
+			className="flex h-[44px] w-full min-w-0 shrink-0 items-center gap-2.5 border-b border-border/40 px-5"
 		>
 			{/* Breadcrumb: project / [branch badge] / session name */}
 			<div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
 				{/* Project name */}
-				<span className="hidden shrink-0 text-xs font-semibold leading-none text-foreground sm:inline">
+				<span className="hidden shrink-0 text-[13px] font-medium leading-none text-foreground sm:inline">
 					{agent.project}
 				</span>
 
@@ -371,7 +371,7 @@ function SessionPanelHeader({
 				{isEditingTitle ? (
 					<div className="inline-grid min-w-0 max-w-full flex-1 items-center">
 						{/* Ghost span — sizes the grid column to match the text width */}
-						<span className="invisible col-start-1 row-start-1 truncate text-xs font-semibold leading-none">
+						<span className="invisible col-start-1 row-start-1 truncate text-[13px] font-medium leading-none">
 							{titleValue}
 						</span>
 						<Input
@@ -384,7 +384,7 @@ function SessionPanelHeader({
 								if (e.key === "Escape") onCancelEditing()
 							}}
 							onBlur={onConfirmTitle}
-							className="col-start-1 row-start-1 h-7 min-w-0 border-none bg-transparent p-0 text-xs md:text-xs font-semibold leading-none shadow-none focus-visible:ring-0"
+							className="col-start-1 row-start-1 h-7 min-w-0 border-none bg-transparent p-0 text-[13px] md:text-[13px] font-medium leading-none shadow-none focus-visible:ring-0"
 						/>
 					</div>
 				) : (
@@ -393,7 +393,7 @@ function SessionPanelHeader({
 						onClick={onRename ? onStartEditing : undefined}
 						className={`group flex min-w-0 items-center gap-1.5 ${onRename ? "cursor-pointer" : "cursor-default"}`}
 					>
-						<h2 className="min-w-0 truncate text-xs font-semibold leading-none">
+						<h2 className="min-w-0 truncate text-[13px] font-medium leading-none">
 							{agent.name}
 						</h2>
 						{onRename && (
@@ -415,7 +415,7 @@ function SessionPanelHeader({
 						<OpenInButton directory={agent.worktreePath ?? agent.directory} />
 					</div>
 
-					<div className="flex shrink-0 items-center gap-1 rounded-lg border border-border/70 bg-background/70 p-0.5">
+					<div className="flex shrink-0 items-center gap-0.5">
 						<SessionMetricsOverviewButton sessionId={agent.sessionId} />
 						<TerminalToggleButton />
 						<ChangesPanelToggleButton

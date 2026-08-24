@@ -9,6 +9,7 @@ import { useAtomValue } from "jotai"
 import {
 	ArrowLeftIcon,
 	BellIcon,
+	BookOpenIcon,
 	GitForkIcon,
 	InfoIcon,
 	PlugIcon,
@@ -28,6 +29,8 @@ import { useSetSidebarSlot } from "../sidebar-slot-context"
 type SettingsTab =
 	| "general"
 	| "servers"
+	| "mcp"
+	| "skills"
 	| "notifications"
 	| "providers"
 	| "worktrees"
@@ -37,6 +40,8 @@ type SettingsTab =
 const tabs: { id: SettingsTab; label: string; icon: typeof SettingsIcon }[] = [
 	{ id: "general", label: "General", icon: SettingsIcon },
 	{ id: "servers", label: "Servers", icon: ServerIcon },
+	{ id: "mcp", label: "MCP", icon: PlugIcon },
+	{ id: "skills", label: "Skills", icon: BookOpenIcon },
 	{ id: "notifications", label: "Notifications", icon: BellIcon },
 	{ id: "providers", label: "Providers", icon: PlugIcon },
 	{ id: "worktrees", label: "Worktrees", icon: GitForkIcon },
@@ -62,7 +67,7 @@ export function SettingsPage() {
 
 	return (
 		<div className="h-full overflow-y-auto">
-			<div className="mx-auto max-w-2xl px-8 py-6">
+			<div className="mx-auto max-w-2xl px-10 py-10">
 				<Outlet />
 			</div>
 		</div>
@@ -87,7 +92,7 @@ function SettingsSidebarContent() {
 				<button
 					type="button"
 					onClick={() => navigate(resolveSettingsBackTarget(lastAppRoute))}
-					className="flex h-8 w-full items-center gap-2.5 rounded-lg px-1.5 text-left text-sm font-normal text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-sidebar-foreground dark:hover:bg-white/[0.06]"
+					className="flex h-8 w-full items-center gap-2.5 rounded-lg px-1.5 text-left text-[13px] font-normal text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-sidebar-foreground dark:hover:bg-white/[0.06]"
 				>
 					<span className="flex size-[18px] shrink-0 items-center justify-center text-sidebar-foreground/90">
 						<ArrowLeftIcon aria-hidden="true" className="size-[18px]" />

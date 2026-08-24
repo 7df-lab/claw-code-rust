@@ -16,11 +16,13 @@ import { RootLayout } from "./components/root-layout"
 import { SessionRoute } from "./components/session-route"
 import { AboutSettings } from "./components/settings/about-settings"
 import { GeneralSettings } from "./components/settings/general-settings"
+import { McpSettings } from "./components/settings/mcp-settings"
 import { NotificationSettings } from "./components/settings/notification-settings"
 import { ProviderSettings } from "./components/settings/provider-settings"
 import { ServerSettings } from "./components/settings/server-settings"
 import { SettingsPage } from "./components/settings/settings-page"
 import { SetupSettings } from "./components/settings/setup-settings"
+import { SkillSettings } from "./components/settings/skill-settings"
 import { WorktreeSettings } from "./components/settings/worktree-settings"
 import { SidebarLayout } from "./components/sidebar-layout"
 
@@ -87,6 +89,18 @@ const settingsServersRoute = createRoute({
 	getParentRoute: () => settingsRoute,
 	path: "servers",
 	component: ServerSettings,
+})
+
+const settingsMcpRoute = createRoute({
+	getParentRoute: () => settingsRoute,
+	path: "mcp",
+	component: McpSettings,
+})
+
+const settingsSkillsRoute = createRoute({
+	getParentRoute: () => settingsRoute,
+	path: "skills",
+	component: SkillSettings,
 })
 
 const settingsNotificationsRoute = createRoute({
@@ -160,6 +174,8 @@ const routeTree = rootRoute.addChildren([
 			settingsIndexRoute,
 			settingsGeneralRoute,
 			settingsServersRoute,
+			settingsMcpRoute,
+			settingsSkillsRoute,
 			settingsNotificationsRoute,
 			settingsProvidersRoute,
 			settingsWorktreesRoute,

@@ -33,11 +33,15 @@ class FakeNativeTransport implements DevoNativeTransport {
 			case "subscription/ack":
 				return { serverTimeMs: 1 }
 			case "skill/list":
-				return { skills: [{ id: "review", name: "review", description: "Review code" }] }
+				return { skills: [nativeSkill] }
+			case "skill/set_enabled":
+				return { skills: [{ ...nativeSkill, enabled: false }] }
 			case "mcp/list":
 				return { servers: [{ name: "docs", status: "connected", toolCount: 2 }] }
 			case "workspace/changes/read":
-				return { views: [{ scope: "uncommitted", unifiedDiff: "diff --git a/a b/a\n" }] }
+				return { views: [nativeWorkspaceView] }
+			case "turn/start":
+				return { turn: nativeTurnInProgress }
 			default:
 				throw new Error(`unexpected request ${method}`)
 		}
@@ -61,6 +65,30 @@ class FakeNativeTransport implements DevoNativeTransport {
 	emit(event: DevoNativeTransportEvent): void {
 		for (const listener of this.listeners) listener(event)
 	}
+}
+
+const nativeSkill = {
+	id: "review",
+	name: "review",
+	description: "Review code",
+	path: "/skills/review",
+	enabled: true,
+	source: "User",
+	scope: "user",
+}
+
+const nativeWorkspaceView = {
+	scope: "uncommitted",
+	status: "ready",
+	workspaceRoot: "/repo",
+	coverage: "git_visible",
+	attribution: "git_working_tree",
+	changeSetStatus: "finalized",
+	files: [],
+	stats: { files_changed: 0, additions: 0, deletions: 0 },
+	unifiedDiff: "diff --git a/a b/a\n",
+	warnings: [],
+	generatedAt: "2026-08-22T00:00:00Z",
 }
 
 const nativeSession = {
@@ -95,6 +123,22 @@ const nativeSession = {
 		byPurpose: [],
 		updatedAt: "2026-08-22T00:00:00Z",
 	},
+}
+
+const nativeTurnInProgress = {
+	id: "turn-1",
+	sessionId: nativeSession.id,
+	sequence: 1,
+	kind: "regular",
+	status: "inProgress",
+	model: nativeSession.model,
+	startedAt: "2026-08-24T00:00:00Z",
+}
+
+const nativeTurnCompleted = {
+	...nativeTurnInProgress,
+	status: "completed",
+	completedAt: "2026-08-24T00:00:08Z",
 }
 
 const approvalItem = {
@@ -224,11 +268,12 @@ describe("Native desktop SDK interactions", () => {
 		const transport = new FakeNativeTransport()
 		const client = createDevoClient({ directory: "/repo", transport })
 
-		expect((await client.app.skills()).data).toEqual([
-			{ id: "review", name: "review", description: "Review code" },
-		])
+		expect((await client.app.skills()).data).toEqual([nativeSkill])
 		expect((await client.mcp.list()).data).toEqual([
 			{ name: "docs", status: "connected", toolCount: 2 },
+		])
+		expect((await client.app.setSkillEnabled({ path: "/skills/review", enabled: false })).data).toEqual([
+			{ ...nativeSkill, enabled: false },
 		])
 		expect((await client.session.diff({ sessionID: "session-1" })).data).toEqual([
 			{ diff: "diff --git a/a b/a\n" },
@@ -240,6 +285,11 @@ describe("Native desktop SDK interactions", () => {
 				directory: "/repo",
 			},
 			{ method: "mcp/list", params: {}, directory: "/repo" },
+			{
+				method: "skill/set_enabled",
+				params: { path: "/skills/review", enabled: false, cwd: "/repo" },
+				directory: "/repo",
+			},
 			{
 				method: "workspace/changes/read",
 				params: {
@@ -382,8 +432,6 @@ describe("Native desktop SDK interactions", () => {
 
 	test("restores an answerable pending approval during subscription creation", async () => {
 		const transport = new FakeNativeTransport()
-		const client = createDevoClient({ directory: "/repo", transport })
-		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
 		transport.pendingControlRequests = [
 			{ requestId: "approval-1", kind: "approvalCommand", item: approvalEnvelope },
 		]
@@ -395,6 +443,8 @@ describe("Native desktop SDK interactions", () => {
 				params: approvalItem,
 			})
 		}
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
 
 		await client.session.create()
 		const asked = await nextPayloadOfType(stream, "permission.asked")
@@ -425,5 +475,152 @@ describe("Native desktop SDK interactions", () => {
 			includeSnapshot: true,
 			after: [{ streamId: "session:session-1", seq: 7 }],
 		})
+	})
+
+	test("does not duplicate user message text across item started and completed", async () => {
+		const transport = new FakeNativeTransport()
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+		const text = "让我们聊会天，随便聊会。"
+		const envelope = {
+			id: "item-user-1",
+			sessionId: "session-1",
+			turnId: "turn-1",
+			revision: 1,
+			seq: 1,
+			state: "running",
+			createdAt: "2026-08-22T00:00:03Z",
+			updatedAt: "2026-08-22T00:00:03Z",
+			item: {
+				type: "userMessage",
+				content: [{ type: "text", text }],
+				entry: "turnStart",
+			},
+		}
+
+		transport.emit({
+			type: "notification",
+			method: "item/started",
+			params: { item: envelope },
+		})
+		transport.emit({
+			type: "notification",
+			method: "item/completed",
+			params: { item: { ...envelope, revision: 2, state: "completed" } },
+		})
+
+		const parts: string[] = []
+		const deadline = Date.now() + 1_000
+		while (Date.now() < deadline) {
+			const result = await Promise.race([
+				stream.next(),
+				new Promise<IteratorResult<any>>((resolve) =>
+					setTimeout(() => resolve({ done: false, value: { payload: { type: "timeout" } } }), 25),
+				),
+			])
+			if (result.value?.payload?.type === "message.part.updated") {
+				const partText = result.value.payload.properties.part.text
+				if (typeof partText === "string") parts.push(partText)
+			}
+			if (result.value?.payload?.type === "timeout" && parts.length > 0) break
+		}
+
+		expect(parts.at(-1)).toBe(text)
+		expect(parts.some((part) => part === `${text}${text}`)).toBe(false)
+	})
+
+	test("completes a write tool when the matching FileChange item finishes", async () => {
+		const transport = new FakeNativeTransport()
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+		const callId = "write-1"
+		transport.emit({
+			type: "notification",
+			method: "item/started",
+			params: {
+				item: {
+					id: "item-write-call",
+					sessionId: "session-1",
+					turnId: "turn-1",
+					revision: 1,
+					seq: 2,
+					state: "running",
+					item: {
+						type: "toolCall",
+						callId,
+						toolName: "write",
+						source: "builtin",
+						input: { path: "C:/Users/lenovo/Desktop/from-devo.txt", content: "hi" },
+					},
+				},
+			},
+		})
+		transport.emit({
+			type: "notification",
+			method: "item/completed",
+			params: {
+				item: {
+					id: "item-write-change",
+					sessionId: "session-1",
+					turnId: "turn-1",
+					revision: 1,
+					seq: 3,
+					state: "completed",
+					item: {
+						type: "fileChange",
+						callId,
+						changes: [
+							{
+								path: "C:/Users/lenovo/Desktop/from-devo.txt",
+								change: { type: "add", content: "hi" },
+							},
+						],
+					},
+				},
+			},
+		})
+
+		let status = ""
+		const deadline = Date.now() + 1_000
+		while (Date.now() < deadline) {
+			const result = await Promise.race([
+				stream.next(),
+				new Promise<IteratorResult<any>>((resolve) =>
+					setTimeout(() => resolve({ done: false, value: { payload: { type: "timeout" } } }), 25),
+				),
+			])
+			const payload = result.value?.payload
+			if (payload?.type === "message.part.updated") {
+				const part = payload.properties.part
+				if (part?.callID === callId || part?.tool === "write") {
+					status = part.state?.status ?? ""
+					if (status === "completed") break
+				}
+			}
+			if (payload?.type === "timeout" && status) break
+		}
+
+		expect(status).toBe("completed")
+	})
+
+	test("keeps the session busy after turn/start until turn/completed", async () => {
+		const transport = new FakeNativeTransport()
+		const client = createDevoClient({ directory: "/repo", transport })
+		await client.session.create()
+
+		await client.session.promptAsync({
+			sessionID: "session-1",
+			parts: [{ type: "text", text: "hello" }],
+		})
+
+		expect((await client.session.status()).data["session-1"]).toEqual({ type: "busy" })
+
+		transport.emit({
+			type: "notification",
+			method: "turn/completed",
+			params: { turn: nativeTurnCompleted },
+		})
+
+		expect((await client.session.status()).data["session-1"]).toEqual({ type: "idle" })
 	})
 })

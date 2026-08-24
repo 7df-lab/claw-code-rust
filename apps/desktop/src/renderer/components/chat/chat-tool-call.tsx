@@ -25,6 +25,7 @@ import {
 	Loader2Icon,
 	MinusIcon,
 	PlusIcon,
+	PlugIcon,
 	SearchIcon,
 	SquareCheckIcon,
 	TerminalIcon,
@@ -218,6 +219,11 @@ export function getToolInfo(tool: string): {
 		case "request_user_input":
 			return { icon: BookOpenIcon, title: "Question" }
 		default:
+			if (tool.startsWith("mcp__")) {
+				const segments = tool.split("__")
+				const label = segments.slice(2).join("__") || segments[1] || tool
+				return { icon: PlugIcon, title: `MCP · ${label}` }
+			}
 			return { icon: WrenchIcon, title: tool }
 	}
 }
@@ -882,8 +888,16 @@ export function describeToolGroup(
 
 	switch (category) {
 		case "explore": {
+			const fileCount = tools.filter((t) => t.tool === "read" || t.tool === "list").length
+			const searchCount = tools.filter((t) => t.tool === "grep" || t.tool === "glob").length
+			if (fileCount > 0 && searchCount > 0) {
+				return `Explored ${fileCount} ${fileCount === 1 ? "file" : "files"}, ${searchCount} ${searchCount === 1 ? "search" : "searches"}`
+			}
 			const verb = exploreGroupVerb(tools)
-			return `${verb} ${count} ${verb === "Searched" ? "patterns" : "files"}`
+			if (verb === "Searched") {
+				return `Searched ${count} ${count === 1 ? "pattern" : "patterns"}`
+			}
+			return `${verb} ${count} ${count === 1 ? "file" : "files"}`
 		}
 		case "edit":
 			return `Edited ${count} files`
@@ -902,7 +916,8 @@ export function describeToolGroup(
 	}
 }
 
-export function isGroupRunning(tools: ToolPart[]): boolean {
+export function isGroupRunning(tools: ToolPart[], turnWorking = true): boolean {
+	if (!turnWorking) return false
 	return tools.some((t) => t.state.status === "running" || t.state.status === "pending")
 }
 
@@ -992,6 +1007,8 @@ interface ChatToolCallProps {
 	part: ToolPart
 	/** Whether the turn containing this tool has an error (enables delete action) */
 	turnHasError?: boolean
+	/** When false, running/pending tools do not show a live spinner. */
+	turnWorking?: boolean
 	/** Delete this tool part (for error recovery) */
 	onDelete?: (part: ToolPart) => void
 	/** Project root used only for display-only path labels. */
@@ -1041,6 +1058,7 @@ export const ChatToolCall = memo(
 	function ChatToolCall({
 		part,
 		turnHasError = false,
+		turnWorking = true,
 		onDelete,
 		projectRoot,
 		open,
@@ -1076,6 +1094,7 @@ export const ChatToolCall = memo(
 		)
 
 		const status = part.state.status as "running" | "error" | "completed" | "pending"
+		const isRunning = turnWorking && (status === "running" || status === "pending")
 
 		// Build trailing element: diff stats, or a running spinner.
 		const trailingElement = useMemo(() => {
@@ -1096,7 +1115,7 @@ export const ChatToolCall = memo(
 				)
 			}
 
-			if (status === "running" || status === "pending") {
+			if (isRunning) {
 				parts.push(
 					<Loader2Icon
 						key="running"
@@ -1108,7 +1127,7 @@ export const ChatToolCall = memo(
 			if (parts.length === 0) return undefined
 			if (parts.length === 1) return parts[0]
 			return <span className="flex items-center gap-2.5">{parts}</span>
-		}, [diffStats, status])
+		}, [diffStats, isRunning])
 
 		// When the turn has an error, add a delete button so the user can
 		// surgically remove a problematic tool part and continue the conversation.
@@ -1151,11 +1170,10 @@ export const ChatToolCall = memo(
 		}
 
 		// --- All other tools (including todos): unified tool row ---
-		const { icon: Icon, title } = getToolInfo(part.tool)
+		const { title } = getToolInfo(part.tool)
 		const subtitle = getToolSubtitle(part, { projectRoot })
 		const hasContent = hasExpandableContent(part)
 		const defaultOpen = defaultOpenProp ?? false
-		const isRunning = status === "running" || status === "pending"
 
 		// Extract attachments
 		const attachments: FilePart[] =
@@ -1185,15 +1203,6 @@ export const ChatToolCall = memo(
 					onOpenChange={onOpenChange}
 				>
 					<TranscriptDisclosureTrigger
-						leading={
-							<Icon
-								className={`size-3.5 shrink-0 stroke-[1.5] ${
-									isRunning
-										? "animate-pulse text-muted-foreground"
-										: "text-muted-foreground/50"
-								}`}
-							/>
-						}
 						label={label}
 						trailing={finalTrailing}
 					/>
@@ -1227,6 +1236,7 @@ export const ChatToolCall = memo(
 		// comparison the memo blocks the re-render and the row can never expand.
 		if (prev.open !== next.open) return false
 		if (prev.turnHasError !== next.turnHasError) return false
+		if (prev.turnWorking !== next.turnWorking) return false
 		if (prev.projectRoot !== next.projectRoot) return false
 		// onDelete/onOpenChange are callback refs - skip reference comparison to avoid
 		// re-renders from parent creating new closures

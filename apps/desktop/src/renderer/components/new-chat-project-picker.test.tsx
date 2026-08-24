@@ -60,7 +60,6 @@ describe("NewChatProjectPicker", () => {
 				selectedProject={project}
 				selectedDirectory={project.directory}
 				onSelectProject={() => {}}
-				onClearProject={() => {}}
 			/>,
 		)
 
@@ -69,7 +68,25 @@ describe("NewChatProjectPicker", () => {
 			clearProjectButton: markup.includes('aria-label="Clear project"'),
 		}).toEqual({
 			projectName: true,
-			clearProjectButton: true,
+			clearProjectButton: false,
 		})
+	})
+
+	test("optional clear control appears only when provided", () => {
+		const markup = renderToStaticMarkup(
+			<NewChatProjectPicker
+				projects={[project]}
+				selectedProject={project}
+				selectedDirectory={project.directory}
+				onSelectProject={() => {}}
+				onClearProject={() => {}}
+			/>,
+		)
+
+		expect(markup.includes('aria-label="Clear project"')).toBe(true)
+	})
+
+	test("new chat keeps a project selected instead of clearing it", () => {
+		expect(newChatSource.includes("onClearProject")).toBe(false)
 	})
 })

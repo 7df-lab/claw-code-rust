@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Notification } from "electron"
 import { createLogger } from "./logger"
+import { isAppInForeground } from "./notification-policy"
 import { getNotificationSettings } from "./settings-store"
 
 const log = createLogger("notifications")
@@ -84,10 +85,8 @@ export function showNotification(request: NotificationRequest): void {
 		// "unfocused" mode: normal behavior (suppress when focused)
 	}
 
-	// Suppression: app is focused and not minimized
-	const win = BrowserWindow.getAllWindows()[0]
-	const isFocused = win?.isFocused() && !win.isMinimized()
-	if (isFocused && !(request.type === "completed" && prefs.completionMode === "always")) {
+	// Suppression: a visible focused window means the user is already looking.
+	if (isAppInForeground(BrowserWindow.getAllWindows()) && !(request.type === "completed" && prefs.completionMode === "always")) {
 		log.debug("Suppressed (window focused)", { type: request.type, session: request.sessionId })
 		return
 	}

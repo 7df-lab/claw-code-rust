@@ -16,7 +16,7 @@ describe("Desktop slash command composer", () => {
 			showsPlan: clientCommandsBlock.includes('name: "plan"'),
 			showsResearch: clientCommandsBlock.includes('name: "research"'),
 			omitsUndo: !clientCommandsBlock.includes('name: "undo"'),
-			omitsSkills: !clientCommandsBlock.includes('name: "skills"'),
+			showsSkills: clientCommandsBlock.includes('name: "skills"'),
 			omitsServerCommands: !popoverSource.includes("useServerCommands"),
 			omitsUserCommandDispatch: !chatViewSource.includes("session.command"),
 			omitsSearchHeader:
@@ -27,7 +27,7 @@ describe("Desktop slash command composer", () => {
 			showsPlan: true,
 			showsResearch: true,
 			omitsUndo: true,
-			omitsSkills: true,
+			showsSkills: true,
 			omitsServerCommands: true,
 			omitsUserCommandDispatch: true,
 			omitsSearchHeader: true,

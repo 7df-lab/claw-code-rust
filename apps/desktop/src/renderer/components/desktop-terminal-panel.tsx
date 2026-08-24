@@ -7,8 +7,10 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@devo/ui/components/tooltip";
+import { useAtomValue } from "jotai";
 import { PanelBottomIcon, PlusIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { terminalNewTabNonceAtom } from "../atoms/terminal";
 import { isElectron } from "../services/backend";
 
 interface DesktopTerminalPanelProps {
@@ -398,6 +400,14 @@ export function DesktopTerminalPanel({
 		if (!open || !getTerminalBridge() || tabsRef.current.length > 0) return;
 		addTerminalTab();
 	}, [open, addTerminalTab]);
+
+	const newTabNonce = useAtomValue(terminalNewTabNonceAtom);
+	const previousNewTabNonceRef = useRef(newTabNonce);
+	useEffect(() => {
+		if (newTabNonce === previousNewTabNonceRef.current) return;
+		previousNewTabNonceRef.current = newTabNonce;
+		if (open) addTerminalTab();
+	}, [addTerminalTab, newTabNonce, open]);
 
 	useEffect(() => {
 		if (!open || !activeTabId || height <= 0) return;

@@ -43,7 +43,15 @@ export interface UpdateState {
 	canAutoInstall: boolean
 }
 
-export type AppMenuId = "edit" | "view" | "window"
+export type AppMenuId = "file" | "edit" | "view" | "window"
+export type AppMenuAction = "new-agent" | "open-folder" | "new-terminal"
+
+export interface RuleFileInfo {
+	path: string
+	name: string
+	directory: string
+	scope: "user" | "project"
+}
 
 export interface AppMenuPosition {
 	x: number
@@ -437,6 +445,7 @@ export interface DevoAPI {
 	getAppInfo: () => Promise<AppInfo>
 	appMenu: {
 		popup: (id: AppMenuId, position?: AppMenuPosition) => Promise<{ success: boolean }>
+		onAction: (callback: (action: AppMenuAction) => void) => () => void
 	}
 
 	/** Subscribe to chrome tier notification (fired once on load). */
@@ -541,6 +550,11 @@ export interface DevoAPI {
 
 	// Directory picker
 	pickDirectory: () => Promise<string | null>
+	rules: {
+		list: (directories: string[]) => Promise<RuleFileInfo[]>
+		open: (filePath: string) => Promise<void>
+		create: (directory: string) => Promise<RuleFileInfo>
+	}
 	desktopFolders: {
 		stat: (directories: string[]) => Promise<DesktopFolderStat[]>
 		create: (input: CreateDesktopFolderInput) => Promise<CreateDesktopFolderResult>

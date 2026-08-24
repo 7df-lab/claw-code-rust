@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { Agent, SidebarProject } from "../../lib/types"
-import { buildSidebarItems, type SidebarPreferences } from "./sidebar-data"
+import { buildSidebarItems, groupAgentsByProject, type SidebarPreferences } from "./sidebar-data"
 
 function project(name: string, directory: string, lastActiveAt: number): SidebarProject {
 	return {
@@ -147,5 +147,18 @@ describe("sidebar data helpers", () => {
 				preferences,
 			}),
 		).toEqual([{ type: "project", project: missingAlpha, sessions: [alphaNewer, alphaOlder] }])
+	})
+
+	test("groups sessions onto projects even when path separators differ", () => {
+		const windowsProject = project("devo", "C:\\Users\\lenovo\\Desktop\\devo", 200)
+		const session = {
+			...agent("slash-session", windowsProject, 10, 30),
+			directory: "C:/Users/lenovo/Desktop/devo",
+			projectDirectory: "C:/Users/lenovo/Desktop/devo",
+		}
+
+		expect(groupAgentsByProject([session], [windowsProject]).get(windowsProject.directory)).toEqual([
+			session,
+		])
 	})
 })

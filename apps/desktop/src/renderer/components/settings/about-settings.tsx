@@ -24,7 +24,7 @@ export function AboutSettings() {
 	return (
 		<div className="space-y-8">
 			<div>
-				<h2 className="text-xl font-semibold">About</h2>
+				<h2 className="text-[22px] font-medium tracking-tight">About</h2>
 			</div>
 
 			<SettingsSection>

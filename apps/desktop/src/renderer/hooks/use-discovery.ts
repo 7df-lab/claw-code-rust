@@ -121,32 +121,46 @@ export function useDiscovery() {
 					projects,
 				})
 
-				// --- Step 5: Pre-fetch sessions for user-managed Desktop projects ---
+				// --- Step 5: Pre-fetch sessions for every known project ---
 				const desktopFolders = appStore.get(desktopFoldersAtom)
 				const folderStatuses = appStore.get(desktopFolderStatusByDirectoryAtom)
 				const storedAvailableFolders = desktopFolders.filter(
 					(folder) => (folderStatuses[folder.directory] ?? "available") === "available",
 				)
 
-				if (storedAvailableFolders.length > 0) {
-					// Build sandbox lookup for worktree metadata restoration
-					const projectSandboxMap = new Map<string, Set<string>>()
-					for (const project of projects) {
-						if (!project.worktree || !project.sandboxes?.length) continue
-						const sandboxSet = new Set<string>()
-						for (const s of project.sandboxes) sandboxSet.add(s)
-						projectSandboxMap.set(project.worktree, sandboxSet)
-					}
+				const prefetchDirectories = new Map<string, Set<string> | undefined>()
+				const projectSandboxMap = new Map<string, Set<string>>()
+				for (const project of projects) {
+					if (!project.worktree || !project.sandboxes?.length) continue
+					const sandboxSet = new Set<string>()
+					for (const s of project.sandboxes) sandboxSet.add(s)
+					projectSandboxMap.set(project.worktree, sandboxSet)
+				}
 
+				for (const folder of storedAvailableFolders) {
+					prefetchDirectories.set(
+						folder.directory,
+						projectSandboxMap.get(folder.directory),
+					)
+				}
+				for (const project of projects) {
+					if (!project.worktree) continue
+					if (prefetchDirectories.has(project.worktree)) continue
+					prefetchDirectories.set(
+						project.worktree,
+						projectSandboxMap.get(project.worktree),
+					)
+				}
+
+				if (prefetchDirectories.size > 0) {
 					await Promise.allSettled(
-						storedAvailableFolders.map((folder) => {
-							const sandboxDirs = projectSandboxMap.get(folder.directory)
-							return loadProjectSessions(
-								folder.directory,
+						[...prefetchDirectories.entries()].map(([directory, sandboxDirs]) =>
+							loadProjectSessions(
+								directory,
 								sandboxDirs?.size ? sandboxDirs : undefined,
 								{ limit: 5, roots: true },
-							)
-						}),
+							),
+						),
 					)
 				}
 
@@ -154,7 +168,7 @@ export function useDiscovery() {
 					server: activeServer.name,
 					url,
 					projects: projects.length,
-					prefetched: storedAvailableFolders.length,
+					prefetched: prefetchDirectories.size,
 				})
 			} catch (err) {
 				log.error("Discovery failed", err)

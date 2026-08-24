@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, systemPreferences } from "electron"
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, shell, systemPreferences } from "electron"
 import {
 	acceptRun,
 	archiveRun,
@@ -32,6 +32,7 @@ import {
 	stashPop,
 } from "./git-service"
 import { getResolvedChromeTier, resolveTitleBarOverlay } from "./liquid-glass"
+import { createProjectAgentsMd, listRuleFiles } from "./rules-files"
 import { createLogger } from "./logger"
 import { readModelState, updateModelRecent } from "./model-state"
 import { dismissNotification, updateBadgeCount } from "./notifications"
@@ -423,6 +424,26 @@ export function registerIpcHandlers(): void {
 			async (_, input: { parentDirectory: string; name: string }) =>
 				await createDesktopFolder(input),
 		),
+	)
+
+	ipcMain.handle(
+		"rules:list",
+		withLogging("rules:list", (_, directories: string[]) =>
+			listRuleFiles(Array.isArray(directories) ? directories : []),
+		),
+	)
+
+	ipcMain.handle(
+		"rules:open",
+		withLogging("rules:open", async (_, filePath: string) => {
+			const error = await shell.openPath(filePath)
+			if (error) throw new Error(error)
+		}),
+	)
+
+	ipcMain.handle(
+		"rules:create",
+		withLogging("rules:create", (_, directory: string) => createProjectAgentsMd(directory)),
 	)
 
 	// --- Fetch proxy (bypasses Chromium connection limits) ---

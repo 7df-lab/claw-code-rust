@@ -23,7 +23,7 @@ export function GeneralSettings() {
 	return (
 		<div className="space-y-8">
 			<div>
-				<h2 className="text-xl font-semibold">General</h2>
+				<h2 className="text-[22px] font-medium tracking-tight">General</h2>
 			</div>
 
 			<SettingsSection>

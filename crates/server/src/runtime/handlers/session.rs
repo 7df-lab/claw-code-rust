@@ -6,6 +6,25 @@ use devo_protocol::native::rpc_session::RollbackMode;
 /// Default page size for canonical `session/list` when no limit is given.
 const CANONICAL_SESSION_LIST_DEFAULT_LIMIT: usize = 50;
 
+fn session_list_cwd_matches(cwds: &[std::path::PathBuf], cwd: &std::path::PathBuf) -> bool {
+    if cwds.is_empty() {
+        return true;
+    }
+    cwds.iter().any(|filter| {
+        if filter == cwd {
+            return true;
+        }
+        normalize_session_list_cwd(filter) == normalize_session_list_cwd(cwd)
+    })
+}
+
+fn normalize_session_list_cwd(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
 pub(crate) struct RuntimeSessionTurnCutOptions {
     pub(crate) session_id: SessionId,
     pub(crate) user_turn_index: Option<u32>,
@@ -1270,7 +1289,7 @@ impl ServerRuntime {
         let search = params.search.as_deref().map(str::to_lowercase);
         let mut sessions = Vec::new();
         for summary in self.list_session_summaries().await {
-            if !params.cwds.is_empty() && !params.cwds.contains(&summary.cwd) {
+            if !session_list_cwd_matches(&params.cwds, &summary.cwd) {
                 continue;
             }
             if let Some(search) = search.as_ref()

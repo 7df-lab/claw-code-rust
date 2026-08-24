@@ -136,7 +136,7 @@ export function WorktreeSettings() {
 	return (
 		<div className="space-y-8">
 			<div>
-				<h2 className="text-xl font-semibold">Worktrees</h2>
+				<h2 className="text-[22px] font-medium tracking-tight">Worktrees</h2>
 				<p className="mt-1 text-sm text-muted-foreground">
 					Manage git worktrees created for isolated agent sessions.
 				</p>

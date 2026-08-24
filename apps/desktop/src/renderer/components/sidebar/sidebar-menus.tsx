@@ -33,7 +33,7 @@ import type { SidebarPreferences, SidebarSort } from "./sidebar-data"
 const menuContentClass = projectMenuContentClass
 const menuItemClass = rowMenuItemClass
 const menuIconClass = optionMenuIconClass
-const headerIconClass = "size-4 stroke-[1.6]"
+const headerIconClass = "size-[15px] stroke-[1.5]"
 
 type HeaderIconButtonProps = ComponentPropsWithoutRef<"button"> & {
 	label: string

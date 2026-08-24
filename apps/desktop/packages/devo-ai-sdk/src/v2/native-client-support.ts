@@ -218,6 +218,7 @@ export function statusFromDevo(status?: string): any {
 		.replace(/-/g, "_")
 		.toLowerCase()
 	switch (normalized) {
+		case "active":
 		case "active_turn":
 		case "running":
 		case "busy":
@@ -388,6 +389,7 @@ function toolStateStatus(value: unknown, existingStatus: unknown): "completed" |
 		case "pending":
 			return "pending"
 		case "in_progress":
+		case "inProgress":
 		case "running":
 			return "running"
 		case "failed":

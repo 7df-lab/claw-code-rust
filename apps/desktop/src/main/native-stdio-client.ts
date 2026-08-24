@@ -173,6 +173,7 @@ export function routeNativeLine(line: string): NativeIncomingMessage {
 const DIRECTORY_SCOPED_METHODS = new Set([
 	"session/list",
 	"skill/list",
+	"skill/set_enabled",
 	"search/start",
 	"command/exec",
 ])

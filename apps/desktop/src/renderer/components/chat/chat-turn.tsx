@@ -13,6 +13,7 @@ import {
 	BotIcon,
 	CheckIcon,
 	ChevronDownIcon,
+	ChevronRightIcon,
 	CopyIcon,
 	FileIcon,
 	GitForkIcon,
@@ -46,9 +47,11 @@ import { buildProcessTimeline } from "./process-timeline"
 import { ProcessTimelineView } from "./process-timeline-view"
 import {
 	CompactionStatusDivider,
+	compactionStatusFromMetadata,
 	isCompactionStatusText,
 } from "./compaction-status-divider"
 import { PermissionItem } from "./chat-permission"
+import { PlanBlock, isPlanTextPart } from "./plan-block"
 
 // ============================================================
 // Utility functions
@@ -290,6 +293,7 @@ function getPartsAndTools(assistantMessages: ChatMessageEntry[]): {
 			} else if (part.type === "text" && !part.synthetic && part.text.trim()) {
 				if (isCompactionStatusText(part.text)) continue
 				const metadata = (part as { metadata?: Record<string, unknown> }).metadata
+				if (compactionStatusFromMetadata(metadata)) continue
 				ordered.push({ kind: "text", id: part.id, text: part.text, metadata })
 			} else if (part.type === "reasoning") {
 				// Strip OpenRouter's encrypted [REDACTED] chunks
@@ -303,10 +307,22 @@ function getPartsAndTools(assistantMessages: ChatMessageEntry[]): {
 	return { ordered, tools }
 }
 
-function hasCompactionStatusMarker(assistantMessages: ChatMessageEntry[]): boolean {
-	return assistantMessages.some((msg) =>
-		msg.parts.some((part) => part.type === "text" && isCompactionStatusText(part.text)),
-	)
+function compactionStatusFromTurn(
+	assistantMessages: ChatMessageEntry[],
+	sessionStatus: SessionCompactionStatus | null | undefined,
+): SessionCompactionStatus | null {
+	for (const msg of assistantMessages) {
+		for (const part of msg.parts) {
+			if (part.type !== "text") continue
+			const metadata = (part as { metadata?: Record<string, unknown> }).metadata
+			const fromPart = compactionStatusFromMetadata(metadata)
+			if (fromPart) return fromPart
+			if (isCompactionStatusText(part.text)) {
+				return sessionStatus === "completed" ? "completed" : "started"
+			}
+		}
+	}
+	return null
 }
 
 /**
@@ -347,6 +363,30 @@ function researchArtifactTitle(item: TextRenderablePart): string | undefined {
 	if (metadata?.[DEVO_ITEM_KIND_META] !== "research_artifact") return undefined
 	const title = metadata[DEVO_RESEARCH_ARTIFACT_TITLE_META]
 	return typeof title === "string" && title.trim() ? title : undefined
+}
+
+function AssistantTextBlock({
+	item,
+	showPlanActions = false,
+	onImplementPlan,
+	onRevisePlan,
+}: {
+	item: TextRenderablePart
+	showPlanActions?: boolean
+	onImplementPlan?: () => void
+	onRevisePlan?: () => void
+}) {
+	if (isPlanTextPart(item.metadata)) {
+		return (
+			<PlanBlock
+				item={item}
+				onImplementPlan={onImplementPlan}
+				onRevisePlan={onRevisePlan}
+				showActions={showPlanActions}
+			/>
+		)
+	}
+	return <ResearchArtifactBlock item={item} />
 }
 
 function ResearchArtifactBlock({ item }: { item: TextRenderablePart }) {
@@ -419,14 +459,26 @@ function messageEntryFingerprint(entry: ChatMessageEntry): string {
 						`${part.id}:${metadata[DEVO_ITEM_KIND_META]}:${metadata[DEVO_RESEARCH_ARTIFACT_TITLE_META] ?? ""}`,
 					)
 				}
+				if (
+					metadata?.[DEVO_ITEM_KIND_META] === "context_compaction" ||
+					metadata?.[DEVO_ITEM_KIND_META] === "proposed_plan" ||
+					metadata?.[DEVO_ITEM_KIND_META] === "plan"
+				) {
+					textMetadataSegments.push(
+						`${part.id}:${metadata[DEVO_ITEM_KIND_META]}:${metadata["devo/compactionStatus"] ?? ""}:${part.text.length}`,
+					)
+				}
 			}
 		} else if (part.type === "tool") {
-			const outLen =
-				part.state.status === "completed"
-					? part.state.output.length
-					: part.state.status === "error"
-						? part.state.error.length
-						: 0
+			let outLen = 0
+			if (part.state.status === "completed") outLen = part.state.output.length
+			else if (part.state.status === "error") outLen = part.state.error.length
+			else if (part.state.status === "running") {
+				const output = part.state.metadata?.output
+				outLen = typeof output === "string" ? output.length : 0
+			} else if (part.state.status === "pending" && typeof part.state.raw === "string") {
+				outLen = part.state.raw.length
+			}
 			toolSegments.push(`${part.id}:${part.state.status}:${outLen}`)
 		}
 	}
@@ -485,6 +537,8 @@ interface ChatTurnProps {
 	onForkFromTurn?: () => Promise<void>
 	/** Delete a specific part from a message (for error recovery) */
 	onDeletePart?: (sessionId: string, messageId: string, partId: string) => Promise<void>
+	onImplementPlan?: () => void
+	onRevisePlan?: () => void
 }
 
 function pendingPermissionFingerprint(permission: PendingPermission | undefined): string {
@@ -525,11 +579,9 @@ function WorkingTurnStatusStrip({
 	}, [turn])
 
 	return (
-		<div className="space-y-2 pt-1">
-			<div className="text-sm tabular-nums text-muted-foreground/70">
-				{retryStatus ? retryStatusText(retryStatus) : <>Working for {display}</>}
-			</div>
-			<div className="h-px bg-border/70" />
+		<div className="flex items-center gap-2 pt-0.5 text-[13px] leading-5 tabular-nums text-muted-foreground">
+			<span aria-hidden="true" className="size-1.5 shrink-0 animate-pulse rounded-full bg-foreground/45" />
+			{retryStatus ? retryStatusText(retryStatus) : <>Working for {display}</>}
 		</div>
 	)
 }
@@ -545,25 +597,30 @@ function CompletedTurnProcessDisclosure({
 	hasProcessDetails: boolean
 	onToggle: () => void
 }) {
-	const content = (
-		<>
-			<span>
-				{duration ? "Worked for " : "Worked"}
-				{duration}
-			</span>
-			{hasProcessDetails && (
-				<ChevronDownIcon
-					className={expanded ? "size-4 rotate-180 transition-transform" : "size-4 transition-transform"}
-					aria-hidden="true"
-				/>
-			)}
-		</>
+	const label = (
+		<span>
+			{duration ? "Worked for " : "Worked"}
+			{duration}
+		</span>
 	)
+	const chevron = hasProcessDetails ? (
+		expanded ? (
+			<ChevronDownIcon
+				aria-hidden="true"
+				className="size-3.5 shrink-0 text-muted-foreground/70"
+			/>
+		) : (
+			<ChevronRightIcon
+				aria-hidden="true"
+				className="size-3.5 shrink-0 text-muted-foreground/70 opacity-0 transition-opacity group-hover/worked:opacity-100 group-focus-visible/worked:opacity-100"
+			/>
+		)
+	) : null
 
 	if (!hasProcessDetails) {
 		return (
-			<div className="flex w-fit max-w-full items-center gap-1.5 border-b border-border/70 pb-1 text-sm tabular-nums text-muted-foreground/70">
-				{content}
+			<div className="flex w-full max-w-full items-center gap-2 py-0.5 text-[13px] leading-5 tabular-nums text-muted-foreground">
+				{label}
 			</div>
 		)
 	}
@@ -573,9 +630,10 @@ function CompletedTurnProcessDisclosure({
 			type="button"
 			onClick={onToggle}
 			aria-expanded={expanded}
-			className="flex w-fit max-w-full items-center gap-1.5 border-b border-border/70 pb-1 text-left text-sm tabular-nums text-muted-foreground/70 transition-colors hover:text-foreground"
+			className="group/worked flex w-fit max-w-full items-center gap-0.5 py-0.5 text-left text-[13px] leading-5 tabular-nums text-muted-foreground transition-colors hover:text-foreground"
 		>
-			{content}
+			<span className="min-w-0 truncate">{label}</span>
+			{chevron}
 		</button>
 	)
 }
@@ -608,6 +666,8 @@ export const ChatTurnComponent = memo(
 		onRevertToMessage,
 		onForkFromTurn,
 		onDeletePart,
+		onImplementPlan,
+		onRevisePlan,
 	}: ChatTurnProps) {
 		const [completedProcessExpanded, setCompletedProcessExpanded] = useState(false)
 		const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(() => new Set())
@@ -638,15 +698,10 @@ export const ChatTurnComponent = memo(
 			() => splitCompletedTurnParts(orderedParts),
 			[orderedParts],
 		)
-		const hasCompactionMarker = useMemo(
-			() => hasCompactionStatusMarker(turn.assistantMessages),
-			[turn.assistantMessages],
+		const displayedCompactionStatus: SessionCompactionStatus | null = compactionStatusFromTurn(
+			turn.assistantMessages,
+			compactionStatus,
 		)
-		const displayedCompactionStatus: SessionCompactionStatus | null = hasCompactionMarker
-			? compactionStatus === "completed"
-				? "completed"
-				: "started"
-			: null
 
 		// The last text for streaming display and copy action
 		const rawResponseText = useMemo(() => getLastResponseText(orderedParts), [orderedParts])
@@ -716,6 +771,12 @@ export const ChatTurnComponent = memo(
 		const textAlreadyInline =
 			processSectionVisible && processOrderedParts.some((p) => p.kind === "text")
 
+		useEffect(() => {
+			if (working) return
+			setCompletedProcessExpanded(false)
+			setExpandedRowIds(new Set())
+		}, [working])
+
 		const handleToggleTimelineRow = useCallback((rowId: string, open: boolean) => {
 			setExpandedRowIds((previous) => {
 				const next = new Set(previous)
@@ -773,7 +834,7 @@ export const ChatTurnComponent = memo(
 		)
 
 		return (
-			<div ref={turnRef} className="group/turn space-y-4">
+			<div ref={turnRef} className="group/turn space-y-3">
 				{/* User message */}
 				{isSynthetic ? (
 					<div className="flex items-center justify-end gap-1.5 text-[11px] italic text-muted-foreground/50">
@@ -817,8 +878,13 @@ export const ChatTurnComponent = memo(
 							orderedParts={processOrderedParts}
 							projectRoot={toolPathRoot}
 							renderText={(item) => (
-								<div className="py-0.5">
-									<ResearchArtifactBlock item={item} />
+								<div className="py-1">
+									<AssistantTextBlock
+										item={item}
+										onImplementPlan={onImplementPlan}
+										onRevisePlan={onRevisePlan}
+										showPlanActions={isLast && !working}
+									/>
 								</div>
 							)}
 							turnHasError={!!errorText}
@@ -826,7 +892,7 @@ export const ChatTurnComponent = memo(
 						/>
 
 						{working && hasSteps && (
-							<div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+							<div className="flex items-center gap-2 text-[13px] text-muted-foreground">
 								<Loader2Icon className="size-3 animate-spin text-muted-foreground/30" />
 								<Shimmer className="text-[11px]">{statusText}</Shimmer>
 							</div>
@@ -854,24 +920,29 @@ export const ChatTurnComponent = memo(
 
 				{/* Completed final response */}
 				{!working && finalResponsePart && responseText && (
-					researchArtifactTitle(finalResponsePart) ? (
-						<ResearchArtifactBlock item={{ ...finalResponsePart, text: responseText }} />
-					) : (
-						<Message from="assistant">
-							<MessageContent>
-								<MessageResponse>{responseText}</MessageResponse>
-							</MessageContent>
-						</Message>
-					)
+					<div>
+					<AssistantTextBlock
+						item={{ ...finalResponsePart, text: responseText }}
+						onImplementPlan={onImplementPlan}
+						onRevisePlan={onRevisePlan}
+						showPlanActions={isLast}
+					/>
+					</div>
 				)}
 
 				{/* Streaming response — visible while working, when text isn't already inline */}
 				{working && responseText && !textAlreadyInline && (
-					<Message from="assistant">
-						<MessageContent>
-							<MessageResponse animated>{responseText}</MessageResponse>
-						</MessageContent>
-					</Message>
+					<div>
+					{isPlanTextPart(finalResponsePart?.metadata) ? (
+						<AssistantTextBlock item={{ ...(finalResponsePart as TextRenderablePart), text: responseText }} />
+					) : (
+						<Message from="assistant">
+							<MessageContent>
+								<MessageResponse animated>{responseText}</MessageResponse>
+							</MessageContent>
+						</Message>
+					)}
+					</div>
 				)}
 
 				{/* User requirement: render compaction lifecycle as a transcript divider,
@@ -882,16 +953,16 @@ export const ChatTurnComponent = memo(
 
 				{/* Per-turn metadata — shown on completed turns so badges are visible after long responses */}
 				{!working && turn.assistantMessages.length > 0 && (turnModel || turnCostStr) && (
-					<div className="flex items-center gap-1.5 text-[11px] tabular-nums text-muted-foreground/40">
+					<div className="flex items-center gap-1.5 text-[11px] tabular-nums text-muted-foreground/45">
 						{turnModel && <span>{turnModel}</span>}
 						{turnModel && turnCostStr && <span>·</span>}
 						{turnCostStr && <span>{turnCostStr}</span>}
 					</div>
 				)}
 
-				{/* Turn-level message actions — always visible across all display modes */}
-				{responseText && (
-					<MessageActions>
+				{/* Turn-level message actions — only after the assistant turn finishes */}
+				{!working && responseText && (
+					<MessageActions className="-ml-1">
 						<MessageAction tooltip="Scroll to top" onClick={handleScrollToTop}>
 							<ArrowUpToLineIcon className="size-3" />
 						</MessageAction>

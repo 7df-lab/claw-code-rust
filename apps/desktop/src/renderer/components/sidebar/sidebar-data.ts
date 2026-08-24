@@ -1,3 +1,4 @@
+import { directoriesMatch } from "../../lib/directory-path"
 import type { Agent, SidebarProject } from "../../lib/types"
 
 export type SidebarSort = "updated" | "created"
@@ -24,6 +25,26 @@ export interface BuildSidebarItemsArgs {
 	projectSessionsByDirectory: Map<string, Agent[]>
 	preferences: SidebarPreferences
 	projectOrder?: ReadonlyMap<string, number>
+}
+
+export function groupAgentsByProject(
+	agents: Agent[],
+	projects: SidebarProject[],
+): Map<string, Agent[]> {
+	const grouped = new Map<string, Agent[]>()
+	for (const project of projects) {
+		grouped.set(project.directory, [])
+	}
+	for (const agent of agents) {
+		if (agent.parentId) continue
+		const sessionDir = agent.projectDirectory || agent.directory
+		const project = projects.find((item) => directoriesMatch(item.directory, sessionDir))
+		if (!project) continue
+		const existing = grouped.get(project.directory)
+		if (existing) existing.push(agent)
+		else grouped.set(project.directory, [agent])
+	}
+	return grouped
 }
 
 function sortSessions(sessions: Agent[], sort: SidebarSort): Agent[] {

@@ -67,7 +67,7 @@ export function ServerSettings({ initialNativeTrafficLogState = null }: ServerSe
 	return (
 		<div className="space-y-8">
 			<div>
-				<h2 className="text-xl font-semibold">Server</h2>
+				<h2 className="text-[22px] font-medium tracking-tight">Server</h2>
 				<p className="mt-1 text-sm text-muted-foreground">
 					Devo Desktop manages a private local stdio Native process.
 				</p>

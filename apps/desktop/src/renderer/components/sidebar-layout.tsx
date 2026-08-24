@@ -21,8 +21,9 @@ import {
 	desktopFolderStatusByDirectoryAtom,
 	desktopFoldersAtom,
 } from "../atoms/desktop-folders"
-import { terminalPanelOpenAtom } from "../atoms/terminal"
-import { settingsBackgroundSessionAtom, settingsOverlayOpenAtom } from "../atoms/ui"
+import { openNewTerminalAtom, terminalPanelOpenAtom } from "../atoms/terminal"
+import { customizeOpenAtom, settingsBackgroundSessionAtom, settingsOverlayOpenAtom } from "../atoms/ui"
+import { lastProjectDirectoryAtom } from "../atoms/preferences"
 import { useAppRoutePersistence } from "../hooks/use-app-route-persistence"
 import { useAgents, useProjectList, useSetCommandPaletteOpen } from "../hooks/use-agents"
 import { useAgentActions } from "../hooks/use-server"
@@ -34,6 +35,7 @@ import {
 	upsertDesktopFolder,
 } from "../lib/desktop-folders"
 import { formatShortcut } from "../lib/shortcut-display"
+import { navigateToNewChat } from "../lib/project-selection"
 import { isSettingsRoute } from "../lib/app-navigation"
 import type { Agent, SidebarProject } from "../lib/types"
 import { createDesktopFolder, pickDirectory, statDesktopFolders } from "../services/backend"
@@ -42,6 +44,7 @@ import {
 	refillProjectSessionsAfterDelete,
 } from "../services/connection-manager"
 import { APP_BAR_HEIGHT, AppBar } from "./app-bar"
+import { CustomizeView } from "./customize/customize-view"
 import { DesktopProjectActionsProvider } from "./desktop-project-actions-context"
 import { DesktopTerminalPanel } from "./desktop-terminal-panel"
 import { LeftPanelIcon } from "./panel-icons"
@@ -68,7 +71,7 @@ const isWindowsElectron = isElectronEnv && window.devo.platform === "win32"
 const WINDOW_CONTROLS_LEFT = isMac && isElectronEnv ? 93 : 8
 const WINDOW_CONTROLS_TOP = isMac && isElectronEnv ? 7 : 6
 /** Total width reserved for traffic lights or custom titlebar controls */
-const WINDOW_CONTROLS_INSET = isMac && isElectronEnv ? 160 : isWindowsElectron ? 200 : 72
+const WINDOW_CONTROLS_INSET = isMac && isElectronEnv ? 160 : isWindowsElectron ? 248 : 72
 const WINDOW_CONTROLS_RIGHT_INSET = isWindowsElectron ? 138 : 12
 
 // ============================================================
@@ -116,6 +119,7 @@ function NarrowWindowCollapser() {
 // ============================================================
 
 const APP_MENU_ITEMS = [
+	{ id: "file", label: "File" },
 	{ id: "edit", label: "Edit" },
 	{ id: "view", label: "View" },
 	{ id: "window", label: "Window" },
@@ -145,6 +149,10 @@ function AppMenuBar() {
 					type="button"
 					className="h-7 rounded-md px-2 text-sm font-normal text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
 					onClick={(event) => handleMenuClick(event, item.id)}
+					style={{
+						// @ts-expect-error -- vendor-prefixed CSS property
+						WebkitAppRegion: "no-drag",
+					}}
 				>
 					{item.label}
 				</button>
@@ -207,18 +215,27 @@ export function SidebarLayout() {
 	const pathname = useRouterState({ select: (state) => state.location.pathname })
 	const { content: slotContent, footer: slotFooter } = useSidebarSlot()
 	const [terminalPanelOpen, setTerminalPanelOpen] = useAtom(terminalPanelOpenAtom)
+	const openNewTerminal = useSetAtom(openNewTerminalAtom)
 	const backgroundSession = useAtomValue(settingsBackgroundSessionAtom)
 	const [settingsOverlayOpen, setSettingsOverlayOpen] = useAtom(settingsOverlayOpenAtom)
+	const [customizeOpen, setCustomizeOpen] = useAtom(customizeOpenAtom)
 	useAppRoutePersistence()
 
 	const isSettingsOpen = isSettingsRoute(pathname)
 	if (settingsOverlayOpen !== isSettingsOpen) {
 		setSettingsOverlayOpen(isSettingsOpen)
 	}
+	const previousPathnameRef = useRef(pathname)
+	if (previousPathnameRef.current !== pathname) {
+		previousPathnameRef.current = pathname
+		if (customizeOpen) setCustomizeOpen(false)
+	}
 
 	// ---- Sidebar-specific data ----
 	const agents = useAgents()
 	const projects = useProjectList()
+	const lastProjectDirectory = useAtomValue(lastProjectDirectoryAtom)
+	const setLastProjectDirectory = useSetAtom(lastProjectDirectoryAtom)
 	const setCommandPaletteOpen = useSetCommandPaletteOpen()
 	const desktopFolders = useAtomValue(desktopFoldersAtom)
 	const folderStatuses = useAtomValue(desktopFolderStatusByDirectoryAtom)
@@ -234,6 +251,11 @@ export function SidebarLayout() {
 	const [createFolderPending, setCreateFolderPending] = useState(false)
 	const [createFolderError, setCreateFolderError] = useState<string | null>(null)
 	const loadedProjectDirectoriesRef = useRef<Set<string>>(new Set())
+	useEffect(() => {
+		if (!projectSlug) return
+		const project = projects.find((item) => item.slug === projectSlug)
+		if (project) setLastProjectDirectory(project.directory)
+	}, [projectSlug, projects, setLastProjectDirectory])
 
 	// Sub-agents are filtered at the API level (roots: true)
 	const visibleAgents = agents
@@ -406,6 +428,32 @@ export function SidebarLayout() {
 		}
 	}, [desktopFolders, navigate, persistDesktopFolders, setFolderStatuses])
 
+	useEffect(() => {
+		if (!isElectronEnv || typeof window.devo.appMenu?.onAction !== "function") return
+		return window.devo.appMenu.onAction((action) => {
+			if (action === "new-agent") {
+				setCustomizeOpen(false)
+				navigateToNewChat(navigate, projects, projectSlug, lastProjectDirectory)
+				return
+			}
+			if (action === "open-folder") {
+				void handleAddProject()
+				return
+			}
+			if (action === "new-terminal") {
+				openNewTerminal()
+			}
+		})
+	}, [
+		handleAddProject,
+		lastProjectDirectory,
+		navigate,
+		openNewTerminal,
+		projects,
+		projectSlug,
+		setCustomizeOpen,
+	])
+
 	const handleOpenCreateFolder = useCallback(() => {
 		setCreateFolderError(null)
 		setCreateFolderOpen(true)
@@ -570,16 +618,21 @@ export function SidebarLayout() {
 							<div
 								className={cn(
 									"absolute inset-0 h-full",
-									isSettingsOpen && "pointer-events-none invisible",
+									(isSettingsOpen || customizeOpen) && "pointer-events-none invisible",
 								)}
-								aria-hidden={isSettingsOpen}
+								aria-hidden={isSettingsOpen || customizeOpen}
 							>
 								{sessionToKeepAlive ? (
 									<SessionView sessionId={sessionToKeepAlive} />
 								) : (
-									!isSettingsOpen && <Outlet />
+									!isSettingsOpen && !customizeOpen && <Outlet />
 								)}
 							</div>
+							{customizeOpen && !isSettingsOpen && (
+								<div className="absolute inset-0 z-10 h-full overflow-hidden bg-background">
+									<CustomizeView />
+								</div>
+							)}
 							{isSettingsOpen && (
 								<div className="absolute inset-0 z-10 h-full overflow-hidden bg-background">
 									<Outlet />

@@ -180,14 +180,13 @@ impl CommandPopup {
         matches
             .into_iter()
             .enumerate()
-            .map(|(idx, (item, indices))| {
+            .map(|(_, (item, indices))| {
                 let CommandItem::Builtin(cmd) = item;
                 let name = format!("/{}", cmd.command());
                 let description = cmd.description().to_string();
-                let selected = self.state.selected_idx == Some(idx);
                 GenericDisplayRow {
                     name,
-                    name_prefix_spans: vec![if selected { "> " } else { "  " }.into()],
+                    name_prefix_spans: vec!["  ".into()],
                     match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
                     display_shortcut: None,
                     description: Some(description),
@@ -338,6 +337,17 @@ mod tests {
             height >= MAX_POPUP_ROWS as u16,
             "expected filtered slash popup to keep an 8-row panel, got {height}"
         );
+    }
+
+    #[test]
+    fn selected_command_does_not_show_selection_marker() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
+        popup.on_composer_text_change("/model".to_string());
+
+        let height = popup.calculate_required_height(80);
+        let rendered = render_popup(&popup, 80, height);
+
+        assert!(rendered.contains("  /model"));
     }
 
     #[test]

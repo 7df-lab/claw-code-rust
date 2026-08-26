@@ -214,6 +214,11 @@ devo resume <session-id>
 完整示例（自定义模型参数 + API key）与协议说明见
 [配置](./docs/configuration.zh-Hans.md#接入自有-api-key)。
 
+## 响应较慢的 Provider
+
+Provider 响应没有应用层总超时，因此本地模型可以按需要花费时间加载或生成输出。
+Provider 连接建立仍有内部期限，并且用户可以随时取消请求。
+
 ## Docs
 
 - [离线安装](./docs/offline-installation.zh-Hans.md)

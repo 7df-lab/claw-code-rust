@@ -10,6 +10,8 @@ mod app_event_sender;
 mod bottom_pane;
 mod chatwidget;
 #[cfg(test)]
+mod chatwidget_layout_tests;
+#[cfg(test)]
 mod chatwidget_tail_follow_tests;
 #[cfg(test)]
 mod chatwidget_tests;

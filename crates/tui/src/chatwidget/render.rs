@@ -132,7 +132,7 @@ impl ChatWidget {
             if self.bottom_pane.is_resume_picker_open() {
                 area.height.saturating_sub(3).max(3)
             } else {
-                area.height.saturating_sub(1).max(3)
+                area.height
             },
         );
         let subagent_height = self

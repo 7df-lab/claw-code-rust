@@ -123,6 +123,9 @@ Devo server methods。
 - `openai_chat_completions`
 - `openai_responses`
 
+Provider 响应没有应用层总超时。本地模型可以按需要花费时间加载或生成输出，
+用户可以随时取消请求；连接建立仍保留内部期限。
+
 ## `[model_bindings.<id>]`
 
 | Field | Type | Meaning |

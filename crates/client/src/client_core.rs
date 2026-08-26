@@ -40,6 +40,12 @@ use crate::native_approval::resolve_approval_response;
 
 const SERVER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[derive(Clone, Copy)]
+enum ServerResponseWait {
+    Standard,
+    Unbounded,
+}
+
 /// Synthetic notifications emitted when falling back to detached `session/prompt`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerNotificationMessage {
@@ -362,6 +368,29 @@ impl ServerClientCore {
         P: Serialize,
         R: DeserializeOwned,
     {
+        self.request_with_wait(method, params, ServerResponseWait::Standard)
+            .await
+    }
+
+    async fn request_without_timeout<P, R>(&mut self, method: &str, params: P) -> Result<R>
+    where
+        P: Serialize,
+        R: DeserializeOwned,
+    {
+        self.request_with_wait(method, params, ServerResponseWait::Unbounded)
+            .await
+    }
+
+    async fn request_with_wait<P, R>(
+        &mut self,
+        method: &str,
+        params: P,
+        wait: ServerResponseWait,
+    ) -> Result<R>
+    where
+        P: Serialize,
+        R: DeserializeOwned,
+    {
         let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
         let (response_tx, response_rx) = oneshot::channel();
         // The transport reader resolves responses by this id (see
@@ -373,18 +402,32 @@ impl ServerClientCore {
             return Err(error);
         }
 
-        let response = match timeout(SERVER_RESPONSE_TIMEOUT, response_rx).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                self.pending.lock().await.remove(&request_id);
-                return Err(error)
-                    .with_context(|| format!("server dropped response for request {request_id}"));
+        let response = match wait {
+            ServerResponseWait::Standard => {
+                match timeout(SERVER_RESPONSE_TIMEOUT, response_rx).await {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(error)) => {
+                        self.pending.lock().await.remove(&request_id);
+                        return Err(error).with_context(|| {
+                            format!("server dropped response for request {request_id}")
+                        });
+                    }
+                    Err(error) => {
+                        self.pending.lock().await.remove(&request_id);
+                        return Err(error)
+                            .with_context(|| format!("{method} request {request_id} timed out"));
+                    }
+                }
             }
-            Err(error) => {
-                self.pending.lock().await.remove(&request_id);
-                return Err(error)
-                    .with_context(|| format!("{method} request {request_id} timed out"));
-            }
+            ServerResponseWait::Unbounded => match response_rx.await {
+                Ok(response) => response,
+                Err(error) => {
+                    self.pending.lock().await.remove(&request_id);
+                    return Err(error).with_context(|| {
+                        format!("server dropped response for request {request_id}")
+                    });
+                }
+            },
         };
         if response.get("error").is_some() {
             bail_server_error(&response)?;
@@ -1021,7 +1064,8 @@ impl ServerClientCore {
         &mut self,
         params: devo_protocol::native::rpc_admin::ProviderValidateParams,
     ) -> Result<devo_protocol::native::rpc_admin::ProviderValidateResult> {
-        self.request("provider/validate", params).await
+        self.request_without_timeout("provider/validate", params)
+            .await
     }
 
     pub(crate) async fn command_exec(

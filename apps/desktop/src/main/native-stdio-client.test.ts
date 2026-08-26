@@ -182,10 +182,12 @@ describe("StdioNativeClient", () => {
 			sessionList: requestTimeoutMsForMethod("session/list", 10_000),
 			mcpTools: requestTimeoutMsForMethod("mcp/tools", 10_000),
 			mcpSetEnabled: requestTimeoutMsForMethod("mcp/set_enabled", 5),
+			providerValidate: requestTimeoutMsForMethod("provider/validate", 10_000),
 		}).toEqual({
 			sessionList: 10_000,
 			mcpTools: 60_000,
 			mcpSetEnabled: 60_000,
+			providerValidate: undefined,
 		})
 	})
 

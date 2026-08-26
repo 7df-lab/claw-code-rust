@@ -332,6 +332,10 @@ impl OnboardingWidget {
         self.complete
     }
 
+    pub(crate) fn is_validating(&self) -> bool {
+        matches!(&self.state, OnboardingState::Validating { .. })
+    }
+
     pub(crate) fn cancel(&mut self) {
         self.complete = true;
         self.result = Some(OnboardingResult::Cancelled);

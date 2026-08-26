@@ -125,6 +125,10 @@ Supported wire API values:
 - `openai_chat_completions`
 - `openai_responses`
 
+Provider responses do not have an application-level response timeout. Slow local
+models may take as long as needed to load or generate output; users can cancel a
+request at any time. Connection establishment retains an internal deadline.
+
 ## `[model_bindings.<id>]`
 
 | Field | Type | Meaning |

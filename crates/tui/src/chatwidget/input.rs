@@ -757,6 +757,12 @@ impl ChatWidget {
     pub(crate) fn is_onboarding_active(&self) -> bool {
         self.onboarding.is_some()
     }
+
+    pub(crate) fn is_onboarding_validating(&self) -> bool {
+        self.onboarding
+            .as_ref()
+            .is_some_and(crate::onboarding_widget::OnboardingWidget::is_validating)
+    }
 }
 
 fn input_items_for_user_message(user_message: &UserMessage) -> Vec<InputItem> {

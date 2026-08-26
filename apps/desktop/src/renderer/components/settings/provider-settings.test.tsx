@@ -196,6 +196,27 @@ describe("ProviderSettings", () => {
 		expect(calls).toEqual(["validate"])
 	})
 
+	test("cancelled validation does not upsert", async () => {
+		const calls: string[] = []
+		const params = buildProviderUpsertParams(formValues, null)
+		const client = {
+			provider: {
+				validate: async () => {
+					calls.push("validate")
+					return { data: { reply_preview: "OK" } }
+				},
+				upsert: async () => {
+					calls.push("upsert")
+					return { data: { provider_vendor: providerVendor } }
+				},
+			},
+		}
+
+		const cancelled = true
+		await saveProviderVendor(client, params, () => !cancelled)
+		expect(calls).toEqual([])
+	})
+
 	test("provider dialog scrolls form body while keeping footer actions outside", () => {
 		const queryClient = new QueryClient()
 		const markup = renderToStaticMarkup(

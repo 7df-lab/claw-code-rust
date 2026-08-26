@@ -8,6 +8,7 @@ use devo_protocol::{
     StreamEvent, Usage,
 };
 use futures::Stream;
+use futures::StreamExt;
 use reqwest_eventsource::{Event, EventSource};
 use serde::Deserialize;
 use serde_json::Value;
@@ -25,7 +26,6 @@ use crate::error::ProviderError;
 use crate::http::invalid_status_error;
 use crate::openai::error_payload::provider_error_from_payload;
 use crate::text_normalization::{TaggedTextFragment, TaggedTextParser};
-use crate::timeout;
 
 /// <https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events>
 /// Represents a streamed chunk of a chat completion response returned by the model, based on the provided input.
@@ -89,16 +89,9 @@ pub(super) async fn completion_stream(
 
         futures::pin_mut!(event_source);
         loop {
-            let event = match timeout::next_eventsource_event(&mut event_source).await {
-                Ok(Some(event)) => event,
-                Ok(None) => break,
-                Err(idle) => {
-                    Err(timeout::stream_idle_timeout_provider_error(
-                        "openai",
-                        &request.model,
-                        idle,
-                    ))?
-                }
+            let event = match event_source.next().await {
+                Some(event) => event,
+                None => break,
             };
             let event = match event {
                 Ok(event) => event,

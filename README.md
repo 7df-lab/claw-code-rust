@@ -233,6 +233,13 @@ To bring your own key with a custom model manually:
 Full worked example (custom model parameters + API key) and protocol details:
 [Configuration](./docs/configuration.md#bring-your-own-api-key).
 
+## Slow Providers
+
+Provider responses are not subject to an application-level response timeout, so
+local models may take as long as necessary to load or generate output. Provider
+connections still have an internal connection-establishment deadline, and every
+request can be cancelled by the user.
+
 ## Docs
 
 - [Offline Installation](./docs/offline-installation.md)

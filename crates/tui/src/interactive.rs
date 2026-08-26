@@ -589,6 +589,10 @@ fn handle_tui_event(
             );
         }
         TuiEvent::Key(key) => {
+            if key.code == KeyCode::Esc && chat_widget.is_onboarding_validating() {
+                worker.cancel_provider_validation();
+                loop_state.pending_onboarding = None;
+            }
             if chat_widget.handle_onboarding_key_event(key) {
                 return Ok(LoopAction::Continue);
             }

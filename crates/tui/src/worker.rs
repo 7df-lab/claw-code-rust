@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
@@ -15,6 +17,7 @@ use devo_client::{ClientEvent, client_event_from_notification};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use devo_core::PermissionPreset;
 use devo_core::ProviderWireApi;
@@ -441,10 +444,37 @@ fn next_shell_command_exec_start(
     }
 }
 
+#[derive(Default)]
+struct ProviderValidationCancellation(Mutex<Option<CancellationToken>>);
+
+impl ProviderValidationCancellation {
+    fn cancel(&self) {
+        if let Some(token) = self
+            .0
+            .lock()
+            .expect("provider validation cancellation mutex should not be poisoned")
+            .as_ref()
+        {
+            token.cancel();
+        }
+    }
+
+    fn start(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        *self
+            .0
+            .lock()
+            .expect("provider validation cancellation mutex should not be poisoned") =
+            Some(token.clone());
+        token
+    }
+}
+
 /// Handle used by the UI thread to interact with the background query worker.
 pub(crate) struct QueryWorkerHandle {
     /// Sender used to submit commands to the worker.
     command_tx: mpsc::UnboundedSender<OperationCommand>,
+    provider_validation_cancel: Arc<ProviderValidationCancellation>,
     /// Receiver used by the UI to consume worker events.
     pub(crate) event_rx: mpsc::UnboundedReceiver<WorkerEvent>,
     /// Background task running the worker loop.
@@ -456,9 +486,16 @@ impl QueryWorkerHandle {
     pub(crate) fn spawn(config: QueryWorkerConfig) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let join_handle = tokio::spawn(run_worker(config, command_rx, event_tx));
+        let provider_validation_cancel = Arc::new(ProviderValidationCancellation::default());
+        let join_handle = tokio::spawn(run_worker(
+            config,
+            command_rx,
+            event_tx,
+            Arc::clone(&provider_validation_cancel),
+        ));
         Self {
             command_tx,
+            provider_validation_cancel,
             event_rx,
             join_handle,
         }
@@ -584,6 +621,11 @@ impl QueryWorkerHandle {
                 api_key,
             })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Cancels the in-flight provider validation probe, if any.
+    pub(crate) fn cancel_provider_validation(&self) {
+        self.provider_validation_cancel.cancel();
     }
 
     /// Requests the current configured provider vendors from the background worker.
@@ -941,6 +983,7 @@ impl QueryWorkerHandle {
         let (_event_tx, event_rx) = mpsc::unbounded_channel();
         Self {
             command_tx,
+            provider_validation_cancel: Arc::new(ProviderValidationCancellation::default()),
             event_rx,
             join_handle: tokio::spawn(async move { while command_rx.recv().await.is_some() {} }),
         }
@@ -951,8 +994,16 @@ async fn run_worker(
     config: QueryWorkerConfig,
     mut command_rx: mpsc::UnboundedReceiver<OperationCommand>,
     event_tx: mpsc::UnboundedSender<WorkerEvent>,
+    provider_validation_cancel: Arc<ProviderValidationCancellation>,
 ) {
-    if let Err(error) = run_worker_inner(config, &mut command_rx, &event_tx).await {
+    if let Err(error) = run_worker_inner(
+        config,
+        &mut command_rx,
+        &event_tx,
+        provider_validation_cancel,
+    )
+    .await
+    {
         let _ = event_tx.send(WorkerEvent::TurnFailed {
             message: error.to_string(),
             hint: None,
@@ -971,6 +1022,7 @@ async fn run_worker_inner(
     config: QueryWorkerConfig,
     command_rx: &mut mpsc::UnboundedReceiver<OperationCommand>,
     event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+    provider_validation_cancel: Arc<ProviderValidationCancellation>,
 ) -> Result<()> {
     // The worker owns the server client and translates UI commands into server
     // calls, then turns server notifications back into lightweight UI events.
@@ -1370,24 +1422,26 @@ async fn run_worker_inner(
                         model_binding,
                         api_key,
                     }) => {
-                        match tokio::time::timeout(
-                            Duration::from_secs(25),
-                            client.provider_validate(
-                                devo_protocol::native::rpc_admin::ProviderValidateParams {
-                                    provider_vendor: provider_vendor.into(),
-                                    model_binding: model_binding.into(),
-                                    api_key,
-                                },
-                            ),
-                        )
-                        .await
-                        {
-                            Ok(Ok(result)) => {
+                        let cancellation = provider_validation_cancel.start();
+                        let validation = client.provider_validate(
+                            devo_protocol::native::rpc_admin::ProviderValidateParams {
+                                provider_vendor: provider_vendor.into(),
+                                model_binding: model_binding.into(),
+                                api_key,
+                            },
+                        );
+                        tokio::pin!(validation);
+                        let validation_result = tokio::select! {
+                            result = &mut validation => Some(result),
+                            _ = cancellation.cancelled() => None,
+                        };
+                        match validation_result {
+                            Some(Ok(result)) => {
                                 let _ = event_tx.send(WorkerEvent::ProviderValidationSucceeded {
                                     reply_preview: result.reply_preview,
                                 });
                             }
-                            Ok(Err(error)) => {
+                            Some(Err(error)) => {
                                 let message = error.to_string();
                                 let hint =
                                     devo_provider::recovery_hint_for_message(&message);
@@ -1396,16 +1450,7 @@ async fn run_worker_inner(
                                     hint,
                                 });
                             }
-                            Err(_) => {
-                                let message =
-                                    "provider validation request timed out".to_string();
-                                let hint =
-                                    devo_provider::recovery_hint_for_message(&message);
-                                let _ = event_tx.send(WorkerEvent::ProviderValidationFailed {
-                                    message,
-                                    hint,
-                                });
-                            }
+                            None => {}
                         }
                     }
                     Some(OperationCommand::ListProviderVendors) => {
@@ -6605,10 +6650,12 @@ fn map_worker_join_result(result: std::result::Result<(), JoinError>) -> Result<
 
 #[cfg(test)]
 mod tests {
+    use super::ProviderValidationCancellation;
     use chrono::Utc;
     use pretty_assertions::assert_eq;
     use std::future::pending;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use devo_core::SessionId;
@@ -6693,6 +6740,7 @@ mod tests {
         let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         let worker = QueryWorkerHandle {
             command_tx,
+            provider_validation_cancel: Arc::new(ProviderValidationCancellation::default()),
             event_rx,
             join_handle: tokio::spawn(async {
                 pending::<()>().await;

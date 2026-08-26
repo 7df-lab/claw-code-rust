@@ -15,7 +15,6 @@ use devo_provider::anthropic::AnthropicProvider;
 use devo_provider::openai::OpenAIProvider;
 use devo_provider::openai::OpenAIResponsesProvider;
 use devo_util_paths::current_user_config_file;
-use std::time::Duration;
 
 use crate::ProtocolErrorCode;
 use crate::SuccessResponse;
@@ -227,18 +226,14 @@ async fn validate_provider_candidate(
         )?,
     )?;
 
-    tokio::time::timeout(
-        Duration::from_secs(20),
-        test_model_connection(
-            provider.as_ref(),
-            &validation_model,
-            model_profile,
-            &params.model_binding.request_model,
-            "Reply with OK only.",
-        ),
+    test_model_connection(
+        provider.as_ref(),
+        &validation_model,
+        model_profile,
+        &params.model_binding.request_model,
+        "Reply with OK only.",
     )
     .await
-    .context("provider validation timed out after 20s")?
     .map_err(Into::into)
 }
 

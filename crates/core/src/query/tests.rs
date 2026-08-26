@@ -165,19 +165,6 @@ fn network_errors_are_retryable() {
             message: "provider request timed out".into(),
             provider_name: Some("test-provider".into()),
         }),
-        anyhow::Error::new(devo_provider::timeout::stream_idle_timeout_provider_error(
-            "openai",
-            "gpt-test",
-            devo_provider::timeout::StreamIdleTimeoutError {
-                idle_timeout: std::time::Duration::from_secs(60),
-            },
-        )),
-        anyhow::Error::new(devo_provider::timeout::StreamIdleTimeoutError {
-            idle_timeout: std::time::Duration::from_secs(60),
-        }),
-        anyhow::anyhow!(
-            "openai stream idle timeout for model gpt-test: provider stream idle timeout after 60s without receiving data"
-        ),
     ];
 
     for error in cases {

@@ -7,6 +7,7 @@ use devo_protocol::{
     StopReason, StreamEvent, Usage,
 };
 use futures::Stream;
+use futures::StreamExt;
 use reqwest::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest_eventsource::{Event, EventSource};
@@ -17,7 +18,6 @@ use crate::error::ProviderError;
 use crate::hosted_tools::append_openai_responses_hosted_tools;
 use crate::http::invalid_status_error;
 use crate::text_normalization::{TaggedTextFragment, TaggedTextParser, split_tagged_text};
-use crate::timeout;
 use crate::{ModelProviderSDK, ProviderHttpOptions, merge_extra_body};
 
 use super::capabilities::{OpenAITransport, resolve_request_profile};
@@ -556,16 +556,9 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
 
             futures::pin_mut!(event_source);
             loop {
-                let event = match timeout::next_eventsource_event(&mut event_source).await {
-                    Ok(Some(event)) => event,
-                    Ok(None) => break,
-                    Err(idle) => {
-                        Err(timeout::stream_idle_timeout_provider_error(
-                            "openai responses",
-                            &request.model,
-                            idle,
-                        ))?
-                    }
+                let event = match event_source.next().await {
+                    Some(event) => event,
+                    None => break,
                 };
                 let event = match event {
                     Ok(event) => event,

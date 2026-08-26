@@ -324,9 +324,12 @@ Required fields for an enabled provider:
 Optional fields:
 
 - `availability_status`: last known safe status such as `unknown`, `valid`, `auth_required`, or `unavailable`.
-- `timeout_ms`: provider request timeout.
-- `connect_timeout_ms`: provider connection timeout.
 - `headers`: JSON object encoded as a TOML string. Object keys are HTTP header names and object values must be strings.
+
+Provider response duration is not configured in TOML. Runtime requests keep an
+internal connection-establishment deadline, but model loading and generation
+have no application-level response deadline; the owning turn or user may cancel
+them.
 
 Provider ids are stable program-generated identifiers. Changing `name` must not change the provider id.
 

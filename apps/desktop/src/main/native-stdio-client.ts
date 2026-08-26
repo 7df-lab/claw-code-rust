@@ -29,14 +29,17 @@ export type JsonRpcId = number | string
 type PendingRequest = {
 	resolve: (value: unknown) => void
 	reject: (error: Error) => void
-	timer: ReturnType<typeof setTimeout>
+	timer?: ReturnType<typeof setTimeout>
 }
 
 const REQUEST_TIMEOUT_MS = 10_000
 /** MCP admin RPCs may start a lazy server before listing tools. */
 export const MCP_ADMIN_REQUEST_TIMEOUT_MS = 60_000
 
-export function requestTimeoutMsForMethod(method: string, fallbackMs: number): number {
+export function requestTimeoutMsForMethod(method: string, fallbackMs: number): number | undefined {
+	if (method === "provider/validate") {
+		return undefined
+	}
 	if (method === "mcp/tools" || method === "mcp/set_enabled") {
 		return Math.max(fallbackMs, MCP_ADMIN_REQUEST_TIMEOUT_MS)
 	}
@@ -295,11 +298,17 @@ export class StdioNativeClient implements NativeTransport {
 		const scopedParams = scopeRequestParams(method, params, directory)
 		const payload = { jsonrpc: "2.0", id, method, params: scopedParams }
 		const response = new Promise<unknown>((resolve, reject) => {
-			const timer = setTimeout(() => {
-				if (!this.pending.delete(id)) return
-				this.pendingMethods.delete(id)
-				reject(new Error(`${method} request ${id} timed out`))
-			}, requestTimeoutMsForMethod(method, this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS))
+			const timeoutMs = requestTimeoutMsForMethod(
+				method,
+				this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+			)
+			const timer = timeoutMs === undefined
+				? undefined
+				: setTimeout(() => {
+						if (!this.pending.delete(id)) return
+						this.pendingMethods.delete(id)
+						reject(new Error(`${method} request ${id} timed out`))
+					}, timeoutMs)
 			this.pending.set(id, { resolve, reject, timer })
 		})
 		this.pendingMethods.set(id, method)
@@ -315,7 +324,7 @@ export class StdioNativeClient implements NativeTransport {
 		} catch (error) {
 			const reason = toError(error)
 			const pending = this.pending.get(id)
-			if (pending) clearTimeout(pending.timer)
+			if (pending?.timer !== undefined) clearTimeout(pending.timer)
 			this.pending.delete(id)
 			this.pendingMethods.delete(id)
 			this.close(reason)
@@ -399,7 +408,7 @@ export class StdioNativeClient implements NativeTransport {
 				const pending = this.pending.get(routed.id)
 				if (!pending) return
 				this.pending.delete(routed.id)
-				clearTimeout(pending.timer)
+				if (pending.timer !== undefined) clearTimeout(pending.timer)
 				const error = routed.message.error as { message?: string } | undefined
 				if (error) {
 					pending.reject(new Error(error.message ?? "Devo Native request failed"))
@@ -485,7 +494,7 @@ export class StdioNativeClient implements NativeTransport {
 			payload: { error: error.message },
 		})
 		for (const pending of this.pending.values()) {
-			clearTimeout(pending.timer)
+			if (pending.timer !== undefined) clearTimeout(pending.timer)
 			pending.reject(error)
 		}
 		this.pending.clear()

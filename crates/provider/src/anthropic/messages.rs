@@ -21,6 +21,7 @@ use devo_protocol::StreamEvent;
 use devo_protocol::Usage;
 use devo_protocol::normalize_tool_result_messages;
 use futures::Stream;
+use futures::StreamExt;
 use reqwest::Client;
 use reqwest::header::ACCEPT_ENCODING;
 use reqwest::header::CACHE_CONTROL;
@@ -46,7 +47,6 @@ use crate::error::ProviderError;
 use crate::hosted_tools::append_anthropic_hosted_tools;
 use crate::http::invalid_status_error;
 use crate::merge_extra_body;
-use crate::timeout;
 
 /// <https://platform.claude.com/docs/en/api/messages>
 /// Anthropic provider backed by the official HTTP API.
@@ -387,16 +387,9 @@ impl ModelProviderSDK for AnthropicProvider {
 
             futures::pin_mut!(event_source);
             loop {
-                let event = match timeout::next_eventsource_event(&mut event_source).await {
-                    Ok(Some(event)) => event,
-                    Ok(None) => break,
-                    Err(idle) => {
-                        Err(timeout::stream_idle_timeout_provider_error(
-                            "anthropic",
-                            &request.model,
-                            idle,
-                        ))?
-                    }
+                let event = match event_source.next().await {
+                    Some(event) => event,
+                    None => break,
                 };
                 let event = match event {
                     Ok(event) => event,

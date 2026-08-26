@@ -84,14 +84,6 @@ pub(crate) fn classify_error(e: &anyhow::Error) -> ErrorClass {
     }
 
     if e.chain().any(|cause| {
-        cause
-            .downcast_ref::<devo_provider::timeout::StreamIdleTimeoutError>()
-            .is_some()
-    }) {
-        return ErrorClass::NetworkError;
-    }
-
-    if e.chain().any(|cause| {
         cause.downcast_ref::<reqwest::Error>().is_some_and(|error| {
             error.is_timeout()
                 || error.is_connect()

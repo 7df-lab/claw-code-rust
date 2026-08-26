@@ -38,7 +38,7 @@ import { Spinner } from "@devo/ui/components/spinner"
 import { Textarea } from "@devo/ui/components/textarea"
 import { useQueryClient } from "@tanstack/react-query"
 import { SaveIcon } from "lucide-react"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { queryKeys } from "../../hooks/use-devo-data"
 import { createLogger } from "../../lib/logger"
 import { getBaseClient, invalidateConfigOptionCaches } from "../../services/connection-manager"
@@ -170,16 +170,19 @@ export function buildProviderUpsertParams(
 export async function saveProviderVendor(
 	client: ProviderVendorClient,
 	params: ProviderVendorUpsertParams,
+	shouldContinue: () => boolean = () => true,
 ) {
 	if (!params.model_binding) {
 		throw new Error("Model binding is required")
 	}
+	if (!shouldContinue()) return
 	const validateParams: ProviderValidateParams = {
 		provider_vendor: params.provider_vendor,
 		model_binding: params.model_binding,
 		...(params.api_key ? { api_key: params.api_key } : {}),
 	}
 	await client.provider.validate(validateParams)
+	if (!shouldContinue()) return
 	return client.provider.upsert(params)
 }
 
@@ -193,8 +196,10 @@ export function ProviderVendorDialog({
 	const [values, setValues] = useState<ProviderVendorFormValues>(() => initialValues(providerVendor))
 	const [error, setError] = useState<string | null>(null)
 	const [saving, setSaving] = useState(false)
+	const saveAttemptRef = useRef(0)
 
 	useEffect(() => {
+		saveAttemptRef.current += 1
 		if (!open) return
 		setValues(initialValues(providerVendor))
 		setError(null)
@@ -211,13 +216,15 @@ export function ProviderVendorDialog({
 	const handleSubmit = useCallback(
 		async (event: React.FormEvent<HTMLFormElement>) => {
 			event.preventDefault()
+			const saveAttempt = ++saveAttemptRef.current
 			setSaving(true)
 			setError(null)
 			try {
 				const client = getBaseClient()
 				if (!client) throw new Error("Not connected to server")
 				const params = buildProviderUpsertParams(values, providerVendor)
-				await saveProviderVendor(client, params)
+				await saveProviderVendor(client, params, () => saveAttemptRef.current === saveAttempt)
+				if (saveAttemptRef.current !== saveAttempt) return
 				invalidateConfigOptionCaches()
 				queryClient.invalidateQueries({ queryKey: queryKeys.providerVendors })
 				queryClient.invalidateQueries({
@@ -226,18 +233,32 @@ export function ProviderVendorDialog({
 				onSaved()
 				onOpenChange(false)
 			} catch (err) {
+				if (saveAttemptRef.current !== saveAttempt) return
 				const message = err instanceof Error ? err.message : "Failed to save provider"
 				log.error("Failed to save provider", { error: err })
 				setError(message)
 			} finally {
-				setSaving(false)
+				if (saveAttemptRef.current === saveAttempt) setSaving(false)
 			}
 		},
 		[values, providerVendor, queryClient, onSaved, onOpenChange],
 	)
 
+	const handleDialogOpenChange = useCallback(
+		(nextOpen: boolean) => {
+			if (!nextOpen) {
+				// Closing while validation is pending invalidates the continuation so
+				// a late validation response cannot persist the provider.
+				saveAttemptRef.current += 1
+				setSaving(false)
+			}
+			onOpenChange(nextOpen)
+		},
+		[onOpenChange],
+	)
+
 	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
+		<Dialog open={open} onOpenChange={handleDialogOpenChange}>
 			<DialogContent className="flex max-h-[calc(100dvh-2rem)] overflow-hidden p-0 sm:max-w-xl">
 				<form onSubmit={handleSubmit} className="flex min-h-0 flex-col">
 					<DialogHeader className="px-6 pt-6 pb-4">
@@ -399,7 +420,7 @@ export function ProviderVendorDialog({
 						className="shrink-0 bg-background px-6 py-4"
 						data-testid="provider-dialog-footer"
 					>
-						<Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+						<Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>
 							Cancel
 						</Button>
 						<Button type="submit" disabled={saving}>

@@ -186,7 +186,7 @@ impl CommandPopup {
                 let description = cmd.description().to_string();
                 GenericDisplayRow {
                     name,
-                    name_prefix_spans: vec!["  ".into()],
+                    name_prefix_spans: Vec::new(),
                     match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
                     display_shortcut: None,
                     description: Some(description),
@@ -340,14 +340,14 @@ mod tests {
     }
 
     #[test]
-    fn selected_command_does_not_show_selection_marker() {
+    fn selected_command_has_no_left_padding() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Color::Cyan);
         popup.on_composer_text_change("/model".to_string());
 
         let height = popup.calculate_required_height(80);
         let rendered = render_popup(&popup, 80, height);
 
-        assert!(rendered.contains("  /model"));
+        assert!(rendered.lines().any(|line| line.starts_with("  /model")));
     }
 
     #[test]

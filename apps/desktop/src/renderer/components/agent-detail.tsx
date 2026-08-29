@@ -44,9 +44,9 @@ import {
 	setOpenInPreferred,
 } from "../services/backend"
 import { ChatView } from "./chat"
+import { ContextUsageButton } from "./context-usage-button"
 import { BottomPanelIcon, RightPanelIcon } from "./panel-icons"
 import { ReviewPanel } from "./review/review-panel"
-import { SessionMetricsOverviewButton } from "./session-metrics-bar"
 import { WorktreeActions } from "./worktree-actions"
 
 function useTurnWorkspaceChangeStats(sessionId: string): {
@@ -416,7 +416,7 @@ function SessionPanelHeader({
 					</div>
 
 					<div className="flex shrink-0 items-center gap-0.5">
-						<SessionMetricsOverviewButton sessionId={agent.sessionId} />
+						<ContextUsageButton sessionId={agent.sessionId} directory={agent.directory} />
 						<TerminalToggleButton />
 						<ChangesPanelToggleButton
 							reviewPanelOpen={reviewPanelOpen}

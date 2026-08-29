@@ -1,5 +1,6 @@
 import { atom } from "jotai"
 import { atomFamily } from "jotai-family"
+import type { ContextOccupancy } from "../lib/context-occupancy"
 
 export interface SessionNativeState {
 	commands: unknown[]
@@ -10,6 +11,7 @@ export interface SessionNativeState {
 		size: unknown
 		cost?: unknown
 	}
+	occupancy?: ContextOccupancy
 }
 
 export const sessionNativeFamily = atomFamily((_sessionId: string) =>

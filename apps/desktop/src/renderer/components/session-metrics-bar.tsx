@@ -5,8 +5,9 @@
  * Popover: full token breakdown, exchanges, model distribution,
  * tool calls, and cache efficiency.
  *
- * Context window usage is displayed separately in the StatusBar below
- * the chat input (see prompt-toolbar.tsx).
+ * Context window occupancy is the circular progress control in the session
+ * header (see context-usage-button.tsx). The composer status bar also shows
+ * a compact usage indicator (see prompt-toolbar.tsx).
  */
 import { Popover, PopoverContent, PopoverTrigger } from "@devo/ui/components/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@devo/ui/components/tooltip"

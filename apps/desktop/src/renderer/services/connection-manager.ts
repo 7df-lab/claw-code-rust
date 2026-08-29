@@ -616,6 +616,8 @@ function coalescingKey(event: Event): string | undefined {
 			return `part:${event.properties.messageID}:${event.properties.partID}`
 		case "session.status":
 			return `status:${event.properties.sessionID}`
+		case "context.usage.updated":
+			return `context-usage:${event.properties.sessionID}`
 		default:
 			return undefined
 	}

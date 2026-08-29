@@ -29,7 +29,7 @@ describe("Native session renderer state", () => {
 		expect(appStore.get(sessionFamily(sessionID))?.permissions).toEqual([event.properties])
 	})
 
-	test("stores command, config, mode, and usage updates from events", () => {
+	test("stores command, config, mode, usage, and occupancy updates from events", () => {
 		const sessionID = "session-native-state"
 
 		processEvent({
@@ -62,6 +62,20 @@ describe("Native session renderer state", () => {
 				cost: { amount: 1, currency: "USD" },
 			},
 		})
+		processEvent({
+			type: "context.usage.updated",
+			properties: {
+				sessionID,
+				occupancy: {
+					totalTokens: 48_000,
+					contextWindowTokens: 190_000,
+					categories: [
+						{ id: "base", tokens: 8_000, shareBps: 1667 },
+						{ id: "conversation", tokens: 40_000, shareBps: 8333 },
+					],
+				},
+			},
+		})
 
 		expect(appStore.get(sessionNativeFamily(sessionID))).toEqual({
 			commands: [{ name: "compact", description: "Compact session" }],
@@ -71,6 +85,14 @@ describe("Native session renderer state", () => {
 				used: 42,
 				size: 100,
 				cost: { amount: 1, currency: "USD" },
+			},
+			occupancy: {
+				totalTokens: 48_000,
+				contextWindowTokens: 190_000,
+				categories: [
+					{ id: "base", tokens: 8_000, shareBps: 1667 },
+					{ id: "conversation", tokens: 40_000, shareBps: 8333 },
+				],
 			},
 		})
 	})

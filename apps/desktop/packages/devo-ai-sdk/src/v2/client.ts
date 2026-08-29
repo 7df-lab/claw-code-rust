@@ -337,6 +337,36 @@ function numberFromProtocol(value: unknown): number {
 	return 0
 }
 
+type ContextOccupancyWire = {
+	totalTokens: number
+	contextWindowTokens: number
+	categories: Array<{ id: string; tokens: number; shareBps: number }>
+}
+
+function contextOccupancyFromProtocol(value: unknown): ContextOccupancyWire | null {
+	const occupancy = objectRecord(value)
+	if (!occupancy) return null
+	const rawCategories = Array.isArray(occupancy.categories) ? occupancy.categories : []
+	return {
+		totalTokens: numberFromProtocol(occupancy.totalTokens ?? occupancy.total_tokens),
+		contextWindowTokens: numberFromProtocol(
+			occupancy.contextWindowTokens ?? occupancy.context_window_tokens,
+		),
+		categories: rawCategories.flatMap((entry) => {
+			const category = objectRecord(entry)
+			const id = String(category?.id ?? "")
+			if (!id) return []
+			return [
+				{
+					id,
+					tokens: numberFromProtocol(category?.tokens),
+					shareBps: numberFromProtocol(category?.shareBps ?? category?.share_bps),
+				},
+			]
+		}),
+	}
+}
+
 function workspaceChangeStats(value: unknown): WorkspaceChangeStats {
 	const stats = objectRecord(value)
 	return {
@@ -1208,6 +1238,18 @@ class NativeClient {
 		},
 	}
 
+	context = {
+		usage: {
+			read: async (params: { sessionID: string }) => {
+				const result = (await this.requestCanonical("context/usage/read", {
+					sessionId: params.sessionID,
+				})) as { occupancy?: unknown }
+				this.emitContextUsage(params.sessionID, result.occupancy)
+				return { data: result.occupancy }
+			},
+		},
+	}
+
 	mcp = {
 		list: async () => {
 			const result = (await this.requestCanonical("mcp/list", {})) as { servers?: unknown[] }
@@ -1383,8 +1425,12 @@ class NativeClient {
 		if (!cwd) throw new Error(`session ${sessionId} not found`)
 		const resumed = (await this.requestCanonical("session/resume", {
 			sessionId,
-		})) as { session: Record<string, unknown> }
+		})) as { session: Record<string, unknown>; lastContextOccupancy?: unknown; last_context_occupancy?: unknown }
 		this.rememberNativeSession(resumed.session)
+		await this.hydrateContextOccupancy(
+			sessionId,
+			resumed.lastContextOccupancy ?? resumed.last_context_occupancy,
+		)
 		await this.ensureSessionSubscription(sessionId)
 		let cursor: string | undefined
 		do {
@@ -1792,6 +1838,11 @@ class NativeClient {
 					properties: { sessionID: pending.sessionId ?? String(value.sessionId ?? ""), requestID: approvalId },
 				})
 			}
+			return true
+		}
+		if (method === "context/usageUpdated") {
+			const sessionId = String(value.sessionId ?? "")
+			if (sessionId) this.emitContextUsage(sessionId, value.occupancy)
 			return true
 		}
 		if (method === "turn/usage/updated" || method === "session/usage/updated") {
@@ -2934,6 +2985,28 @@ class NativeClient {
 		}
 		this.rememberDirectoryConfigOptions(directory, sessionConfigOptionsFromModelPreferences(result.preferences ?? {}))
 		return this.currentConfigOptions()
+	}
+
+	private async hydrateContextOccupancy(sessionId: string, occupancy: unknown): Promise<void> {
+		if (this.emitContextUsage(sessionId, occupancy)) return
+		try {
+			const result = (await this.requestCanonical("context/usage/read", {
+				sessionId,
+			})) as { occupancy?: unknown }
+			this.emitContextUsage(sessionId, result.occupancy)
+		} catch {
+			// Occupancy is optional chrome; live context/usageUpdated still hydrates later.
+		}
+	}
+
+	private emitContextUsage(sessionId: string, occupancyValue: unknown): boolean {
+		const occupancy = contextOccupancyFromProtocol(occupancyValue)
+		if (!occupancy) return false
+		this.emit(this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd(), {
+			type: "context.usage.updated",
+			properties: { sessionID: sessionId, occupancy },
+		})
+		return true
 	}
 
 	private emit(directory: string, payload: Event): void {

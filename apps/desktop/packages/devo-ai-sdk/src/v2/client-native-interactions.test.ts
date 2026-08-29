@@ -46,6 +46,15 @@ class FakeNativeTransport implements DevoNativeTransport {
 				return { views: [nativeWorkspaceView] }
 			case "turn/start":
 				return { turn: nativeTurnInProgress }
+			case "session/resume":
+				return {
+					session: nativeSession,
+					lastContextOccupancy: nativeOccupancy,
+				}
+			case "session/items/list":
+				return { data: [], nextCursor: null }
+			case "context/usage/read":
+				return { occupancy: nativeOccupancy }
 			default:
 				throw new Error(`unexpected request ${method}`)
 		}
@@ -143,6 +152,18 @@ const nativeTurnCompleted = {
 	...nativeTurnInProgress,
 	status: "completed",
 	completedAt: "2026-08-24T00:00:08Z",
+}
+
+const nativeOccupancy = {
+	totalTokens: 100_000,
+	contextWindowTokens: 200_000,
+	categories: [
+		{ id: "base", tokens: 10_000, shareBps: 1000 },
+		{ id: "skills", tokens: 5_000, shareBps: 500 },
+		{ id: "toolsBuiltin", tokens: 20_000, shareBps: 2000 },
+		{ id: "toolsMcp", tokens: 15_000, shareBps: 1500 },
+		{ id: "conversation", tokens: 50_000, shareBps: 5000 },
+	],
 }
 
 const approvalItem = {
@@ -647,5 +668,42 @@ describe("Native desktop SDK interactions", () => {
 		await client.session.list({ limit: 5, roots: true })
 
 		expect((await client.session.status()).data["session-1"]).toEqual({ type: "busy" })
+	})
+
+	test("projects context occupancy from context/usageUpdated", async () => {
+		const transport = new FakeNativeTransport()
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+
+		transport.emit({
+			type: "notification",
+			method: "context/usageUpdated",
+			params: { sessionId: nativeSession.id, occupancy: nativeOccupancy },
+		})
+
+		expect(await nextPayloadOfType(stream, "context.usage.updated")).toEqual({
+			type: "context.usage.updated",
+			properties: {
+				sessionID: nativeSession.id,
+				occupancy: nativeOccupancy,
+			},
+		})
+	})
+
+	test("reads context occupancy through context/usage/read", async () => {
+		const transport = new FakeNativeTransport()
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+
+		const result = await client.context.usage.read({ sessionID: nativeSession.id })
+		expect(result.data).toEqual(nativeOccupancy)
+		expect(transport.requests.some((request) => request.method === "context/usage/read")).toBe(true)
+		expect(await nextPayloadOfType(stream, "context.usage.updated")).toEqual({
+			type: "context.usage.updated",
+			properties: {
+				sessionID: nativeSession.id,
+				occupancy: nativeOccupancy,
+			},
+		})
 	})
 })

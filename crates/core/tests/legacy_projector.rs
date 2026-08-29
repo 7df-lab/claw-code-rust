@@ -138,6 +138,7 @@ fn item_record(n: u128, session: u128, turn: u128, seq: u64) -> ItemRecord {
         turn_id: turn_id(turn),
         seq,
         timestamp: ts(10 + seq as u32),
+        started_at: None,
         attempt_placement: None,
         turn_status: Some(TurnStatus::Running),
         sibling_turn_ids: Vec::new(),

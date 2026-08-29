@@ -275,10 +275,14 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>
 const streamdownPlugins = { cjk, code, math, mermaid }
 
 // Product requirement: regular transcript Markdown tables should keep copy and
-// download controls, but not show a fullscreen control.
+// download controls, but not show a fullscreen control. Code blocks keep copy
+// but hide download — the transcript already has the source in context.
 const transcriptMarkdownControls: NonNullable<MessageResponseProps["controls"]> = {
 	table: {
 		fullscreen: false,
+	},
+	code: {
+		download: false,
 	},
 }
 

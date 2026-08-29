@@ -362,6 +362,7 @@ impl ServerRuntime {
     ) -> (ItemId, u64) {
         let item_id = ItemId::new();
         let item_seq = self.allocate_item_sequence(session_id).await;
+        self.remember_item_started_at(session_id, item_id).await;
         self.emit_item_started(
             session_id,
             turn_id,
@@ -382,9 +383,50 @@ impl ServerRuntime {
     ) -> (ItemId, u64) {
         let item_id = ItemId::new();
         let item_seq = self.allocate_item_sequence(session_id).await;
+        self.remember_item_started_at(session_id, item_id).await;
         self.emit_native_item_started(session_id, turn_id, item_id, Some(item_seq), native_item)
             .await;
         (item_id, item_seq)
+    }
+
+    async fn remember_item_started_at(&self, session_id: SessionId, item_id: ItemId) {
+        let Some(stream) = self.active_stream_state(session_id).await else {
+            return;
+        };
+        let mut stream = stream.lock().await;
+        if let Some(inline) = stream.turn_inline.as_mut() {
+            inline.item_started_at.insert(item_id, chrono::Utc::now());
+        }
+    }
+
+    async fn take_item_started_at(
+        &self,
+        session_id: SessionId,
+        item_id: ItemId,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let stream = self.active_stream_state(session_id).await?;
+        let mut stream = stream.lock().await;
+        stream
+            .turn_inline
+            .as_mut()
+            .and_then(|inline| inline.item_started_at.remove(&item_id))
+    }
+
+    fn payload_with_started_at(
+        mut payload: serde_json::Value,
+        started_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> serde_json::Value {
+        if let Some(started_at) = started_at
+            && let Some(object) = payload.as_object_mut()
+        {
+            object.insert(
+                "startedAt".to_string(),
+                serde_json::Value::String(
+                    started_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                ),
+            );
+        }
+        payload
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -480,6 +522,7 @@ impl ServerRuntime {
         turn_item: TurnItem,
         payload: serde_json::Value,
     ) {
+        let started_at = self.take_item_started_at(session_id, item_id).await;
         self.persist_item(
             session_id,
             turn_id,
@@ -488,6 +531,7 @@ impl ServerRuntime {
             turn_item,
             Some(TurnStatus::Running),
             None,
+            started_at,
         )
         .await;
         self.emit_item_completed(
@@ -496,7 +540,7 @@ impl ServerRuntime {
             item_id,
             Some(item_seq),
             item_kind,
-            payload,
+            Self::payload_with_started_at(payload, started_at),
         )
         .await;
     }
@@ -510,6 +554,7 @@ impl ServerRuntime {
         native_item: NativeItem,
         turn_item: TurnItem,
     ) {
+        let started_at = self.take_item_started_at(session_id, item_id).await;
         self.persist_item(
             session_id,
             turn_id,
@@ -518,10 +563,20 @@ impl ServerRuntime {
             turn_item,
             Some(TurnStatus::Running),
             None,
+            started_at,
         )
         .await;
-        self.emit_native_item_completed(session_id, turn_id, item_id, Some(item_seq), native_item)
-            .await;
+        let (item_kind, payload) =
+            legacy_wire_from_native_item(&native_item).expect("native item must reverse-project");
+        self.emit_item_completed(
+            session_id,
+            turn_id,
+            item_id,
+            Some(item_seq),
+            item_kind,
+            Self::payload_with_started_at(payload, started_at),
+        )
+        .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -534,6 +589,7 @@ impl ServerRuntime {
         turn_item: TurnItem,
         turn_status: Option<TurnStatus>,
         worklog: Option<Worklog>,
+        started_at: Option<chrono::DateTime<chrono::Utc>>,
     ) {
         if let Some(stream) = self.active_stream_state(session_id).await {
             // Mutate inline state under the lock, then release before any
@@ -568,6 +624,7 @@ impl ServerRuntime {
                                 turn_item.clone(),
                                 turn_status.clone(),
                                 worklog.clone(),
+                                started_at,
                             ),
                         )
                     })
@@ -617,6 +674,7 @@ impl ServerRuntime {
                 turn_item,
                 turn_status,
                 worklog,
+                started_at,
             );
             if let Err(error) = self.rollout_store.append_item(&record, item) {
                 tracing::warn!(session_id = %session_id, error = %error, "failed to persist item line");

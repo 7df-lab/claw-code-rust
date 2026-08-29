@@ -166,6 +166,10 @@ export interface TranscriptDisclosureContentProps {
  * Expanded body for a transcript row.
  * Spacing uses padding inside the panel (not margin) so Base UI's height
  * collapse to 0 does not leave uneven gaps between process rows.
+ *
+ * Keep `keepMounted={false}` so bodies (especially @pierre/diffs) mount only
+ * while open. Skip CSS height transitions — animated 0→N measurement races
+ * pierre's virtualizer and blanks the first expand of a session.
  */
 export const TranscriptDisclosureContent = memo(function TranscriptDisclosureContent({
 	children,
@@ -174,7 +178,7 @@ export const TranscriptDisclosureContent = memo(function TranscriptDisclosureCon
 }: TranscriptDisclosureContentProps) {
 	return (
 		<CollapsibleContent
-			className="outline-none overflow-hidden"
+			className="outline-none overflow-hidden [&]:transition-none [&]:animate-none"
 			keepMounted={false}
 		>
 			<div

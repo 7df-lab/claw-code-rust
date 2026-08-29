@@ -10,6 +10,7 @@ import {
 	type HTMLAttributes,
 	useCallback,
 	useContext,
+	useEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -24,6 +25,7 @@ type DiffOptions = {
 	theme?: string
 	disableLineNumbers?: boolean
 	disableFileHeader?: boolean
+	diffStyle?: "unified" | "split"
 }
 
 type DiffContextType =
@@ -48,6 +50,31 @@ const useDiffContext = () => {
 		throw new Error("Diff components must be used within a <Diff> component")
 	}
 	return context
+}
+
+/**
+ * Mount only the active color scheme. Rendering both light + dark MultiFileDiff
+ * (one with display:none) lets the hidden instance initialize @pierre/diffs
+ * against a 0×0 box and leaves the first expand blank until remount — same
+ * lesson as the review panel ("render only one theme, not both").
+ */
+function useIsDarkMode(): boolean {
+	const [dark, setDark] = useState(() => {
+		if (typeof document === "undefined") return false
+		return (
+			document.documentElement.classList.contains("dark") ||
+			document.documentElement.dataset.theme === "dark"
+		)
+	})
+	useEffect(() => {
+		const root = document.documentElement
+		const sync = () =>
+			setDark(root.classList.contains("dark") || root.dataset.theme === "dark")
+		const observer = new MutationObserver(sync)
+		observer.observe(root, { attributes: true, attributeFilter: ["class", "data-theme"] })
+		return () => observer.disconnect()
+	}, [])
+	return dark
 }
 
 export type DiffProps = HTMLAttributes<HTMLDivElement> &
@@ -267,16 +294,20 @@ export type DiffContentProps = HTMLAttributes<HTMLDivElement> & {
 	maxHeight?: string | number
 	/** Hide the internal @pierre/diffs file header (filename + stats bar) */
 	hideFileHeader?: boolean
+	/** `unified` = single-column (Cursor-style); `split` = side-by-side. Default: unified. */
+	diffStyle?: "unified" | "split"
 }
 
 export const DiffContent = ({
 	showLineNumbers = true,
 	maxHeight,
 	hideFileHeader = false,
+	diffStyle = "unified",
 	className,
 	...props
 }: DiffContentProps) => {
 	const context = useDiffContext()
+	const isDark = useIsDarkMode()
 
 	const containerStyle = maxHeight
 		? {
@@ -284,16 +315,15 @@ export const DiffContent = ({
 			}
 		: undefined
 
-	const lightOptions: DiffOptions = {
-		theme: "one-light",
-		disableLineNumbers: !showLineNumbers,
-		disableFileHeader: hideFileHeader,
-	}
-	const darkOptions: DiffOptions = {
-		theme: "one-dark-pro",
-		disableLineNumbers: !showLineNumbers,
-		disableFileHeader: hideFileHeader,
-	}
+	const options: DiffOptions = useMemo(
+		() => ({
+			theme: isDark ? "one-dark-pro" : "one-light",
+			disableLineNumbers: !showLineNumbers,
+			disableFileHeader: hideFileHeader,
+			diffStyle,
+		}),
+		[isDark, showLineNumbers, hideFileHeader, diffStyle],
+	)
 
 	return (
 		<div
@@ -302,43 +332,19 @@ export const DiffContent = ({
 			{...props}
 		>
 			{context.mode === "files" ? (
-				<>
-					<div className="dark:hidden">
-						<MultiFileDiff
-							options={lightOptions}
-							newFile={{
-								name: context.newFile.name,
-								contents: context.newFile.content,
-							}}
-							oldFile={{
-								name: context.oldFile.name,
-								contents: context.oldFile.content,
-							}}
-						/>
-					</div>
-					<div className="hidden dark:block">
-						<MultiFileDiff
-							options={darkOptions}
-							newFile={{
-								name: context.newFile.name,
-								contents: context.newFile.content,
-							}}
-							oldFile={{
-								name: context.oldFile.name,
-								contents: context.oldFile.content,
-							}}
-						/>
-					</div>
-				</>
+				<MultiFileDiff
+					options={options}
+					newFile={{
+						name: context.newFile.name,
+						contents: context.newFile.content,
+					}}
+					oldFile={{
+						name: context.oldFile.name,
+						contents: context.oldFile.content,
+					}}
+				/>
 			) : (
-				<>
-					<div className="dark:hidden">
-						<PatchDiff options={lightOptions} patch={context.patch} />
-					</div>
-					<div className="hidden dark:block">
-						<PatchDiff options={darkOptions} patch={context.patch} />
-					</div>
-				</>
+				<PatchDiff options={options} patch={context.patch} />
 			)}
 		</div>
 	)

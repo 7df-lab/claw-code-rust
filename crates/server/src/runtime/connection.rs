@@ -2639,6 +2639,7 @@ mod tests {
                     }),
                     Some(TurnStatus::Running),
                     None,
+                    None,
                 );
                 rollout_store
                     .append_item(&record, item)
@@ -3196,6 +3197,7 @@ mod tests {
                 seq,
                 TurnItem::AgentMessage(TextItem { text: text.into() }),
                 Some(TurnStatus::Running),
+                None,
                 None,
             );
             store.append_item(&record, item).expect("append item");

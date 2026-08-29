@@ -533,7 +533,7 @@ impl LegacyProjector {
                     turn_id: turn_id.clone(),
                     seq,
                     revision,
-                    created_at: record.timestamp,
+                    created_at: record.started_at.unwrap_or(record.timestamp),
                     updated_at: record.timestamp,
                     state,
                     item,

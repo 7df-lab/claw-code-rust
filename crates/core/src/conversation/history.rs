@@ -252,6 +252,7 @@ mod tests {
             turn_id,
             seq,
             timestamp: Utc.with_ymd_and_hms(2026, 7, 1, 12, 0, 0).unwrap(),
+            started_at: None,
             attempt_placement: None,
             turn_status: Some(TurnStatus::Running),
             sibling_turn_ids: Vec::new(),

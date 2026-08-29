@@ -252,9 +252,10 @@ describe("ChatTurnComponent transcript controls", () => {
         "Thought for a few seconds",
       ),
       keepsActiveThinkingCue: thoughtRowSource.includes("Thinking..."),
-      switchesToThoughtWhenComplete: thoughtRowSource.includes(
-        "<span>Thought</span>",
-      ),
+      switchesToThoughtWhenComplete:
+        thoughtRowSource.includes('"Thought"') ||
+        thoughtRowSource.includes("Thought for "),
+      showsThoughtDurationHelper: thoughtRowSource.includes("computeThoughtWorkTime"),
       toolsUseTranscriptDisclosure: chatToolCallSource.includes(
         "<TranscriptDisclosure",
       ),
@@ -303,6 +304,7 @@ describe("ChatTurnComponent transcript controls", () => {
       dropsVisibleThoughtCopyDependency: true,
       keepsActiveThinkingCue: true,
       switchesToThoughtWhenComplete: true,
+      showsThoughtDurationHelper: true,
       toolsUseTranscriptDisclosure: true,
       toolsOmitDurationTrailing: true,
       timelineRendersSeparateThoughtRows: true,

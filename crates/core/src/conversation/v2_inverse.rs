@@ -567,6 +567,8 @@ impl V2InverseProjector {
                 turn_id: legacy_turn_id(&envelope.turn_id)?,
                 seq: envelope.seq,
                 timestamp: envelope.updated_at,
+                started_at: (envelope.created_at != envelope.updated_at)
+                    .then_some(envelope.created_at),
                 // Not modeled on the canonical envelope: orchestration
                 // placement, the turn status at append time, sibling turns,
                 // worklog and per-item errors.
@@ -617,6 +619,7 @@ impl V2InverseProjector {
                         turn_id: legacy_turn_id(turn_id.ok_or(V2InverseError::MissingTurnId)?)?,
                         seq,
                         timestamp,
+                        started_at: None,
                         attempt_placement: None,
                         turn_status: None,
                         sibling_turn_ids: Vec::new(),

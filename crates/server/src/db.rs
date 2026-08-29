@@ -591,7 +591,7 @@ impl Database {
                 additional_directories = excluded.additional_directories,
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at,
-                last_activity_at = excluded.last_activity_at,
+                last_activity_at = MAX(excluded.last_activity_at, sessions.last_activity_at),
                 parent_session_id = COALESCE(excluded.parent_session_id, sessions.parent_session_id),
                 agent_path = COALESCE(excluded.agent_path, sessions.agent_path),
                 rollout_path = COALESCE(excluded.rollout_path, sessions.rollout_path)"

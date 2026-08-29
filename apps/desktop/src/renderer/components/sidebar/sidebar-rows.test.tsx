@@ -150,11 +150,13 @@ describe("SessionRow", () => {
 		expect({
 			hasSpinner: markup.includes("animate-spin"),
 			hasLoaderIcon: markup.includes("lucide-loader-circle"),
+			spinnerOnLeft: markup.includes("absolute left-1.5 top-1/2"),
 			hasCustomRing: markup.includes("border-[1.5px]"),
 			hasBlueDot: markup.includes("size-2 rounded-full bg-[#3396f4]"),
 		}).toEqual({
 			hasSpinner: true,
 			hasLoaderIcon: true,
+			spinnerOnLeft: true,
 			hasCustomRing: false,
 			hasBlueDot: false,
 		})
@@ -243,18 +245,24 @@ describe("SessionRow", () => {
 				/>,
 			)
 
+			const rightStatus = runningMarkup.slice(runningMarkup.indexOf("absolute right-2"))
+
 			expect({
 				idleShowsLastActive: idleMarkup.includes(">2h<"),
 				idleSpins: idleMarkup.includes("animate-spin"),
 				runningUsesLoader: runningMarkup.includes("lucide-loader-circle"),
 				runningSpins: runningMarkup.includes("animate-spin"),
 				runningShowsLastActive: runningMarkup.includes(">2h<"),
+				runningSpinnerOnLeft: runningMarkup.includes("absolute left-1.5 top-1/2"),
+				runningSpinnerNotOnRight: !rightStatus.includes("animate-spin"),
 			}).toEqual({
 				idleShowsLastActive: true,
 				idleSpins: false,
 				runningUsesLoader: true,
 				runningSpins: true,
-				runningShowsLastActive: false,
+				runningShowsLastActive: true,
+				runningSpinnerOnLeft: true,
+				runningSpinnerNotOnRight: true,
 			})
 		} finally {
 			Date.now = originalNow

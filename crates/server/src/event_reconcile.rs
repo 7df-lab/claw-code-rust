@@ -196,6 +196,7 @@ mod tests {
             TurnItem::AgentMessage(TextItem { text: "hi".into() }),
             Some(TurnStatus::Running),
             None,
+            None,
         );
         store.append_item(&record, item).expect("append item");
         (store, record.rollout_path)

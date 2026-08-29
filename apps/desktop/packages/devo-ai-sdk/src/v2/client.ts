@@ -256,20 +256,225 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
 }
 
+/** Maps a Native FileChangeKind entry into flat tool-input fields the UI can render. */
+function mapFileChangeKind(change: Record<string, unknown> | undefined): {
+	changeType?: string
+	content?: string
+	unifiedDiff?: string
+	movePath?: string
+} {
+	if (!change) return {}
+	const changeType = typeof change.type === "string" ? change.type : undefined
+	const content = typeof change.content === "string" ? change.content : undefined
+	const unifiedDiff =
+		typeof change.unifiedDiff === "string"
+			? change.unifiedDiff
+			: typeof change.unified_diff === "string"
+				? change.unified_diff
+				: undefined
+	const movePath =
+		typeof change.movePath === "string"
+			? change.movePath
+			: typeof change.move_path === "string"
+				? change.move_path
+				: undefined
+	return { changeType, content, unifiedDiff, movePath }
+}
+
+/**
+ * Project Native `fileChange` items into tool-part input.
+ * Preserves change kind + unifiedDiff so the desktop row can show
+ * Writing/Added or Editing/Edited with an expandable diff — not a generic tool.
+ */
 function fileChangeInput(item: Record<string, unknown>): Record<string, unknown> | undefined {
 	const changes = Array.isArray(item.changes) ? item.changes : []
-	const first = objectRecord(changes[0])
+	if (changes.length === 0) return undefined
+
+	const mapped = changes.map((entry) => {
+		const record = objectRecord(entry) ?? {}
+		const path = typeof record.path === "string" ? record.path : undefined
+		const kind = mapFileChangeKind(objectRecord(record.change))
+		return {
+			path,
+			...kind,
+			...(typeof record.content === "string" && kind.content == null
+				? { content: record.content }
+				: {}),
+		}
+	})
+
+	const first = mapped[0]
 	if (!first) return undefined
-	const path = typeof first.path === "string" ? first.path : undefined
-	const change = objectRecord(first.change)
-	const content =
-		typeof change?.content === "string"
-			? change.content
-			: typeof first.content === "string"
-				? first.content
+	const path = first.path
+	const hasPayload =
+		path != null ||
+		first.content != null ||
+		first.unifiedDiff != null ||
+		first.changeType != null
+	if (!hasPayload) return undefined
+
+	const unifiedDiffs = mapped
+		.map((entry) => entry.unifiedDiff)
+		.filter((diff): diff is string => typeof diff === "string" && diff.length > 0)
+
+	return {
+		...(path ? { filePath: path, path } : {}),
+		...(first.changeType ? { changeType: first.changeType } : {}),
+		...(first.content != null ? { content: first.content } : {}),
+		...(first.unifiedDiff != null ? { unifiedDiff: first.unifiedDiff } : {}),
+		...(first.movePath ? { movePath: first.movePath } : {}),
+		...(mapped.length > 1 ? { changes: mapped } : {}),
+		...(unifiedDiffs.length > 1 ? { unifiedDiff: unifiedDiffs.join("\n") } : {}),
+	}
+}
+
+/**
+ * History often stores file tools as a nameless ToolResult whose `output` is
+ * `{ diff, files: [{ kind, filePath, oldContent, postContent, ... }] }` —
+ * the same shape the TUI parses on resume. Project that into flat tool input
+ * so desktop can render Writing/Added / Editing/Edited instead of generic JSON.
+ */
+function fileChangeInputFromToolOutput(output: unknown): Record<string, unknown> | undefined {
+	const record =
+		typeof output === "string"
+			? (() => {
+					try {
+						return objectRecord(JSON.parse(output))
+					} catch {
+						return undefined
+					}
+				})()
+			: objectRecord(output)
+	if (!record) return undefined
+	const files = Array.isArray(record.files) ? record.files : []
+	if (files.length === 0) return undefined
+
+	const topDiff =
+		typeof record.diff === "string"
+			? record.diff
+			: typeof record.patch === "string"
+				? record.patch
 				: undefined
-	if (!path && content == null) return undefined
-	return { filePath: path, path, content }
+
+	const mapped = files.map((entry) => {
+		const file = objectRecord(entry) ?? {}
+		const path =
+			typeof file.filePath === "string"
+				? file.filePath
+				: typeof file.path === "string"
+					? file.path
+					: undefined
+		const kind = typeof file.kind === "string" ? file.kind : undefined
+		const changeType =
+			kind === "add" || kind === "update" || kind === "delete" || kind === "move"
+				? kind === "move"
+					? "update"
+					: kind
+				: undefined
+		const content = typeof file.content === "string" ? file.content : undefined
+		const oldString =
+			typeof file.oldContent === "string"
+				? file.oldContent
+				: typeof file.preContent === "string"
+					? file.preContent
+					: typeof file.pre_content === "string"
+						? file.pre_content
+						: undefined
+		const newString =
+			typeof file.postContent === "string"
+				? file.postContent
+				: typeof file.post_content === "string"
+					? file.post_content
+					: changeType === "update" || changeType === "add"
+						? content
+						: undefined
+		const unifiedDiff =
+			typeof file.diff === "string"
+				? file.diff
+				: typeof file.patch === "string"
+					? file.patch
+					: undefined
+		const movePath =
+			typeof file.movePath === "string"
+				? file.movePath
+				: typeof file.move_path === "string"
+					? file.move_path
+					: undefined
+		return {
+			path,
+			changeType,
+			content: changeType === "add" || changeType === "delete" ? content : undefined,
+			oldString,
+			newString,
+			unifiedDiff,
+			movePath,
+		}
+	})
+
+	const first = mapped[0]
+	if (!first?.path && !first?.unifiedDiff && !first?.content && !first?.oldString) {
+		return undefined
+	}
+
+	const unifiedDiff = first.unifiedDiff ?? topDiff
+	return {
+		...(first.path ? { filePath: first.path, path: first.path } : {}),
+		...(first.changeType ? { changeType: first.changeType } : {}),
+		...(first.content != null ? { content: first.content } : {}),
+		...(first.oldString != null ? { oldString: first.oldString } : {}),
+		...(first.newString != null ? { newString: first.newString } : {}),
+		...(unifiedDiff ? { unifiedDiff } : {}),
+		...(first.movePath ? { movePath: first.movePath } : {}),
+		...(mapped.length > 1 ? { changes: mapped } : {}),
+	}
+}
+
+/** Infer write vs edit from Native fileChange entries when toolName is absent. */
+function fileChangeToolKind(item: Record<string, unknown>): "write" | "edit" | undefined {
+	const changes = Array.isArray(item.changes) ? item.changes : []
+	const first = objectRecord(changes[0])
+	const change = objectRecord(first?.change)
+	const changeType = typeof change?.type === "string" ? change.type : undefined
+	if (changeType === "add") return "write"
+	if (changeType === "update" || changeType === "delete") return "edit"
+	return undefined
+}
+
+function fileChangeToolKindFromInput(
+	input: Record<string, unknown> | undefined,
+): "write" | "edit" | undefined {
+	if (!input) return undefined
+	const changeType = typeof input.changeType === "string" ? input.changeType : undefined
+	if (changeType === "add") return "write"
+	if (changeType === "update" || changeType === "delete") return "edit"
+	if (typeof input.unifiedDiff === "string" || typeof input.oldString === "string") return "edit"
+	if (typeof input.content === "string" && (input.path != null || input.filePath != null)) {
+		return "write"
+	}
+	return undefined
+}
+
+/** Prefer displayContent; unwrap Mixed `{ output: string }` without JSON.stringify. */
+function toolResultDisplayOutput(item: Record<string, unknown>): unknown {
+	if (typeof item.displayContent === "string" && item.displayContent.length > 0) {
+		return item.displayContent
+	}
+	if (typeof item.display_content === "string" && item.display_content.length > 0) {
+		return item.display_content
+	}
+	return unwrapToolOutputValue(item.output)
+}
+
+function unwrapToolOutputValue(output: unknown): unknown {
+	if (typeof output === "string") return output
+	const record = objectRecord(output)
+	if (!record) return output
+	// Mixed tool result: text lives under `output` / `text`; keep file-change
+	// metadata objects intact so callers can project `files[]`.
+	if (Array.isArray(record.files)) return output
+	if (typeof record.output === "string") return record.output
+	if (typeof record.text === "string") return record.text
+	return output
 }
 
 function sessionMeta(value: unknown): Record<string, unknown> | undefined {
@@ -713,9 +918,34 @@ function workspaceChangesUpdatedEventProperties(
 }
 
 function parseTimestampMs(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) return value
 	if (typeof value !== "string") return undefined
 	const parsed = Date.parse(value)
 	return Number.isFinite(parsed) ? parsed : undefined
+}
+
+/** Wire timestamps from a native ItemEnvelope into appendText/appendTool updates. */
+function nativeItemTimingFields(
+	envelope: Record<string, unknown>,
+	options: { includeCompletedAt?: boolean } = {},
+): Record<string, unknown> {
+	const turnId = typeof envelope.turnId === "string" ? envelope.turnId : ""
+	const fields: Record<string, unknown> = {}
+	if (turnId) fields._meta = { [DEVO_TURN_ID_META]: turnId }
+	if (typeof envelope.createdAt === "string") fields.createdAt = envelope.createdAt
+	if (options.includeCompletedAt && typeof envelope.updatedAt === "string") {
+		fields.completedAt = envelope.updatedAt
+	}
+	return fields
+}
+
+function updateEventTimeMs(update: Record<string, unknown>, fallback: number): number {
+	return (
+		parseTimestampMs(update.completedAt) ??
+		parseTimestampMs(update.createdAt) ??
+		updateHistoryCreatedAt(update) ??
+		fallback
+	)
 }
 
 type LoadedSessionLimit = number | null
@@ -951,6 +1181,10 @@ class NativeClient {
 				type: "session.status",
 				properties: { sessionID: params.sessionID, status: busyStatus },
 			})
+			// Sidebar / agents list read session.time.lastActivity via session.updated;
+			// bump immediately so sending a message refreshes relative age without
+			// waiting for turn/* (server does not project activity-only metadata).
+			this.touchNativeSessionActivity(params.sessionID, promptStartedAt)
 			// turn/start returns when the turn is accepted, not when it finishes.
 			// Stay busy until turn/completed (or a failed start below).
 			try {
@@ -1559,6 +1793,27 @@ class NativeClient {
 		return session
 	}
 
+	/**
+	 * Advances session lastActivity and emits session.updated so Desktop atoms
+	 * (agentsAtom / sidebar) recompute without a session/list refresh.
+	 * Native turn/item traffic does not carry session/metadataUpdated for
+	 * activity-only bumps — only title updates do — so the client owns live sync.
+	 */
+	private touchNativeSessionActivity(sessionId: string, at = Date.now()): void {
+		const session = this.sessions.get(sessionId)
+		if (!session) return
+		const previous = Math.max(session.time.lastActivity ?? 0, session.time.updated ?? 0)
+		if (at <= previous) return
+		session.time.lastActivity = at
+		session.time.updated = at
+		const directory =
+			this.sessionDirectories.get(sessionId) ?? session.directory ?? this.options.directory ?? defaultCwd()
+		this.emit(directory, {
+			type: "session.updated",
+			properties: { info: session, session },
+		})
+	}
+
 	private async ensureInitialized(): Promise<void> {
 		if (this.initialized) return
 		await this.open()
@@ -1781,6 +2036,14 @@ class NativeClient {
 			const status = { type: terminal ? "idle" : "busy" }
 			this.sessionStatuses.set(sessionId, status)
 			this.emit(directory, { type: "session.status", properties: { sessionID: sessionId, status } })
+			const activityAt =
+				parseTimestampMs(terminal ? turn?.completedAt : turn?.startedAt) ??
+				parseTimestampMs(turn?.updatedAt) ??
+				Date.now()
+			// Start + terminal only: statusChanged mid-turn would spam session.updated.
+			if (method === "turn/started" || terminal) {
+				this.touchNativeSessionActivity(sessionId, activityAt)
+			}
 			if (terminal) {
 				const startedAt = this.promptStartedAtBySession.get(sessionId) ?? 0
 				this.promptStartedAtBySession.delete(sessionId)
@@ -1796,7 +2059,20 @@ class NativeClient {
 		}
 		if (method === "item/started" || method === "item/updated" || method === "item/completed") {
 			const item = objectRecord(value.item)
-			if (item) this.handleNativeItemEnvelope(item, method)
+			if (item) {
+				this.handleNativeItemEnvelope(item, method)
+				// User submissions bump activity even if turn/* was missed.
+				if (method === "item/started") {
+					const sessionId = String(item.sessionId ?? "")
+					const itemBody = objectRecord(item.item)
+					const itemType = typeof itemBody?.type === "string" ? itemBody.type : ""
+					if (sessionId && itemType === "userMessage") {
+						const activityAt =
+							parseTimestampMs(item.updatedAt) ?? parseTimestampMs(item.createdAt) ?? Date.now()
+						this.touchNativeSessionActivity(sessionId, activityAt)
+					}
+				}
+			}
 			return true
 		}
 		if (method === "item/assistantMessage/delta" || method === "item/reasoning/delta") {
@@ -1941,7 +2217,15 @@ class NativeClient {
 			if (completed) this.renderedNativeItems.add(id)
 			return
 		}
-		if (completed && this.renderedNativeItems.has(id)) return
+		if (completed && this.renderedNativeItems.has(id)) {
+			// History dual-writes ToolResult then FileChange under the same item id.
+			// Allow a richer FileChange (or file-shaped ToolResult) to upgrade the
+			// nameless generic tool that won the first pass.
+			const canUpgrade =
+				itemType === "fileChange" ||
+				(itemType === "toolResult" && fileChangeInputFromToolOutput(item.output) != null)
+			if (!canUpgrade) return
+		}
 
 		if (itemType === "approval") {
 			const approvalId = String(item.approvalId ?? "")
@@ -2001,11 +2285,29 @@ class NativeClient {
 		if (itemType === "assistantMessage" || itemType === "reasoning") {
 			const partType = itemType === "reasoning" ? "reasoning" : "text"
 			const existing = this.parts.get(partCacheKey(sessionId, id))?.some((part) => part.type === partType)
-			if (!existing) this.appendText(sessionId, directory, "assistant", partType, { messageId: id, content: { text: String(item.text ?? "") } })
+			const text = String(item.text ?? "")
+			if (!existing) {
+				if (text || partType === "reasoning") {
+					this.appendText(sessionId, directory, "assistant", partType, {
+						messageId: id,
+						content: { text },
+						allowEmpty: partType === "reasoning",
+						...nativeItemTimingFields(envelope, { includeCompletedAt: completed }),
+					})
+				}
+			} else if (completed) {
+				this.finalizeNativeAssistantItem(sessionId, directory, id, envelope, partType)
+			}
 		} else if (itemType === "userMessage") {
 			const text = (Array.isArray(item.content) ? item.content : []).map((part) => objectRecord(part)).filter(Boolean).filter((part) => part?.type === "text").map((part) => String(part?.text ?? "")).join("\n")
 			const existing = this.parts.get(partCacheKey(sessionId, id))?.some((part) => part.type === "text")
-			if (!existing) this.appendText(sessionId, directory, "user", "text", { messageId: id, content: { text } })
+			if (!existing) {
+				this.appendText(sessionId, directory, "user", "text", {
+					messageId: id,
+					content: { text },
+					...nativeItemTimingFields(envelope),
+				})
+			}
 		} else if (
 			itemType === "toolCall" ||
 			itemType === "commandExecution" ||
@@ -2014,20 +2316,112 @@ class NativeClient {
 			itemType === "hostedToolCall"
 		) {
 			if (item.callId) this.nativeItemCallIds.set(id, String(item.callId))
+			const fromFileChange = itemType === "fileChange" ? fileChangeInput(item) : undefined
+			const fromToolOutput =
+				itemType === "toolResult" || (!item.input && !fromFileChange)
+					? fileChangeInputFromToolOutput(item.output)
+					: undefined
+			const projectedInput = item.input
+				? objectRecord(item.input)
+				: (fromFileChange ?? fromToolOutput)
+			const inferredFileChangeKind =
+				(!item.toolName
+					? itemType === "fileChange"
+						? fileChangeToolKind(item)
+						: fileChangeToolKindFromInput(projectedInput)
+					: undefined) ?? fileChangeToolKindFromInput(projectedInput)
+			const toolKind =
+				item.toolName ??
+				(itemType === "commandExecution" ? "execute" : undefined) ??
+				inferredFileChangeKind
 			this.appendTool(sessionId, directory, {
 				toolCallId: item.callId,
-				title: item.toolName ?? item.command ?? (itemType === "fileChange" ? "Write" : "Tool"),
-				...(item.toolName
-					? { kind: item.toolName }
-					: itemType === "commandExecution"
-						? { kind: "execute" }
-						: {}),
+				title:
+					item.toolName ??
+					item.command ??
+					(inferredFileChangeKind === "write"
+						? "Write"
+						: inferredFileChangeKind === "edit"
+							? "Edit"
+							: itemType === "fileChange"
+								? "Write"
+								: "Tool"),
+				...(toolKind ? { kind: toolKind } : {}),
 				status: completed ? (item.isError || envelope.state === "failed" ? "failed" : "completed") : "in_progress",
-				rawInput: item.input ?? fileChangeInput(item),
-				rawOutput: item.output,
+				rawInput: projectedInput,
+				rawOutput: toolResultDisplayOutput(item),
+				...nativeItemTimingFields(envelope, { includeCompletedAt: completed }),
 			})
 		}
 		if (completed) this.renderedNativeItems.add(id)
+	}
+
+	private finalizeNativeAssistantItem(
+		sessionId: string,
+		directory: string,
+		messageId: string,
+		envelope: Record<string, unknown>,
+		partType: "reasoning" | "text",
+	): void {
+		const item = objectRecord(envelope.item) ?? {}
+		const createdAt = parseTimestampMs(envelope.createdAt)
+		const completedAt = parseTimestampMs(envelope.updatedAt)
+		const messages = this.messages.get(sessionId)
+		const messageIndex = messages?.findIndex((message) => message.id === messageId) ?? -1
+		const message = messageIndex >= 0 ? messages?.[messageIndex] : undefined
+		if (message && messages && message.role === "assistant" && completedAt !== undefined) {
+			const nextCreated =
+				typeof createdAt === "number" &&
+				(typeof message.time?.created !== "number" || createdAt < message.time.created)
+					? createdAt
+					: message.time.created
+			const updated = {
+				...message,
+				time: {
+					...message.time,
+					created: nextCreated,
+					completed: message.time?.completed ?? completedAt,
+				},
+			} as Message
+			messages[messageIndex] = updated
+			this.emit(directory, {
+				type: "message.updated",
+				properties: { info: updated, message: updated },
+			})
+		}
+
+		const partId = `${messageId}-${partType === "reasoning" ? "reasoning" : "text"}`
+		const parts = this.parts.get(partCacheKey(sessionId, messageId))
+		const partIndex = parts?.findIndex((part) => part.id === partId) ?? -1
+		const existingPart = partIndex >= 0 ? parts?.[partIndex] : undefined
+		if (!parts || !existingPart) return
+		const completedText = typeof item.text === "string" ? item.text : ""
+		const existingText =
+			typeof (existingPart as { text?: unknown }).text === "string"
+				? (existingPart as { text: string }).text
+				: ""
+		const nextText =
+			completedText && (!existingText || completedText.startsWith(existingText) || existingText.startsWith(completedText))
+				? completedText.length >= existingText.length
+					? completedText
+					: existingText
+				: existingText || completedText
+		const start =
+			typeof createdAt === "number"
+				? createdAt
+				: typeof existingPart.time?.start === "number"
+					? existingPart.time.start
+					: (completedAt ?? this.nextEventTime())
+		const updatedPart = {
+			...existingPart,
+			text: nextText,
+			time: partTime(existingPart, start, {
+				start,
+				...(completedAt !== undefined ? { end: completedAt } : {}),
+			}),
+		} as Part
+		parts[partIndex] = updatedPart
+		this.emit(directory, { type: "message.part.updated", properties: { part: updatedPart } })
 	}
 
 	private async ensureSessionSubscription(sessionId: string): Promise<void> {
@@ -2474,7 +2868,10 @@ class NativeClient {
 	}
 
 	private turnIdForUpdate(update: Record<string, unknown>): string | undefined {
-		return updateMetaString(update, DEVO_TURN_ID_META)
+		return (
+			updateMetaString(update, DEVO_TURN_ID_META) ??
+			(typeof update.turnId === "string" && update.turnId ? update.turnId : undefined)
+		)
 	}
 
 	private parentMessageIdForUpdate(
@@ -2511,7 +2908,11 @@ class NativeClient {
 		now: number,
 	): number {
 		let created =
-			existingMessage?.time?.created ?? updateHistoryCreatedAt(update) ?? historyMessageCreatedAt(messageId) ?? now
+			existingMessage?.time?.created ??
+			parseTimestampMs(update.createdAt) ??
+			updateHistoryCreatedAt(update) ??
+			historyMessageCreatedAt(messageId) ??
+			now
 		const turnId = this.turnIdForUpdate(update)
 		if (role === "user" && turnId) {
 			const earliest = this.earliestMessageCreatedForTurn(sessionId, turnId)
@@ -2673,6 +3074,10 @@ class NativeClient {
 			now,
 		)
 		const turnId = this.turnIdForUpdate(update)
+		const completedAt =
+			role === "assistant"
+				? (existingMessage?.time?.completed ?? parseTimestampMs(update.completedAt))
+				: undefined
 		const message = {
 			...(existingMessage ?? {}),
 			id: messageId,
@@ -2680,7 +3085,11 @@ class NativeClient {
 			role,
 			...(parentID ? { parentID } : {}),
 			...(turnId ? { turnID: turnId } : {}),
-			time: { ...(existingMessage?.time ?? {}), created },
+			time: {
+				...(existingMessage?.time ?? {}),
+				created,
+				...(completedAt !== undefined ? { completed: completedAt } : {}),
+			},
 		} as Message
 		this.appendMessage(sessionId, message)
 		if (role === "user") this.lastUserMessageBySession.set(sessionId, messageId)
@@ -2691,7 +3100,7 @@ class NativeClient {
 		const existingPart = this.parts
 			.get(partCacheKey(sessionId, messageId))
 			?.find((part) => part.id === partId)
-		const partEventTime = updateHistoryCreatedAt(update) ?? now
+		const partEventTime = updateEventTimeMs(update, now)
 		const metadata = textPartMetadataFromUpdate(update, existingPart)
 		const part = {
 			id: partId,
@@ -2714,7 +3123,7 @@ class NativeClient {
 		update: Record<string, unknown>,
 	): void {
 		const text = textFromUpdate(update)
-		if (!text) return
+		if (!text && update.allowEmpty !== true) return
 		const now = this.nextEventTime()
 		const messageId =
 			typeof update.messageId === "string"
@@ -2732,6 +3141,10 @@ class NativeClient {
 			now,
 		)
 		const turnId = this.turnIdForUpdate(update)
+		const completedAt =
+			role === "assistant"
+				? (existingMessage?.time?.completed ?? parseTimestampMs(update.completedAt))
+				: undefined
 		const message = {
 			...(existingMessage ?? {}),
 			id: messageId,
@@ -2739,7 +3152,11 @@ class NativeClient {
 			role,
 			...(parentID ? { parentID } : {}),
 			...(turnId ? { turnID: turnId } : {}),
-			time: { ...(existingMessage?.time ?? {}), created },
+			time: {
+				...(existingMessage?.time ?? {}),
+				created,
+				...(completedAt !== undefined ? { completed: completedAt } : {}),
+			},
 		} as Message
 		this.appendMessage(sessionId, message)
 		if (role === "user") this.lastUserMessageBySession.set(sessionId, messageId)
@@ -2761,8 +3178,8 @@ class NativeClient {
 				: role === "user" && existingText && text.startsWith(existingText)
 					? text
 					: `${existingText}${text}`
-		if (existingPart && nextText === existingText) return
-		const partEventTime = updateHistoryCreatedAt(update) ?? now
+		if (existingPart && nextText === existingText && completedAt === undefined) return
+		const partEventTime = updateEventTimeMs(update, now)
 		const metadata = textPartMetadataFromUpdate(update, existingPart)
 		const part = {
 			id: partId,
@@ -2771,7 +3188,10 @@ class NativeClient {
 			type: partType,
 			[field]: nextText,
 			...(metadata ? { metadata } : {}),
-			time: partTime(existingPart, partEventTime),
+			time: partTime(existingPart, partEventTime, {
+				start: parseTimestampMs(update.createdAt) ?? created,
+				...(completedAt !== undefined ? { end: completedAt } : {}),
+			}),
 		} as TextPart | ReasoningPart
 		this.appendPart(sessionId, messageId, part)
 		this.emit(directory, { type: "message.part.updated", properties: { part } })
@@ -2810,6 +3230,8 @@ class NativeClient {
 			now,
 		)
 		const turnId = this.turnIdForUpdate(update)
+		const completedAt =
+			existingMessage?.time?.completed ?? parseTimestampMs(update.completedAt)
 		const message = {
 			...(existingMessage ?? {}),
 			id: messageId,
@@ -2817,9 +3239,13 @@ class NativeClient {
 			role: "assistant",
 			...(parentID ? { parentID } : {}),
 			...(turnId ? { turnID: turnId } : {}),
-			time: { ...(existingMessage?.time ?? {}), created },
+			time: {
+				...(existingMessage?.time ?? {}),
+				created,
+				...(completedAt !== undefined ? { completed: completedAt } : {}),
+			},
 		} as Message
-		const partEventTime = updateHistoryCreatedAt(update) ?? now
+		const partEventTime = updateEventTimeMs(update, now)
 		const part = toolPartFromUpdate(sessionId, update, existingPart, partEventTime) as ToolPart
 		this.appendMessage(sessionId, message)
 		this.rememberMessageTurn(sessionId, directory, messageId, "assistant", update)

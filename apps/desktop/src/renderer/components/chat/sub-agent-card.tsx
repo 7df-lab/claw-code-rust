@@ -56,6 +56,8 @@ function extractFirstLine(md: string): string | undefined {
 
 interface SubAgentCardProps {
 	part: ToolPart
+	/** Project root for display-only relative paths on nested tool rows. */
+	projectRoot?: string | null
 }
 
 /**
@@ -73,7 +75,10 @@ interface SubAgentCardProps {
  * While running the card is fully expanded. On completion it auto-collapses
  * to the summary state (or closed if there's no text).
  */
-export const SubAgentCard = memo(function SubAgentCard({ part: propPart }: SubAgentCardProps) {
+export const SubAgentCard = memo(function SubAgentCard({
+	part: propPart,
+	projectRoot,
+}: SubAgentCardProps) {
 	const navigate = useNavigate()
 	const { projectSlug } = useParams({ strict: false }) as { projectSlug?: string }
 
@@ -379,9 +384,12 @@ export const SubAgentCard = memo(function SubAgentCard({ part: propPart }: SubAg
 						<div className="py-2 pr-1">
 							<div className="space-y-1">
 								{latestToolParts.map((tp) => {
-									const { icon: TpIcon, title } = getToolInfo(tp.tool)
-									const tpSubtitle = getToolSubtitle(tp)
 									const tpRunning = tp.state.status === "running" || tp.state.status === "pending"
+									const { icon: TpIcon, title } = getToolInfo(tp.tool, {
+										running: tpRunning,
+										input: tp.state.input as Record<string, unknown> | undefined,
+									})
+									const tpSubtitle = getToolSubtitle(tp, { projectRoot })
 									const tpError = tp.state.status === "error"
 
 									return (
@@ -403,14 +411,14 @@ export const SubAgentCard = memo(function SubAgentCard({ part: propPart }: SubAg
 											/>
 											<span
 												className={cn(
-													"font-medium",
+													"shrink-0 font-medium",
 													tpError ? "text-red-400" : "text-foreground/70",
 												)}
 											>
 												{title}
 											</span>
 											{tpSubtitle && (
-												<span className="min-w-0 truncate text-muted-foreground/50">
+												<span className="min-w-0 truncate font-mono text-muted-foreground/50">
 													{tpSubtitle}
 												</span>
 											)}

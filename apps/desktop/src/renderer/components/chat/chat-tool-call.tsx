@@ -6,25 +6,20 @@ import {
 	CodeBlockHeader,
 	CodeBlockTitle,
 } from "@devo/ui/components/ai-elements/code-block"
-import { Diff, DiffContent } from "@devo/ui/components/ai-elements/diff"
 import { Terminal, TerminalContent } from "@devo/ui/components/ai-elements/terminal"
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@devo/ui/components/dialog"
 import { cn } from "@devo/ui/lib/utils"
 
-import { useSetAtom } from "jotai"
 import {
 	AlertTriangleIcon,
 	BookOpenIcon,
 	CodeIcon,
-	DiffIcon,
 	EditIcon,
 	EyeIcon,
 	FileCodeIcon,
 	FileIcon,
 	GlobeIcon,
 	Loader2Icon,
-	MinusIcon,
-	PlusIcon,
 	PlugIcon,
 	SearchIcon,
 	SquareCheckIcon,
@@ -36,9 +31,15 @@ import {
 import type { ReactNode } from "react"
 import { memo, useCallback, useMemo } from "react"
 import type { BundledLanguage } from "shiki"
-import { viewFileInDiffPanelAtom } from "../../atoms/ui"
 import { detectContentLanguage, detectLanguage, prettyPrintJson } from "../../lib/language"
 import type { FilePart, ToolPart, ToolStateCompleted } from "../../lib/types"
+import { FileChangeContent, FileChangeStatsBadge } from "./file-change-content"
+import {
+	fileChangeStats,
+	fileChangeVerb,
+	hasFileChangeExpandableContent,
+	isFileChangeTool,
+} from "./file-change-presentation"
 import { SubAgentCard } from "./sub-agent-card"
 import type { ToolCategory } from "./tool-category"
 import {
@@ -117,13 +118,14 @@ export function stripShellEnvelope(output: string): string {
  * Handles:
  * 1. Claude Code's `cat -n` format: <file>00001| content</file>
  * 2. Devo's XML-wrapped format: <path>...</path><content>1: content</content>
+ * 3. Mixed-result JSON accidentally stringified (literal `\n` escapes)
  *
  * Strips the wrapper tags and trailing metadata lines, but keeps the
  * content's own line-number prefixes — the read output already carries
  * line numbers, so the UI must not add another gutter of its own.
  */
-function parseReadOutput(raw: string): string {
-	let text = raw
+export function parseReadOutput(raw: string): string {
+	let text = unwrapPossiblyStringifiedReadOutput(raw)
 
 	// 1. Strip Devo XML-style tags
 	text = text.replace(/<path>[\s\S]*?<\/path>\s*\n?/g, "")
@@ -148,43 +150,49 @@ function parseReadOutput(raw: string): string {
 	text = text.replace(/\n?\s*\(File has more lines[^)]*\)\s*$/, "")
 	text = text.replace(/\n?\s*\(Output truncated[^)]*\)\s*$/, "")
 
-	return text
+	return unescapeLiteralNewlines(text)
 }
 
-// ============================================================
-// Diff stats computation
-// ============================================================
+/** If Mixed metadata was JSON.stringified, pull out the `output` string. */
+function unwrapPossiblyStringifiedReadOutput(raw: string): string {
+	const trimmed = raw.trim()
+	if (!trimmed.startsWith("{")) return raw
+	try {
+		const parsed = JSON.parse(trimmed) as unknown
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			const record = parsed as Record<string, unknown>
+			if (typeof record.output === "string") return record.output
+			if (typeof record.text === "string") return record.text
+		}
+	} catch {
+		// Not JSON — fall through.
+	}
+	return raw
+}
 
 /**
- * Computes +additions / -deletions stats from old/new strings.
+ * History/SDK bugs sometimes leave literal `\\n` sequences instead of real
+ * newlines. Only unescape when escaped newlines clearly dominate.
  */
-function computeDiffStats(
-	oldStr: string,
-	newStr: string,
-): { additions: number; deletions: number } {
-	const oldLines = oldStr.split("\n")
-	const newLines = newStr.split("\n")
-	const oldSet = new Set(oldLines)
-	const newSet = new Set(newLines)
-
-	let additions = 0
-	let deletions = 0
-
-	for (const line of newLines) {
-		if (!oldSet.has(line)) additions++
-	}
-	for (const line of oldLines) {
-		if (!newSet.has(line)) deletions++
-	}
-
-	return { additions, deletions }
+function unescapeLiteralNewlines(text: string): string {
+	const realNewlines = (text.match(/\n/g) ?? []).length
+	const escapedNewlines = (text.match(/\\n/g) ?? []).length
+	if (escapedNewlines === 0 || escapedNewlines <= realNewlines) return text
+	return text
+		.replace(/\\r\\n/g, "\n")
+		.replace(/\\n/g, "\n")
+		.replace(/\\t/g, "\t")
+		.replace(/\\"/g, '"')
 }
 
 // ============================================================
 // Tool info resolver
 // ============================================================
 
-export function getToolInfo(tool: string): {
+export function getToolInfo(
+	tool: string,
+	options?: { running?: boolean; input?: Record<string, unknown> },
+): {
 	icon: typeof WrenchIcon
 	title: string
 } {
@@ -202,13 +210,26 @@ export function getToolInfo(tool: string): {
 		case "bash":
 		case "shell_command":
 		case "exec_command":
-			return { icon: TerminalIcon, title: "Shell" }
+		case "write_stdin":
+			return { icon: TerminalIcon, title: options?.running ? "Running" : "Ran" }
 		case "edit":
-			return { icon: EditIcon, title: "Edit" }
+			return {
+				icon: EditIcon,
+				title: fileChangeVerb("edit", { running: options?.running, input: options?.input }),
+			}
 		case "write":
-			return { icon: FileCodeIcon, title: "Write" }
+			return {
+				icon: FileCodeIcon,
+				title: fileChangeVerb("write", { running: options?.running, input: options?.input }),
+			}
 		case "apply_patch":
-			return { icon: CodeIcon, title: "Patch" }
+			return {
+				icon: CodeIcon,
+				title: fileChangeVerb("apply_patch", {
+					running: options?.running,
+					input: options?.input,
+				}),
+			}
 		case "task":
 			return { icon: ZapIcon, title: "Agent" }
 		case "todowrite":
@@ -492,127 +513,9 @@ function BashContent({ part }: { part: ToolPart }) {
 }
 
 /**
- * Edit tool: shows inline diff of oldString → newString with syntax highlighting.
- * No inner headers — diff stats are shown in the tool row's trailing area.
+ * Edit / write / apply_patch: Cursor-style expandable unified diff
+ * (see file-change-content.tsx).
  */
-function EditDiffContent({ part }: { part: ToolPart }) {
-	const filePath = (part.state.input?.filePath as string) ?? (part.state.input?.path as string)
-	const oldString = part.state.input?.oldString as string | undefined
-	const newString = part.state.input?.newString as string | undefined
-	const error = part.state.status === "error" ? (part.state as { error: string }).error : undefined
-
-	if (error) return <ErrorContent error={error} />
-
-	// If we have both old and new strings, show a proper diff
-	if (oldString != null && newString != null) {
-		const fileName = filePath?.split("/").pop() ?? "file"
-		return (
-			<Diff
-				mode="files"
-				oldFile={{ name: fileName, content: oldString }}
-				newFile={{ name: fileName, content: newString }}
-				className="max-h-96 text-[11px] border-0 shadow-none rounded-none"
-			>
-				<DiffContent maxHeight={384} showLineNumbers hideFileHeader />
-			</Diff>
-		)
-	}
-
-	// Fallback: just show the output text
-	const output = part.state.status === "completed" ? part.state.output : undefined
-	if (output) {
-		return (
-			<pre className="max-h-48 overflow-auto px-3.5 py-2.5 font-mono text-[11px] text-muted-foreground">
-				<code>{truncateOutput(output)}</code>
-			</pre>
-		)
-	}
-
-	return null
-}
-
-/**
- * Write tool: shows syntax-highlighted file content being written.
- * No inner header — the tool row header already shows the filename.
- */
-function WriteContent({ part }: { part: ToolPart }) {
-	const filePath = (part.state.input?.filePath as string) ?? (part.state.input?.path as string)
-	const content = part.state.input?.content as string | undefined
-	const error = part.state.status === "error" ? (part.state as { error: string }).error : undefined
-
-	if (error) return <ErrorContent error={error} />
-
-	const language = (detectLanguage(filePath) ?? "text") as BundledLanguage
-
-	if (content) {
-		const displayContent = truncateOutput(content)
-		return (
-			<CodeBlock
-				code={displayContent}
-				language={language}
-				showLineNumbers
-				className="max-h-96 border-0 shadow-none rounded-none text-[11px]"
-			>
-				<CodeBlockContent code={displayContent} language={language} showLineNumbers />
-			</CodeBlock>
-		)
-	}
-
-	// Fallback to output
-	const output = part.state.status === "completed" ? part.state.output : undefined
-	if (output) {
-		return (
-			<pre className="max-h-48 overflow-auto px-3.5 py-2.5 font-mono text-[11px] text-muted-foreground">
-				<code>{truncateOutput(output)}</code>
-			</pre>
-		)
-	}
-
-	return null
-}
-
-/**
- * Apply patch tool: shows diff in patch mode.
- * No inner header — the tool row header identifies this as a patch.
- */
-function PatchContent({ part }: { part: ToolPart }) {
-	const output = part.state.status === "completed" ? part.state.output : undefined
-	const error = part.state.status === "error" ? (part.state as { error: string }).error : undefined
-
-	if (error) return <ErrorContent error={error} />
-
-	// Try to detect if output is a patch/diff
-	if (output) {
-		const trimmed = output.trimStart()
-		const isPatch =
-			trimmed.startsWith("---") || trimmed.startsWith("diff --git") || trimmed.startsWith("@@")
-
-		if (isPatch) {
-			return (
-				<Diff
-					mode="patch"
-					patch={output}
-					className="max-h-96 text-[11px] border-0 shadow-none rounded-none"
-				>
-					<DiffContent maxHeight={384} showLineNumbers hideFileHeader />
-				</Diff>
-			)
-		}
-
-		// Not a patch format — show as plain diff-highlighted text
-		return (
-			<CodeBlock
-				code={truncateOutput(output)}
-				language="diff"
-				className="max-h-96 border-0 shadow-none rounded-none text-[11px]"
-			>
-				<CodeBlockContent code={truncateOutput(output)} language="diff" />
-			</CodeBlock>
-		)
-	}
-
-	return null
-}
 
 /**
  * Read tool: shows syntax-highlighted file contents.
@@ -636,7 +539,7 @@ function ReadContent({ part }: { part: ToolPart }) {
 		<CodeBlock
 			code={displayContent}
 			language={language}
-			className="devo-read-output max-h-96 border-0 shadow-none rounded-none"
+			className="devo-read-output max-h-96 border-0 bg-transparent shadow-none rounded-none text-[11px]"
 		>
 			<CodeBlockContent code={displayContent} language={language} />
 		</CodeBlock>
@@ -943,16 +846,11 @@ function hasExpandableContent(part: ToolPart): boolean {
 		const todos = state.input?.todos as Array<{ content: string; status: string }> | undefined
 		return (todos?.length ?? 0) > 0
 	}
-	// Edit tool has content if we have old/new strings
-	if (tool === "edit") {
-		const oldString = state.input?.oldString as string | undefined
-		const newString = state.input?.newString as string | undefined
-		if (oldString != null && newString != null) return true
-	}
-	// Write tool has content if we have the file content
-	if (tool === "write") {
-		const content = state.input?.content as string | undefined
-		if (content) return true
+	if (isFileChangeTool(tool)) {
+		const output = state.status === "completed" ? state.output : undefined
+		if (hasFileChangeExpandableContent(tool, state.input as Record<string, unknown>, output)) {
+			return true
+		}
 	}
 	// If there's output or error, there's content
 	if (state.status === "completed" && state.output) return true
@@ -970,10 +868,8 @@ function getToolContent(part: ToolPart): ReactNode {
 	if (
 		error &&
 		!SHELL_TOOLS.has(part.tool) &&
-		part.tool !== "edit" &&
-		part.tool !== "write" &&
-		part.tool !== "read" &&
-		part.tool !== "apply_patch"
+		!isFileChangeTool(part.tool) &&
+		part.tool !== "read"
 	) {
 		return <ErrorContent error={error} />
 	}
@@ -984,11 +880,9 @@ function getToolContent(part: ToolPart): ReactNode {
 		case "exec_command":
 			return <BashContent part={part} />
 		case "edit":
-			return <EditDiffContent part={part} />
 		case "write":
-			return <WriteContent part={part} />
 		case "apply_patch":
-			return <PatchContent part={part} />
+			return <FileChangeContent part={part} />
 		case "read":
 			return <ReadContent part={part} />
 		case "glob":
@@ -1033,7 +927,24 @@ interface ChatToolCallProps {
 function areToolPartsEqual(a: ToolPart, b: ToolPart): boolean {
 	if (a === b) return true
 	if (a.id !== b.id) return false
+	if (a.tool !== b.tool) return false
 	if (a.state.status !== b.state.status) return false
+	// File-change rows depend on input for verb, path, +/- stats, and expandable diff.
+	if (isFileChangeTool(a.tool)) {
+		const aIn = a.state.input as Record<string, unknown> | undefined
+		const bIn = b.state.input as Record<string, unknown> | undefined
+		if (
+			aIn?.path !== bIn?.path ||
+			aIn?.filePath !== bIn?.filePath ||
+			aIn?.unifiedDiff !== bIn?.unifiedDiff ||
+			aIn?.content !== bIn?.content ||
+			aIn?.oldString !== bIn?.oldString ||
+			aIn?.newString !== bIn?.newString ||
+			aIn?.changeType !== bIn?.changeType
+		) {
+			return false
+		}
+	}
 	// During "pending", the server streams partial tool-call arguments into
 	// state.raw. Compare raw length so the subtitle updates as arguments arrive.
 	if (a.state.status === "pending" && b.state.status === "pending") {
@@ -1074,69 +985,24 @@ export const ChatToolCall = memo(
 		defaultOpen: defaultOpenProp,
 		onOpenChange,
 	}: ChatToolCallProps) {
-		const viewFileInDiff = useSetAtom(viewFileInDiffPanelAtom)
+		const toolInput = part.state.input as Record<string, unknown> | undefined
 
-		// Compute diff stats for edit tools (shown in trailing area)
-		// Must be called before early returns to satisfy hooks rules.
-		const diffStats = useMemo(() => {
-			if (part.tool !== "edit") return undefined
-			const oldString = part.state.input?.oldString as string | undefined
-			const newString = part.state.input?.newString as string | undefined
-			if (oldString == null || newString == null) return undefined
-			return computeDiffStats(oldString, newString)
-		}, [part.tool, part.state.input?.oldString, part.state.input?.newString])
-
-		// Extract file path for edit-category tools (used for "View diff" button)
-		const editFilePath = useMemo(() => {
-			if (part.tool !== "edit" && part.tool !== "write" && part.tool !== "apply_patch") {
-				return undefined
-			}
-			return (part.state.input?.filePath as string) ?? (part.state.input?.path as string)
-		}, [part.tool, part.state.input?.filePath, part.state.input?.path])
-
-		const handleViewDiff = useCallback(
-			(e: React.MouseEvent) => {
-				e.stopPropagation()
-				if (editFilePath) viewFileInDiff(editFilePath)
-			},
-			[editFilePath, viewFileInDiff],
+		// +/- stats sit next to the path for file-change tools (not in trailing).
+		const diffStats = useMemo(
+			() => (isFileChangeTool(part.tool) ? fileChangeStats(part.tool, toolInput) : undefined),
+			[part.tool, toolInput],
 		)
 
 		const status = part.state.status as "running" | "error" | "completed" | "pending"
 		const isRunning = turnWorking && (status === "running" || status === "pending")
 
-		// Build trailing element: diff stats, or a running spinner.
+		// Trailing: spinner only (file-change +/- live in the label).
 		const trailingElement = useMemo(() => {
-			const parts: ReactNode[] = []
-
-			if (diffStats) {
-				parts.push(
-					<span key="stats" className="flex items-center gap-1.5 text-[11px]">
-						<span className="flex items-center gap-0.5 text-diff-addition-foreground">
-							<PlusIcon className="size-2.5" aria-hidden="true" />
-							{diffStats.additions}
-						</span>
-						<span className="flex items-center gap-0.5 text-diff-deletion-foreground">
-							<MinusIcon className="size-2.5" aria-hidden="true" />
-							{diffStats.deletions}
-						</span>
-					</span>,
-				)
-			}
-
-			if (isRunning) {
-				parts.push(
-					<Loader2Icon
-						key="running"
-						className="size-3 animate-spin text-muted-foreground/40"
-					/>,
-				)
-			}
-
-			if (parts.length === 0) return undefined
-			if (parts.length === 1) return parts[0]
-			return <span className="flex items-center gap-2.5">{parts}</span>
-		}, [diffStats, isRunning])
+			if (!isRunning) return undefined
+			return (
+				<Loader2Icon className="size-3 animate-spin text-muted-foreground/40" />
+			)
+		}, [isRunning])
 
 		// When the turn has an error, add a delete button so the user can
 		// surgically remove a problematic tool part and continue the conversation.
@@ -1175,14 +1041,15 @@ export const ChatToolCall = memo(
 
 		// --- Task tool: Sub-agent card ---
 		if (part.tool === "task") {
-			return <SubAgentCard part={part} />
+			return <SubAgentCard part={part} projectRoot={projectRoot} />
 		}
 
 		// --- All other tools (including todos): unified tool row ---
-		const { title } = getToolInfo(part.tool)
+		const { title } = getToolInfo(part.tool, { running: isRunning, input: toolInput })
 		const subtitle = getToolSubtitle(part, { projectRoot })
 		const hasContent = hasExpandableContent(part)
 		const defaultOpen = defaultOpenProp ?? false
+		const fileChangeRow = isFileChangeTool(part.tool)
 
 		// Extract attachments
 		const attachments: FilePart[] =
@@ -1190,7 +1057,21 @@ export const ChatToolCall = memo(
 				? ((part.state as ToolStateCompleted).attachments ?? [])
 				: []
 
-		const label = subtitle ? (
+		// Same path typography as Read (`text-muted-foreground/60`, inherit sans).
+		const label = fileChangeRow ? (
+			<>
+				<span>{title}</span>
+				{subtitle ? (
+					<span className="text-muted-foreground/60"> {subtitle}</span>
+				) : null}
+				{diffStats ? (
+					<>
+						{" "}
+						<FileChangeStatsBadge stats={diffStats} />
+					</>
+				) : null}
+			</>
+		) : subtitle ? (
 			<>
 				<span>{title}</span>
 				<span className="text-muted-foreground/60"> · {subtitle}</span>
@@ -1198,10 +1079,6 @@ export const ChatToolCall = memo(
 		) : (
 			<span>{title}</span>
 		)
-
-		// Completed edit-category tools can jump to the diff panel; the action
-		// lives at the top of the expanded content so the row trailing stays lean.
-		const showViewDiff = editFilePath != null && status === "completed"
 
 		return (
 			<div className={attachments.length > 0 && !compact ? "space-y-1.5" : undefined}>
@@ -1218,20 +1095,9 @@ export const ChatToolCall = memo(
 					/>
 					{hasContent && (
 						<TranscriptDisclosureContent rail className="overflow-hidden">
-							{showViewDiff && (
-								<div className="flex justify-end pb-1">
-									<button
-										type="button"
-										onClick={handleViewDiff}
-										className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground"
-										title="View in diff panel"
-									>
-										<DiffIcon className="size-3" aria-hidden="true" />
-										View diff
-									</button>
-								</div>
-							)}
-							{getToolContent(part)}
+							{/* Controlled rows: only mount the body while open so @pierre/diffs
+							    is created after the panel is shown (avoids blank first expand). */}
+							{open === false ? null : getToolContent(part)}
 						</TranscriptDisclosureContent>
 					)}
 				</TranscriptDisclosure>

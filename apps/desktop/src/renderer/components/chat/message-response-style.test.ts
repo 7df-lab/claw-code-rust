@@ -97,6 +97,8 @@ describe("MessageResponse markdown surfaces", () => {
 	test("keeps streamdown code block actions in the language header row", () => {
 		expect({
 			headerPadding: rendererCssSource.includes('[data-streamdown="code-block-header"]'),
+			compactHeaderHeight: rendererCssSource.includes("height: 1.5rem;"),
+			compactBodyPadding: rendererCssSource.includes("padding: 0.45rem 0.7rem;"),
 			actionsSiblingSelector: rendererCssSource.includes(
 				'> div:has(> [data-streamdown="code-block-actions"])',
 			),
@@ -104,6 +106,8 @@ describe("MessageResponse markdown surfaces", () => {
 			actionsStillClickable: rendererCssSource.includes("pointer-events: auto;"),
 		}).toEqual({
 			headerPadding: true,
+			compactHeaderHeight: true,
+			compactBodyPadding: true,
 			actionsSiblingSelector: true,
 			actionsAbsolute: true,
 			actionsStillClickable: true,
@@ -115,14 +119,14 @@ describe("MessageResponse markdown surfaces", () => {
 			controlsConfig: messageSource.includes("const transcriptMarkdownControls"),
 			tableFullscreenDisabled: messageSource.includes("fullscreen: false"),
 			controlsPassedToStreamdown: messageSource.includes("controls={transcriptMarkdownControls}"),
-			tableCopyNotDisabled: !messageSource.includes("copy: false"),
-			tableDownloadNotDisabled: !messageSource.includes("download: false"),
+			tableCopyNotDisabled: !/table:\s*\{[^}]*copy:\s*false/.test(messageSource),
+			codeDownloadDisabled: /code:\s*\{[^}]*download:\s*false/.test(messageSource),
 		}).toEqual({
 			controlsConfig: true,
 			tableFullscreenDisabled: true,
 			controlsPassedToStreamdown: true,
 			tableCopyNotDisabled: true,
-			tableDownloadNotDisabled: true,
+			codeDownloadDisabled: true,
 		})
 	})
 

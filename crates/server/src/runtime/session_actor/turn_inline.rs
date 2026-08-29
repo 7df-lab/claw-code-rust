@@ -47,6 +47,9 @@ pub(crate) struct TurnInlineState {
     /// Last assembled provider request for this turn. Auto-review clones this
     /// prefix so the reviewer shares the main-turn prompt cache.
     pub(crate) last_model_request: devo_core::SharedLastModelRequest,
+    /// Wall-clock start times for in-flight items (keyed by item id). Used so
+    /// completion can persist/project a distinct `created_at` for duration UI.
+    pub(crate) item_started_at: std::collections::HashMap<devo_core::ItemId, chrono::DateTime<chrono::Utc>>,
 }
 
 impl TurnInlineState {
@@ -79,6 +82,7 @@ impl TurnInlineState {
             )),
             live_turn_settings: Default::default(),
             last_model_request: Arc::new(std::sync::Mutex::new(None)),
+            item_started_at: std::collections::HashMap::new(),
         }
     }
 

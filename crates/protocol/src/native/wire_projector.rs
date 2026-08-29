@@ -57,7 +57,8 @@ pub fn project_wire_item(
             Some(Item::AssistantMessage { text, phase: None })
         }
         ItemKind::Reasoning => {
-            let text = payload_text(payload)?;
+            // Empty text is valid on `item/started` before the first delta.
+            let text = payload_text(payload).unwrap_or_default();
             Some(Item::Reasoning {
                 text,
                 provider_payload_ref: None,
@@ -333,9 +334,9 @@ fn string_array_field(payload: &serde_json::Value, field: &str) -> Option<Vec<St
 ///
 /// Returns `None` when the payload does not project (caller falls back to
 /// the legacy envelope) or when the event has no turn id (the native
-/// envelope requires one). `projected_at` stamps `created_at`/`updated_at`:
-/// legacy item events carry no timestamp, so the fan-out time is the only
-/// honest value.
+/// envelope requires one). `projected_at` stamps `updated_at` (and
+/// `created_at` when the payload has no earlier `startedAt`). Legacy item
+/// events otherwise carry no timestamp, so the fan-out time is the fallback.
 pub fn typed_item_envelope(
     context: &EventContext,
     item: &crate::ItemEnvelope,
@@ -343,6 +344,7 @@ pub fn typed_item_envelope(
     projected_at: DateTime<Utc>,
 ) -> Option<ItemEnvelope> {
     let native_item = project_wire_item(&item.item_kind, &item.payload, projected_at)?;
+    let created_at = payload_started_at(&item.payload).unwrap_or(projected_at);
     Some(ItemEnvelope {
         id: ItemId::from_legacy_uuid(Uuid::from(item.item_id)),
         session_id: SessionId::from_legacy_uuid(Uuid::from(context.session_id)),
@@ -351,7 +353,7 @@ pub fn typed_item_envelope(
         // otherwise the connection event sequence is the only ordering left.
         seq: context.item_seq.unwrap_or(context.seq),
         revision: 1,
-        created_at: projected_at,
+        created_at,
         updated_at: projected_at,
         state,
         item: native_item,
@@ -919,6 +921,16 @@ fn payload_text(payload: &serde_json::Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Optional wall-clock start injected by the server on `item/completed` so
+/// clients can recover `created_at` when the legacy event itself is untimed.
+fn payload_started_at(payload: &serde_json::Value) -> Option<DateTime<Utc>> {
+    payload
+        .get("startedAt")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
 /// Hosted-tool payloads are text-like display objects; keep the text when
 /// present, otherwise pass the raw payload through unchanged.
 fn hosted_tool_output(payload: &serde_json::Value) -> serde_json::Value {
@@ -1025,6 +1037,50 @@ mod tests {
                 provider_payload_ref: None,
             })
         );
+    }
+
+    #[test]
+    fn empty_reasoning_projects_for_item_started() {
+        let item = project(
+            ItemKind::Reasoning,
+            serde_json::json!({ "title": "Reasoning", "text": "" }),
+        );
+        assert_eq!(
+            item,
+            Some(Item::Reasoning {
+                text: String::new(),
+                provider_payload_ref: None,
+            })
+        );
+    }
+
+    #[test]
+    fn typed_item_envelope_preserves_started_at_as_created_at() {
+        let started = Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap();
+        let completed = Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 14).unwrap();
+        let session = Uuid::nil();
+        let turn = Uuid::from_u128(1);
+        let item_id = Uuid::from_u128(2);
+        let context = EventContext {
+            session_id: session.into(),
+            turn_id: Some(turn.into()),
+            item_id: Some(item_id.into()),
+            seq: 1,
+            item_seq: Some(1),
+        };
+        let item = crate::ItemEnvelope {
+            item_id: item_id.into(),
+            item_kind: ItemKind::Reasoning,
+            payload: serde_json::json!({
+                "title": "Reasoning",
+                "text": "thinking",
+                "startedAt": started.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            }),
+        };
+        let envelope = typed_item_envelope(&context, &item, ItemState::Completed, completed)
+            .expect("typed envelope");
+        assert_eq!(envelope.created_at, started);
+        assert_eq!(envelope.updated_at, completed);
     }
 
     #[test]

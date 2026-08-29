@@ -361,6 +361,11 @@ pub struct ItemRecord {
     pub seq: u64,
     /// The timestamp when the item record was persisted.
     pub timestamp: DateTime<Utc>,
+    /// When the item first started (e.g. first reasoning delta). Used so resume
+    /// can project `ItemEnvelope.created_at` distinctly from `updated_at`.
+    /// Absent on older rollouts that only recorded the completion timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
     /// Optional attempt-placement metadata used by higher-level orchestration.
     pub attempt_placement: Option<i64>,
     /// The turn status observed when this item was appended.
@@ -813,6 +818,7 @@ mod tests {
             turn_id,
             seq: 1,
             timestamp: Utc::now(),
+            started_at: None,
             attempt_placement: None,
             turn_status: Some(TurnStatus::Running),
             sibling_turn_ids: Vec::new(),
@@ -1307,6 +1313,7 @@ mod tests {
             turn_id: TurnId::new(),
             seq: 0,
             timestamp: Utc::now(),
+            started_at: None,
             attempt_placement: None,
             turn_status: Some(TurnStatus::Running),
             sibling_turn_ids: Vec::new(),

@@ -868,7 +868,7 @@ export const ChatTurnComponent = memo(
 
 				{/* Interleaved thought/tool process timeline */}
 				{processSectionVisible && (
-					<div className="space-y-2">
+					<div className="flex flex-col gap-1">
 						<ProcessTimelineView
 							defaultExpandAll={showVerboseTools}
 							expandedRowIds={showVerboseTools ? undefined : expandedRowIds}
@@ -878,7 +878,7 @@ export const ChatTurnComponent = memo(
 							orderedParts={processOrderedParts}
 							projectRoot={toolPathRoot}
 							renderText={(item) => (
-								<div className="py-1">
+								<div className="py-0.5">
 									<AssistantTextBlock
 										item={item}
 										onImplementPlan={onImplementPlan}

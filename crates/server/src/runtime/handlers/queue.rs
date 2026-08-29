@@ -447,11 +447,8 @@ impl ServerRuntime {
             }
         };
         let pending_id = PendingInputId::from(queue_item_uuid);
-        // Remove directly through the shared queue, not the actor mailbox:
-        // the actor loop is busy for the whole duration of a running turn
-        // (`ExecuteTurn` is inline in the actor), so a mailbox round-trip
-        // would block the RPC until the turn ends. The queue mutex is the
-        // per-session serialization point for queue ops (01 §4.3).
+        // Remove through the shared queue mutex (01 §4.3 last-write-wins),
+        // not an actor command: queue ops must stay zero-hop at decision points.
         let Some(reservation) = self
             .session_turn_reservation_snapshot(legacy_session_id)
             .await

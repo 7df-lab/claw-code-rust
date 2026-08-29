@@ -2384,20 +2384,34 @@ fn read_rollout_index_fields(path: &Path) -> Result<(SessionRecord, chrono::Date
         }
         let legacy_lines: Vec<RolloutLine> = match parse_rollout_line(&line) {
             Ok(ParsedRolloutLine::Legacy(legacy)) => vec![*legacy],
-            Ok(ParsedRolloutLine::V2(v2)) => match inverse.project_line(&v2) {
-                Ok(lines) => lines,
-                Err(_) => continue,
-            },
+            Ok(ParsedRolloutLine::V2(v2)) => {
+                // Always advance activity from the line wall-clock, even when
+                // inverse projection fails — otherwise the sidebar ages
+                // sessions from created_at instead of last turn/item write.
+                last_activity_at = Some(match last_activity_at {
+                    Some(current) => current.max(rollout_line_v2_timestamp(&v2)),
+                    None => rollout_line_v2_timestamp(&v2),
+                });
+                match inverse.project_line(&v2) {
+                    Ok(lines) => lines,
+                    Err(_) => continue,
+                }
+            }
             Err(_) => continue,
         };
         for parsed in legacy_lines {
+            if let Some(timestamp) = rollout_line_timestamp(&parsed) {
+                last_activity_at = Some(match last_activity_at {
+                    Some(current) => current.max(timestamp),
+                    None => timestamp,
+                });
+            }
             match parsed {
                 RolloutLine::SessionMeta(meta_line) => {
                     let mut record = meta_line.session;
                     if record.last_activity_at.is_none() {
                         record.last_activity_at = Some(record.created_at);
                     }
-                    last_activity_at = record.last_activity_at;
                     session = Some(record);
                 }
                 RolloutLine::SessionTitleUpdated(line) => {
@@ -2405,7 +2419,6 @@ fn read_rollout_index_fields(path: &Path) -> Result<(SessionRecord, chrono::Date
                         record.title = Some(line.title);
                         record.title_state = line.title_state;
                         record.updated_at = line.timestamp;
-                        last_activity_at = Some(line.timestamp);
                     }
                 }
                 _ => {}
@@ -2419,6 +2432,41 @@ fn read_rollout_index_fields(path: &Path) -> Result<(SessionRecord, chrono::Date
         .or(session.last_activity_at)
         .unwrap_or(session.created_at);
     Ok((session, last_activity_at))
+}
+
+fn rollout_line_timestamp(line: &RolloutLine) -> Option<chrono::DateTime<Utc>> {
+    Some(match line {
+        RolloutLine::SessionMeta(line) => line.timestamp,
+        RolloutLine::Turn(line) => line.timestamp,
+        RolloutLine::Item(line) => line.timestamp,
+        RolloutLine::SessionTitleUpdated(line) => line.timestamp,
+        RolloutLine::SessionContextUpdated(line) => line.timestamp,
+        RolloutLine::CompactionSnapshot(line) => line.timestamp,
+        RolloutLine::MessageEditRecorded(line) => line.timestamp,
+        RolloutLine::TurnSuperseded(line) => line.timestamp,
+        RolloutLine::TurnWorkspaceCheckpointRecorded(line) => line.timestamp,
+        RolloutLine::TurnWorkspaceChangeRecorded(line) => line.timestamp,
+        RolloutLine::TurnWorkspaceRestoreStarted(line) => line.timestamp,
+        RolloutLine::TurnWorkspaceRestoreCompleted(line) => line.timestamp,
+        RolloutLine::SessionRollback(line) => line.timestamp,
+        RolloutLine::SessionSettings(line) => line.timestamp,
+    })
+}
+
+fn rollout_line_v2_timestamp(line: &RolloutLineV2) -> chrono::DateTime<Utc> {
+    match line {
+        RolloutLineV2::SessionMeta { timestamp, .. }
+        | RolloutLineV2::Turn { timestamp, .. }
+        | RolloutLineV2::Item { timestamp, .. }
+        | RolloutLineV2::Internal { timestamp, .. }
+        | RolloutLineV2::SessionTitleUpdated { timestamp, .. }
+        | RolloutLineV2::CompactionSnapshot { timestamp, .. }
+        | RolloutLineV2::SessionRollback { timestamp, .. }
+        | RolloutLineV2::WorkspaceCheckpoint { timestamp, .. }
+        | RolloutLineV2::WorkspaceChange { timestamp, .. }
+        | RolloutLineV2::WorkspaceRestoreStarted { timestamp, .. }
+        | RolloutLineV2::WorkspaceRestoreCompleted { timestamp, .. } => *timestamp,
+    }
 }
 
 pub(crate) fn session_metadata_from_record(
@@ -2559,6 +2607,7 @@ pub(crate) fn build_item_record(
     item: TurnItem,
     turn_status: Option<TurnStatus>,
     worklog: Option<Worklog>,
+    started_at: Option<chrono::DateTime<Utc>>,
 ) -> ItemRecord {
     ItemRecord {
         id: item_id,
@@ -2566,6 +2615,7 @@ pub(crate) fn build_item_record(
         turn_id,
         seq,
         timestamp: Utc::now(),
+        started_at,
         attempt_placement: None,
         turn_status,
         sibling_turn_ids: Vec::new(),
@@ -2647,6 +2697,7 @@ mod tests {
                     turn_id,
                     seq: 2,
                     timestamp: earlier,
+                    started_at: None,
                     attempt_placement: None,
                     turn_status: None,
                     sibling_turn_ids: Vec::new(),
@@ -2671,6 +2722,7 @@ mod tests {
                     turn_id,
                     seq: 1,
                     timestamp: later,
+                    started_at: None,
                     attempt_placement: None,
                     turn_status: None,
                     sibling_turn_ids: Vec::new(),
@@ -3004,6 +3056,7 @@ mod tests {
                     turn_id: original_turn_id,
                     seq: 1,
                     timestamp: now,
+                    started_at: None,
                     attempt_placement: None,
                     turn_status: Some(TurnStatus::Completed),
                     sibling_turn_ids: Vec::new(),
@@ -3093,6 +3146,7 @@ mod tests {
                     turn_id: replacement_turn_id,
                     seq: 2,
                     timestamp: now,
+                    started_at: None,
                     attempt_placement: None,
                     turn_status: Some(TurnStatus::Running),
                     sibling_turn_ids: Vec::new(),
@@ -3182,6 +3236,83 @@ mod tests {
         let roots = db.list_root_sessions().expect("list roots");
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].session_id, session_id);
+    }
+
+    #[test]
+    fn index_rollout_metadata_uses_latest_item_timestamp_as_last_activity() {
+        use chrono::Duration;
+        use chrono::Utc;
+        use pretty_assertions::assert_eq;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp dir");
+        let data_root = dir.path().to_path_buf();
+        let session_id = SessionId::new();
+        let created_at = Utc::now() - Duration::hours(2);
+        let rollout_store = super::RolloutStore::new(data_root.clone(), None);
+        let mut record = rollout_store.create_session_record(
+            session_id,
+            created_at,
+            data_root.clone(),
+            Vec::new(),
+            Some("Active session".into()),
+            Some("test-model".into()),
+            None,
+            None,
+            "test-provider".into(),
+            None,
+        );
+        record.created_at = created_at;
+        record.updated_at = created_at;
+        record.last_activity_at = Some(created_at);
+        rollout_store
+            .append_session_meta(&record)
+            .expect("append session meta");
+        let before_item = Utc::now();
+        rollout_store
+            .append_item(
+                &record,
+                ItemRecord {
+                    id: ItemId::new(),
+                    session_id,
+                    turn_id: TurnId::new(),
+                    seq: 1,
+                    timestamp: before_item,
+                    started_at: Some(before_item),
+                    attempt_placement: None,
+                    turn_status: Some(TurnStatus::Completed),
+                    sibling_turn_ids: Vec::new(),
+                    input_items: Vec::new(),
+                    output_items: vec![TurnItem::AgentMessage(TextItem {
+                        text: "reply".into(),
+                    })],
+                    worklog: None,
+                    error: None,
+                    schema_version: 1,
+                },
+            )
+            .expect("append item");
+
+        let db = crate::db::Database::open(data_root.join("index.db")).expect("open db");
+        rollout_store
+            .index_rollout_metadata(&db)
+            .expect("index rollout metadata");
+
+        let index = db
+            .get_session_index(&session_id)
+            .expect("get index")
+            .expect("indexed session");
+        assert_eq!(
+            index.metadata.created_at.timestamp(),
+            created_at.timestamp()
+        );
+        assert!(
+            index.metadata.last_activity_at.timestamp() >= before_item.timestamp(),
+            "last_activity_at={:?} before_item={:?}",
+            index.metadata.last_activity_at,
+            before_item
+        );
+        assert!(index.metadata.last_activity_at > index.metadata.created_at);
     }
 
     #[test]
@@ -4150,6 +4281,7 @@ mod tests {
             TurnItem::AgentMessage(TextItem { text: "hi".into() }),
             Some(TurnStatus::Running),
             None,
+            None,
         );
         rollout_store
             .append_item(&record, item)
@@ -4217,6 +4349,7 @@ mod tests {
                     }),
                     Some(TurnStatus::Running),
                     None,
+                    None,
                 ),
             )
             .expect("append approval request");
@@ -4239,6 +4372,7 @@ mod tests {
                         decision_source: None,
                     }),
                     Some(TurnStatus::Running),
+                    None,
                     None,
                 ),
             )
@@ -4557,6 +4691,7 @@ mod tests {
                     }),
                     Some(TurnStatus::Running),
                     None,
+                    None,
                 ),
             }),
         ];
@@ -4581,6 +4716,7 @@ mod tests {
                         text: "v2 reply".into(),
                     }),
                     Some(TurnStatus::Running),
+                    None,
                     None,
                 ),
             )
@@ -4655,6 +4791,7 @@ mod tests {
             1,
             TurnItem::AgentMessage(TextItem { text: "hi".into() }),
             Some(TurnStatus::Running),
+            None,
             None,
         );
         rollout_store

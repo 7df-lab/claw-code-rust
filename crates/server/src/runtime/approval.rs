@@ -6,10 +6,8 @@ use crate::runtime::session_actor::approval_scope::{
     apply_approval_scope_to_state, apply_path_scope_to_permission_profile,
 };
 use crate::runtime::session_interactive::complete_approval_wait;
-use devo_protocol::ApprovalDecisionPayload;
-use devo_protocol::ApprovalRequestPayload;
-use devo_protocol::PendingServerRequestContext;
-use devo_protocol::ServerRequestKind;
+use chrono::Utc;
+use devo_protocol::native::item::{ApprovalDecision, Item};
 
 use std::path::Component;
 use std::path::Path;
@@ -687,37 +685,6 @@ impl ServerRuntime {
         let approval_id = request.tool_call_id.clone();
         let approval_item_id = ItemId::new();
         let approval_item_seq = self.allocate_item_sequence(session_id).await;
-        let request_payload = ApprovalRequestPayload {
-            request: PendingServerRequestContext {
-                request_id: approval_id.clone().into(),
-                request_kind: match request.resource {
-                    devo_safety::ResourceKind::ShellExec => {
-                        ServerRequestKind::ItemCommandExecutionRequestApproval
-                    }
-                    devo_safety::ResourceKind::FileWrite => {
-                        ServerRequestKind::ItemFileChangeRequestApproval
-                    }
-                    devo_safety::ResourceKind::FileRead
-                    | devo_safety::ResourceKind::Network
-                    | devo_safety::ResourceKind::Custom(_) => {
-                        ServerRequestKind::ItemPermissionsRequestApproval
-                    }
-                },
-                session_id,
-                turn_id: Some(turn_id),
-                item_id: Some(approval_item_id),
-            },
-            approval_id: approval_id.clone().into(),
-            action_summary: request.action_summary.clone(),
-            justification: request.justification.clone().unwrap_or_default(),
-            resource: Some(format!("{:?}", request.resource)),
-            available_scopes: available_scopes.clone(),
-            path: request.path.as_ref().map(|path| path.display().to_string()),
-            host: request.host.clone(),
-            target: request.target.clone(),
-            command_pattern: request.command_pattern.clone(),
-            command_prefix: request.command_prefix.clone(),
-        };
         let persisted_approval = self
             .persist_waiting_approval_item(
                 session_id,
@@ -770,33 +737,13 @@ impl ServerRuntime {
             | devo_safety::ResourceKind::Network
             | devo_safety::ResourceKind::Custom(_) => "approval/permission/request",
         };
-        let native_target = if let Some(path) = &request.path {
-            Some(devo_protocol::native::item::ApprovalTarget::Path { path: path.clone() })
-        } else if let Some(host) = &request.host {
-            Some(devo_protocol::native::item::ApprovalTarget::Host { host: host.clone() })
-        } else {
-            devo_core::tools::command_str_for_permission_request(&request)
-                .map(|command| devo_protocol::native::item::ApprovalTarget::Command { command })
-        };
-        let native_params = serde_json::to_value(devo_protocol::native::item::Item::Approval {
-            approval_id: approval_id.clone(),
-            target_item_id: None,
-            action_summary: request.action_summary.clone(),
-            justification: request.justification.clone().unwrap_or_default(),
-            resource: Some(format!("{:?}", request.resource)),
-            available_scopes: available_scopes
-                .iter()
-                .filter_map(|scope| {
-                    serde_json::to_value(scope)
-                        .ok()
-                        .and_then(|value| value.as_str().map(str::to_string))
-                })
-                .collect(),
-            command_pattern: request.command_pattern.clone(),
-            command_prefix: request.command_prefix.clone(),
-            target: native_target,
-            decision: None,
-        })
+        let native_target = native_approval_target(&request);
+        let native_params = serde_json::to_value(native_waiting_approval_item(
+            &approval_id,
+            &request,
+            &available_scopes,
+            native_target.clone(),
+        ))
         .expect("serialize native approval request params");
         let cancel_token = self
             .active_turns
@@ -824,14 +771,17 @@ impl ServerRuntime {
         let publish_waiting_item = async {
             match request_ready_rx.await {
                 Ok(Ok(())) => {
-                    self.emit_item_started(
+                    self.emit_native_item_started(
                         session_id,
                         turn_id,
                         approval_item_id,
                         Some(approval_item_seq),
-                        ItemKind::ApprovalRequest,
-                        serde_json::to_value(&request_payload)
-                            .expect("serialize approval request payload"),
+                        native_waiting_approval_item(
+                            &approval_id,
+                            &request,
+                            &available_scopes,
+                            native_target.clone(),
+                        ),
                     )
                     .await;
                     Ok(())
@@ -859,52 +809,25 @@ impl ServerRuntime {
                     .await;
                 }
                 if publish_result.is_ok() {
-                    let mut decision_payload = serde_json::to_value(ApprovalDecisionPayload {
-                        approval_id: approval_id.clone().into(),
-                        decision: "cancel".to_string(),
-                        scope: "once".to_string(),
-                        decision_source: Some(
-                            devo_protocol::native::item::ApprovalDecisionSource::ExternalPolicy,
-                        ),
-                    })
-                    .expect("serialize cancelled approval decision payload");
-                    if let Some(payload) = decision_payload.as_object_mut() {
-                        payload.insert("revision".into(), serde_json::json!(2));
-                        payload.insert(
-                            "action_summary".into(),
-                            serde_json::json!(request.action_summary.clone()),
-                        );
-                        payload.insert(
-                            "justification".into(),
-                            serde_json::json!(request.justification.clone().unwrap_or_default()),
-                        );
-                        payload.insert(
-                            "resource".into(),
-                            serde_json::json!(format!("{:?}", request.resource)),
-                        );
-                        payload.insert(
-                            "available_scopes".into(),
-                            serde_json::json!(available_scopes),
-                        );
-                        payload.insert("path".into(), serde_json::json!(request.path.clone()));
-                        payload.insert("host".into(), serde_json::json!(request.host.clone()));
-                        payload.insert("target".into(), serde_json::json!(request.target.clone()));
-                        payload.insert(
-                            "command_pattern".into(),
-                            serde_json::json!(request.command_pattern.clone()),
-                        );
-                        payload.insert(
-                            "command_prefix".into(),
-                            serde_json::json!(request.command_prefix.clone()),
-                        );
-                    }
-                    self.emit_item_completed(
+                    self.emit_native_item_completed(
                         session_id,
                         turn_id,
                         approval_item_id,
                         Some(approval_item_seq),
-                        ItemKind::ApprovalDecision,
-                        decision_payload,
+                        native_decided_approval_item(
+                            &approval_id,
+                            &request,
+                            &available_scopes,
+                            native_target.clone(),
+                            ApprovalDecision {
+                                decision:
+                                    devo_protocol::native::item::ApprovalDecisionKind::Cancelled,
+                                scope: devo_protocol::native::item::ApprovalScope::Once,
+                                decision_source:
+                                    devo_protocol::native::item::ApprovalDecisionSource::ExternalPolicy,
+                                decided_at: Utc::now(),
+                            },
+                        ),
                     )
                     .await;
                 }
@@ -927,12 +850,6 @@ impl ServerRuntime {
             outcome,
             reason,
         );
-        let decision_label = match &decision {
-            ApprovalDecisionValue::Approve => "approve",
-            ApprovalDecisionValue::Deny => "deny",
-            ApprovalDecisionValue::Cancel => "cancel",
-        };
-        let scope_label = approval_scope_label(&scope);
         let native_decision = match &decision {
             ApprovalDecisionValue::Approve => {
                 devo_protocol::native::item::ApprovalDecisionKind::Approved
@@ -957,50 +874,23 @@ impl ServerRuntime {
             )
             .await;
         }
-        let mut decision_payload = serde_json::to_value(ApprovalDecisionPayload {
-            approval_id: approval_id.clone().into(),
-            decision: decision_label.to_string(),
-            scope: scope_label.to_string(),
-            decision_source: Some(devo_protocol::native::item::ApprovalDecisionSource::User),
-        })
-        .expect("serialize approval decision payload");
-        if let Some(payload) = decision_payload.as_object_mut() {
-            payload.insert("revision".into(), serde_json::json!(2));
-            payload.insert(
-                "action_summary".into(),
-                serde_json::json!(request.action_summary.clone()),
-            );
-            payload.insert(
-                "justification".into(),
-                serde_json::json!(request.justification.clone().unwrap_or_default()),
-            );
-            payload.insert(
-                "resource".into(),
-                serde_json::json!(format!("{:?}", request.resource)),
-            );
-            payload.insert(
-                "available_scopes".into(),
-                serde_json::json!(available_scopes),
-            );
-            payload.insert("path".into(), serde_json::json!(request.path.clone()));
-            payload.insert("host".into(), serde_json::json!(request.host.clone()));
-            payload.insert("target".into(), serde_json::json!(request.target.clone()));
-            payload.insert(
-                "command_pattern".into(),
-                serde_json::json!(request.command_pattern.clone()),
-            );
-            payload.insert(
-                "command_prefix".into(),
-                serde_json::json!(request.command_prefix.clone()),
-            );
-        }
-        self.emit_item_completed(
+        self.emit_native_item_completed(
             session_id,
             turn_id,
             approval_item_id,
             Some(approval_item_seq),
-            ItemKind::ApprovalDecision,
-            decision_payload,
+            native_decided_approval_item(
+                &approval_id,
+                &request,
+                &available_scopes,
+                native_target,
+                ApprovalDecision {
+                    decision: native_decision,
+                    scope: native_approval_scope(&scope),
+                    decision_source: devo_protocol::native::item::ApprovalDecisionSource::User,
+                    decided_at: Utc::now(),
+                },
+            ),
         )
         .await;
 
@@ -1028,9 +918,9 @@ impl ServerRuntime {
                     persisted: pending.persisted,
                     tx: scope_tx,
                 };
-                // ExecuteTurn owns the session mailbox, so ApplyApprovalScope cannot
-                // run until the turn ends. Update live TurnInlineState here so the
-                // same turn's later tool calls see PathPrefix/Session grants.
+                // Apply durable scope via the mailbox, and update live
+                // TurnInlineState so the same turn's later tool calls see
+                // PathPrefix/Session grants without waiting on MergeTurn.
                 self.apply_approval_scope_to_turn_inline(
                     host_session_id,
                     &scope,
@@ -1338,16 +1228,71 @@ fn approval_scopes_for_request(request: &ToolPermissionRequest) -> Vec<String> {
     scopes
 }
 
-fn approval_scope_label(scope: &ApprovalScopeValue) -> &'static str {
-    match scope {
-        ApprovalScopeValue::Once => "once",
-        ApprovalScopeValue::Turn => "turn",
-        ApprovalScopeValue::Session => "session",
-        ApprovalScopeValue::PathPrefix => "path_prefix",
-        ApprovalScopeValue::Host => "host",
-        ApprovalScopeValue::Tool => "tool",
-        ApprovalScopeValue::CommandPrefix => "command_prefix",
-        ApprovalScopeValue::CommandPrefixPersist => "command_prefix_persist",
+fn native_approval_target(
+    request: &ToolPermissionRequest,
+) -> Option<devo_protocol::native::item::ApprovalTarget> {
+    if let Some(path) = &request.path {
+        Some(devo_protocol::native::item::ApprovalTarget::Path { path: path.clone() })
+    } else if let Some(host) = &request.host {
+        Some(devo_protocol::native::item::ApprovalTarget::Host { host: host.clone() })
+    } else {
+        devo_core::tools::command_str_for_permission_request(request)
+            .map(|command| devo_protocol::native::item::ApprovalTarget::Command { command })
+    }
+}
+
+fn native_waiting_approval_item(
+    approval_id: &str,
+    request: &ToolPermissionRequest,
+    available_scopes: &[String],
+    target: Option<devo_protocol::native::item::ApprovalTarget>,
+) -> Item {
+    Item::Approval {
+        approval_id: approval_id.to_string(),
+        target_item_id: None,
+        action_summary: request.action_summary.clone(),
+        justification: request.justification.clone().unwrap_or_default(),
+        resource: Some(format!("{:?}", request.resource)),
+        available_scopes: available_scopes
+            .iter()
+            .filter_map(|scope| {
+                serde_json::to_value(scope)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_string))
+            })
+            .collect(),
+        command_pattern: request.command_pattern.clone(),
+        command_prefix: request.command_prefix.clone(),
+        target,
+        decision: None,
+    }
+}
+
+fn native_decided_approval_item(
+    approval_id: &str,
+    request: &ToolPermissionRequest,
+    available_scopes: &[String],
+    target: Option<devo_protocol::native::item::ApprovalTarget>,
+    decision: ApprovalDecision,
+) -> Item {
+    Item::Approval {
+        approval_id: approval_id.to_string(),
+        target_item_id: None,
+        action_summary: request.action_summary.clone(),
+        justification: request.justification.clone().unwrap_or_default(),
+        resource: Some(format!("{:?}", request.resource)),
+        available_scopes: available_scopes
+            .iter()
+            .filter_map(|scope| {
+                serde_json::to_value(scope)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_string))
+            })
+            .collect(),
+        command_pattern: request.command_pattern.clone(),
+        command_prefix: request.command_prefix.clone(),
+        target,
+        decision: Some(decision),
     }
 }
 

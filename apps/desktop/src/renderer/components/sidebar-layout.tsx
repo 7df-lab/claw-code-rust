@@ -23,7 +23,8 @@ import {
 } from "../atoms/desktop-folders"
 import { openNewTerminalAtom, terminalPanelOpenAtom } from "../atoms/terminal"
 import { customizeOpenAtom, settingsBackgroundSessionAtom, settingsOverlayOpenAtom } from "../atoms/ui"
-import { lastProjectDirectoryAtom } from "../atoms/preferences"
+import { lastProjectDirectoryAtom, sidebarWidthAtom } from "../atoms/preferences"
+import { clampSidebarWidth } from "../lib/sidebar-width"
 import { useAppRoutePersistence } from "../hooks/use-app-route-persistence"
 import { useAgents, useProjectList, useSetCommandPaletteOpen } from "../hooks/use-agents"
 import { useAgentActions } from "../hooks/use-server"
@@ -50,6 +51,7 @@ import { DesktopProjectActionsProvider } from "./desktop-project-actions-context
 import { DesktopTerminalPanel } from "./desktop-terminal-panel"
 import { LeftPanelIcon } from "./panel-icons"
 import { AppSidebarContent } from "./sidebar"
+import { SidebarResizeHandle } from "./sidebar/sidebar-resize-handle"
 import {
 	SessionDeleteDialog,
 	deleteSessionNavigationTarget,
@@ -237,6 +239,8 @@ export function SidebarLayout() {
 	const projects = useProjectList()
 	const lastProjectDirectory = useAtomValue(lastProjectDirectoryAtom)
 	const setLastProjectDirectory = useSetAtom(lastProjectDirectoryAtom)
+	const [sidebarWidth, setSidebarWidth] = useAtom(sidebarWidthAtom)
+	const [sidebarResizing, setSidebarResizing] = useState(false)
 	const setCommandPaletteOpen = useSetCommandPaletteOpen()
 	const desktopFolders = useAtomValue(desktopFoldersAtom)
 	const folderStatuses = useAtomValue(desktopFolderStatusByDirectoryAtom)
@@ -537,6 +541,17 @@ export function SidebarLayout() {
 		[desktopFolders, navigate, persistDesktopFolders, projectSlug, setFolderStatuses],
 	)
 
+	const handleSidebarWidthChange = useCallback(
+		(nextWidth: number) => {
+			setSidebarWidth(clampSidebarWidth(nextWidth, { windowWidth: window.innerWidth }))
+		},
+		[setSidebarWidth],
+	)
+
+	const resolvedSidebarWidth = clampSidebarWidth(sidebarWidth, {
+		windowWidth: typeof window !== "undefined" ? window.innerWidth : undefined,
+	})
+
 	return (
 		<div
 			className="relative flex h-screen text-foreground"
@@ -551,7 +566,17 @@ export function SidebarLayout() {
 				startFromScratch={handleOpenCreateFolder}
 				useExistingFolder={handleAddProject}
 			>
-				<SidebarProvider embedded defaultOpen={true}>
+				<SidebarProvider
+					embedded
+					defaultOpen={true}
+					data-resizing={sidebarResizing ? "true" : undefined}
+					className="relative"
+					style={
+						{
+							"--sidebar-width": `${resolvedSidebarWidth}px`,
+						} as React.CSSProperties
+					}
+				>
 					<NarrowWindowCollapser />
 					<Sidebar collapsible="offcanvas" variant="sidebar">
 						{/* Sidebar header -- reserves space to match the app bar height so
@@ -605,6 +630,11 @@ export function SidebarLayout() {
 						 * When default sidebar is active, AppSidebarContent renders its own footer. */}
 						{slotFooter !== false && slotFooter}
 					</Sidebar>
+					<SidebarResizeHandle
+						width={resolvedSidebarWidth}
+						onWidthChange={handleSidebarWidthChange}
+						onResizingChange={setSidebarResizing}
+					/>
 					<SidebarInset data-transcript-titlebar-fill={transcriptTitlebarFillAttr}>
 						<UpdateBanner />
 						{!transcriptFillsTitlebar && <AppBar />}

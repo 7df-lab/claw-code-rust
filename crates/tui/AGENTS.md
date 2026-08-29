@@ -22,6 +22,30 @@ server responses -->  WorkerEvent -> host.rs  -->  ChatWidget.apply_worker_event
 - `chatwidget.rs` (~4200 lines) and `history_cell.rs` (~1600 lines) are known exceptions due to deeply coupled variant rendering. Do not add significant new code to these files; prefer extracting to new modules under `chatwidget/` or as standalone files.
 - `worker.rs` (~2900 lines) is the server child-process bridge and accumulates protocol translation logic. New protocol features should add well-bounded private methods rather than standalone modules unless the new code exceeds ~400 lines.
 
+### Transcript projection (L2-DES-TUI-007)
+
+Tool rows in the live viewport and scrollback are driven by a single pipeline:
+
+```
+Native item/* (or adapted WorkerEvent)
+  → ItemLifecycleEvent (transcript/lifecycle.rs)
+  → TranscriptProjector (transcript/projector.rs)
+  → ToolCellModel / LiveTextCellModel + transcript/presentation.rs (semantic verbs)
+  → chatwidget/history_commit.rs (canonical finished-tool commit)
+  → transcript/render.rs → HistoryCell
+  → transcript_sync.rs → active viewport (tools + streaming text)
+```
+
+- **Historical tool commits** must go through `chatwidget/history_commit.rs`. Do not append tool history via ad-hoc `ToolResultCell` or `complete_exec_tool_from_committed` on commit.
+  - **Live turn** (`transcript_sync.rs`): `commit_committed_tool_to_live_turn` keeps exploration/exec groups in the live overlay until turn finish or compaction; `complete_exec_tool_from_committed` is only for in-flight exec output sync.
+  - **Resume rebuild** (`restored_session.rs`): `commit_committed_tool_to_history` appends directly to scrollback history (resume semantics are canonical for rendering).
+  - Decision order: `file_changes` → exploration (`ExecCell`) → exec-like shell (`ExecCell`) → paired `tool_io` (`ToolIoCell`) → semantic fallback (`ToolResultCell`).
+- **Semantic verbs** live in `transcript/presentation.rs`: `Reading`/`Read`, `Writing`/`Wrote`, `Editing`/`Edited`, `Grepping`/`Grepped`, `Finding`/`Found`, `Running`/`Ran` (shell), `Loading`/`Loaded` (skill). Do not prepend a second generic `Running`/`Ran` prefix in renderers.
+- **Exec-like tools** (`read`, `grep`, `glob`, shell) still route through `ExecCell` for grouping; `exec_cell/render.rs` uses the same verb pairs on action lines.
+- **Assistant and reasoning text** use the same `ItemLifecycleEvent` pipeline (`TextStarted` / `TextDelta` / `TextCompleted`). `TranscriptProjector` is the single source of truth for live text bodies; `transcript/stream_text.rs` merges incremental and cumulative wire deltas. `transcript_sync.rs` mirrors projector state into `active_text_items` for viewport ordering and rendering only. Worker code emits `WorkerEvent::Transcript`; legacy `TextDelta`/`ReasoningDelta` are routed into the projector at the widget boundary. Tests use `worker_event_test_helpers::{text_item_started, text_item_delta, text_item_completed}`.
+- **Tool input streaming**: `item/toolCall/inputDelta` maps to `ItemLifecycleEvent::ToolInputChunk` via `worker/tool_lifecycle.rs`.
+- **Shell-family tools** (`shell_command`, `bash`, `exec_command`, `write_stdin`): inline viewport shows `Running`/`Ran` plus the model-provided `description`, then the command in dim gray; stdout/stderr stays in `transcript_lines` (Ctrl+T) only. User-composer `$` shell rows keep inline output.
+
 ### Adding a New Module
 
 1. Add `mod my_module;` to `lib.rs` with the appropriate visibility.

@@ -48,10 +48,32 @@ const initializeResult = {
 const modelPreferences = {
 	model: "test-openai",
 	availableModels: [
-		{ value: "test-openai", label: "Test OpenAI", description: "OpenAI: test-model" },
-		{ value: "alt-openai", label: "Alt OpenAI", description: "OpenAI: alt-model" },
+		{
+			value: "test-openai",
+			label: "Test OpenAI",
+			description: "OpenAI: test-model",
+			availableEfforts: [
+				{ value: "low", label: "Low" },
+				{ value: "medium", label: "Medium" },
+				{ value: "high", label: "High" },
+			],
+		},
+		{
+			value: "alt-openai",
+			label: "Alt OpenAI",
+			description: "OpenAI: alt-model",
+			availableEfforts: [
+				{ value: "high", label: "High" },
+				{ value: "max", label: "Max" },
+			],
+		},
 	],
-	availableEfforts: [],
+	availableEfforts: [
+		{ value: "low", label: "Low" },
+		{ value: "medium", label: "Medium" },
+		{ value: "high", label: "High" },
+	],
+	reasoningEffort: "medium",
 }
 
 const configOptions = [
@@ -131,6 +153,17 @@ describe("Native desktop SDK config option cache", () => {
 		const config = await client.config.get()
 
 		expect(providers.data.default).toEqual({ session: "test-openai" })
+		expect(Object.keys(providers.data.providers[0].models["test-openai"].variants)).toEqual([
+			"low",
+			"medium",
+			"high",
+		])
+		expect(Object.keys(providers.data.providers[0].models["alt-openai"].variants)).toEqual([
+			"high",
+			"max",
+		])
+		expect(providers.data.providers[0].models["test-openai"].currentVariant).toBe("medium")
+		expect(providers.data.providers[0].models["alt-openai"].currentVariant).toBeUndefined()
 		expect(config.data).toEqual({ model: "session/test-openai" })
 		expect(transport.requests.map((request) => request.method)).toEqual([
 			"initialize",

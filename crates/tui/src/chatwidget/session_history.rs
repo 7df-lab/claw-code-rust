@@ -3,7 +3,6 @@
 //! This module converts protocol/session items into history cells and owns the
 //! bookkeeping for active cells, scrollback flushes, and restored transcripts.
 
-use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -35,6 +34,7 @@ use super::DotStatus;
 
 impl ChatWidget {
     pub(super) fn clear_for_session_switch(&mut self) {
+        self.transcript_projector.reset_sync_cursor();
         self.history.clear();
         self.next_history_flush_index = 0;
         self.active_cell = None;
@@ -62,7 +62,6 @@ impl ChatWidget {
         self.boundary_committed_assistant_items.clear();
         self.active_proposed_plan = None;
         self.pending_proposed_plan_actions = false;
-        self.stream_chunking_policy.reset();
         self.selection_mode = false;
         self.selected_user_cell_index = None;
         self.user_cell_history_indices.clear();
@@ -82,7 +81,7 @@ impl ChatWidget {
         self.last_plan_progress = (total > 0).then_some((completed, total));
 
         let mut lines = vec![Line::from(vec![
-            Span::styled("▌", Style::default().fg(Color::Rgb(120, 220, 160))),
+            Span::styled("▌", Style::default().dim()),
             " ".into(),
             "Updated Plan".bold(),
         ])];
@@ -303,9 +302,9 @@ impl ChatWidget {
         }
         if is_ai_message {
             let prefix = if title == "Reasoning" {
-                Self::reasoning_completed_dot_prefix()
+                Self::muted_dot_prefix()
             } else {
-                self.dot_prefix(status)
+                Self::reply_dot_prefix()
             };
             self.add_history_entry_without_redraw(Box::new(
                 history_cell::AgentMessageCell::new_ai_response_with_prefix(
@@ -369,14 +368,7 @@ impl ChatWidget {
                 self.add_markdown_history_without_redraw("Reasoning", &item.body);
             }
             TranscriptItemKind::ToolCall => {
-                self.add_history_entry_without_redraw(Box::new(
-                    history_cell::AgentMessageCell::new_with_prefix(
-                        vec![Self::running_tool_line(&item.title)],
-                        self.dot_prefix(DotStatus::Pending),
-                        "  ",
-                        false,
-                    ),
-                ));
+                // Completed tools are rendered from the paired ToolResult row.
             }
             TranscriptItemKind::ToolResult => {
                 self.add_history_entry_without_redraw(Box::new(ToolResultCell::new(

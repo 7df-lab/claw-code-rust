@@ -46,13 +46,17 @@ impl ServerRuntime {
         self.active_turns.remove_abort_handle(session_id).await;
     }
 
-    /// Cancels and aborts the active turn for `session_id` without clearing the
-    /// full runtime handle (used while waiting for terminal status).
+    /// Cancels the active turn for `session_id` without clearing the full
+    /// runtime handle (used while waiting for terminal status).
+    ///
+    /// Does not abort the join handle: the turn task must run
+    /// `finalize_executed_turn` + `MergeTurn` after seeing the cancel token.
+    /// Callers that need hard abort after a timed-out wait use
+    /// `ActiveTurnRegistry::abort_task` on the orphan path.
     pub(crate) async fn signal_active_turn_interrupt(&self, session_id: SessionId) {
         if let Some(cancel_token) = self.active_turns.cancel_token(session_id).await {
             cancel_token.cancel();
         }
-        self.active_turns.abort_task(session_id).await;
     }
 
     pub(crate) async fn spawn_active_turn_task<F>(

@@ -497,6 +497,9 @@ mod tests {
             "literal \"/dev/urandom\"".to_string(),
             "literal \"/dev/tty\"".to_string(),
             "literal \"/dev/ptmx\"".to_string(),
+            // `/dev/fd` is a directory (symlink to `/proc/self/fd` on Linux;
+            // directory-like on macOS), so Seatbelt emits `subpath`.
+            "subpath \"/dev/fd\"".to_string(),
         ] {
             expected.push_str(&format!("(allow file-map-executable ({filter}))\n"));
         }
@@ -516,6 +519,7 @@ mod tests {
             "literal \"/dev/urandom\"".to_string(),
             "literal \"/dev/tty\"".to_string(),
             "literal \"/dev/ptmx\"".to_string(),
+            "subpath \"/dev/fd\"".to_string(),
         ] {
             expected.push_str(&format!("(allow file-ioctl ({filter}))\n"));
         }
@@ -530,6 +534,7 @@ mod tests {
             "literal \"/dev/urandom\"".to_string(),
             "literal \"/dev/tty\"".to_string(),
             "literal \"/dev/ptmx\"".to_string(),
+            "subpath \"/dev/fd\"".to_string(),
         ] {
             expected.push_str(&format!("(allow file-read* ({filter}))\n"));
         }
@@ -550,6 +555,7 @@ mod tests {
             "literal \"/dev/urandom\"".to_string(),
             "literal \"/dev/tty\"".to_string(),
             "literal \"/dev/ptmx\"".to_string(),
+            "subpath \"/dev/fd\"".to_string(),
         ] {
             expected.push_str(&format!("(allow file-write* ({filter}))\n"));
         }

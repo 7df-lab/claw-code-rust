@@ -97,14 +97,6 @@ function SessionRowStatusIndicator({
 			</>
 		)
 	}
-	if (agent.status === "running") {
-		return (
-			<>
-				<Loader2Icon className="size-3.5 animate-spin text-[#3396f4]" aria-hidden="true" />
-				{isWorktree && <GitForkIcon className="size-3.5 text-muted-foreground" />}
-			</>
-		)
-	}
 	if (agent.status === "failed") {
 		return (
 			<>
@@ -498,6 +490,14 @@ export const SessionRow = memo(function SessionRow({
 				projectUnavailable && "text-muted-foreground opacity-55",
 			)}
 		>
+			{!isEditing && agent.status === "running" && (
+				<span
+					className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2"
+					aria-hidden="true"
+				>
+					<Loader2Icon className="size-3.5 animate-spin text-[#3396f4]" />
+				</span>
+			)}
 			<button
 				type="button"
 				onClick={isEditing ? undefined : onSelect}

@@ -5,6 +5,7 @@ use devo_protocol::native::rpc_admin::PreferencesOption;
 use crate::runtime::handlers::acp_config_options::{
     ACP_MODEL_CONFIG_ID, ACP_REASONING_EFFORT_CONFIG_ID,
 };
+use crate::session_context::SessionRuntimeContext;
 use crate::{ProtocolErrorCode, SuccessResponse};
 
 use super::ServerRuntime;
@@ -12,9 +13,11 @@ use super::ServerRuntime;
 /// Projects the ACP config-option selects into canonical model preferences
 /// (ratified #12): the model select becomes `model` + `available_models`,
 /// the reasoning-effort select becomes `reasoning_effort` +
-/// `available_efforts`.
+/// `available_efforts`. Each `available_models` entry also carries that
+/// model's own `available_efforts` from the catalog.
 fn model_preferences_from_config_options(
     options: &[devo_core::AcpSessionConfigOption],
+    runtime_context: &SessionRuntimeContext,
 ) -> ModelPreferences {
     let mut preferences = ModelPreferences {
         model: None,
@@ -45,6 +48,7 @@ fn model_preferences_from_config_options(
             value: entry.value.to_string(),
             label: entry.name,
             description: entry.description,
+            available_efforts: Vec::new(),
         })
         .collect();
         match id.as_str() {
@@ -59,7 +63,30 @@ fn model_preferences_from_config_options(
             _ => {}
         }
     }
+    enrich_available_models_with_efforts(&mut preferences, runtime_context);
     preferences
+}
+
+fn enrich_available_models_with_efforts(
+    preferences: &mut ModelPreferences,
+    runtime_context: &SessionRuntimeContext,
+) {
+    for model_option in &mut preferences.available_models {
+        let turn_config =
+            runtime_context.resolve_turn_config(Some(model_option.value.as_str()), None);
+        model_option.available_efforts = turn_config
+            .model
+            .effective_reasoning_capability()
+            .options()
+            .into_iter()
+            .map(|option| PreferencesOption {
+                value: option.value,
+                label: option.label,
+                description: Some(option.description),
+                available_efforts: Vec::new(),
+            })
+            .collect();
+    }
 }
 
 impl ServerRuntime {
@@ -119,7 +146,7 @@ impl ServerRuntime {
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: devo_protocol::native::rpc_admin::ModelPreferencesReadResult {
-                preferences: model_preferences_from_config_options(&options),
+                preferences: model_preferences_from_config_options(&options, &runtime_context),
             },
         })
         .expect("serialize canonical model/preferences/read response")
@@ -153,6 +180,7 @@ impl ServerRuntime {
         };
         let preferences = model_preferences_from_config_options(
             &self.acp_model_config_options_for_context(&runtime_context),
+            &runtime_context,
         );
         for (config_id, value) in [
             (ACP_MODEL_CONFIG_ID, params.patch.model.as_ref()),
@@ -223,7 +251,7 @@ impl ServerRuntime {
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: devo_protocol::native::rpc_admin::ModelPreferencesWriteResult {
-                preferences: model_preferences_from_config_options(&options),
+                preferences: model_preferences_from_config_options(&options, &runtime_context),
             },
         })
         .expect("serialize canonical model/preferences/write response")

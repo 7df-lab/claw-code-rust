@@ -2639,6 +2639,7 @@ mod tests {
                     }),
                     Some(TurnStatus::Running),
                     None,
+                    None,
                 );
                 rollout_store
                     .append_item(&record, item)
@@ -3196,6 +3197,7 @@ mod tests {
                 seq,
                 TurnItem::AgentMessage(TextItem { text: text.into() }),
                 Some(TurnStatus::Running),
+                None,
                 None,
             );
             store.append_item(&record, item).expect("append item");
@@ -4496,14 +4498,10 @@ mod tests {
         }
     }
 
-    /// Regression: during the first turn of an untitled session, final
-    /// title generation takes `state_change_gate`
-    /// (`maybe_generate_final_title` in runtime/items.rs) and then parks on
-    /// the session-actor mailbox (`update_title`) while the actor is busy
-    /// executing the turn, so the gate stays held for the rest of the turn.
-    /// A `session/queue/push` in that window must still answer `Queued`
-    /// immediately: the busy path no longer touches the gate
-    /// (runtime/handlers/turn.rs).
+    /// Regression: title generation used to hold `state_change_gate` across a
+    /// parked `update_title` mailbox wait while the actor ran the turn.
+    /// Title apply is now gate-free (persist-first), and the turn no longer
+    /// blocks the actor; queue push must still answer immediately.
     #[tokio::test]
     async fn queue_push_responds_immediately_while_title_generation_holds_gate() -> Result<()> {
         let data_root = TempDir::new()?;
@@ -4561,36 +4559,9 @@ mod tests {
             "turn should be executing"
         );
 
-        // Let the title model call finish: the title task now grabs
-        // `state_change_gate` and parks on the busy actor mailbox.
+        // Title apply no longer holds `state_change_gate`. Queue push must
+        // still answer `Queued` immediately while the turn stream is gated.
         completion_open.store(true, std::sync::atomic::Ordering::SeqCst);
-        let session_handle = runtime.session(session_id).await.expect("session");
-        let mut gate_held = false;
-        for _ in 0..50 {
-            match tokio::time::timeout(
-                Duration::from_millis(100),
-                session_handle.lock_state_change(),
-            )
-            .await
-            {
-                Ok(guard) => {
-                    drop(guard);
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(_) => {
-                    gate_held = true;
-                    break;
-                }
-            }
-        }
-        assert!(
-            gate_held,
-            "title generation should be holding state_change_gate across the actor mailbox wait"
-        );
-
-        // Fixed behavior: the busy push no longer touches
-        // `state_change_gate`, so it answers `Queued` immediately even
-        // while title generation holds the gate.
         let push_runtime = Arc::clone(&runtime);
         let push = tokio::spawn(async move {
             push_runtime
@@ -4610,7 +4581,7 @@ mod tests {
         });
         let response = tokio::time::timeout(Duration::from_secs(5), push)
             .await
-            .context("busy push must respond immediately while the gate is held")??
+            .context("busy push must respond immediately during an active turn")??
             .expect("push response");
         assert!(response.get("error").is_none(), "push: {response}");
         let result: devo_protocol::native::rpc_turn::SessionQueuePushResult =
@@ -4623,7 +4594,7 @@ mod tests {
             "busy push must queue: {response}"
         );
 
-        // Cleanup: let the turn finish so the gate is released.
+        // Cleanup: let the turn finish.
         stream_open.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
@@ -4679,29 +4650,6 @@ mod tests {
             "title generation should have requested its completion"
         );
         completion_open.store(true, std::sync::atomic::Ordering::SeqCst);
-        let session_handle = runtime.session(session_id).await.expect("session");
-        let mut gate_held = false;
-        for _ in 0..50 {
-            match tokio::time::timeout(
-                Duration::from_millis(100),
-                session_handle.lock_state_change(),
-            )
-            .await
-            {
-                Ok(guard) => {
-                    drop(guard);
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(_) => {
-                    gate_held = true;
-                    break;
-                }
-            }
-        }
-        assert!(
-            gate_held,
-            "title generation should be holding state_change_gate across the actor mailbox wait"
-        );
 
         let start_runtime = Arc::clone(&runtime);
         let native_start = tokio::spawn(async move {
@@ -4722,7 +4670,7 @@ mod tests {
         });
         let response = tokio::time::timeout(Duration::from_secs(2), native_start)
             .await
-            .context("native turn/start must respond while the gate is held")??
+            .context("native turn/start must respond during an active turn")??
             .expect("turn/start response");
         assert_eq!(
             response["error"]["code"].as_str(),
@@ -4749,7 +4697,7 @@ mod tests {
         });
         let response = tokio::time::timeout(Duration::from_secs(2), metadata_update)
             .await
-            .context("session/metadata/update must respond while the gate is held")??
+            .context("session/metadata/update must respond during an active turn")??
             .expect("metadata update response");
         assert!(
             response.get("error").is_none(),
@@ -5745,6 +5693,217 @@ mod tests {
         Ok(())
     }
 
+    /// Trace: L2-DES-SERVER-002, L2-DES-CONV-002
+    /// Verifies: mid-turn control/read RPCs return promptly while the model
+    /// stream is gated open (session actor mailbox must stay free).
+    #[tokio::test]
+    async fn mid_turn_list_items_workspace_and_ping_respond_promptly() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Arc::clone(&started),
+            }),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        let _turn_id = start_turn(&runtime, connection_id, session_id, "hold the turn").await?;
+        let wait_started = async {
+            while !started.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), wait_started)
+            .await
+            .expect("turn should start streaming");
+
+        let deadline = std::time::Duration::from_millis(500);
+        let list = tokio::time::timeout(
+            deadline,
+            history_request(
+                &runtime,
+                connection_id,
+                20,
+                "session/list",
+                serde_json::json!({}),
+            ),
+        )
+        .await
+        .expect("session/list must return mid-turn");
+        assert!(list.get("result").is_some(), "session/list: {list}");
+
+        let items = tokio::time::timeout(
+            deadline,
+            history_request(
+                &runtime,
+                connection_id,
+                21,
+                "session/items/list",
+                serde_json::json!({ "sessionId": session_id.to_string() }),
+            ),
+        )
+        .await
+        .expect("session/items/list must return mid-turn");
+        assert!(
+            items.get("result").is_some() || items.get("error").is_some(),
+            "session/items/list: {items}"
+        );
+
+        let workspace = tokio::time::timeout(
+            deadline,
+            history_request(
+                &runtime,
+                connection_id,
+                22,
+                "workspace/changes/read",
+                serde_json::json!({
+                    "sessionId": session_id.to_string(),
+                    "scopes": ["uncommitted"],
+                }),
+            ),
+        )
+        .await
+        .expect("workspace/changes/read must return mid-turn");
+        assert!(
+            workspace.get("result").is_some() || workspace.get("error").is_some(),
+            "workspace/changes/read: {workspace}"
+        );
+
+        let ping = tokio::time::timeout(
+            deadline,
+            history_request(
+                &runtime,
+                connection_id,
+                23,
+                "runtime/ping",
+                serde_json::json!({}),
+            ),
+        )
+        .await
+        .expect("runtime/ping must return mid-turn");
+        assert!(ping.get("result").is_some(), "runtime/ping: {ping}");
+
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Trace: L2-DES-SERVER-002, L2-DES-APP-008
+    /// Verifies: session/list and session/read overlay ActiveTurnRegistry so a
+    /// mid-turn session reports `active` with matching `activeTurnId`, then
+    /// returns to `idle` after the turn completes.
+    #[tokio::test]
+    async fn mid_turn_session_list_and_read_report_active_status() -> Result<()> {
+        use devo_protocol::native::session::SessionStatus;
+        use pretty_assertions::assert_eq;
+
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Arc::clone(&started),
+            }),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let turn_started = history_request(
+            &runtime,
+            connection_id,
+            2,
+            "turn/start",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "hold the turn" }],
+                "idempotencyKey": "list-live-status-turn",
+            }),
+        )
+        .await;
+        let turn_started: devo_protocol::native::rpc_turn::TurnStartResult =
+            serde_json::from_value(turn_started["result"].clone()).expect("turn/start result");
+        let expected_turn_id = turn_started.turn.id.clone();
+
+        let wait_started = async {
+            while !started.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), wait_started)
+            .await
+            .expect("turn should start streaming");
+
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            3,
+            "session/list",
+            serde_json::json!({}),
+        )
+        .await;
+        let listed: devo_protocol::native::rpc_session::SessionListResult =
+            serde_json::from_value(listed["result"].clone()).expect("session/list result");
+        let listed_session = listed
+            .data
+            .iter()
+            .find(|session| session.id.as_str() == session_id.to_string())
+            .expect("listed session");
+        assert_eq!(listed_session.status, SessionStatus::Active);
+        assert_eq!(
+            listed_session.active_turn_id.as_ref(),
+            Some(&expected_turn_id)
+        );
+
+        let read = history_request(
+            &runtime,
+            connection_id,
+            4,
+            "session/read",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        let read: devo_protocol::native::rpc_session::SessionReadResult =
+            serde_json::from_value(read["result"].clone()).expect("session/read result");
+        assert_eq!(read.session.status, SessionStatus::Active);
+        assert_eq!(
+            read.session.active_turn_id.as_ref(),
+            Some(&expected_turn_id)
+        );
+
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+        let wait_idle = async {
+            while runtime.runtime_active_turn_id(session_id).await.is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), wait_idle)
+            .await
+            .expect("turn should finish");
+
+        let listed_idle = history_request(
+            &runtime,
+            connection_id,
+            5,
+            "session/list",
+            serde_json::json!({}),
+        )
+        .await;
+        let listed_idle: devo_protocol::native::rpc_session::SessionListResult =
+            serde_json::from_value(listed_idle["result"].clone()).expect("session/list after turn");
+        let listed_idle_session = listed_idle
+            .data
+            .iter()
+            .find(|session| session.id.as_str() == session_id.to_string())
+            .expect("listed session after turn");
+        assert_eq!(listed_idle_session.status, SessionStatus::Idle);
+        assert_eq!(listed_idle_session.active_turn_id, None);
+        Ok(())
+    }
+
     /// Trace: L2-DES-CONV-002, L2-DES-APP-008
     /// Verifies: the native settings update returns while a turn is in
     /// flight (the persist-first path never waits on the session actor).
@@ -5904,7 +6063,7 @@ mod tests {
             ),
         )
         .await
-        .context("native turn/start must return before ExecuteTurn finishes")?;
+        .context("native turn/start must return before the turn finishes")?;
         let result: devo_protocol::native::rpc_turn::TurnStartResult =
             serde_json::from_value(started["result"].clone()).expect("native turn/start result");
         assert_eq!(result.turn.session_id.as_str(), session_id.to_string());
@@ -5962,7 +6121,7 @@ mod tests {
             history_request(&runtime, connection_id, 7, "turn/start", params.clone()),
         )
         .await
-        .context("native turn/start replay setup must return before ExecuteTurn finishes")?;
+        .context("native turn/start replay setup must return before the turn finishes")?;
         let first: devo_protocol::native::rpc_turn::TurnStartResult =
             serde_json::from_value(first["result"].clone()).expect("first result");
         let replay = history_request(&runtime, connection_id, 8, "turn/start", params).await;
@@ -6958,6 +7117,37 @@ mod tests {
         assert!(
             !read.preferences.available_efforts.is_empty(),
             "reasoning effort levels must be offered"
+        );
+        assert!(
+            read.preferences
+                .available_models
+                .iter()
+                .any(|model| !model.available_efforts.is_empty()),
+            "available_models entries must carry per-model available_efforts"
+        );
+        let current_model = read
+            .preferences
+            .model
+            .as_deref()
+            .and_then(|current| {
+                read.preferences
+                    .available_models
+                    .iter()
+                    .find(|model| model.value == current)
+            })
+            .expect("current model must appear in available_models");
+        assert_eq!(
+            current_model
+                .available_efforts
+                .iter()
+                .map(|effort| effort.value.as_str())
+                .collect::<Vec<_>>(),
+            read.preferences
+                .available_efforts
+                .iter()
+                .map(|effort| effort.value.as_str())
+                .collect::<Vec<_>>(),
+            "top-level available_efforts must match the current model's efforts"
         );
 
         let slug = read.preferences.available_models[0].value.clone();

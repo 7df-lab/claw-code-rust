@@ -81,12 +81,15 @@ export function providerDataFromConfigOptions(configOptions: SessionConfigOption
 	if (!modelOption) return { default: {}, providers: [] }
 	const currentValue = typeof modelOption.currentValue === "string" ? modelOption.currentValue : undefined
 	const reasoningOption = configOptions.find((option) => option.id === "thought_level")
-	const reasoningVariants = variantsFromConfigOption(reasoningOption)
+	const fallbackReasoningVariants = variantsFromConfigOption(reasoningOption)
 	const currentVariant =
 		typeof reasoningOption?.currentValue === "string" ? reasoningOption.currentValue : undefined
-	const hasReasoningVariants = Object.keys(reasoningVariants).length > 0
 	const models = Object.fromEntries(
 		flattenSelectOptions(modelOption.options).map((option) => {
+			const perModelVariants = variantsFromAvailableEfforts(option.availableEfforts)
+			const reasoningVariants =
+				Object.keys(perModelVariants).length > 0 ? perModelVariants : fallbackReasoningVariants
+			const hasReasoningVariants = Object.keys(reasoningVariants).length > 0
 			const model = {
 				name: option.name,
 				description: option.description,
@@ -96,16 +99,20 @@ export function providerDataFromConfigOptions(configOptions: SessionConfigOption
 					attachment: false,
 				},
 			}
+			if (!hasReasoningVariants) return [option.value, model]
+			const isCurrentModel = option.value === currentValue
+			const variantOnCurrent =
+				isCurrentModel && currentVariant && currentVariant in reasoningVariants
+					? currentVariant
+					: undefined
 			return [
 				option.value,
-				hasReasoningVariants
-					? {
-							...model,
-							variants: reasoningVariants,
-							currentVariant,
-							allowDefaultVariant: false,
-						}
-					: model,
+				{
+					...model,
+					variants: reasoningVariants,
+					...(variantOnCurrent !== undefined ? { currentVariant: variantOnCurrent } : {}),
+					allowDefaultVariant: false,
+				},
 			]
 		}),
 	)
@@ -156,8 +163,24 @@ export function requestUserInputFromOriginalEvent(
 		: undefined
 }
 
-export function partTime(existingPart: any, now: number): { start: number; end?: number } {
-	return existingPart?.time ?? { start: now }
+export function partTime(
+	existingPart: any,
+	now: number,
+	options?: { start?: number; end?: number },
+): { start: number; end?: number } {
+	const start =
+		typeof options?.start === "number" && Number.isFinite(options.start)
+			? options.start
+			: typeof existingPart?.time?.start === "number"
+				? existingPart.time.start
+				: now
+	const end =
+		typeof options?.end === "number" && Number.isFinite(options.end)
+			? options.end
+			: typeof existingPart?.time?.end === "number"
+				? existingPart.time.end
+				: undefined
+	return end === undefined ? { start } : { start, end }
 }
 
 export function toolCallIdFromUpdate(update: Record<string, unknown>, now: number): string {
@@ -174,10 +197,15 @@ export function toolPartFromUpdate(
 	const messageID = `tool-${toolCallId}`
 	const legacyContent = Array.isArray(update.content) ? update.content : undefined
 	const legacyLocations = Array.isArray(update.locations) ? update.locations : undefined
-	const input = enrichedToolInput(
-		objectFromValue(update.rawInput ?? update.input ?? existingPart?.state?.input),
-		legacyContent,
-	)
+	const incomingInput = objectFromValue(update.rawInput ?? update.input)
+	const existingInput = objectFromValue(existingPart?.state?.input)
+	// Prefer the update's input when present, but keep richer fields from a prior
+	// toolCall start (oldString/newString/content) that fileChange completions omit.
+	const mergedBase =
+		Object.keys(incomingInput).length > 0
+			? mergeToolInputs(existingInput, incomingInput)
+			: existingInput
+	const input = enrichedToolInput(mergedBase, legacyContent)
 	const tool = resolvedToolName(update, existingPart, input, toolCallId)
 	const title = resolvedToolTitle(update, existingPart, tool, toolCallId)
 	const metadata = {
@@ -210,6 +238,20 @@ export function toolPartFromUpdate(
 		tool,
 		state,
 	}
+}
+
+/** Merge fileChange completion fields onto an existing toolCall start without wiping diffs. */
+function mergeToolInputs(
+	existing: Record<string, unknown>,
+	incoming: Record<string, unknown>,
+): Record<string, unknown> {
+	const merged = { ...existing, ...incoming }
+	for (const key of ["oldString", "newString", "content"] as const) {
+		if (typeof existing[key] === "string" && incoming[key] == null) {
+			merged[key] = existing[key]
+		}
+	}
+	return merged
 }
 
 export function statusFromDevo(status?: string): any {
@@ -302,10 +344,13 @@ function toolNameFromUpdateKind(kind: string, input: Record<string, unknown>): s
 	switch (kind) {
 		case "read":
 			return "read"
+		case "write":
+			return "write"
 		case "edit":
 		case "delete":
 		case "move":
-			return "edit"
+		case "apply_patch":
+			return kind === "apply_patch" ? "apply_patch" : "edit"
 		case "search":
 			return "grep"
 		case "execute":
@@ -317,7 +362,7 @@ function toolNameFromUpdateKind(kind: string, input: Record<string, unknown>): s
 		case "other":
 			return inferToolNameFromInput(input)
 		default:
-			return inferToolNameFromInput(input)
+			return inferToolNameFromInput(input, kind)
 	}
 }
 
@@ -325,6 +370,10 @@ function inferToolNameFromInput(input: Record<string, unknown>, title?: string):
 	if (typeof input.command === "string") return "bash"
 	if (typeof input.url === "string") return "webfetch"
 	if (typeof input.pattern === "string") return "grep"
+	const changeType = typeof input.changeType === "string" ? input.changeType : undefined
+	if (changeType === "add") return "write"
+	if (changeType === "update" || changeType === "delete") return "edit"
+	if (typeof input.unifiedDiff === "string" || typeof input.unified_diff === "string") return "edit"
 	if (typeof input.filePath === "string" || typeof input.path === "string") {
 		if (typeof input.oldString === "string" || typeof input.newString === "string") return "edit"
 		if (typeof input.content === "string") return "write"
@@ -332,7 +381,7 @@ function inferToolNameFromInput(input: Record<string, unknown>, title?: string):
 	}
 	const normalizedTitle = title?.trim().toLowerCase()
 	if (normalizedTitle?.startsWith("read")) return "read"
-	if (normalizedTitle?.startsWith("edit")) return "edit"
+	if (normalizedTitle?.startsWith("edit") || normalizedTitle?.startsWith("patch")) return "edit"
 	if (normalizedTitle?.startsWith("write")) return "write"
 	if (normalizedTitle?.startsWith("search")) return "grep"
 	if (normalizedTitle?.startsWith("fetch")) return "webfetch"
@@ -343,6 +392,16 @@ function inferToolNameFromInput(input: Record<string, unknown>, title?: string):
 function rawString(value: unknown): string {
 	if (typeof value === "string") return value
 	if (value === undefined || value === null) return ""
+	const record =
+		value && typeof value === "object" && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: undefined
+	// Mixed tool results carry the human-readable body under `output` / `text`.
+	// Do not JSON.stringify those — that turns real newlines into literal `\n`.
+	if (record && !Array.isArray(record.files)) {
+		if (typeof record.output === "string") return record.output
+		if (typeof record.text === "string") return record.text
+	}
 	return JSON.stringify(value)
 }
 
@@ -441,27 +500,49 @@ function flattenSelectOptions(options: unknown): Array<{
 	value: string
 	name: string
 	description?: string
+	availableEfforts?: unknown
 }> {
 	if (!Array.isArray(options)) return []
-	const result: Array<{ value: string; name: string; description?: string }> = []
+	const result: Array<{
+		value: string
+		name: string
+		description?: string
+		availableEfforts?: unknown
+	}> = []
 	for (const option of options) {
 		if (!option || typeof option !== "object") continue
-		const value = (option as Record<string, unknown>).value
-		const nestedOptions = (option as Record<string, unknown>).options
+		const record = option as Record<string, unknown>
+		const value = record.value
+		const nestedOptions = record.options
 		if (typeof value === "string") {
 			result.push({
 				value,
-				name: String((option as Record<string, unknown>).name ?? value),
-				description:
-					typeof (option as Record<string, unknown>).description === "string"
-						? String((option as Record<string, unknown>).description)
-						: undefined,
+				name: String(record.name ?? value),
+				description: typeof record.description === "string" ? String(record.description) : undefined,
+				...(record.availableEfforts !== undefined
+					? { availableEfforts: record.availableEfforts }
+					: {}),
 			})
 			continue
 		}
 		result.push(...flattenSelectOptions(nestedOptions))
 	}
 	return result
+}
+
+function variantsFromAvailableEfforts(
+	availableEfforts: unknown,
+): Record<string, { name: string; description?: string }> {
+	if (!Array.isArray(availableEfforts)) return {}
+	return Object.fromEntries(
+		flattenSelectOptions(availableEfforts).map((selectOption) => [
+			selectOption.value,
+			{
+				name: selectOption.name,
+				description: selectOption.description,
+			},
+		]),
+	)
 }
 
 function variantsFromConfigOption(option?: SessionConfigOption): Record<string, { name: string; description?: string }> {

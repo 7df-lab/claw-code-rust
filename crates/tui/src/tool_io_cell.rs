@@ -17,7 +17,12 @@ use crate::ansi_escape::ansi_escape_line;
 use crate::diff_render::create_diff_summary;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
+use crate::render::line_utils::prefix_lines;
 use crate::tool_result_cell::ToolResultCell;
+use crate::transcript::tool_state::shell_command_from_input;
+use crate::wrapping::RtOptions;
+use crate::wrapping::adaptive_wrap_lines;
+use textwrap::WordSplitter;
 
 #[derive(Debug)]
 pub(crate) struct ToolIoCellOptions {
@@ -107,10 +112,36 @@ impl ToolIoCell {
         }
         lines
     }
+
+    fn shell_compact_display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut body: Vec<Line<'static>> = self.title_line.iter().cloned().collect();
+        if let Some(command) = shell_command_from_input(&self.input) {
+            let command_line = Line::from(Span::styled(command, Style::default().dim()));
+            let wrapped = adaptive_wrap_lines(
+                std::slice::from_ref(&command_line),
+                RtOptions::new(width.max(1) as usize).word_splitter(WordSplitter::NoHyphenation),
+            );
+            body.extend(prefix_lines(
+                wrapped,
+                Span::from("  ").dim(),
+                Span::from("    ").dim(),
+            ));
+        }
+        AgentMessageCell::new_with_prefix(
+            body,
+            self.dot_prefix.clone(),
+            self.subsequent_prefix.clone(),
+            false,
+        )
+        .display_lines(width)
+    }
 }
 
 impl HistoryCell for ToolIoCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if crate::transcript::tool_state::is_shell_tool_name(&self.tool_name) {
+            return self.shell_compact_display_lines(width);
+        }
         self.legacy_cell().display_lines(width)
     }
 

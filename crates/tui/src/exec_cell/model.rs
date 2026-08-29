@@ -240,6 +240,16 @@ impl ExecCall {
     pub(crate) fn is_unified_exec_interaction(&self) -> bool {
         matches!(self.source, ExecCommandSource::UnifiedExecInteraction)
     }
+
+    pub(crate) fn is_agent_shell_tool_call(&self) -> bool {
+        if self.is_user_shell_command() || self.is_unified_exec_interaction() {
+            return false;
+        }
+        match self.tool_name.as_deref() {
+            Some(name) => crate::transcript::tool_state::is_shell_tool_name(name),
+            None => matches!(self.source, ExecCommandSource::Agent),
+        }
+    }
 }
 
 #[cfg(test)]

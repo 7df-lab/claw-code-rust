@@ -2,6 +2,7 @@
 //!
 //! public entry point for launching the CLI TUI.
 #![allow(dead_code)]
+mod agent_tool_cell;
 mod ansi_escape;
 mod app;
 pub(crate) mod app_command;
@@ -74,10 +75,13 @@ mod tool_io_cell;
 #[cfg(test)]
 mod tool_rendering_e2e_tests;
 mod tool_result_cell;
+mod transcript;
 mod tui;
 mod ui_consts;
 mod version;
 mod worker;
+#[cfg(test)]
+mod worker_event_test_helpers;
 #[cfg(test)]
 mod worker_queue_compaction_tests;
 mod wrapping;

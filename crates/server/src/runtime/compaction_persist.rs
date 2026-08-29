@@ -217,6 +217,7 @@ pub(crate) fn append_compaction_summary_and_snapshot(
         summary_turn_item,
         None,
         None,
+        None,
     );
     if let Err(error) = rollout_store.append_item(record, item_record) {
         tracing::warn!(

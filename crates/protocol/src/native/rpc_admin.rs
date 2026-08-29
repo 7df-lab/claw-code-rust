@@ -94,6 +94,11 @@ pub struct PreferencesOption {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Per-model reasoning-effort choices when this entry is an
+    /// `available_models` item. Empty for effort entries themselves and for
+    /// models with no configurable reasoning effort.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_efforts: Vec<PreferencesOption>,
 }
 
 /// Effective model preferences for a workspace — the defaults new sessions

@@ -16,10 +16,11 @@ use crate::turn::TurnMetadata;
 use super::SessionActorState;
 use super::snapshots::HookContextSnapshot;
 
-/// Mutable session fields updated during an in-actor turn without mailbox round-trips.
+/// Mutable session fields updated during an active turn without mailbox round-trips.
 ///
-/// Transient scratch state registered in `ActiveTurnRegistry` while the actor
-/// mailbox is blocked. Merges into durable actor state when the turn completes.
+/// Transient scratch state registered in `ActiveTurnRegistry` while the turn
+/// task owns a [`super::TurnWorkingSet`]. Merges into durable actor state when
+/// the turn completes via `MergeTurn`.
 pub(crate) struct TurnInlineState {
     pub(crate) turn_id: TurnId,
     pub(crate) turn_kind: TurnKind,
@@ -46,6 +47,10 @@ pub(crate) struct TurnInlineState {
     /// Last assembled provider request for this turn. Auto-review clones this
     /// prefix so the reviewer shares the main-turn prompt cache.
     pub(crate) last_model_request: devo_core::SharedLastModelRequest,
+    /// Wall-clock start times for in-flight items (keyed by item id). Used so
+    /// completion can persist/project a distinct `created_at` for duration UI.
+    pub(crate) item_started_at:
+        std::collections::HashMap<devo_core::ItemId, chrono::DateTime<chrono::Utc>>,
 }
 
 impl TurnInlineState {
@@ -78,6 +83,7 @@ impl TurnInlineState {
             )),
             live_turn_settings: Default::default(),
             last_model_request: Arc::new(std::sync::Mutex::new(None)),
+            item_started_at: std::collections::HashMap::new(),
         }
     }
 

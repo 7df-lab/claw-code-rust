@@ -10,10 +10,10 @@ use crate::turn::TurnMetadata;
 
 use super::session_actor::state::{SessionStreamState, SpawnSnapshot};
 
-/// Per-session execution state for an in-flight turn.
+/// Runtime coordination for an in-flight turn (cancel, abort, spawn/stream mirrors).
 ///
-/// Durable session fields remain on `SessionActorState`; this struct holds only
-/// runtime coordination needed while a turn blocks the actor or runs outside it.
+/// Durable session fields remain on `SessionActorState`; turn I/O runs on a
+/// spawned task with a `TurnWorkingSet` and merges back through `MergeTurn`.
 pub(crate) struct ActiveTurnExecution {
     pub turn: Option<TurnMetadata>,
     pub cancel_token: Option<CancellationToken>,
@@ -161,8 +161,8 @@ impl ActiveTurnRegistry {
 
     /// Clears cancellation, metadata, and connection routing while a turn ends.
     ///
-    /// Stream state and spawn snapshots remain registered until
-    /// `execute_turn_in_actor` unregisters them after inline finalization.
+    /// Stream state and spawn snapshots remain registered until the turn task
+    /// unregisters them after `MergeTurn`.
     pub(crate) async fn clear_interrupt_handles(&self, session_id: SessionId) {
         let mut turns = self.turns.lock().await;
         if let Some(execution) = turns.get_mut(&session_id) {

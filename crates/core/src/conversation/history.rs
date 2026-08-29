@@ -31,6 +31,9 @@ pub struct CanonicalHistory {
     pub turns: Vec<Turn>,
     /// Item envelopes in ascending `seq` order, approval folds applied.
     pub items: Vec<ItemEnvelope>,
+    /// Latest context-window occupancy observed while reading the rollout
+    /// (turn extras or compaction snapshots), when present.
+    pub latest_context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
 }
 
 /// Errors from reading a rollout file as canonical history.
@@ -98,7 +101,15 @@ pub fn read_canonical_history(path: &Path) -> Result<CanonicalHistory, HistoryRe
 fn apply_v2_line(history: &mut CanonicalHistory, line: RolloutLineV2) {
     match line {
         RolloutLineV2::SessionMeta { session, .. } => history.session = Some(session),
-        RolloutLineV2::Turn { turn, .. } => history.turns.push(turn),
+        RolloutLineV2::Turn { turn, extras, .. } => {
+            history.turns.push(turn);
+            if let Some(extras) = extras
+                .as_ref()
+                .and_then(|extras| extras.context_occupancy.clone())
+            {
+                history.latest_context_occupancy = Some(extras);
+            }
+        }
         RolloutLineV2::Item { item, .. } => history.items.push(item),
         RolloutLineV2::Internal {
             entry:
@@ -144,11 +155,17 @@ fn apply_v2_line(history: &mut CanonicalHistory, line: RolloutLineV2) {
         // the prompt, not the displayed history; workspace lines are not part
         // of the conversational timeline.
         RolloutLineV2::Internal { .. }
-        | RolloutLineV2::CompactionSnapshot { .. }
         | RolloutLineV2::WorkspaceCheckpoint { .. }
         | RolloutLineV2::WorkspaceChange { .. }
         | RolloutLineV2::WorkspaceRestoreStarted { .. }
         | RolloutLineV2::WorkspaceRestoreCompleted { .. } => {}
+        RolloutLineV2::CompactionSnapshot {
+            context_occupancy, ..
+        } => {
+            if let Some(occupancy) = context_occupancy {
+                history.latest_context_occupancy = Some(occupancy);
+            }
+        }
     }
 }
 
@@ -235,6 +252,7 @@ mod tests {
             turn_id,
             seq,
             timestamp: Utc.with_ymd_and_hms(2026, 7, 1, 12, 0, 0).unwrap(),
+            started_at: None,
             attempt_placement: None,
             turn_status: Some(TurnStatus::Running),
             sibling_turn_ids: Vec::new(),

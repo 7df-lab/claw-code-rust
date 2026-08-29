@@ -51,6 +51,13 @@ pub enum QueryEvent {
         /// Fully decoded tool input payload, when available.
         input: serde_json::Value,
     },
+    /// Incremental tool-call input JSON from the provider stream.
+    ToolUseInputDelta {
+        /// Stable provider-issued tool use identifier.
+        id: String,
+        /// Partial JSON fragment to append to the in-flight tool input.
+        partial_json: String,
+    },
     /// A locally executed tool has passed permission checks and started running.
     ToolExecutionStart {
         /// Stable provider-issued tool use identifier.

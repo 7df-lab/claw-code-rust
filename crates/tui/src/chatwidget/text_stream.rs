@@ -1,10 +1,9 @@
-//! Active assistant/reasoning text stream lifecycle for `ChatWidget`.
+//! Active assistant/reasoning text view state for `ChatWidget`.
 //!
-//! This module owns the ordering, live-cell synchronization, and final commit
-//! behavior for streaming text items while `ChatWidget` keeps the actual state.
+//! Text bodies live in [`TranscriptProjector`] only; this module tracks ordering,
+//! live-cell rendering, and commit-to-history behavior.
 
 use std::sync::OnceLock;
-use std::time::Duration;
 use std::time::Instant;
 
 use devo_core::ItemId;
@@ -13,9 +12,7 @@ use ratatui::text::Span;
 use crate::events::TextItemKind;
 use crate::history_cell;
 use crate::markdown::append_markdown;
-use crate::streaming::commit_tick::CommitTickScope;
-use crate::streaming::commit_tick::run_commit_tick;
-use crate::streaming::controller::StreamController;
+use crate::transcript::lifecycle::ItemLifecycleEvent;
 
 use super::ChatWidget;
 use super::DotStatus;
@@ -25,31 +22,74 @@ pub(super) struct ActiveTextItem {
     pub(super) kind: TextItemKind,
     pub(super) seq: u64,
     pub(super) status: DotStatus,
-    pub(super) stream_controller: Option<StreamController>,
-    last_renderable_delta_at: Option<Instant>,
-    last_stream_commit_at: Option<Instant>,
-    stream_stall_warned: bool,
-    delta_seq: u64,
-    raw_text: String,
+    commit_text: Option<String>,
     pub(super) cell: Option<Box<dyn history_cell::HistoryCell>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ActiveTextItemId {
-    Server(ItemId),
-    Legacy(TextItemKind),
-}
+pub(super) struct ActiveTextItemId(pub(crate) ItemId);
 
 impl ActiveTextItemId {
+    pub(super) fn item_id(self) -> ItemId {
+        self.0
+    }
+
     pub(super) fn log_label(self) -> String {
-        match self {
-            Self::Server(item_id) => item_id.to_string(),
-            Self::Legacy(kind) => format!("legacy-{kind:?}"),
-        }
+        self.0.to_string()
     }
 }
 
 impl ChatWidget {
+    pub(super) fn is_legacy_text_item(&self, item_id: ItemId) -> bool {
+        item_id == self.legacy_assistant_item_id || item_id == self.legacy_reasoning_item_id
+    }
+
+    pub(super) fn legacy_text_item_id(&self, kind: TextItemKind) -> ItemId {
+        match kind {
+            TextItemKind::Assistant => self.legacy_assistant_item_id,
+            TextItemKind::Reasoning => self.legacy_reasoning_item_id,
+        }
+    }
+
+    pub(super) fn live_text_body(&self, item_id: ItemId) -> &str {
+        self.transcript_projector
+            .live_text_for(item_id)
+            .unwrap_or("")
+    }
+
+    pub(super) fn has_native_text_item(&self, kind: TextItemKind) -> bool {
+        self.transcript_projector
+            .live_text_items()
+            .any(|live| live.kind == kind && !self.is_legacy_text_item(live.item_id))
+    }
+
+    pub(super) fn apply_legacy_text_delta(&mut self, kind: TextItemKind, delta: String) {
+        if self.has_native_text_item(kind) {
+            return;
+        }
+        self.flush_active_cell();
+        let item_id = self.legacy_text_item_id(kind);
+        if !self.transcript_projector.has_live_text(item_id) {
+            self.apply_item_lifecycle(ItemLifecycleEvent::TextStarted { item_id, kind });
+        }
+        self.apply_item_lifecycle(ItemLifecycleEvent::TextDelta {
+            item_id,
+            kind,
+            delta,
+        });
+    }
+
+    pub(super) fn apply_legacy_text_completed(&mut self, kind: TextItemKind, final_text: String) {
+        if self.has_native_text_item(kind) {
+            return;
+        }
+        let item_id = self.legacy_text_item_id(kind);
+        self.apply_item_lifecycle(ItemLifecycleEvent::TextCompleted {
+            item_id,
+            kind,
+            final_text,
+        });
+    }
     pub(super) fn commit_active_streams(&mut self, status: DotStatus) {
         tracing::debug!(
             status = ?status,
@@ -58,9 +98,10 @@ impl ChatWidget {
         );
         for item in &self.active_text_items {
             if item.kind == TextItemKind::Assistant
-                && let ActiveTextItemId::Server(item_id) = item.item_id
+                && !self.is_legacy_text_item(item.item_id.item_id())
             {
-                self.boundary_committed_assistant_items.insert(item_id);
+                self.boundary_committed_assistant_items
+                    .insert(item.item_id.item_id());
                 self.committed_server_assistant_in_turn = true;
             }
         }
@@ -77,8 +118,9 @@ impl ChatWidget {
                 index += 1;
                 continue;
             }
-            if let ActiveTextItemId::Server(item_id) = item.item_id {
-                self.boundary_committed_assistant_items.insert(item_id);
+            if !self.is_legacy_text_item(item.item_id.item_id()) {
+                self.boundary_committed_assistant_items
+                    .insert(item.item_id.item_id());
                 self.committed_server_assistant_in_turn = true;
             }
             self.commit_text_item_at(index, DotStatus::Completed);
@@ -100,11 +142,6 @@ impl ChatWidget {
         }
 
         let seq = self.reserve_seq();
-        let stream_controller = if kind == TextItemKind::Assistant {
-            Some(StreamController::new(None, &self.session.cwd))
-        } else {
-            None
-        };
         let insert_index = self.active_text_item_insert_index(kind);
         tracing::debug!(
             item_id = %item_id.log_label(),
@@ -120,12 +157,7 @@ impl ChatWidget {
                 kind,
                 seq,
                 status: DotStatus::Pending,
-                stream_controller,
-                last_renderable_delta_at: None,
-                last_stream_commit_at: None,
-                stream_stall_warned: false,
-                delta_seq: 0,
-                raw_text: String::new(),
+                commit_text: None,
                 cell: None,
             },
         );
@@ -133,85 +165,17 @@ impl ChatWidget {
             after = ?self.active_text_item_log_order(),
             "active text item order after start"
         );
-        self.stream_chunking_policy.reset();
     }
 
-    pub(super) fn push_text_item_delta(
-        &mut self,
-        item_id: ActiveTextItemId,
-        kind: TextItemKind,
-        delta: &str,
-    ) {
-        let index = self.ensure_text_item(item_id, kind);
-        let active_items = self.active_text_item_log_order();
-        let active_cell_revision_before = self.active_cell_revision;
-        let delta_seq = {
-            let item = &mut self.active_text_items[index];
-            item.delta_seq = item.delta_seq.saturating_add(1);
-            item.delta_seq
+    pub(super) fn sync_live_text_item(&mut self, item_id: ActiveTextItemId) {
+        let Some(index) = self
+            .active_text_items
+            .iter()
+            .position(|item| item.item_id == item_id)
+        else {
+            return;
         };
-        let queued_lines_before = self.active_text_items[index]
-            .stream_controller
-            .as_ref()
-            .map(StreamController::queued_lines);
-        if let Some(assistant_token_text) = (kind == TextItemKind::Assistant)
-            .then(|| assistant_token_log_preview(delta))
-            .flatten()
-        {
-            tracing::debug!(
-                stream_elapsed_ms = stream_trace_elapsed_ms(),
-                item_id = %item_id.log_label(),
-                kind = ?kind,
-                delta_seq,
-                delta_len = delta.len(),
-                queued_lines_before = ?queued_lines_before,
-                active_cell_revision_before,
-                active_items = ?active_items,
-                assistant_token_text = %assistant_token_text,
-                "received active text item delta"
-            );
-        } else {
-            tracing::debug!(
-                stream_elapsed_ms = stream_trace_elapsed_ms(),
-                item_id = %item_id.log_label(),
-                kind = ?kind,
-                delta_seq,
-                delta_len = delta.len(),
-                queued_lines_before = ?queued_lines_before,
-                active_cell_revision_before,
-                active_items = ?active_items,
-                "received active text item delta"
-            );
-        }
-        match kind {
-            TextItemKind::Assistant => {
-                if let Some(controller) = self.active_text_items[index].stream_controller.as_mut() {
-                    let produced_renderable_lines = controller.push(delta);
-                    if produced_renderable_lines {
-                        let item = &mut self.active_text_items[index];
-                        item.last_renderable_delta_at = Some(Instant::now());
-                        item.stream_stall_warned = false;
-                    }
-                }
-            }
-            TextItemKind::Reasoning => {
-                self.active_text_items[index].raw_text.push_str(delta);
-            }
-        }
         self.sync_text_item_cell(index);
-        tracing::debug!(
-            stream_elapsed_ms = stream_trace_elapsed_ms(),
-            item_id = %item_id.log_label(),
-            kind = ?kind,
-            delta_seq,
-            queued_lines_after = ?self.active_text_items[index]
-                .stream_controller
-                .as_ref()
-                .map(StreamController::queued_lines),
-            active_cell_revision_after = self.active_cell_revision,
-            "active text item delta synced"
-        );
-        self.frame_requester.schedule_frame();
     }
 
     pub(super) fn complete_text_item(
@@ -222,8 +186,11 @@ impl ChatWidget {
     ) {
         let boundary_committed = matches!(
             (item_id, kind),
-            (ActiveTextItemId::Server(item_id), TextItemKind::Assistant)
-                if self.boundary_committed_assistant_items.contains(&item_id)
+            (_, TextItemKind::Assistant)
+                if self
+                    .boundary_committed_assistant_items
+                    .contains(&item_id.item_id())
+                    && !self.is_legacy_text_item(item_id.item_id())
         );
         let index = if boundary_committed {
             let Some(index) = self
@@ -247,11 +214,11 @@ impl ChatWidget {
         );
         self.active_text_items[index].status = DotStatus::Completed;
         if !boundary_committed && !final_text.trim().is_empty() {
-            self.active_text_items[index].raw_text = final_text;
+            self.active_text_items[index].commit_text = Some(final_text);
         }
         self.sync_text_item_cell(index);
         self.commit_completed_text_items();
-        if matches!(item_id, ActiveTextItemId::Server(_)) && kind == TextItemKind::Assistant {
+        if !self.is_legacy_text_item(item_id.item_id()) && kind == TextItemKind::Assistant {
             self.committed_server_assistant_in_turn = true;
         }
     }
@@ -273,19 +240,7 @@ impl ChatWidget {
     }
 
     pub(super) fn has_server_active_item(&self, kind: TextItemKind) -> bool {
-        self.active_text_items
-            .iter()
-            .any(|item| matches!(item.item_id, ActiveTextItemId::Server(_)) && item.kind == kind)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn assistant_stream_queued_lines_for_test(&self) -> usize {
-        self.active_text_items
-            .iter()
-            .filter(|item| item.kind == TextItemKind::Assistant)
-            .filter_map(|item| item.stream_controller.as_ref())
-            .map(StreamController::queued_lines)
-            .sum()
+        self.has_native_text_item(kind)
     }
 
     fn commit_text_item_at(&mut self, index: usize, status: DotStatus) {
@@ -294,6 +249,12 @@ impl ChatWidget {
         }
 
         let mut item = self.active_text_items.remove(index);
+        let body = item
+            .commit_text
+            .take()
+            .unwrap_or_else(|| self.live_text_body(item.item_id.item_id()).to_string());
+        self.transcript_projector
+            .drop_live_text(item.item_id.item_id());
         tracing::debug!(
             item_id = %item.item_id.log_label(),
             kind = ?item.kind,
@@ -303,31 +264,20 @@ impl ChatWidget {
         );
         match item.kind {
             TextItemKind::Assistant => {
-                if let Some(controller) = item.stream_controller.as_mut() {
-                    let (_cell, source) = controller.finalize();
-                    if let Some(source) = source {
-                        self.add_assistant_markdown_source(source, status);
-                    } else if !item.raw_text.trim().is_empty() {
-                        self.add_markdown_history_with_status_without_redraw(
-                            "Assistant",
-                            &item.raw_text,
-                            status,
-                        );
-                    }
-                } else if !item.raw_text.trim().is_empty() {
+                if !body.trim().is_empty() {
                     self.add_markdown_history_with_status_without_redraw(
                         "Assistant",
-                        &item.raw_text,
+                        &body,
                         status,
                     );
                 }
             }
             TextItemKind::Reasoning => {
-                if !item.raw_text.trim().is_empty() {
+                if !body.trim().is_empty() {
                     if self.collapse_reasoning {
                         self.add_history_entry_without_redraw(
                             super::reasoning_view::collapsed_reasoning_history_cell(
-                                item.raw_text,
+                                body,
                                 &self.session.cwd,
                                 "Thought: ",
                                 Self::reasoning_completed_heading_style(),
@@ -336,25 +286,11 @@ impl ChatWidget {
                             ),
                         );
                     } else {
-                        self.add_markdown_history_with_status("Reasoning", &item.raw_text, status);
+                        self.add_markdown_history_with_status("Reasoning", &body, status);
                     }
                 }
             }
         }
-        self.stream_chunking_policy.reset();
-    }
-
-    fn add_assistant_markdown_source(&mut self, source: String, status: DotStatus) {
-        if source.trim().is_empty() {
-            return;
-        }
-
-        self.add_history_entry_without_redraw(Box::new(history_cell::AgentMarkdownCell::new(
-            source,
-            &self.session.cwd,
-            self.dot_prefix(status),
-            "  ",
-        )));
     }
 
     fn active_text_item_insert_index(&self, kind: TextItemKind) -> usize {
@@ -428,72 +364,7 @@ impl ChatWidget {
             .collect()
     }
 
-    pub(super) fn run_stream_commit_tick(&mut self) {
-        let now = Instant::now();
-        let mut output_cells = Vec::new();
-        let mut needs_followup = false;
-        let mut changed_indexes = Vec::new();
-
-        for (index, item) in self.active_text_items.iter_mut().enumerate() {
-            let Some(controller) = item.stream_controller.as_mut() else {
-                continue;
-            };
-            let queued_lines_before = controller.queued_lines();
-            let output = run_commit_tick(
-                &mut self.stream_chunking_policy,
-                Some(controller),
-                CommitTickScope::AnyMode,
-                now,
-            );
-            let queued_lines_after = controller.queued_lines();
-            let emitted_cells = output.cells.len();
-            tracing::debug!(
-                stream_elapsed_ms = stream_trace_elapsed_ms(),
-                item_id = %item.item_id.log_label(),
-                kind = ?item.kind,
-                delta_seq = item.delta_seq,
-                queued_lines_before,
-                queued_lines_after,
-                emitted_cells,
-                all_idle = output.all_idle,
-                "stream commit tick processed active text item"
-            );
-            if matches!(item.kind, TextItemKind::Assistant) {
-                if !output.cells.is_empty() {
-                    changed_indexes.push(index);
-                    item.last_stream_commit_at = Some(now);
-                    item.stream_stall_warned = false;
-                } else if item.kind == TextItemKind::Assistant {
-                    maybe_warn_stream_commit_stall(item, queued_lines_after, now);
-                }
-                if !output.all_idle {
-                    needs_followup = true;
-                }
-                continue;
-            }
-            if !output.cells.is_empty() {
-                output_cells.extend(output.cells);
-                changed_indexes.push(index);
-            }
-            if !output.all_idle {
-                needs_followup = true;
-            }
-        }
-
-        for cell in output_cells {
-            self.add_history_entry_without_redraw(cell);
-        }
-        for index in changed_indexes {
-            self.sync_text_item_cell(index);
-        }
-        if needs_followup {
-            self.frame_requester
-                .schedule_frame_in(std::time::Duration::from_millis(16));
-        }
-        if !self.active_text_items.is_empty() {
-            self.frame_requester.schedule_frame();
-        }
-    }
+    pub(super) fn run_stream_commit_tick(&mut self) {}
 
     pub(super) fn sync_text_item_cell(&mut self, index: usize) {
         if index >= self.active_text_items.len() {
@@ -512,39 +383,27 @@ impl ChatWidget {
         &self,
         item: &ActiveTextItem,
     ) -> Option<Box<dyn history_cell::HistoryCell>> {
-        if let Some(controller) = &item.stream_controller {
-            let lines = controller.live_rendered_lines();
-            if lines.iter().any(|line| !Self::is_blank_line(&line.line)) {
-                return Some(Box::new(
-                    history_cell::AgentMessageCell::new_with_rendered_lines(
-                        lines,
-                        Self::pending_dot_prefix(),
-                        "  ",
-                        false,
-                    ),
-                ));
-            }
-        } else if !item.raw_text.trim().is_empty() {
-            return Some(Box::new(
-                self.bulleted_markdown_cell(&item.raw_text, Self::pending_dot_prefix()),
-            ));
+        let body = self.live_text_body(item.item_id.item_id());
+        if body.trim().is_empty() {
+            return None;
         }
-        None
+        Some(Box::new(
+            self.bulleted_markdown_cell(body, Self::reply_dot_prefix()),
+        ))
     }
 
     fn reasoning_active_cell(
         &self,
         item: &ActiveTextItem,
     ) -> Option<Box<dyn history_cell::HistoryCell>> {
-        if item.raw_text.trim().is_empty() {
+        let body = self.live_text_body(item.item_id.item_id());
+        if body.trim().is_empty() {
             return None;
         }
 
         if self.collapse_reasoning {
-            // Width-aware live window: cap by wrapped visual rows, not logical
-            // newlines, so one long paragraph cannot blow past the budget.
             return Some(super::reasoning_view::collapsed_reasoning_live_cell(
-                item.raw_text.clone(),
+                body.to_string(),
                 &self.session.cwd,
                 "Thinking: ",
                 Self::reasoning_heading_style(),
@@ -554,12 +413,7 @@ impl ChatWidget {
         }
 
         let mut body_lines = Vec::new();
-        append_markdown(
-            &item.raw_text,
-            None,
-            Some(&self.session.cwd),
-            &mut body_lines,
-        );
+        append_markdown(body, None, Some(&self.session.cwd), &mut body_lines);
         Self::patch_lines_style(&mut body_lines, Self::reasoning_text_style());
         if let Some(first_line) = body_lines.first_mut() {
             first_line.spans.insert(
@@ -576,43 +430,6 @@ impl ChatWidget {
             ),
         ))
     }
-}
-
-fn maybe_warn_stream_commit_stall(item: &mut ActiveTextItem, queued_lines: usize, now: Instant) {
-    if item.kind != TextItemKind::Assistant || item.stream_stall_warned || queued_lines == 0 {
-        return;
-    }
-    let Some(last_renderable_delta_at) = item.last_renderable_delta_at else {
-        return;
-    };
-    let threshold = stream_stall_warning_threshold();
-    let age = now.saturating_duration_since(last_renderable_delta_at);
-    if age < threshold {
-        return;
-    }
-    tracing::warn!(
-        stream_elapsed_ms = stream_trace_elapsed_ms(),
-        item_id = %item.item_id.log_label(),
-        queued_lines,
-        stalled_ms = age.as_millis(),
-        threshold_ms = threshold.as_millis(),
-        last_stream_commit_age_ms = item
-            .last_stream_commit_at
-            .map(|last_commit| now.saturating_duration_since(last_commit).as_millis()),
-        "assistant stream has queued renderable lines but no visible commit"
-    );
-    item.stream_stall_warned = true;
-}
-
-fn stream_stall_warning_threshold() -> Duration {
-    static STREAM_STALL_WARNING_THRESHOLD: OnceLock<Duration> = OnceLock::new();
-    *STREAM_STALL_WARNING_THRESHOLD.get_or_init(|| {
-        std::env::var("DEVO_TUI_STREAM_STALL_WARN_MS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .map(Duration::from_millis)
-            .unwrap_or_else(|| Duration::from_millis(750))
-    })
 }
 
 fn stream_trace_elapsed_ms() -> u128 {
@@ -718,19 +535,8 @@ mod tests {
     use std::hint::black_box;
     use std::time::Instant;
 
-    use crate::events::TextItemKind;
-
-    use super::ActiveTextItemId;
     use super::assistant_token_log_preview_with_enabled;
     use super::format_assistant_token_log_preview;
-
-    #[test]
-    fn legacy_text_item_id_log_label_includes_kind() {
-        assert_eq!(
-            ActiveTextItemId::Legacy(TextItemKind::Assistant).log_label(),
-            "legacy-Assistant"
-        );
-    }
 
     #[test]
     fn assistant_token_log_preview_escapes_and_truncates_text() {

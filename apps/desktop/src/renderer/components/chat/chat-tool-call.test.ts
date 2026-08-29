@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { describe, expect, test } from "bun:test"
-import { buildBashTerminalOutput, getToolSubtitle, stripShellEnvelope } from "./chat-tool-call"
+import { buildBashTerminalOutput, getToolInfo, getToolSubtitle, parseReadOutput, stripShellEnvelope } from "./chat-tool-call"
 
 const elapsedHookSource = readFileSync(new URL("../../hooks/use-elapsed-time.ts", import.meta.url), "utf8")
 const chatToolCallSource = readFileSync(new URL("./chat-tool-call.tsx", import.meta.url), "utf8")
@@ -139,11 +139,13 @@ describe("read tool output density source", () => {
 			preRule: rendererCssSource.includes(".devo-read-output pre"),
 			codeRule: rendererCssSource.includes(".devo-read-output code"),
 			lineHeight: rendererCssSource.includes("line-height: 1.35"),
+			preservesWhitespace: rendererCssSource.includes("white-space: pre"),
 		}).toEqual({
 			readClass: true,
 			preRule: true,
 			codeRule: true,
 			lineHeight: true,
+			preservesWhitespace: true,
 		})
 	})
 })
@@ -161,6 +163,100 @@ describe("useToolElapsedTime source", () => {
 })
 
 
+describe("parseReadOutput", () => {
+	test("unwraps stringified Mixed metadata and restores real newlines", () => {
+		const body = "<path>hello.py</path>\n<content>\n1: def main():\n2:    print(1)\n</content>"
+		const stringified = JSON.stringify({
+			output: body,
+			preview: "def main",
+			truncated: false,
+		})
+		const parsed = parseReadOutput(stringified)
+		expect({
+			hasRealNewline: parsed.includes("\n"),
+			noLiteralEscape: !parsed.includes("\\n"),
+			line1: parsed.includes("1: def main():"),
+			line2: parsed.includes("2:    print(1)"),
+		}).toEqual({
+			hasRealNewline: true,
+			noLiteralEscape: true,
+			line1: true,
+			line2: true,
+		})
+	})
+
+	test("unescapes literal \\n when they dominate the string", () => {
+		const parsed = parseReadOutput(
+			'\\n1: def main():\\n2:    name = input(\\"What is your name? \\")',
+		)
+		expect(parsed.split("\n")).toEqual([
+			"",
+			"1: def main():",
+			'2:    name = input("What is your name? ")',
+		])
+	})
+})
+
+describe("getToolInfo", () => {
+	test("labels shell tools as Running while active and Ran when finished", () => {
+		expect({
+			running: getToolInfo("bash", { running: true }).title,
+			ran: getToolInfo("bash", { running: false }).title,
+			shellCommand: getToolInfo("shell_command", { running: true }).title,
+			execCommand: getToolInfo("exec_command").title,
+		}).toEqual({
+			running: "Running",
+			ran: "Ran",
+			shellCommand: "Running",
+			execCommand: "Ran",
+		})
+	})
+
+	test("labels write and edit with Writing/Added and Editing/Edited", () => {
+		expect({
+			writing: getToolInfo("write", { running: true }).title,
+			added: getToolInfo("write", { running: false }).title,
+			editing: getToolInfo("edit", { running: true }).title,
+			edited: getToolInfo("edit", { running: false }).title,
+			patchEditing: getToolInfo("apply_patch", { running: true }).title,
+			patchEdited: getToolInfo("apply_patch", { running: false }).title,
+		}).toEqual({
+			writing: "Writing",
+			added: "Added",
+			editing: "Editing",
+			edited: "Edited",
+			patchEditing: "Editing",
+			patchEdited: "Edited",
+		})
+	})
+
+	test("does not use legacy Write/Edit/Patch titles for file-change tools", () => {
+		const titles = [
+			getToolInfo("write").title,
+			getToolInfo("edit").title,
+			getToolInfo("apply_patch").title,
+		]
+		expect(titles).toEqual(["Added", "Edited", "Edited"])
+		expect(titles).not.toContain("Write")
+		expect(titles).not.toContain("Edit")
+		expect(titles).not.toContain("Patch")
+	})
+
+	test("keeps file-change path typography aligned with Read", () => {
+		expect({
+			noMonoOnFileChangePath: !chatToolCallSource.includes(
+				'font-mono text-[12px] text-muted-foreground/50',
+			),
+			fileChangePathUsesReadMutedClass: /fileChangeRow[\s\S]*?text-muted-foreground\/60/.test(
+				chatToolCallSource,
+			),
+		}).toEqual({
+			noMonoOnFileChangePath: true,
+			fileChangePathUsesReadMutedClass: true,
+		})
+	})
+})
+
 describe("ChatToolCall memo comparison", () => {
 	test("re-renders when the controlled open state changes so rows can expand", () => {
 		expect({
@@ -170,11 +266,13 @@ describe("ChatToolCall memo comparison", () => {
 			hidesSpinnerWhenTurnIdle: chatToolCallSource.includes(
 				"turnWorking && (status === \"running\" || status === \"pending\")",
 			),
+			gatesBodyWhileControlledClosed: chatToolCallSource.includes("open === false ? null"),
 		}).toEqual({
 			comparesOpen: true,
 			comparesTurnError: true,
 			comparesTurnWorking: true,
 			hidesSpinnerWhenTurnIdle: true,
+			gatesBodyWhileControlledClosed: true,
 		})
 	})
 

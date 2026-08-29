@@ -1167,6 +1167,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         turn_id,
         seq,
         timestamp,
+        started_at: None,
         attempt_placement: None,
         turn_status: None,
         sibling_turn_ids: Vec::new(),

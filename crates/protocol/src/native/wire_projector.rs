@@ -57,7 +57,8 @@ pub fn project_wire_item(
             Some(Item::AssistantMessage { text, phase: None })
         }
         ItemKind::Reasoning => {
-            let text = payload_text(payload)?;
+            // Empty text is valid on `item/started` before the first delta.
+            let text = payload_text(payload).unwrap_or_default();
             Some(Item::Reasoning {
                 text,
                 provider_payload_ref: None,
@@ -186,20 +187,53 @@ pub fn project_wire_item(
                 output: Some(hosted_tool_output(payload)),
             })
         }
-        ItemKind::ContextCompaction => Some(Item::ContextCompaction {
-            // The wire payload carries only a display title, never the
-            // trigger or the summary text.
-            trigger: CompactionTrigger::AutoThreshold,
-            before: ContextUsage {
-                measured: false,
-                ..ContextUsage::default()
-            },
-            after: None,
-            summary: payload
-                .get("text")
+        ItemKind::ContextCompaction => {
+            let failed = payload
+                .get("status")
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
-        }),
+                .is_some_and(|status| {
+                    status.eq_ignore_ascii_case("failed") || status.eq_ignore_ascii_case("error")
+                })
+                || payload
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|title| title.eq_ignore_ascii_case("Compaction failed"));
+            let message = payload
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|message| !message.is_empty());
+            let summary = if failed {
+                Some(match message {
+                    Some(message) => format!("Compaction failed: {message}"),
+                    None => "Compaction failed".to_string(),
+                })
+            } else {
+                payload
+                    .get("text")
+                    .or_else(|| payload.get("title"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            };
+            let trigger = match payload
+                .get("trigger")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+            {
+                "manual" => CompactionTrigger::Manual,
+                "providerRetry" | "provider_retry" => CompactionTrigger::ProviderRetry,
+                _ => CompactionTrigger::AutoThreshold,
+            };
+            Some(Item::ContextCompaction {
+                trigger,
+                before: ContextUsage {
+                    measured: false,
+                    ..ContextUsage::default()
+                },
+                after: None,
+                summary,
+            })
+        }
         ItemKind::ApprovalRequest => {
             let request = serde_json::from_value::<ApprovalRequestPayload>(payload.clone()).ok()?;
             Some(Item::Approval {
@@ -300,9 +334,9 @@ fn string_array_field(payload: &serde_json::Value, field: &str) -> Option<Vec<St
 ///
 /// Returns `None` when the payload does not project (caller falls back to
 /// the legacy envelope) or when the event has no turn id (the native
-/// envelope requires one). `projected_at` stamps `created_at`/`updated_at`:
-/// legacy item events carry no timestamp, so the fan-out time is the only
-/// honest value.
+/// envelope requires one). `projected_at` stamps `updated_at` (and
+/// `created_at` when the payload has no earlier `startedAt`). Legacy item
+/// events otherwise carry no timestamp, so the fan-out time is the fallback.
 pub fn typed_item_envelope(
     context: &EventContext,
     item: &crate::ItemEnvelope,
@@ -310,6 +344,7 @@ pub fn typed_item_envelope(
     projected_at: DateTime<Utc>,
 ) -> Option<ItemEnvelope> {
     let native_item = project_wire_item(&item.item_kind, &item.payload, projected_at)?;
+    let created_at = payload_started_at(&item.payload).unwrap_or(projected_at);
     Some(ItemEnvelope {
         id: ItemId::from_legacy_uuid(Uuid::from(item.item_id)),
         session_id: SessionId::from_legacy_uuid(Uuid::from(context.session_id)),
@@ -318,7 +353,7 @@ pub fn typed_item_envelope(
         // otherwise the connection event sequence is the only ordering left.
         seq: context.item_seq.unwrap_or(context.seq),
         revision: 1,
-        created_at: projected_at,
+        created_at,
         updated_at: projected_at,
         state,
         item: native_item,
@@ -485,8 +520,7 @@ pub fn typed_item_notification_from_server_event(
 ) -> Option<(String, serde_json::Value)> {
     // Delta family (L2-DES-APP-009 DD-3): mapped onto the native delta
     // notifications; the per-item `chunk_index` is assigned at the emit site.
-    // `PlanDelta` and `FileChangeOutputDelta` have no native kind yet and
-    // stay on the legacy path.
+    // `FileChangeOutputDelta` has no native kind yet and stays on the legacy path.
     if let ServerEvent::ItemDelta {
         delta_kind,
         payload,
@@ -499,7 +533,9 @@ pub fn typed_item_notification_from_server_event(
             crate::ItemDeltaKind::CommandExecutionOutputDelta => {
                 "item/commandExecution/outputDelta"
             }
-            crate::ItemDeltaKind::FileChangeOutputDelta | crate::ItemDeltaKind::PlanDelta => {
+            crate::ItemDeltaKind::ToolCallInputDelta => "item/toolCall/inputDelta",
+            crate::ItemDeltaKind::PlanDelta => "item/plan/delta",
+            crate::ItemDeltaKind::FileChangeOutputDelta => {
                 return None;
             }
         };
@@ -830,6 +866,15 @@ pub fn typed_item_notification_from_server_event(
             });
             return Some(("context/compactionCompleted".to_string(), value));
         }
+        ServerEvent::SessionCompactionFailed(payload) => {
+            let value = serde_json::json!({
+                "sessionId": crate::native::ids::SessionId::from_legacy_uuid(
+                    Uuid::from(payload.session_id),
+                ),
+                "message": payload.message,
+            });
+            return Some(("context/compactionFailed".to_string(), value));
+        }
         // `model/queryRetrying` is deferred: the native shape lacks the
         // provider/model/phase fields the TUI renders, so projecting now
         // would silently degrade the retry display (straggler,
@@ -874,6 +919,16 @@ fn payload_text(payload: &serde_json::Value) -> Option<String> {
         .get("text")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
+}
+
+/// Optional wall-clock start injected by the server on `item/completed` so
+/// clients can recover `created_at` when the legacy event itself is untimed.
+fn payload_started_at(payload: &serde_json::Value) -> Option<DateTime<Utc>> {
+    payload
+        .get("startedAt")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
 }
 
 /// Hosted-tool payloads are text-like display objects; keep the text when
@@ -982,6 +1037,50 @@ mod tests {
                 provider_payload_ref: None,
             })
         );
+    }
+
+    #[test]
+    fn empty_reasoning_projects_for_item_started() {
+        let item = project(
+            ItemKind::Reasoning,
+            serde_json::json!({ "title": "Reasoning", "text": "" }),
+        );
+        assert_eq!(
+            item,
+            Some(Item::Reasoning {
+                text: String::new(),
+                provider_payload_ref: None,
+            })
+        );
+    }
+
+    #[test]
+    fn typed_item_envelope_preserves_started_at_as_created_at() {
+        let started = Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap();
+        let completed = Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 14).unwrap();
+        let session = Uuid::nil();
+        let turn = Uuid::from_u128(1);
+        let item_id = Uuid::from_u128(2);
+        let context = EventContext {
+            session_id: session.into(),
+            turn_id: Some(turn.into()),
+            item_id: Some(item_id.into()),
+            seq: 1,
+            item_seq: Some(1),
+        };
+        let item = crate::ItemEnvelope {
+            item_id: item_id.into(),
+            item_kind: ItemKind::Reasoning,
+            payload: serde_json::json!({
+                "title": "Reasoning",
+                "text": "thinking",
+                "startedAt": started.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            }),
+        };
+        let envelope = typed_item_envelope(&context, &item, ItemState::Completed, completed)
+            .expect("typed envelope");
+        assert_eq!(envelope.created_at, started);
+        assert_eq!(envelope.updated_at, completed);
     }
 
     #[test]
@@ -1216,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn context_compaction_projects_without_summary_on_wire() {
+    fn context_compaction_projects_title_as_summary_on_wire() {
         let item = project(
             ItemKind::ContextCompaction,
             serde_json::json!({ "title": "Context compacted" }),
@@ -1230,7 +1329,31 @@ mod tests {
                     ..ContextUsage::default()
                 },
                 after: None,
-                summary: None,
+                summary: Some("Context compacted".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn context_compaction_failed_projects_message_into_summary() {
+        let item = project(
+            ItemKind::ContextCompaction,
+            serde_json::json!({
+                "title": "Compaction failed",
+                "status": "failed",
+                "message": "boom",
+            }),
+        );
+        assert_eq!(
+            item,
+            Some(Item::ContextCompaction {
+                trigger: CompactionTrigger::AutoThreshold,
+                before: ContextUsage {
+                    measured: false,
+                    ..ContextUsage::default()
+                },
+                after: None,
+                summary: Some("Compaction failed: boom".to_string()),
             })
         );
     }
@@ -1426,13 +1549,20 @@ mod tests {
         .expect("reasoning delta projects");
         assert_eq!(method, "item/reasoning/delta");
 
+        let (method, _) = typed_item_notification_from_server_event(&delta_event(
+            crate::ItemDeltaKind::PlanDelta,
+            Some(0),
+        ))
+        .expect("plan delta projects");
+        assert_eq!(method, "item/plan/delta");
+
         assert!(
             typed_item_notification_from_server_event(&delta_event(
-                crate::ItemDeltaKind::PlanDelta,
+                crate::ItemDeltaKind::FileChangeOutputDelta,
                 Some(0),
             ))
             .is_none(),
-            "plan deltas stay on the legacy path until a native kind exists"
+            "file-change output deltas stay on the legacy path until a native kind exists"
         );
     }
 

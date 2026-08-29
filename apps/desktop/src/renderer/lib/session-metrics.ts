@@ -224,6 +224,30 @@ export function computeTurnWorkTime(
 }
 
 /**
+ * Compute elapsed time for a single reasoning/thought part.
+ * Active thoughts use `Date.now()`; completed thoughts require both
+ * `time.start` and `time.end`. Returns 0 when the interval is missing or
+ * implausible (legacy history without distinct start/end).
+ */
+export function computeThoughtWorkTime(
+	part: { time?: { start?: number; end?: number } },
+	options: { active?: boolean; now?: () => number } = {},
+): number {
+	const start = part.time?.start
+	if (typeof start !== "number" || !Number.isFinite(start)) return 0
+	const end = options.active
+		? (options.now?.() ?? Date.now())
+		: typeof part.time?.end === "number" && Number.isFinite(part.time.end)
+			? part.time.end
+			: undefined
+	if (typeof end !== "number") return 0
+	const elapsed = Math.max(0, end - start)
+	if (!options.active && elapsed > MAX_COMPLETED_TURN_WORK_TIME_MS) return 0
+	if (!options.active && elapsed <= 0) return 0
+	return elapsed
+}
+
+/**
  * Compute the live elapsed-time split for a single active turn.
  * The submit button timer uses the same user-message start as completed turn
  * duration, so active and completed displays share one semantic.

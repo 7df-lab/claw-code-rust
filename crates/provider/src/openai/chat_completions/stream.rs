@@ -830,7 +830,9 @@ struct ChatCompletionStreamDelta {
     role: Option<String>,
     #[serde(default)]
     content: Option<String>,
-    #[serde(default)]
+    /// DeepSeek / vLLM use `reasoning_content`; Ollama's OpenAI-compat layer
+    /// currently emits the same payload under `reasoning`.
+    #[serde(default, alias = "reasoning")]
     reasoning_content: Option<String>,
     #[serde(default)]
     refusal: Option<String>,
@@ -1306,6 +1308,51 @@ mod tests {
                 },
                 StreamEvent::ReasoningDone { index: 1 },
             ]
+        );
+    }
+
+    #[test]
+    fn ollama_reasoning_field_alias_emits_reasoning_events() {
+        let mut state = ChatCompletionStreamState::default();
+
+        let events = state.apply_chunk(parse_chunk(json!({
+            "id": "chatcmpl-ollama",
+            "choices": [
+                {
+                    "delta": {
+                        "reasoning": "plan via ollama",
+                        "content": "answer"
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        })));
+
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::ReasoningStart { index: 1 },
+                StreamEvent::ReasoningDelta {
+                    index: 1,
+                    text: "plan via ollama".to_string(),
+                },
+                StreamEvent::TextStart { index: 0 },
+                StreamEvent::TextDelta {
+                    index: 0,
+                    text: "answer".to_string(),
+                },
+                StreamEvent::ReasoningDone { index: 1 },
+            ]
+        );
+
+        let response = state.into_response();
+        assert!(response.metadata.extras.iter().any(|extra| matches!(
+            extra,
+            ResponseExtra::ReasoningText { text } if text == "plan via ollama"
+        )));
+        assert_eq!(
+            response.content,
+            vec![ResponseContent::Text("answer".to_string())]
         );
     }
 

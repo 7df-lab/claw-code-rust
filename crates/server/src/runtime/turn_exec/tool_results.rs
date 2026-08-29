@@ -4,15 +4,15 @@ use devo_core::tools::ToolContent;
 use devo_core::{
     CommandExecutionItem, SessionId, TextItem, ToolCallItem, ToolResultItem, TurnId, TurnItem,
 };
+use devo_protocol::native::item::{
+    ExecOrigin, ExecutionMode, FileChangeEntry, FileChangeKind, Item, PlanEntry, PlanStepStatus,
+};
 use devo_util_git::extract_paths_from_patch;
 
 use super::super::*;
 use super::tool_display::{command_actions_from_tool_result, is_file_change_tool, is_plan_tool};
 use super::types::PendingToolCall;
-use crate::{
-    CommandExecutionPayload, FileChangePayload, ItemKind, ToolCallPayload, ToolResultPayload,
-    TurnPlanStepPayload, TurnPlanUpdatedPayload,
-};
+use crate::{ItemKind, ToolCallPayload, TurnPlanStepPayload, TurnPlanUpdatedPayload};
 
 pub(super) fn tool_content_to_json(content: ToolContent) -> serde_json::Value {
     match content {
@@ -147,18 +147,19 @@ async fn complete_plan_tool_call(
         .cloned()
         .unwrap_or_default();
     runtime
-        .complete_item(
+        .complete_native_item(
             session_id,
             turn_id,
             pending_item_id,
             pending_item_seq,
-            ItemKind::Plan,
+            Item::Plan {
+                entries: vec![PlanEntry {
+                    step: output_json.to_string(),
+                    status: PlanStepStatus::Completed,
+                }],
+            },
             TurnItem::Plan(TextItem {
                 text: output_json.to_string(),
-            }),
-            serde_json::json!({
-                "title": "Plan",
-                "text": output_json.to_string(),
             }),
         )
         .await;
@@ -189,7 +190,7 @@ async fn complete_file_change_tool_call(
     turn_id: TurnId,
     tool_use_id: &str,
     tool_name: &str,
-    pending: &PendingToolCall,
+    _pending: &PendingToolCall,
     content: &ToolContent,
     display_content: Option<String>,
     is_error: bool,
@@ -199,12 +200,16 @@ async fn complete_file_change_tool_call(
     let output_json = tool_content_to_json(content.clone());
     let changes = file_changes_from_output(&output_json);
     runtime
-        .complete_item(
+        .complete_native_item(
             session_id,
             turn_id,
             pending_item_id,
             pending_item_seq,
-            ItemKind::FileChange,
+            Item::FileChange {
+                call_id: tool_use_id.to_string(),
+                changes: legacy_file_changes_to_native(&changes),
+                sandbox: None,
+            },
             TurnItem::ToolResult(ToolResultItem {
                 tool_call_id: tool_use_id.to_string(),
                 tool_name: Some(tool_name.to_string()),
@@ -212,14 +217,6 @@ async fn complete_file_change_tool_call(
                 display_content: display_content.clone(),
                 is_error,
             }),
-            serde_json::to_value(FileChangePayload {
-                tool_call_id: tool_use_id.to_string(),
-                tool_name: Some(tool_name.to_string()),
-                input: Some(pending.input.clone()),
-                changes: changes.clone(),
-                is_error,
-            })
-            .expect("serialize file change payload"),
         )
         .await;
     runtime
@@ -338,34 +335,31 @@ async fn complete_command_execution_tool_call(
     pending: &PendingToolCall,
     content: &ToolContent,
     is_error: bool,
-    summary: &str,
+    _summary: &str,
     pending_item_id: devo_core::ItemId,
     pending_item_seq: u64,
 ) {
     let output = tool_content_to_json(content.clone());
-    let completed_payload = serde_json::to_value(CommandExecutionPayload {
-        tool_call_id: tool_use_id.to_string(),
-        tool_name: tool_name.to_string(),
-        command: pending.command.clone(),
-        input: Some(pending.input.clone()),
-        source: devo_protocol::protocol::ExecCommandSource::Agent,
-        command_actions: command_actions_from_tool_result(
-            tool_name,
-            &pending.command,
-            &pending.input,
-            summary,
-        ),
-        output: Some(output.clone()),
-        is_error,
-    })
-    .expect("serialize command execution payload");
     runtime
-        .complete_item(
+        .complete_native_item(
             session_id,
             turn_id,
             pending_item_id,
             pending_item_seq,
-            ItemKind::CommandExecution,
+            Item::CommandExecution {
+                call_id: tool_use_id.to_string(),
+                command: pending.command.clone(),
+                argv: None,
+                cwd: std::path::PathBuf::new(),
+                input: Some(pending.input.clone()),
+                output: Some(output.clone()),
+                exit_code: None,
+                execution_handle: None,
+                is_error,
+                execution_mode: ExecutionMode::Foreground,
+                origin: ExecOrigin::AgentTool,
+                sandbox: None,
+            },
             TurnItem::CommandExecution(CommandExecutionItem {
                 tool_call_id: tool_use_id.to_string(),
                 tool_name: tool_name.to_string(),
@@ -374,7 +368,6 @@ async fn complete_command_execution_tool_call(
                 output,
                 is_error,
             }),
-            completed_payload,
         )
         .await;
 }
@@ -427,36 +420,59 @@ pub(super) async fn emit_tool_result_item(
     turn_id: TurnId,
     tool_use_id: String,
     tool_name: Option<String>,
-    result_input: Option<serde_json::Value>,
+    _result_input: Option<serde_json::Value>,
     content: ToolContent,
     display_content: Option<String>,
     is_error: bool,
-    summary: String,
+    _summary: String,
 ) {
     runtime
-        .emit_turn_item(
+        .emit_turn_native_item(
             session_id,
             turn_id,
-            ItemKind::ToolResult,
-            TurnItem::ToolResult(ToolResultItem {
-                tool_call_id: tool_use_id.clone(),
-                tool_name: tool_name.clone(),
+            Item::ToolResult {
+                call_id: tool_use_id.clone(),
                 output: tool_content_to_json(content.clone()),
                 display_content: display_content.clone(),
                 is_error,
-            }),
-            serde_json::to_value(ToolResultPayload {
+                truncated: false,
+            },
+            TurnItem::ToolResult(ToolResultItem {
                 tool_call_id: tool_use_id,
-                tool_name,
-                input: result_input,
-                content: tool_content_to_json(content),
+                tool_name: tool_name.clone(),
+                output: tool_content_to_json(content),
                 display_content,
                 is_error,
-                summary,
-            })
-            .expect("serialize tool result payload"),
+            }),
         )
         .await;
+}
+
+fn legacy_file_changes_to_native(
+    changes: &[(std::path::PathBuf, devo_protocol::protocol::FileChange)],
+) -> Vec<FileChangeEntry> {
+    changes
+        .iter()
+        .map(|(path, change)| FileChangeEntry {
+            path: path.clone(),
+            change: match change {
+                devo_protocol::protocol::FileChange::Add { content } => FileChangeKind::Add {
+                    content: content.clone(),
+                },
+                devo_protocol::protocol::FileChange::Delete { content } => FileChangeKind::Delete {
+                    content: content.clone(),
+                },
+                devo_protocol::protocol::FileChange::Update {
+                    unified_diff,
+                    move_path,
+                    ..
+                } => FileChangeKind::Update {
+                    unified_diff: unified_diff.clone(),
+                    move_path: move_path.clone(),
+                },
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]

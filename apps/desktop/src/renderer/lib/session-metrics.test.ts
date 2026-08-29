@@ -4,6 +4,7 @@ import type { Message } from "./types"
 import {
 	computeLatestTurnTimerSplit,
 	computeSessionMetrics,
+	computeThoughtWorkTime,
 	computeTurnWorkTime,
 	computeTurnWorkTimeSplit,
 	formatWorkDuration,
@@ -118,7 +119,35 @@ describe("turn duration metrics", () => {
 
 		expect(computeTurnWorkTime(turn)).toBe(0)
 	})
+})
 
+describe("thought duration metrics", () => {
+	test("computes completed thought duration from part start to end", () => {
+		expect(
+			computeThoughtWorkTime({ time: { start: 1_000, end: 15_000 } }),
+		).toBe(14_000)
+	})
+
+	test("returns 0 when completed thought is missing end", () => {
+		expect(computeThoughtWorkTime({ time: { start: 1_000 } })).toBe(0)
+	})
+
+	test("uses Date.now only for active thoughts", () => {
+		expect(
+			computeThoughtWorkTime(
+				{ time: { start: 1_000 } },
+				{ active: true, now: () => 6_000 },
+			),
+		).toBe(5_000)
+	})
+
+	test("formats thought durations with the shared work duration formatter", () => {
+		expect(formatWorkDuration(14_000)).toBe("14s")
+		expect(formatWorkDuration(80_000)).toBe("1m 20s")
+	})
+})
+
+describe("historical session timer guards", () => {
 	test("does not treat historical ordering timestamps as active session timers", () => {
 		Date.now = () => Date.parse("2026-06-25T12:00:00.000Z")
 		const messages = [

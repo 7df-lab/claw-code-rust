@@ -310,6 +310,17 @@ export function processEvent(event: Event): void {
 			break
 		}
 
+		case "context.usage.updated": {
+			const sessionID = event.properties.sessionID
+			if (!sessionID) break
+			const current = appStore.get(sessionNativeFamily(sessionID))
+			set(sessionNativeFamily(sessionID), {
+				...current,
+				occupancy: event.properties.occupancy,
+			})
+			break
+		}
+
 		case "session.diff": {
 			const { sessionID, diff } = event.properties as {
 				sessionID: string

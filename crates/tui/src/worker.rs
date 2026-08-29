@@ -40,11 +40,8 @@ use devo_protocol::SpawnAgentParams;
 use devo_protocol::ThreadGoalStatus;
 use devo_protocol::TurnFailedPayload;
 use devo_protocol::native::rpc_session::RollbackMode;
-use devo_server::ApprovalDecisionPayload;
-use devo_server::ApprovalRequestPayload;
 use devo_server::ApprovalResponseParams;
 use devo_server::CollaborationMode;
-use devo_server::CommandExecutionPayload;
 use devo_server::InputItem;
 use devo_server::ItemEnvelope;
 use devo_server::ItemEventPayload;
@@ -55,8 +52,6 @@ use devo_server::SessionHistoryItemKind;
 use devo_server::SkillSource;
 use devo_server::StdioServerClient;
 use devo_server::StdioServerClientConfig;
-use devo_server::ToolCallPayload;
-use devo_server::ToolResultPayload;
 use devo_server::TurnEventPayload;
 
 use crate::app_command::GoalObjectiveMode;
@@ -74,9 +69,30 @@ use crate::events::TextItemKind;
 use crate::events::TranscriptItem;
 use crate::events::TranscriptItemKind;
 use crate::events::WorkerEvent;
+use crate::transcript::lifecycle::ItemLifecycleEvent;
 
+mod approval_items;
+mod compaction_items;
+mod goals;
+mod history;
+mod item_dispatch;
+mod native_items;
+mod plan_items;
+mod session_preview;
+mod session_restore;
+mod skills;
 mod subagent_events;
+mod tool_lifecycle;
+mod tool_summaries;
 mod typed_events;
+
+#[cfg(test)]
+pub(crate) use tool_summaries::exploration_actions_from_tool_input;
+pub(crate) use tool_summaries::parse_plan_step_status;
+
+use session_restore::native_session_id;
+use session_restore::restore_session_native;
+use session_restore::session_switched_event_from_restore;
 
 use subagent_events::subagent_monitor_events_from_unwrapped_server_notification;
 
@@ -402,6 +418,7 @@ enum OperationCommand {
 #[derive(Debug, Clone, PartialEq)]
 struct ShellCommandExecStart {
     process_id: String,
+    command: String,
     started_event: WorkerEvent,
     params: CommandExecParams,
 }
@@ -427,13 +444,14 @@ fn next_shell_command_exec_start(
     });
     ShellCommandExecStart {
         process_id: process_id.clone(),
-        started_event: WorkerEvent::CommandExecutionStarted {
-            tool_use_id: process_id.clone(),
-            command: command.clone(),
-            input: Some(input),
-            source: devo_protocol::protocol::ExecCommandSource::UserShell,
-            command_actions: Vec::new(),
-        },
+        command: command.clone(),
+        started_event: WorkerEvent::Transcript(tool_lifecycle::tool_opened_from_command_source(
+            process_id.clone(),
+            command.clone(),
+            Some(input),
+            devo_protocol::protocol::ExecCommandSource::UserShell,
+            Vec::new(),
+        )),
         params: CommandExecParams {
             session_id,
             process_id,
@@ -1312,27 +1330,28 @@ async fn run_worker_inner(
                                 Ok(result) => {
                                     let process_id = result.item_id.as_str().to_string();
                                     active_shell_process_ids.insert(process_id.clone());
-                                    let _ = event_tx.send(
-                                        WorkerEvent::CommandExecutionStarted {
-                                            tool_use_id: process_id,
-                                            command: command.clone(),
-                                            input: Some(input),
-                                            source: devo_protocol::protocol::ExecCommandSource::UserShell,
-                                            command_actions: Vec::new(),
-                                        },
-                                    );
+                                    let _ = event_tx.send(WorkerEvent::Transcript(
+                                        tool_lifecycle::tool_opened_from_command_source(
+                                            process_id,
+                                            command.clone(),
+                                            Some(input),
+                                            devo_protocol::protocol::ExecCommandSource::UserShell,
+                                            Vec::new(),
+                                        ),
+                                    ));
                                 }
                                 Err(error) => {
-                                    let _ = event_tx.send(WorkerEvent::ToolResult {
-                                        tool_use_id: format!(
-                                            "user-shell-failed-{}",
-                                            next_shell_process_index
+                                    let _ = event_tx.send(WorkerEvent::Transcript(
+                                        tool_lifecycle::tool_closed_shell(
+                                            format!(
+                                                "user-shell-failed-{}",
+                                                next_shell_process_index
+                                            ),
+                                            "Shell".to_string(),
+                                            Some(error.to_string()),
+                                            true,
                                         ),
-                                        title: "Shell".to_string(),
-                                        preview: error.to_string(),
-                                        is_error: true,
-                                        truncated: false,
-                                    });
+                                    ));
                                     next_shell_process_index += 1;
                                 }
                             }
@@ -1350,13 +1369,14 @@ async fn run_worker_inner(
                             Ok(_) => {}
                             Err(error) => {
                                 active_shell_process_ids.remove(&shell_start.process_id);
-                                let _ = event_tx.send(WorkerEvent::ToolResult {
-                                    tool_use_id: shell_start.process_id,
-                                    title: "Shell".to_string(),
-                                    preview: error.to_string(),
-                                    is_error: true,
-                                    truncated: false,
-                                });
+                                let _ = event_tx.send(WorkerEvent::Transcript(
+                                    tool_lifecycle::tool_closed_shell(
+                                        shell_start.process_id,
+                                        shell_start.command,
+                                        Some(error.to_string()),
+                                        true,
+                                    ),
+                                ));
                             }
                         }
                     }
@@ -3415,9 +3435,30 @@ async fn run_worker_inner(
                                         if let Ok(item_id) =
                                             devo_protocol::ItemId::try_from(delta.item_id.as_str())
                                         {
-                                            let _ = event_tx.send(WorkerEvent::TextItemDelta {
+                                            let _ = event_tx.send(WorkerEvent::Transcript(
+                                                ItemLifecycleEvent::TextDelta {
+                                                    item_id,
+                                                    kind,
+                                                    delta: delta.delta,
+                                                },
+                                            ));
+                                        }
+                                    }
+                                    continue;
+                                }
+                                "item/plan/delta" => {
+                                    if let Ok(delta) = serde_json::from_value::<
+                                        devo_protocol::native::event::ItemDelta,
+                                    >(params.clone())
+                                    {
+                                        let delta_session =
+                                            SessionId::try_from(delta.session_id.as_str()).ok();
+                                        if delta_session == session_id
+                                            && let Ok(item_id) =
+                                                devo_protocol::ItemId::try_from(delta.item_id.as_str())
+                                        {
+                                            let _ = event_tx.send(WorkerEvent::ProposedPlanDelta {
                                                 item_id,
-                                                kind,
                                                 delta: delta.delta,
                                             });
                                         }
@@ -3441,11 +3482,26 @@ async fn run_worker_inner(
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
                                         if !tool_use_id.is_empty() {
-                                            let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
-                                                tool_use_id: tool_use_id.to_string(),
-                                                delta: text.to_string(),
-                                            });
+                                            let _ = event_tx.send(WorkerEvent::Transcript(
+                                                tool_lifecycle::transcript_tool_output_chunk(
+                                                    tool_use_id.to_string(),
+                                                    text.to_string(),
+                                                ),
+                                            ));
                                         }
+                                    }
+                                    continue;
+                                }
+                                "item/toolCall/inputDelta" => {
+                                    if let Ok(delta) = serde_json::from_value::<
+                                        devo_protocol::native::event::ItemDelta,
+                                    >(params)
+                                        && let Some(event) =
+                                            tool_lifecycle::transcript_tool_input_chunk_from_delta_payload(
+                                                &delta.delta,
+                                            )
+                                    {
+                                        let _ = event_tx.send(WorkerEvent::Transcript(event));
                                     }
                                     continue;
                                 }
@@ -3555,6 +3611,18 @@ async fn run_worker_inner(
                                                 .ok();
                                         if item_session_id == session_id {
                                             if method == "item/completed"
+                                                && let devo_protocol::native::item::Item::AssistantMessage {
+                                                    text,
+                                                    ..
+                                                } = &payload.item.item
+                                            {
+                                                let text = text.trim();
+                                                if !text.is_empty() {
+                                                    latest_completed_agent_message =
+                                                        Some(text.to_string());
+                                                }
+                                            }
+                                            if method == "item/completed"
                                                 && let devo_protocol::native::item::Item::UserInputRequest {
                                                     request_id,
                                                     ..
@@ -3582,15 +3650,13 @@ async fn run_worker_inner(
                                                 )
                                                 .await;
                                             }
-                                            if let Some(legacy) =
-                                                typed_events::legacy_item_event_from_typed(&payload)
-                                            {
-                                                if method == "item/started" {
-                                                    handle_started_item(legacy, event_tx);
-                                                } else {
-                                                    handle_completed_item(legacy, event_tx);
-                                                }
-                                            }
+                                            item_dispatch::dispatch_typed_item_lifecycle(
+                                                &method,
+                                                &payload,
+                                                devo_core::ItemId::try_from(payload.item.id.as_str())
+                                                    .expect("typed item id"),
+                                                event_tx,
+                                            );
                                         } else if let Some(child_id) = item_session_id
                                             && child_agent_sessions.contains(&child_id)
                                         {
@@ -3723,6 +3789,51 @@ async fn run_worker_inner(
                                     }
                                     continue;
                                 }
+                                "context/compactionStarted" => {
+                                    let event_session_matches = params["sessionId"]
+                                        .as_str()
+                                        .and_then(|id| SessionId::try_from(id).ok())
+                                        .is_some_and(|id| Some(id) == session_id);
+                                    if event_session_matches {
+                                        let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
+                                    }
+                                    continue;
+                                }
+                                "context/compactionCompleted" => {
+                                    let event_session_matches = params["sessionId"]
+                                        .as_str()
+                                        .and_then(|id| SessionId::try_from(id).ok())
+                                        .is_some_and(|id| Some(id) == session_id);
+                                    if event_session_matches {
+                                        // Token totals arrive on the accompanying usage /
+                                        // session events; this surfaces busy-state clear.
+                                        let _ = event_tx.send(WorkerEvent::SessionCompacted {
+                                            total_input_tokens,
+                                            total_output_tokens,
+                                            total_tokens,
+                                            last_query_total_tokens,
+                                            last_query_input_tokens,
+                                            prompt_token_estimate: total_input_tokens,
+                                        });
+                                    }
+                                    continue;
+                                }
+                                "context/compactionFailed" => {
+                                    let event_session_matches = params["sessionId"]
+                                        .as_str()
+                                        .and_then(|id| SessionId::try_from(id).ok())
+                                        .is_some_and(|id| Some(id) == session_id);
+                                    if event_session_matches {
+                                        let message = params["message"]
+                                            .as_str()
+                                            .unwrap_or("Context compaction failed")
+                                            .to_string();
+                                        let _ = event_tx.send(
+                                            WorkerEvent::SessionCompactionFailed { message },
+                                        );
+                                    }
+                                    continue;
+                                }
                                 _ => {}
                             }
                         }
@@ -3784,11 +3895,6 @@ async fn run_worker_inner(
                                 }
                                 latest_completed_agent_message = None;
                             }
-                            "item/started" => {
-                                if let ServerEvent::ItemStarted(payload) = event {
-                                    handle_started_item(payload, event_tx);
-                                }
-                            }
                             "item/agentMessage/delta" => {
                                 if let ServerEvent::ItemDelta { payload, .. } = event {
                                     if let Some(item_id) = payload.context.item_id {
@@ -3816,24 +3922,16 @@ async fn run_worker_inner(
                                                 "server assistant delta"
                                             );
                                         }
-                                        let _ = event_tx.send(WorkerEvent::TextItemDelta {
-                                            item_id,
-                                            kind: TextItemKind::Assistant,
-                                            delta: payload.delta,
-                                        });
+                                        let _ = event_tx.send(WorkerEvent::Transcript(
+                                            ItemLifecycleEvent::TextDelta {
+                                                item_id,
+                                                kind: TextItemKind::Assistant,
+                                                delta: payload.delta,
+                                            },
+                                        ));
                                     } else {
                                         let _ = event_tx.send(WorkerEvent::TextDelta(payload.delta));
                                     }
-                                }
-                            }
-                            "item/plan/delta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event
-                                    && let Some(item_id) = payload.context.item_id
-                                {
-                                    let _ = event_tx.send(WorkerEvent::ProposedPlanDelta {
-                                        item_id,
-                                        delta: payload.delta,
-                                    });
                                 }
                             }
                             "item/commandExecution/outputDelta" => {
@@ -3849,12 +3947,24 @@ async fn run_worker_inner(
                                         let text =
                                             val.get("text").and_then(|v| v.as_str()).unwrap_or("");
                                         if !tool_use_id.is_empty() {
-                                            let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
-                                                tool_use_id: tool_use_id.to_string(),
-                                                delta: text.to_string(),
-                                            });
+                                            let _ = event_tx.send(WorkerEvent::Transcript(
+                                                tool_lifecycle::transcript_tool_output_chunk(
+                                                    tool_use_id.to_string(),
+                                                    text.to_string(),
+                                                ),
+                                            ));
                                         }
                                     }
+                                }
+                            }
+                            "item/toolCall/inputDelta" => {
+                                if let ServerEvent::ItemDelta { payload, .. } = event
+                                    && let Some(event) =
+                                        tool_lifecycle::transcript_tool_input_chunk_from_delta_payload(
+                                            &payload.delta,
+                                        )
+                                {
+                                    let _ = event_tx.send(WorkerEvent::Transcript(event));
                                 }
                             }
                             "command/exec/outputDelta" => {
@@ -3868,10 +3978,12 @@ async fn run_worker_inner(
                                         Ok(bytes) => {
                                             let delta =
                                                 String::from_utf8_lossy(&bytes).to_string();
-                                            let _ = event_tx.send(WorkerEvent::ToolOutputDelta {
-                                                tool_use_id: process_id,
-                                                delta,
-                                            });
+                                            let _ = event_tx.send(WorkerEvent::Transcript(
+                                                tool_lifecycle::transcript_tool_output_chunk(
+                                                    process_id,
+                                                    delta,
+                                                ),
+                                            ));
                                         }
                                         Err(error) => {
                                             tracing::warn!(
@@ -3890,13 +4002,14 @@ async fn run_worker_inner(
                                         ..
                                     } = payload;
                                     if active_shell_process_ids.remove(&process_id) {
-                                        let _ = event_tx.send(WorkerEvent::ToolResult {
-                                            tool_use_id: process_id,
-                                            title: "Shell".to_string(),
-                                            preview: String::new(),
-                                            is_error: false,
-                                            truncated: false,
-                                        });
+                                        let _ = event_tx.send(WorkerEvent::Transcript(
+                                            tool_lifecycle::tool_closed_shell(
+                                                process_id,
+                                                String::new(),
+                                                Some(String::new()),
+                                                false,
+                                            ),
+                                        ));
                                         let _ = event_tx.send(WorkerEvent::ShellCommandFinished {
                                             exit_code,
                                         });
@@ -3913,29 +4026,16 @@ async fn run_worker_inner(
                                             channel = ?payload.channel,
                                             "server reasoning delta"
                                         );
-                                        let _ = event_tx.send(WorkerEvent::TextItemDelta {
-                                            item_id,
-                                            kind: TextItemKind::Reasoning,
-                                            delta: payload.delta,
-                                        });
+                                        let _ = event_tx.send(WorkerEvent::Transcript(
+                                            ItemLifecycleEvent::TextDelta {
+                                                item_id,
+                                                kind: TextItemKind::Reasoning,
+                                                delta: payload.delta,
+                                            },
+                                        ));
                                     } else {
                                         let _ = event_tx.send(WorkerEvent::ReasoningDelta(payload.delta));
                                     }
-                                }
-                            }
-                            "item/completed" => {
-                                if let ServerEvent::ItemCompleted(payload) = event {
-                                    tracing::debug!(
-                                        item_id = %payload.item.item_id,
-                                        item_kind = ?payload.item.item_kind,
-                                        "server item completed"
-                                    );
-                                    if let Some(text) = completed_agent_message_text(&payload) {
-                                        latest_completed_agent_message = Some(text);
-                                    }
-                                    // Completed tool items are mapped into compact UI events
-                                    // with pre-rendered summaries and previews.
-                                    handle_completed_item(payload, event_tx);
                                 }
                             }
                             "turn/completed" => {
@@ -4398,20 +4498,6 @@ async fn prepare_session_for_command(
     Ok(active_session_id)
 }
 
-/// Result of restoring a session through canonical APIs (resume + items
-/// list + queue list), replacing the legacy `session/resume` aggregate
-/// result (L2-DES-APP-008 Phase C).
-struct NativeSessionRestore {
-    session: devo_protocol::native::session::Session,
-    history_items: Vec<devo_protocol::SessionHistoryItem>,
-    pending_texts: Vec<String>,
-}
-
-/// Restores a session through canonical APIs: `session/resume` (hydration),
-/// `session/items/list` pages (transcript), and `session/queue/list`
-/// (pending input previews). Approximations vs the legacy aggregate result:
-/// `prompt_token_estimate` falls back to total input tokens, and the
-/// per-query live meter starts at zero (it has no canonical source yet).
 /// Resolves a user-turn index (counting `Regular` turns in sequence order,
 /// matching the fork machinery's user-turn counting) into a turn id for
 /// canonical `session/fork` (L2-DES-APP-008 Phase C).
@@ -4605,137 +4691,6 @@ fn restored_history_items(
             .filter_map(typed_events::history_item_from_native_item),
     );
     history_items
-}
-
-async fn restore_session_native(
-    client: &mut StdioServerClient,
-    session_id: SessionId,
-) -> Result<NativeSessionRestore> {
-    let resumed = client.session_resume_native(session_id).await?;
-    let fallback_mode = resumed
-        .session
-        .settings
-        .mode
-        .as_deref()
-        .and_then(|mode| serde_json::from_value(serde_json::Value::String(mode.to_string())).ok())
-        .unwrap_or_default();
-
-    let mut turns = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = client
-            .session_turns_list_native(session_id, cursor.clone(), Some(200))
-            .await?;
-        let page_len = page.data.len();
-        let next_cursor = page.next_cursor;
-        turns.extend(page.data);
-        match (next_cursor, page_len) {
-            (Some(next), len) if len > 0 => cursor = Some(next),
-            _ => break,
-        }
-    }
-
-    let mut items = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = client
-            .session_items_list_native(session_id, cursor.clone(), Some(500))
-            .await?;
-        let page_len = page.data.len();
-        let next_cursor = page.next_cursor;
-        items.extend(page.data);
-        match (next_cursor, page_len) {
-            (Some(next), len) if len > 0 => cursor = Some(next),
-            _ => break,
-        }
-    }
-    let history_items = restored_history_items(turns, items, fallback_mode);
-
-    let queue = client
-        .session_queue_list(devo_protocol::native::rpc_turn::SessionQueueListParams {
-            session_id: native_session_id(session_id),
-        })
-        .await?;
-    let pending_texts = queue
-        .entries
-        .iter()
-        .map(|entry| entry.preview.clone())
-        .collect();
-
-    Ok(NativeSessionRestore {
-        session: resumed.session,
-        history_items,
-        pending_texts,
-    })
-}
-
-/// Builds the `SessionSwitched` event from a canonical restore. Mapping
-/// notes: `prompt_token_estimate` falls back to total input tokens (no
-/// canonical source), and the last-query meter starts at zero (the
-/// query-level usage event has no canonical vocabulary yet).
-fn session_switched_event_from_restore(
-    session_id: SessionId,
-    restore: &NativeSessionRestore,
-) -> WorkerEvent {
-    let session = &restore.session;
-    let active_agent_label = session.parent.as_ref().map(|parent| {
-        let label = match parent {
-            devo_protocol::native::session::SessionParent::Fork { .. } => "Fork".to_string(),
-            devo_protocol::native::session::SessionParent::Agent { role, .. } => {
-                role.clone().unwrap_or_else(|| "subagent".to_string())
-            }
-        };
-        format!("Agent: {label}")
-    });
-    let total_usage = &session.usage.total;
-    let legacy_session_id = session_id;
-    WorkerEvent::SessionSwitched {
-        session_id: legacy_session_id.to_string(),
-        cwd: session.cwd.clone(),
-        title: session.title.clone(),
-        model: Some(session.model.model.clone()),
-        model_binding_id: (session.model.provider != "unknown")
-            .then(|| session.model.provider.clone()),
-        reasoning_effort_selection: session
-            .settings
-            .reasoning_effort
-            .map(|effort| effort.to_string()),
-        reasoning_effort: session.settings.reasoning_effort,
-        active_agent_label,
-        total_input_tokens: total_usage.input_tokens as usize,
-        total_output_tokens: total_usage.output_tokens as usize,
-        total_tokens: total_usage.total_tokens as usize,
-        total_cache_read_tokens: total_usage.cache_read_input_tokens as usize,
-        last_query_total_tokens: 0,
-        last_query_input_tokens: 0,
-        prompt_token_estimate: total_usage.input_tokens as usize,
-        history_items: project_history_items(&restore.history_items),
-        rich_history_items: restore.history_items.clone(),
-        loaded_item_count: restore.history_items.len() as u64,
-        pending_texts: restore.pending_texts.clone(),
-        collaboration_mode: session
-            .settings
-            .mode
-            .as_deref()
-            .and_then(|mode| {
-                serde_json::from_value(serde_json::Value::String(mode.to_string())).ok()
-            })
-            .unwrap_or_default(),
-        permission_preset: Some(match session.settings.permission_profile {
-            devo_protocol::native::model::PermissionProfile::Default => PermissionPreset::Default,
-            devo_protocol::native::model::PermissionProfile::AutoReview => {
-                PermissionPreset::AutoReview
-            }
-            devo_protocol::native::model::PermissionProfile::FullAccess => {
-                PermissionPreset::FullAccess
-            }
-        }),
-        effective_context_window: session.settings.effective_context_window,
-    }
-}
-
-fn native_session_id(session_id: SessionId) -> devo_protocol::native::ids::SessionId {
-    devo_protocol::native::ids::SessionId::from_string(session_id.to_string())
 }
 
 /// Converts a canonical goal back into the legacy `ThreadGoal` shape the
@@ -5351,365 +5306,6 @@ async fn close_btw_agent(client: &mut StdioServerClient, child_session_id: Sessi
     let _ = client.agent_cancel_native(&item_id).await;
 }
 
-fn emit_approval_request_item(
-    payload: serde_json::Value,
-    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-) {
-    let Ok(payload) = serde_json::from_value::<ApprovalRequestPayload>(payload) else {
-        return;
-    };
-    let Some(turn_id) = payload.request.turn_id else {
-        return;
-    };
-    let _ = event_tx.send(WorkerEvent::ApprovalRequest {
-        session_id: payload.request.session_id,
-        turn_id,
-        approval_id: payload.approval_id.to_string(),
-        action_summary: payload.action_summary,
-        justification: payload.justification,
-        resource: payload.resource,
-        available_scopes: payload.available_scopes,
-        path: payload.path,
-        host: payload.host,
-        target: payload.target,
-        command_pattern: payload.command_pattern,
-        command_prefix: payload.command_prefix,
-    });
-}
-
-pub(crate) fn handle_started_item(
-    payload: ItemEventPayload,
-    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-) {
-    tracing::debug!(
-        item_id = %payload.item.item_id,
-        item_kind = ?payload.item.item_kind,
-        "server item started"
-    );
-    let ItemEnvelope {
-        item_id,
-        item_kind,
-        payload,
-    } = payload.item;
-    match item_kind {
-        ItemKind::AgentMessage => {
-            let _ = event_tx.send(WorkerEvent::TextItemStarted {
-                item_id,
-                kind: TextItemKind::Assistant,
-            });
-        }
-        ItemKind::Reasoning => {
-            let _ = event_tx.send(WorkerEvent::TextItemStarted {
-                item_id,
-                kind: TextItemKind::Reasoning,
-            });
-        }
-        ItemKind::Plan => {
-            if is_proposed_plan_payload(&payload) {
-                let _ = event_tx.send(WorkerEvent::ProposedPlanStarted { item_id });
-            }
-        }
-        ItemKind::CommandExecution => {
-            if let Ok(payload) = serde_json::from_value::<CommandExecutionPayload>(payload) {
-                let _ = event_tx.send(WorkerEvent::CommandExecutionStarted {
-                    tool_use_id: payload.tool_call_id,
-                    command: payload.command,
-                    input: payload.input,
-                    source: payload.source,
-                    command_actions: payload.command_actions,
-                });
-            }
-        }
-        ItemKind::ToolCall => {
-            if let Ok(payload) = serde_json::from_value::<ToolCallPayload>(payload) {
-                let details = WorkerEvent::ToolCallDetails {
-                    tool_use_id: payload.tool_call_id.clone(),
-                    tool_name: payload.tool_name.clone(),
-                    input: payload.parameters.clone(),
-                };
-                let _ = event_tx.send(tool_call_started_event(payload));
-                let _ = event_tx.send(details);
-            }
-        }
-        ItemKind::ContextCompaction => {
-            let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
-        }
-        ItemKind::ApprovalRequest => emit_approval_request_item(payload, event_tx),
-        ItemKind::UserMessage
-        | ItemKind::ToolResult
-        | ItemKind::FileChange
-        | ItemKind::McpToolCall
-        | ItemKind::WebSearch
-        | ItemKind::ImageView
-        | ItemKind::ApprovalDecision => {}
-    }
-}
-
-pub(crate) fn handle_completed_item(
-    payload: ItemEventPayload,
-    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-) {
-    match payload.item {
-        ItemEnvelope {
-            item_id,
-            item_kind: ItemKind::AgentMessage,
-            payload,
-            ..
-        } => {
-            let text = payload
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(ToOwned::to_owned);
-            if let Some(text) = text {
-                tracing::debug!(
-                    item_id = %item_id,
-                    final_text_len = text.len(),
-                    "emitting assistant item completion"
-                );
-                let _ = event_tx.send(WorkerEvent::TextItemCompleted {
-                    item_id,
-                    kind: TextItemKind::Assistant,
-                    final_text: text,
-                });
-            }
-        }
-        ItemEnvelope {
-            item_id,
-            item_kind: ItemKind::Reasoning,
-            payload,
-            ..
-        } => {
-            let text = payload
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(ToOwned::to_owned);
-            if let Some(text) = text {
-                tracing::debug!(
-                    item_id = %item_id,
-                    final_text_len = text.len(),
-                    "emitting reasoning item completion"
-                );
-                let _ = event_tx.send(WorkerEvent::TextItemCompleted {
-                    item_id,
-                    kind: TextItemKind::Reasoning,
-                    final_text: text,
-                });
-            }
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::ToolCall,
-            payload,
-            ..
-        } => {
-            let Ok(payload) = serde_json::from_value::<ToolCallPayload>(payload) else {
-                return;
-            };
-            let summary = summarize_tool_call_update(&payload);
-            let parsed_commands = tool_call_updated_actions(&payload, &summary);
-            let _ = event_tx.send(WorkerEvent::ToolCallDetails {
-                tool_use_id: payload.tool_call_id.clone(),
-                tool_name: payload.tool_name.clone(),
-                input: payload.parameters.clone(),
-            });
-            if !parsed_commands.is_empty() {
-                let _ = event_tx.send(WorkerEvent::ToolCallUpdated {
-                    tool_use_id: payload.tool_call_id,
-                    summary,
-                    parsed_commands,
-                });
-            }
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::FileChange,
-            payload,
-            ..
-        } => {
-            let Ok(payload) = serde_json::from_value::<devo_server::FileChangePayload>(payload)
-            else {
-                return;
-            };
-            let changes = payload
-                .changes
-                .into_iter()
-                .collect::<std::collections::HashMap<_, _>>();
-            let tool_use_id = payload.tool_call_id;
-            let event = match (payload.tool_name, payload.input) {
-                (Some(tool_name), Some(input)) => WorkerEvent::PatchAppliedIo {
-                    tool_use_id,
-                    tool_name,
-                    input,
-                    changes,
-                },
-                _ => WorkerEvent::PatchApplied {
-                    tool_use_id,
-                    changes,
-                },
-            };
-            let _ = event_tx.send(event);
-        }
-        ItemEnvelope {
-            item_id,
-            item_kind: ItemKind::Plan,
-            payload,
-        } if is_proposed_plan_payload(&payload) => {
-            let _ = event_tx.send(WorkerEvent::ProposedPlanCompleted {
-                item_id,
-                final_text: proposed_plan_text(&payload),
-            });
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::ContextCompaction,
-            payload,
-            ..
-        } => {
-            let error = payload.get("error").filter(|error| !error.is_null());
-            let failed = payload
-                .get("is_error")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-                || payload
-                    .get("failed")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
-                || payload
-                    .get("status")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|status| {
-                        status.eq_ignore_ascii_case("failed")
-                            || status.eq_ignore_ascii_case("error")
-                    })
-                || payload
-                    .get("title")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|title| title.eq_ignore_ascii_case("Compaction failed"))
-                || error.is_some();
-            if failed {
-                let message = error
-                    .and_then(|error| {
-                        error
-                            .as_str()
-                            .or_else(|| error.get("message").and_then(serde_json::Value::as_str))
-                    })
-                    .or_else(|| payload.get("message").and_then(serde_json::Value::as_str))
-                    .map(str::trim)
-                    .filter(|message| !message.is_empty())
-                    .unwrap_or("Context compaction failed")
-                    .to_string();
-                let _ = event_tx.send(WorkerEvent::SessionCompactionFailed { message });
-                return;
-            }
-            let title = payload
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|title| !title.is_empty())
-                .unwrap_or("Context Compaction")
-                .to_string();
-            let _ = event_tx.send(WorkerEvent::ContextCompactionCompleted { title });
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::ToolResult,
-            payload,
-            ..
-        } => {
-            let Ok(payload) = serde_json::from_value::<ToolResultPayload>(payload) else {
-                return;
-            };
-            // Compatibility fallback until all live file changes come through ItemKind::FileChange.
-            if let Some(patch_event) = patch_event_from_tool_result(&payload) {
-                let _ = event_tx.send(patch_event);
-                return;
-            }
-            // Compatibility fallback until all live plan updates come through turn/plan/updated.
-            if let Some(plan_event) = plan_event_from_tool_result(&payload) {
-                let _ = event_tx.send(plan_event);
-                return;
-            }
-            let title = if payload.summary.is_empty() {
-                summarize_tool_result_title(payload.tool_name.as_deref(), payload.is_error)
-            } else {
-                payload.summary
-            };
-            let event = match payload.input {
-                Some(input) => WorkerEvent::ToolResultIo {
-                    tool_use_id: payload.tool_call_id,
-                    tool_name: payload.tool_name.unwrap_or_else(|| "tool".to_string()),
-                    title,
-                    input,
-                    output: payload.content,
-                    display_content: payload.display_content,
-                    is_error: payload.is_error,
-                    truncated: false,
-                },
-                None => WorkerEvent::ToolResult {
-                    tool_use_id: payload.tool_call_id,
-                    title,
-                    preview: payload
-                        .display_content
-                        .unwrap_or_else(|| render_json_value_text(&payload.content)),
-                    is_error: payload.is_error,
-                    truncated: false,
-                },
-            };
-            let _ = event_tx.send(event);
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::CommandExecution,
-            payload,
-            ..
-        } => {
-            let Ok(payload) = serde_json::from_value::<CommandExecutionPayload>(payload) else {
-                return;
-            };
-            let _ = event_tx.send(WorkerEvent::ToolResult {
-                tool_use_id: payload.tool_call_id,
-                title: payload.command,
-                preview: payload
-                    .output
-                    .as_ref()
-                    .map(render_json_value_text)
-                    .unwrap_or_default(),
-                is_error: payload.is_error,
-                truncated: false,
-            });
-        }
-        ItemEnvelope {
-            item_kind: ItemKind::ApprovalRequest,
-            payload,
-            ..
-        } => emit_approval_request_item(payload, event_tx),
-        ItemEnvelope {
-            item_kind: ItemKind::ApprovalDecision,
-            payload,
-            ..
-        } => {
-            let tool_name = payload
-                .get("tool_name")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            let rationale = payload
-                .get("rationale")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            let Ok(payload) = serde_json::from_value::<ApprovalDecisionPayload>(payload) else {
-                return;
-            };
-            let _ = event_tx.send(WorkerEvent::ApprovalDecision {
-                approval_id: payload.approval_id.to_string(),
-                decision: payload.decision,
-                scope: payload.scope,
-                tool_name,
-                rationale,
-            });
-        }
-        _ => {}
-    }
-}
-
 fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
     use std::collections::{HashMap, HashSet};
 
@@ -5880,756 +5476,6 @@ fn project_history_items(items: &[SessionHistoryItem]) -> Vec<TranscriptItem> {
     transcript
 }
 
-fn summarize_tool_result_title(tool_name: Option<&str>, is_error: bool) -> String {
-    match (tool_name, is_error) {
-        (Some(tool_name), true) => format!("{tool_name} error"),
-        (Some(tool_name), false) => format!("{tool_name} output"),
-        (None, true) => "Tool error".to_string(),
-        (None, false) => "Tool output".to_string(),
-    }
-}
-
-fn tool_call_started_event(payload: ToolCallPayload) -> WorkerEvent {
-    let preparing = matches!(payload.tool_name.as_str(), "write" | "apply_patch");
-    let summary = if preparing && payload.tool_name == "apply_patch" {
-        "apply_patch".to_string()
-    } else {
-        summarize_tool_call(&payload)
-    };
-    let parsed_commands = tool_call_started_actions(&payload);
-    WorkerEvent::ToolCall {
-        tool_use_id: payload.tool_call_id,
-        summary,
-        preparing,
-        parsed_commands: Some(parsed_commands),
-    }
-}
-
-fn summarize_tool_call(payload: &ToolCallPayload) -> String {
-    if is_web_search_tool_name(&payload.tool_name)
-        && let Some(query) = web_search_query(&payload.parameters)
-    {
-        return format!("Web Search({})", serde_json::Value::String(query));
-    }
-    if is_web_fetch_tool_name(&payload.tool_name)
-        && let Some(url) = web_fetch_url(&payload.parameters)
-    {
-        return format!("Web Fetch({})", serde_json::Value::String(url));
-    }
-
-    match pretty_tool_call_summary(&payload.tool_name, &payload.parameters) {
-        Some(summary) => summary,
-        None => {
-            let detail = summarize_tool_input(&payload.tool_name, &payload.parameters);
-            if detail.is_empty() {
-                payload.tool_name.clone()
-            } else {
-                format!("{} {detail}", payload.tool_name)
-            }
-        }
-    }
-}
-
-fn pretty_tool_call_summary(tool_name: &str, input: &serde_json::Value) -> Option<String> {
-    let quote = |text: &str| serde_json::Value::String(compact_tool_summary(text, 96)).to_string();
-    let path_value = || {
-        input
-            .get("filePath")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("path").and_then(serde_json::Value::as_str))
-            .map(make_path_relative)
-    };
-    match tool_name {
-        "bash" | "shell_command" | "exec_command" => input
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("cmd").and_then(serde_json::Value::as_str))
-            .map(|command| format!("Shell {}", compact_tool_summary(command, 96))),
-        "read" => path_value().map(|path| format!("Read {path}{}", fmt_line_range(input))),
-        "write" => path_value().map(|path| format!("Write {path}")),
-        "edit" => Some("Edit".to_string()),
-        "apply_patch" => path_value().map(|path| format!("Patch {path}")),
-        "find" | "glob" => input
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .map(make_path_relative)
-            .or_else(|| {
-                input
-                    .get("pattern")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToString::to_string)
-            })
-            .map(|path| format!("List {path}")),
-        "grep" => {
-            let pattern = input.get("pattern").and_then(serde_json::Value::as_str)?;
-            let query = quote(pattern);
-            match input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative)
-            {
-                Some(path) => Some(format!("Search {query} in {path}")),
-                None => Some(format!("Search {query}")),
-            }
-        }
-        "code_search" | "mcp__code_search__code_search" => {
-            let query = input
-                .get("query")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("pattern").and_then(serde_json::Value::as_str))
-                .unwrap_or_default();
-            let path = input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("file_path").and_then(serde_json::Value::as_str))
-                .map(make_path_relative);
-            match (query.is_empty(), path) {
-                (false, Some(path)) => Some(format!("Code-Search {} in {path}", quote(query))),
-                (false, None) => Some(format!("Code-Search {}", quote(query))),
-                (true, Some(path)) => Some(format!("Code-Search in {path}")),
-                (true, None) => Some("Code-Search".to_string()),
-            }
-        }
-        "spawn_agent" | "agent_spawn" => {
-            let nickname = input
-                .get("agent_nickname")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("nickname").and_then(serde_json::Value::as_str))
-                .or_else(|| input.get("agent_path").and_then(serde_json::Value::as_str))
-                .unwrap_or("agent");
-            let prompt = input
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("prompt").and_then(serde_json::Value::as_str))
-                .unwrap_or_default();
-            Some(format!("Spawn-Agent {} {}", quote(nickname), quote(prompt)))
-        }
-        "await_task" | "wait_agent" | "agent_wait" => {
-            let target = input
-                .get("task_id")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("target").and_then(serde_json::Value::as_str))
-                .or_else(|| {
-                    input
-                        .get("agent_nickname")
-                        .and_then(serde_json::Value::as_str)
-                })
-                .unwrap_or("agent");
-            let timeout = input
-                .get("timeout_secs")
-                .and_then(serde_json::Value::as_u64)
-                .map(|secs| format!("{secs}s"))
-                .or_else(|| {
-                    input
-                        .get("timeout")
-                        .and_then(serde_json::Value::as_str)
-                        .map(ToString::to_string)
-                })
-                .unwrap_or_else(|| "default".to_string());
-            Some(format!("Await-Task {} {}", quote(target), quote(&timeout)))
-        }
-        "cancel_task" | "close_agent" | "agent_close" => {
-            let target = input
-                .get("task_id")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("target").and_then(serde_json::Value::as_str))
-                .or_else(|| {
-                    input
-                        .get("agent_nickname")
-                        .and_then(serde_json::Value::as_str)
-                })
-                .unwrap_or("agent");
-            Some(format!("Cancel-Task {}", quote(target)))
-        }
-        "list_tasks" | "list_agents" | "list_agent" | "agent_list" => {
-            Some("List-Tasks".to_string())
-        }
-        _ => None,
-    }
-}
-
-fn is_web_search_tool_name(tool_name: &str) -> bool {
-    matches!(tool_name, "web_search" | "websearch" | "web-search")
-}
-
-fn is_web_fetch_tool_name(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "webfetch" | "web_fetch" | "web-fetch" | "fetch_url" | "fetch-url"
-    )
-}
-
-fn web_search_query(input: &serde_json::Value) -> Option<String> {
-    input
-        .get("query")
-        .and_then(serde_json::Value::as_str)
-        .filter(|query| !query.is_empty())
-        .map(ToString::to_string)
-}
-
-fn web_fetch_url(input: &serde_json::Value) -> Option<String> {
-    input
-        .get("url")
-        .and_then(serde_json::Value::as_str)
-        .filter(|url| !url.is_empty())
-        .map(ToString::to_string)
-}
-
-fn summarize_tool_call_update(payload: &ToolCallPayload) -> String {
-    let summary = summarize_tool_call(payload);
-    if payload.tool_name == "read"
-        && summary == "read {}"
-        && let Some(cmd) = payload
-            .command_actions
-            .iter()
-            .find_map(|action| match action {
-                devo_protocol::parse_command::ParsedCommand::Read { cmd, .. }
-                    if !cmd.is_empty() =>
-                {
-                    Some(cmd.clone())
-                }
-                _ => None,
-            })
-    {
-        return cmd;
-    }
-    if matches!(payload.tool_name.as_str(), "find" | "glob")
-        && (summary == "find {}" || summary == "glob {}")
-        && let Some(cmd) = payload
-            .command_actions
-            .iter()
-            .find_map(|action| match action {
-                devo_protocol::parse_command::ParsedCommand::ListFiles { cmd, .. }
-                    if !cmd.is_empty() =>
-                {
-                    Some(cmd.clone())
-                }
-                _ => None,
-            })
-    {
-        return cmd;
-    }
-    summary
-}
-
-fn read_command_action_from_parameters(
-    command: &str,
-    input: &serde_json::Value,
-) -> Option<devo_protocol::parse_command::ParsedCommand> {
-    let path = input
-        .get("filePath")
-        .or_else(|| input.get("path"))
-        .and_then(serde_json::Value::as_str)?
-        .trim();
-    if path.is_empty() {
-        return None;
-    }
-    let mut name = path.to_string();
-    let offset = input.get("offset").and_then(serde_json::Value::as_u64);
-    let limit = input.get("limit").and_then(serde_json::Value::as_u64);
-    match (offset, limit) {
-        (Some(offset), Some(limit)) => {
-            let end = offset.saturating_add(limit.saturating_sub(1));
-            name.push_str(&format!(" L:{offset}-{end}"));
-        }
-        (Some(offset), None) => name.push_str(&format!(" L:{offset}-")),
-        (None, Some(limit)) => name.push_str(&format!(" L:1-{limit}")),
-        (None, None) => {}
-    }
-    Some(devo_protocol::parse_command::ParsedCommand::Read {
-        cmd: command.to_string(),
-        name,
-        path: PathBuf::from(path),
-    })
-}
-
-fn find_command_action_from_parameters(
-    command: &str,
-    input: &serde_json::Value,
-) -> Option<devo_protocol::parse_command::ParsedCommand> {
-    let pattern = input
-        .get("pattern")
-        .and_then(serde_json::Value::as_str)
-        .filter(|pattern| !pattern.is_empty())?;
-    let path = input.get("path").and_then(serde_json::Value::as_str);
-    let display = match path.filter(|path| !path.is_empty()) {
-        Some(path) => format!("{pattern} in {path}"),
-        None => pattern.to_string(),
-    };
-    Some(devo_protocol::parse_command::ParsedCommand::ListFiles {
-        cmd: command.to_string(),
-        path: Some(display),
-    })
-}
-
-fn tool_call_started_actions(
-    payload: &ToolCallPayload,
-) -> Vec<devo_protocol::parse_command::ParsedCommand> {
-    if !payload.command_actions.is_empty() {
-        return payload.command_actions.clone();
-    }
-    if payload.tool_name == "read" {
-        return vec![
-            read_command_action_from_parameters("read", &payload.parameters).unwrap_or_else(|| {
-                devo_protocol::parse_command::ParsedCommand::Read {
-                    cmd: String::new(),
-                    name: String::new(),
-                    path: PathBuf::new(),
-                }
-            }),
-        ];
-    }
-    if matches!(payload.tool_name.as_str(), "find" | "glob") {
-        let command = payload.tool_name.as_str();
-        return vec![
-            find_command_action_from_parameters(command, &payload.parameters).unwrap_or_else(
-                || devo_protocol::parse_command::ParsedCommand::ListFiles {
-                    cmd: command.to_string(),
-                    path: Some(command.to_string()),
-                },
-            ),
-        ];
-    }
-    if payload.tool_name == "code_search" || payload.tool_name == "mcp__code_search__code_search" {
-        return code_search_command_action_from_parameters("code_search", &payload.parameters)
-            .into_iter()
-            .collect();
-    }
-    Vec::new()
-}
-
-fn tool_call_updated_actions(
-    payload: &ToolCallPayload,
-    summary: &str,
-) -> Vec<devo_protocol::parse_command::ParsedCommand> {
-    if !payload.command_actions.is_empty() {
-        return payload.command_actions.clone();
-    }
-    match payload.tool_name.as_str() {
-        "read" => read_command_action_from_parameters(summary, &payload.parameters)
-            .into_iter()
-            .collect(),
-        "find" | "glob" => find_command_action_from_parameters(summary, &payload.parameters)
-            .into_iter()
-            .collect(),
-        "code_search" | "mcp__code_search__code_search" => {
-            code_search_command_action_from_parameters(summary, &payload.parameters)
-                .into_iter()
-                .collect()
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn code_search_command_action_from_parameters(
-    command: &str,
-    input: &serde_json::Value,
-) -> Option<devo_protocol::parse_command::ParsedCommand> {
-    match input
-        .get("operation")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("search")
-    {
-        "find_related" => {
-            let path = input
-                .get("file_path")
-                .and_then(serde_json::Value::as_str)
-                .filter(|path| !path.is_empty())?;
-            let line = input
-                .get("line")
-                .and_then(serde_json::Value::as_u64)
-                .map(|line| line.to_string())
-                .unwrap_or_else(|| "?".to_string());
-            Some(devo_protocol::parse_command::ParsedCommand::Search {
-                cmd: command.to_string(),
-                query: Some(format!("related {path}:{line}")),
-                path: Some(path.to_string()),
-            })
-        }
-        _ => {
-            let query = input
-                .get("query")
-                .and_then(serde_json::Value::as_str)
-                .filter(|query| !query.is_empty())?;
-            Some(devo_protocol::parse_command::ParsedCommand::Search {
-                cmd: command.to_string(),
-                query: Some(query.to_string()),
-                path: input
-                    .get("path")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned),
-            })
-        }
-    }
-}
-
-fn make_path_relative(path: &str) -> String {
-    let p = std::path::PathBuf::from(path);
-    if p.is_absolute()
-        && let Ok(cwd) = std::env::current_dir()
-        && let Ok(rel) = p.strip_prefix(&cwd)
-    {
-        return rel.to_string_lossy().to_string();
-    }
-    path.to_string()
-}
-
-fn code_search_summary_from_input(input: &serde_json::Value) -> String {
-    match input
-        .get("operation")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("search")
-    {
-        "find_related" => {
-            let path = input
-                .get("file_path")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative);
-            let line = input.get("line").and_then(serde_json::Value::as_u64);
-            match (path, line) {
-                (Some(path), Some(line)) => format!("related {path}:{line}"),
-                (Some(path), None) => format!("related {path}"),
-                (None, _) => "related".to_string(),
-            }
-        }
-        _ => {
-            let query = input
-                .get("query")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            let path = input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative);
-            match (query.is_empty(), path) {
-                (false, Some(path)) => format!("{query} in {path}"),
-                (false, None) => query.to_string(),
-                (true, Some(path)) => format!("in {path}"),
-                (true, None) => String::new(),
-            }
-        }
-    }
-}
-
-fn fmt_offset_limit(input: &serde_json::Value) -> String {
-    let offset = input.get("offset").and_then(|v| v.as_u64());
-    let limit = input.get("limit").and_then(|v| v.as_u64());
-    match (offset, limit) {
-        (Some(o), Some(l)) => format!(" (offset:{o}, limit:{l})"),
-        (Some(o), None) => format!(" (offset:{o})"),
-        (None, Some(l)) => format!(" (limit:{l})"),
-        (None, None) => String::new(),
-    }
-}
-
-fn fmt_line_range(input: &serde_json::Value) -> String {
-    let offset = input.get("offset").and_then(serde_json::Value::as_u64);
-    let limit = input.get("limit").and_then(serde_json::Value::as_u64);
-    match (offset, limit) {
-        (Some(start), Some(limit)) => format!(" L:{start}-{}", start.saturating_add(limit)),
-        (Some(start), None) => format!(" L:{start}"),
-        (None, Some(limit)) => format!(" L:0-{limit}"),
-        (None, None) => String::new(),
-    }
-}
-
-fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
-    let candidate = match tool_name {
-        "bash" | "shell_command" | "exec_command" => input
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("cmd").and_then(serde_json::Value::as_str))
-            .map(|s| s.to_string()),
-        "read" => input
-            .get("filePath")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("path").and_then(serde_json::Value::as_str))
-            .map(|path| {
-                let rel = make_path_relative(path);
-                let ext = fmt_offset_limit(input);
-                format!("{rel}{ext}")
-            }),
-        "write" | "edit" | "apply_patch" => input
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| input.get("filePath").and_then(serde_json::Value::as_str))
-            .map(make_path_relative),
-        "grep" => {
-            let pattern = input
-                .get("pattern")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let path = input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative);
-            match path {
-                Some(p) => Some(format!("'{pattern}' in {p}")),
-                None => Some(format!("'{pattern}'")),
-            }
-        }
-        "find" | "glob" => {
-            let pattern = input
-                .get("pattern")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let path = input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative);
-            match path {
-                Some(p) => Some(format!("{pattern} in {p}")),
-                None => Some(pattern.to_string()),
-            }
-        }
-        "code_search" | "mcp__code_search__code_search" => {
-            Some(code_search_summary_from_input(input))
-        }
-        "webfetch" | "web_fetch" | "web-fetch" | "fetch_url" | "fetch-url" => web_fetch_url(input),
-        "web_search" | "websearch" | "web-search" => web_search_query(input),
-        "lsp" => {
-            let path = input
-                .get("filePath")
-                .and_then(serde_json::Value::as_str)
-                .map(make_path_relative);
-            let line = input.get("line").and_then(|v| v.as_i64());
-            let col = input.get("character").and_then(|v| v.as_i64());
-            match (path, line, col) {
-                (Some(p), Some(l), Some(c)) => Some(format!("{p}:{l}:{c}")),
-                (Some(p), Some(l), None) => Some(format!("{p}:{l}")),
-                (Some(p), None, _) => Some(p),
-                _ => None,
-            }
-        }
-        "question" => None,
-        "skill" => input
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .map(|s| s.to_string()),
-        "spawn_agent" => input
-            .get("message")
-            .and_then(serde_json::Value::as_str)
-            .filter(|message| !message.is_empty())
-            .map(|message| message.to_string()),
-        _ => None,
-    };
-
-    candidate
-        .map(|text| compact_tool_summary(&text, 96))
-        .unwrap_or_else(|| compact_tool_summary(&render_json_preview(input), 96))
-}
-
-fn compact_tool_summary(text: &str, max_chars: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let truncated = compact.chars().count() > max_chars;
-    let mut out = compact.chars().take(max_chars).collect::<String>();
-    if truncated {
-        out.push('…');
-    }
-    out
-}
-
-fn render_json_preview(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Null => String::new(),
-        serde_json::Value::String(text) => truncate_tool_output(text),
-        serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
-            let pretty = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-            truncate_tool_output(&pretty)
-        }
-        _ => truncate_tool_output(&value.to_string()),
-    }
-}
-
-fn render_json_value_text(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(text) => text.clone(),
-        _ => value.to_string(),
-    }
-}
-
-// Legacy compatibility fallback for sessions/items persisted before server-side
-fn is_proposed_plan_payload(payload: &serde_json::Value) -> bool {
-    payload
-        .get("title")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|title| title == "Proposed Plan")
-}
-
-fn proposed_plan_text(payload: &serde_json::Value) -> String {
-    payload
-        .get("text")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn plan_event_from_tool_result(payload: &ToolResultPayload) -> Option<WorkerEvent> {
-    let tool_name = payload.tool_name.as_deref()?;
-    match tool_name {
-        "update_plan" => {
-            let plan = payload.content.get("plan")?.as_array()?;
-            let explanation = payload
-                .content
-                .get("explanation")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-                .filter(|text| !text.trim().is_empty());
-            let steps = plan
-                .iter()
-                .filter_map(|item| {
-                    let text = item.get("step")?.as_str()?.to_string();
-                    let status = parse_plan_step_status(
-                        item.get("status").and_then(serde_json::Value::as_str)?,
-                    )?;
-                    Some(PlanStep { text, status })
-                })
-                .collect::<Vec<_>>();
-            Some(WorkerEvent::PlanUpdated { explanation, steps })
-        }
-        _ => None,
-    }
-}
-
-// Legacy compatibility fallback for sessions/items persisted before server-side
-// FileChange became the primary live source.
-fn patch_event_from_tool_result(payload: &ToolResultPayload) -> Option<WorkerEvent> {
-    if !matches!(payload.tool_name.as_deref()?, "apply_patch" | "write") {
-        return None;
-    }
-    let files = payload.content.get("files")?.as_array()?;
-    let mut changes = std::collections::HashMap::new();
-    for file in files {
-        let path = std::path::PathBuf::from(file.get("path")?.as_str()?);
-        let kind = file.get("kind").and_then(serde_json::Value::as_str)?;
-        let additions = file
-            .get("additions")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        let deletions = file
-            .get("deletions")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        let change = match kind {
-            "add" => devo_protocol::protocol::FileChange::Add {
-                content: file
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| "\n".repeat(additions as usize)),
-            },
-            "delete" => devo_protocol::protocol::FileChange::Delete {
-                content: file
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| "\n".repeat(deletions as usize)),
-            },
-            "update" | "move" => devo_protocol::protocol::FileChange::Update {
-                unified_diff: file
-                    .get("diff")
-                    .or_else(|| file.get("patch"))
-                    .or_else(|| payload.content.get("diff"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-                old_text: file
-                    .get("oldContent")
-                    .or_else(|| file.get("preContent"))
-                    .or_else(|| file.get("pre_content"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned),
-                new_text: file
-                    .get("postContent")
-                    .or_else(|| file.get("post_content"))
-                    .or_else(|| file.get("content"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned),
-                move_path: file
-                    .get("move_path")
-                    .and_then(serde_json::Value::as_str)
-                    .map(std::path::PathBuf::from),
-            },
-            _ => continue,
-        };
-        changes.insert(path, change);
-    }
-    if changes.is_empty() {
-        return None;
-    }
-    match (payload.tool_name.clone(), payload.input.clone()) {
-        (Some(tool_name), Some(input)) => Some(WorkerEvent::PatchAppliedIo {
-            tool_use_id: payload.tool_call_id.clone(),
-            tool_name,
-            input,
-            changes,
-        }),
-        _ => Some(WorkerEvent::PatchApplied {
-            tool_use_id: payload.tool_call_id.clone(),
-            changes,
-        }),
-    }
-}
-
-fn parse_plan_step_status(status: &str) -> Option<PlanStepStatus> {
-    match status {
-        "pending" => Some(PlanStepStatus::Pending),
-        "in_progress" => Some(PlanStepStatus::InProgress),
-        "completed" => Some(PlanStepStatus::Completed),
-        "cancelled" => Some(PlanStepStatus::Cancelled),
-        _ => None,
-    }
-}
-
-fn truncate_tool_output(content: &str) -> String {
-    const MAX_LINES: usize = 8;
-    const MAX_CHARS: usize = 1200;
-    let content = normalize_display_output(content);
-    let content = content.as_str();
-
-    let mut lines = Vec::new();
-    let mut chars = 0usize;
-    for line in content.lines() {
-        if lines.len() >= MAX_LINES || chars >= MAX_CHARS {
-            break;
-        }
-        let remaining = MAX_CHARS.saturating_sub(chars);
-        if line.chars().count() > remaining {
-            let preview = line.chars().take(remaining).collect::<String>();
-            lines.push(preview);
-            break;
-        }
-        chars += line.chars().count();
-        lines.push(line.to_string());
-    }
-
-    if lines.is_empty() && !content.is_empty() {
-        let preview = content.chars().take(MAX_CHARS).collect::<String>();
-        return if preview == content {
-            preview
-        } else {
-            format!("{preview}\n… ")
-        };
-    }
-
-    let preview = lines.join("\n");
-    if preview == content {
-        preview
-    } else if preview.is_empty() {
-        "… ".to_string()
-    } else {
-        format!("{preview}\n… ")
-    }
-}
-
-fn normalize_display_output(content: &str) -> String {
-    content
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .trim_matches('\n')
-        .to_string()
-}
-
 fn map_join_error(error: JoinError) -> anyhow::Error {
     if error.is_cancelled() {
         anyhow::anyhow!("interactive worker task was cancelled")
@@ -6646,6 +5492,55 @@ fn map_worker_join_result(result: std::result::Result<(), JoinError>) -> Result<
         Err(error) if error.is_cancelled() => Ok(()),
         Err(error) => Err(map_join_error(error)),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn dispatch_legacy_item_event_for_test(
+    method: &str,
+    payload: ItemEventPayload,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) {
+    use chrono::Utc;
+    use devo_protocol::EventContext;
+    use devo_protocol::TypedItemEventPayload;
+    use devo_protocol::native::ids::{
+        ItemId as NativeItemId, SessionId as NativeSessionId, TurnId as NativeTurnId,
+    };
+    use devo_protocol::native::item::{ItemEnvelope as NativeItemEnvelope, ItemState};
+    use devo_protocol::native::wire_projector::project_wire_item;
+
+    let item_id = payload.item.item_id;
+    let session_id = payload.context.session_id;
+    let turn_id = payload.context.turn_id.unwrap_or_else(TurnId::new);
+    let projected_at = Utc::now();
+    let native_item =
+        project_wire_item(&payload.item.item_kind, &payload.item.payload, projected_at)
+            .expect("legacy test payload must project to native item");
+    let typed = TypedItemEventPayload {
+        context: EventContext {
+            session_id,
+            turn_id: Some(turn_id),
+            item_id: Some(item_id),
+            seq: payload.context.seq,
+            item_seq: payload.context.item_seq,
+        },
+        item: NativeItemEnvelope {
+            id: NativeItemId::from_legacy_uuid(item_id.into()),
+            session_id: NativeSessionId::from_legacy_uuid(session_id.into()),
+            turn_id: NativeTurnId::from_legacy_uuid(turn_id.into()),
+            seq: payload.context.item_seq.unwrap_or(payload.context.seq),
+            revision: 1,
+            created_at: projected_at,
+            updated_at: projected_at,
+            state: if method == "item/completed" {
+                ItemState::Completed
+            } else {
+                ItemState::Running
+            },
+            item: native_item,
+        },
+    };
+    item_dispatch::dispatch_typed_item_lifecycle(method, &typed, item_id, event_tx);
 }
 
 #[cfg(test)]
@@ -6675,22 +5570,20 @@ mod tests {
     use super::append_preview_item;
     use super::btw_agent_prompt;
     use super::btw_spawn_params;
-    use super::handle_completed_item;
-    use super::handle_started_item;
+    use super::dispatch_legacy_item_event_for_test;
     use super::last_query_tokens_from_resume;
     use super::next_shell_command_exec_start;
-    use super::normalize_display_output;
     use super::project_history_items;
     use super::render_skill_list_body;
     use super::restored_history_items;
     use super::should_apply_terminal_turn_usage_fallback;
     use super::should_pause_goal_before_session_leave;
-    use super::summarize_tool_call;
-    use super::tool_call_started_actions;
-    use super::tool_call_started_event;
-    use super::truncate_tool_output;
-    use crate::events::PlanStep;
-    use crate::events::PlanStepStatus;
+    use super::tool_lifecycle;
+    use super::tool_summaries::normalize_display_output;
+    use super::tool_summaries::summarize_tool_call;
+    use super::tool_summaries::tool_call_started_actions;
+    use super::tool_summaries::tool_call_started_event;
+    use super::tool_summaries::truncate_tool_output;
     use crate::events::SessionListEntry;
     use crate::events::SubagentMonitorAgent;
     use crate::events::SubagentMonitorEvent;
@@ -6708,6 +5601,7 @@ mod tests {
     use devo_protocol::ThreadGoal;
     use devo_protocol::ThreadGoalStatus;
     use devo_server::ApprovalRequestPayload;
+    use devo_server::FileChangePayload;
     use devo_server::ItemEnvelope;
     use devo_server::ItemEventPayload;
     use devo_server::ItemKind;
@@ -6778,16 +5672,18 @@ mod tests {
             vec![
                 ShellCommandExecStart {
                     process_id: "user-shell-1".to_string(),
-                    started_event: WorkerEvent::CommandExecutionStarted {
-                        tool_use_id: "user-shell-1".to_string(),
-                        command: "pwd".to_string(),
-                        input: Some(serde_json::json!({
-                            "cmd": "pwd",
-                            "cwd": PathBuf::from("/tmp/project"),
-                        })),
-                        source: devo_protocol::protocol::ExecCommandSource::UserShell,
-                        command_actions: Vec::new(),
-                    },
+                    command: "pwd".to_string(),
+                    started_event:
+                        super::super::worker_event_test_helpers::command_execution_started(
+                            "user-shell-1".to_string(),
+                            "pwd".to_string(),
+                            Some(serde_json::json!({
+                                "cmd": "pwd",
+                                "cwd": PathBuf::from("/tmp/project"),
+                            })),
+                            devo_protocol::protocol::ExecCommandSource::UserShell,
+                            Vec::new(),
+                        ),
                     params: devo_protocol::CommandExecParams {
                         session_id: Some(session_id),
                         process_id: "user-shell-1".to_string(),
@@ -6800,16 +5696,18 @@ mod tests {
                 },
                 ShellCommandExecStart {
                     process_id: "user-shell-2".to_string(),
-                    started_event: WorkerEvent::CommandExecutionStarted {
-                        tool_use_id: "user-shell-2".to_string(),
-                        command: "whoami".to_string(),
-                        input: Some(serde_json::json!({
-                            "cmd": "whoami",
-                            "cwd": PathBuf::from("/tmp/project"),
-                        })),
-                        source: devo_protocol::protocol::ExecCommandSource::UserShell,
-                        command_actions: Vec::new(),
-                    },
+                    command: "whoami".to_string(),
+                    started_event:
+                        super::super::worker_event_test_helpers::command_execution_started(
+                            "user-shell-2".to_string(),
+                            "whoami".to_string(),
+                            Some(serde_json::json!({
+                                "cmd": "whoami",
+                                "cwd": PathBuf::from("/tmp/project"),
+                            })),
+                            devo_protocol::protocol::ExecCommandSource::UserShell,
+                            Vec::new(),
+                        ),
                     params: devo_protocol::CommandExecParams {
                         session_id: None,
                         process_id: "user-shell-2".to_string(),
@@ -6848,7 +5746,7 @@ mod tests {
             (
                 "read",
                 serde_json::json!({ "path": "/tmp/project/src/lib.rs", "offset": 9, "limit": 4 }),
-                "Read /tmp/project/src/lib.rs L:9-13",
+                "Read /tmp/project/src/lib.rs L:9-12",
             ),
             (
                 "write",
@@ -7026,7 +5924,8 @@ mod tests {
     #[test]
     fn completed_tool_result_uses_display_content_preview() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
+        dispatch_legacy_item_event_for_test(
+            "item/completed",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id: SessionId::new(),
@@ -7057,13 +5956,17 @@ mod tests {
 
         assert_eq!(
             event_rx.try_recv().expect("worker event"),
-            WorkerEvent::ToolResult {
-                tool_use_id: "call-1".to_string(),
-                title: "read output".to_string(),
-                preview: "canonical".to_string(),
-                is_error: false,
-                truncated: false,
-            }
+            WorkerEvent::Transcript(tool_lifecycle::tool_closed_from_result(
+                &ToolResultPayload {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: None,
+                    input: None,
+                    content: serde_json::Value::String("<content>canonical</content>".to_string(),),
+                    display_content: Some("canonical".to_string()),
+                    is_error: false,
+                    summary: String::new(),
+                },
+            ))
         );
     }
 
@@ -7072,7 +5975,8 @@ mod tests {
         let session_id = SessionId::new();
         let turn_id = TurnId::new();
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_started_item(
+        dispatch_legacy_item_event_for_test(
+            "item/started",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id,
@@ -7163,7 +6067,7 @@ mod tests {
         assert_eq!(
             tool_call_started_actions(&payload),
             vec![devo_protocol::parse_command::ParsedCommand::Read {
-                cmd: "read".to_string(),
+                cmd: "Read crates/core/src/query.rs L:10-14".to_string(),
                 name: "crates/core/src/query.rs L:10-14".to_string(),
                 path: PathBuf::from("crates/core/src/query.rs"),
             }]
@@ -7184,17 +6088,8 @@ mod tests {
         };
 
         assert_eq!(
-            tool_call_started_event(payload),
-            WorkerEvent::ToolCall {
-                tool_use_id: "call-1".to_string(),
-                summary: "Code-Search \"live tool feedback\" in crates".to_string(),
-                preparing: false,
-                parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
-                    cmd: "code_search".to_string(),
-                    query: Some("live tool feedback".to_string()),
-                    path: Some("crates".to_string()),
-                }]),
-            }
+            tool_call_started_event(payload.clone()),
+            WorkerEvent::Transcript(tool_lifecycle::tool_opened_from_call(&payload)),
         );
     }
 
@@ -7208,13 +6103,8 @@ mod tests {
         };
 
         assert_eq!(
-            tool_call_started_event(payload),
-            WorkerEvent::ToolCall {
-                tool_use_id: "call-1".to_string(),
-                summary: "Code-Search".to_string(),
-                preparing: false,
-                parsed_commands: Some(Vec::new()),
-            }
+            tool_call_started_event(payload.clone()),
+            WorkerEvent::Transcript(tool_lifecycle::tool_opened_from_call(&payload)),
         );
     }
 
@@ -7228,13 +6118,8 @@ mod tests {
         };
 
         assert_eq!(
-            tool_call_started_event(payload),
-            WorkerEvent::ToolCall {
-                tool_use_id: "call-1".to_string(),
-                summary: "apply_patch".to_string(),
-                preparing: true,
-                parsed_commands: Some(Vec::new()),
-            }
+            tool_call_started_event(payload.clone()),
+            WorkerEvent::Transcript(tool_lifecycle::tool_opened_from_call(&payload)),
         );
     }
 
@@ -7248,20 +6133,16 @@ mod tests {
         };
 
         assert_eq!(
-            tool_call_started_event(payload),
-            WorkerEvent::ToolCall {
-                tool_use_id: "call-1".to_string(),
-                summary: "Edit".to_string(),
-                preparing: false,
-                parsed_commands: Some(Vec::new()),
-            }
+            tool_call_started_event(payload.clone()),
+            WorkerEvent::Transcript(tool_lifecycle::tool_opened_from_call(&payload)),
         );
     }
 
     #[test]
     fn completed_read_tool_call_emits_update_event() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
+        dispatch_legacy_item_event_for_test(
+            "item/completed",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id: SessionId::new(),
@@ -7276,12 +6157,10 @@ mod tests {
                     payload: serde_json::to_value(ToolCallPayload {
                         tool_call_id: "call-1".to_string(),
                         tool_name: "read".to_string(),
-                        parameters: serde_json::json!({}),
-                        command_actions: vec![devo_protocol::parse_command::ParsedCommand::Read {
-                            cmd: "read crates/tui/src/mod.rs".to_string(),
-                            name: "mod.rs".to_string(),
-                            path: PathBuf::from("crates/tui/src/mod.rs"),
-                        }],
+                        parameters: serde_json::json!({
+                            "filePath": "crates/tui/src/mod.rs"
+                        }),
+                        command_actions: Vec::new(),
                     })
                     .expect("serialize tool call payload"),
                 },
@@ -7289,32 +6168,32 @@ mod tests {
             &event_tx,
         );
 
+        use crate::transcript::lifecycle::ItemLifecycleEvent;
+
         assert_eq!(
-            event_rx.try_recv().expect("worker details event"),
-            WorkerEvent::ToolCallDetails {
+            event_rx.try_recv().expect("worker refresh event"),
+            WorkerEvent::Transcript(ItemLifecycleEvent::ToolOpened {
                 tool_use_id: "call-1".to_string(),
                 tool_name: "read".to_string(),
-                input: serde_json::json!({}),
-            }
-        );
-        assert_eq!(
-            event_rx.try_recv().expect("worker update event"),
-            WorkerEvent::ToolCallUpdated {
-                tool_use_id: "call-1".to_string(),
-                summary: "read crates/tui/src/mod.rs".to_string(),
+                input: serde_json::json!({
+                    "filePath": "crates/tui/src/mod.rs"
+                }),
+                command: None,
+                command_source: None,
                 parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::Read {
-                    cmd: "read crates/tui/src/mod.rs".to_string(),
-                    name: "mod.rs".to_string(),
+                    cmd: "Read crates/tui/src/mod.rs".to_string(),
+                    name: "crates/tui/src/mod.rs".to_string(),
                     path: PathBuf::from("crates/tui/src/mod.rs"),
                 }],
-            }
+            })
         );
     }
 
     #[test]
     fn completed_glob_tool_call_emits_update_with_pattern_and_path() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
+        dispatch_legacy_item_event_for_test(
+            "item/completed",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id: SessionId::new(),
@@ -7342,33 +6221,31 @@ mod tests {
         );
 
         assert_eq!(
-            event_rx.try_recv().expect("worker details event"),
-            WorkerEvent::ToolCallDetails {
-                tool_use_id: "call-1".to_string(),
-                tool_name: "glob".to_string(),
-                input: serde_json::json!({
-                    "pattern": "**/Cargo.toml",
-                    "path": "crates"
-                }),
-            }
-        );
-        assert_eq!(
-            event_rx.try_recv().expect("worker update event"),
-            WorkerEvent::ToolCallUpdated {
-                tool_use_id: "call-1".to_string(),
-                summary: "List crates".to_string(),
-                parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::ListFiles {
-                    cmd: "List crates".to_string(),
-                    path: Some("**/Cargo.toml in crates".to_string()),
-                }],
-            }
+            event_rx.try_recv().expect("worker refresh event"),
+            WorkerEvent::Transcript(
+                crate::transcript::lifecycle::ItemLifecycleEvent::ToolOpened {
+                    tool_use_id: "call-1".to_string(),
+                    tool_name: "glob".to_string(),
+                    input: serde_json::json!({
+                        "pattern": "**/Cargo.toml",
+                        "path": "crates"
+                    }),
+                    command: None,
+                    command_source: None,
+                    parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::ListFiles {
+                        cmd: "List crates".to_string(),
+                        path: Some("**/Cargo.toml in crates".to_string()),
+                    }],
+                }
+            )
         );
     }
 
     #[test]
     fn completed_tool_result_falls_back_to_content_preview() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
+        dispatch_legacy_item_event_for_test(
+            "item/completed",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id: SessionId::new(),
@@ -7399,20 +6276,25 @@ mod tests {
 
         assert_eq!(
             event_rx.try_recv().expect("worker event"),
-            WorkerEvent::ToolResult {
-                tool_use_id: "call-1".to_string(),
-                title: "read output".to_string(),
-                preview: "<content>canonical</content>".to_string(),
-                is_error: false,
-                truncated: false,
-            }
+            WorkerEvent::Transcript(tool_lifecycle::tool_closed_from_result(
+                &ToolResultPayload {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: None,
+                    input: None,
+                    content: serde_json::Value::String("<content>canonical</content>".to_string(),),
+                    display_content: None,
+                    is_error: false,
+                    summary: String::new(),
+                },
+            ))
         );
     }
 
     #[test]
-    fn completed_update_plan_tool_result_emits_plan_updated() {
+    fn completed_file_change_item_dispatches_via_legacy_projection() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
+        dispatch_legacy_item_event_for_test(
+            "item/completed",
             ItemEventPayload {
                 context: devo_server::EventContext {
                     session_id: SessionId::new(),
@@ -7423,44 +6305,38 @@ mod tests {
                 },
                 item: ItemEnvelope {
                     item_id: ItemId::new(),
-                    item_kind: ItemKind::ToolResult,
-                    payload: serde_json::to_value(ToolResultPayload {
+                    item_kind: ItemKind::FileChange,
+                    payload: serde_json::to_value(FileChangePayload {
                         tool_call_id: "call-1".to_string(),
-                        tool_name: Some("update_plan".to_string()),
+                        tool_name: Some("apply_patch".to_string()),
                         input: None,
-                        content: serde_json::json!({
-                            "explanation": "Working through the task",
-                            "plan": [
-                                { "step": "Inspect code", "status": "completed" },
-                                { "step": "Patch bug", "status": "in_progress" }
-                            ]
-                        }),
-                        display_content: None,
+                        changes: vec![(
+                            PathBuf::from("foo.txt"),
+                            devo_protocol::protocol::FileChange::Update {
+                                unified_diff: "diff --git a/foo.txt b/foo.txt\n--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                                old_text: None,
+                                new_text: None,
+                                move_path: None,
+                            },
+                        )],
                         is_error: false,
-                        summary: "update_plan".to_string(),
                     })
-                    .expect("serialize tool result payload"),
+                    .expect("serialize file change payload"),
                 },
             },
             &event_tx,
         );
 
-        assert_eq!(
-            event_rx.try_recv().expect("worker event"),
-            WorkerEvent::PlanUpdated {
-                explanation: Some("Working through the task".to_string()),
-                steps: vec![
-                    PlanStep {
-                        text: "Inspect code".to_string(),
-                        status: PlanStepStatus::Completed,
-                    },
-                    PlanStep {
-                        text: "Patch bug".to_string(),
-                        status: PlanStepStatus::InProgress,
-                    },
-                ],
-            }
-        );
+        let WorkerEvent::Transcript(crate::transcript::lifecycle::ItemLifecycleEvent::ToolClosed {
+            tool_use_id,
+            file_changes: Some(changes),
+            ..
+        }) = event_rx.try_recv().expect("worker event")
+        else {
+            panic!("expected file change tool closed event");
+        };
+        assert_eq!(tool_use_id, "call-1");
+        assert!(changes.contains_key(&PathBuf::from("foo.txt")));
     }
 
     #[test]
@@ -7475,223 +6351,6 @@ mod tests {
         assert!(!super::should_apply_terminal_turn_usage_fallback(
             /*saw_usage_update_for_turn*/ true, /*has_authoritative_usage_totals*/ false,
         ));
-    }
-
-    #[test]
-    fn completed_apply_patch_tool_result_emits_patch_applied() {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
-            ItemEventPayload {
-                context: devo_server::EventContext {
-                    session_id: SessionId::new(),
-                    turn_id: None,
-                    item_id: None,
-                    seq: 1,
-                    item_seq: None,
-                },
-                item: ItemEnvelope {
-                    item_id: ItemId::new(),
-                    item_kind: ItemKind::ToolResult,
-                    payload: serde_json::to_value(ToolResultPayload {
-                        tool_call_id: "call-1".to_string(),
-                        tool_name: Some("apply_patch".to_string()),
-                        input: None,
-                        content: serde_json::json!({
-                            "diff": "--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                            "files": [
-                                {
-                                    "path": "foo.txt",
-                                    "kind": "update",
-                                    "additions": 1,
-                                    "deletions": 1
-                                }
-                            ]
-                        }),
-                        display_content: None,
-                        is_error: false,
-                        summary: "apply_patch".to_string(),
-                    })
-                    .expect("serialize tool result payload"),
-                },
-            },
-            &event_tx,
-        );
-
-        let WorkerEvent::PatchApplied {
-            tool_use_id,
-            changes,
-        } = event_rx.try_recv().expect("worker event")
-        else {
-            panic!("expected patch applied event");
-        };
-        assert_eq!(tool_use_id, "call-1");
-        assert!(changes.contains_key(&std::path::PathBuf::from("foo.txt")));
-    }
-
-    #[test]
-    fn completed_write_tool_result_emits_patch_applied() {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
-            ItemEventPayload {
-                context: devo_server::EventContext {
-                    session_id: SessionId::new(),
-                    turn_id: None,
-                    item_id: None,
-                    seq: 1,
-                    item_seq: None,
-                },
-                item: ItemEnvelope {
-                    item_id: ItemId::new(),
-                    item_kind: ItemKind::ToolResult,
-                    payload: serde_json::to_value(ToolResultPayload {
-                        tool_call_id: "call-1".to_string(),
-                        tool_name: Some("write".to_string()),
-                        input: None,
-                        content: serde_json::json!({
-                            "diff": "diff --git a/foo.txt b/foo.txt\n--- a/foo.txt\n+++ b/foo.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                            "files": [
-                                {
-                                    "path": "foo.txt",
-                                    "kind": "update",
-                                    "additions": 1,
-                                    "deletions": 1
-                                }
-                            ]
-                        }),
-                        display_content: None,
-                        is_error: false,
-                        summary: "write foo.txt".to_string(),
-                    })
-                    .expect("serialize tool result payload"),
-                },
-            },
-            &event_tx,
-        );
-
-        let WorkerEvent::PatchApplied {
-            tool_use_id,
-            changes,
-        } = event_rx.try_recv().expect("worker event")
-        else {
-            panic!("expected patch applied event");
-        };
-        assert_eq!(tool_use_id, "call-1");
-        assert!(changes.contains_key(&std::path::PathBuf::from("foo.txt")));
-    }
-
-    #[test]
-    fn completed_apply_patch_tool_result_with_real_metadata_shape_emits_patch_applied() {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
-            ItemEventPayload {
-                context: devo_server::EventContext {
-                    session_id: SessionId::new(),
-                    turn_id: None,
-                    item_id: None,
-                    seq: 1,
-                    item_seq: None,
-                },
-                item: ItemEnvelope {
-                    item_id: ItemId::new(),
-                    item_kind: ItemKind::ToolResult,
-                    payload: serde_json::to_value(ToolResultPayload {
-                        tool_call_id: "call-1".to_string(),
-                        tool_name: Some("apply_patch".to_string()),
-                        input: None,
-                        content: serde_json::json!({
-                            "diff": "diff --git a/update.txt b/update.txt\n--- a/update.txt\n+++ b/update.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                            "files": [
-                                {
-                                    "path": "update.txt",
-                                    "filePath": "/tmp/update.txt",
-                                    "relativePath": "update.txt",
-                                    "kind": "update",
-                                    "type": "update",
-                                    "diff": "diff --git a/update.txt b/update.txt\n--- a/update.txt\n+++ b/update.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                                    "patch": "diff --git a/update.txt b/update.txt\n--- a/update.txt\n+++ b/update.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                                    "additions": 1,
-                                    "deletions": 1
-                                }
-                            ]
-                        }),
-                        display_content: None,
-                        is_error: false,
-                        summary: "apply_patch".to_string(),
-                    })
-                    .expect("serialize tool result payload"),
-                },
-            },
-            &event_tx,
-        );
-
-        let WorkerEvent::PatchApplied {
-            tool_use_id,
-            changes,
-        } = event_rx.try_recv().expect("worker event")
-        else {
-            panic!("expected patch applied event");
-        };
-        assert_eq!(tool_use_id, "call-1");
-        assert!(changes.contains_key(&std::path::PathBuf::from("update.txt")));
-    }
-
-    #[test]
-    fn completed_apply_patch_prefers_file_local_diff_over_top_level_diff() {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_completed_item(
-            ItemEventPayload {
-                context: devo_server::EventContext {
-                    session_id: SessionId::new(),
-                    turn_id: None,
-                    item_id: None,
-                    seq: 1,
-                    item_seq: None,
-                },
-                item: ItemEnvelope {
-                    item_id: ItemId::new(),
-                    item_kind: ItemKind::ToolResult,
-                    payload: serde_json::to_value(ToolResultPayload {
-                        tool_call_id: "call-1".to_string(),
-                        tool_name: Some("apply_patch".to_string()),
-                        input: None,
-                        content: serde_json::json!({
-                            "diff": "BROKEN TOP LEVEL DIFF",
-                            "files": [
-                                {
-                                    "path": "update.txt",
-                                    "kind": "update",
-                                    "diff": "diff --git a/update.txt b/update.txt\n--- a/update.txt\n+++ b/update.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                                    "additions": 1,
-                                    "deletions": 1
-                                }
-                            ]
-                        }),
-                        display_content: None,
-                        is_error: false,
-                        summary: "apply_patch".to_string(),
-                    })
-                    .expect("serialize tool result payload"),
-                },
-            },
-            &event_tx,
-        );
-
-        let WorkerEvent::PatchApplied {
-            tool_use_id,
-            changes,
-        } = event_rx.try_recv().expect("worker event")
-        else {
-            panic!("expected patch applied event");
-        };
-        assert_eq!(tool_use_id, "call-1");
-        let devo_protocol::protocol::FileChange::Update { unified_diff, .. } = changes
-            .get(&std::path::PathBuf::from("update.txt"))
-            .expect("update change")
-        else {
-            panic!("expected update change");
-        };
-        assert!(unified_diff.contains("--- a/update.txt"));
-        assert!(!unified_diff.contains("BROKEN TOP LEVEL DIFF"));
     }
 
     #[test]
@@ -7714,20 +6373,20 @@ mod tests {
         };
 
         assert_eq!(
-            WorkerEvent::CommandExecutionStarted {
-                tool_use_id: payload.tool_call_id.clone(),
-                command: payload.command.clone(),
-                input: payload.input.clone(),
-                source: payload.source,
-                command_actions: payload.command_actions.clone(),
-            },
-            WorkerEvent::CommandExecutionStarted {
-                tool_use_id: payload.tool_call_id,
-                command: payload.command,
-                input: payload.input,
-                source: devo_protocol::protocol::ExecCommandSource::Agent,
-                command_actions: payload.command_actions,
-            }
+            super::super::worker_event_test_helpers::command_execution_started(
+                payload.tool_call_id.clone(),
+                payload.command.clone(),
+                payload.input.clone(),
+                payload.source,
+                payload.command_actions.clone(),
+            ),
+            super::super::worker_event_test_helpers::command_execution_started(
+                payload.tool_call_id,
+                payload.command,
+                payload.input,
+                devo_protocol::protocol::ExecCommandSource::Agent,
+                payload.command_actions,
+            )
         );
     }
 

@@ -3,7 +3,7 @@
 //! This module keeps server/worker event handling out of the main chat surface
 //! while preserving the existing state transitions and rendering side effects.
 
-use std::time::Instant;
+use std::path::Path;
 
 use devo_protocol::CollaborationMode;
 use devo_protocol::ProviderRetryPhase;
@@ -12,8 +12,6 @@ use devo_protocol::SessionHistoryItemKind;
 use devo_protocol::SessionHistoryMetadata;
 use devo_protocol::parse_command::ParsedCommand;
 use devo_protocol::protocol::ExecCommandSource;
-use devo_protocol::protocol::FileChange;
-use ratatui::text::Line;
 
 use crate::bottom_pane::ApprovalOverlay;
 use crate::bottom_pane::ApprovalOverlayRequest;
@@ -24,17 +22,11 @@ use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
 use crate::exec_cell::new_active_exec_command;
 use crate::history_cell;
-use crate::tool_io_cell::FileChangeToolIoCell;
-use crate::tool_io_cell::ToolIoCell;
-use crate::tool_io_cell::ToolIoCellOptions;
-use crate::tool_result_cell::ToolResultCell;
-use devo_util_shell_command::parse_command::parse_command;
 
 use super::ActiveToolCall;
 use super::ChatWidget;
 use super::DotStatus;
 use super::PendingApprovalRequest;
-use super::text_stream::ActiveTextItemId;
 
 fn format_retry_status_message(attempt: usize, backoff_ms: u64) -> String {
     let seconds = (backoff_ms as f64 / 1000.0).max(0.1);
@@ -54,21 +46,26 @@ fn normalize_approval_action_summary(action_summary: String) -> String {
     action_summary
 }
 
-fn has_visible_file_changes(
-    changes: &std::collections::HashMap<std::path::PathBuf, FileChange>,
-) -> bool {
-    changes.values().any(|change| match change {
-        FileChange::Add { content } | FileChange::Delete { content } => !content.trim().is_empty(),
-        FileChange::Update {
-            unified_diff,
-            old_text,
-            new_text,
-            move_path,
-        } => !unified_diff.trim().is_empty() || old_text != new_text || move_path.is_some(),
-    })
+fn exec_call_is_unfinished(cell: &crate::exec_cell::ExecCell, tool_use_id: &str) -> bool {
+    cell.iter_calls()
+        .any(|call| call.call_id == tool_use_id && call.output.is_none())
 }
 
 impl ChatWidget {
+    fn exec_tool_result_targets_unfinished_call(&self, tool_use_id: &str) -> bool {
+        let is_unfinished = |cell: &ExecCell| exec_call_is_unfinished(cell, tool_use_id);
+        self.active_cell
+            .as_ref()
+            .and_then(|cell| cell.as_any().downcast_ref::<ExecCell>())
+            .is_some_and(is_unfinished)
+            || self
+                .history
+                .iter()
+                .rev()
+                .filter_map(|cell| cell.as_any().downcast_ref::<ExecCell>())
+                .any(is_unfinished)
+    }
+
     fn start_command_execution_cell(
         &mut self,
         tool_use_id: String,
@@ -128,6 +125,7 @@ impl ChatWidget {
                     title,
                     lines: Vec::new(),
                     output: String::new(),
+                    parsed_commands: parsed.clone(),
                     exec_like: true,
                     start_time: None,
                 },
@@ -139,6 +137,7 @@ impl ChatWidget {
         }
 
         self.flush_active_cell();
+        let parsed_commands = parsed.clone();
         let mut cell =
             new_active_exec_command(tool_use_id.clone(), command, parsed, source, None, true);
         if let Some(input) = input.clone() {
@@ -156,6 +155,7 @@ impl ChatWidget {
                 title,
                 lines: Vec::new(),
                 output: String::new(),
+                parsed_commands,
                 exec_like: true,
                 start_time: None,
             },
@@ -165,7 +165,217 @@ impl ChatWidget {
         self.set_status_message("Tool started");
     }
 
+    fn exec_cell_has_call(&self, tool_use_id: &str) -> bool {
+        self.active_cell
+            .as_ref()
+            .and_then(|cell| cell.as_any().downcast_ref::<ExecCell>())
+            .is_some_and(|cell| cell.contains_call(tool_use_id))
+            || self.history.iter().rev().any(|cell| {
+                cell.as_any()
+                    .downcast_ref::<ExecCell>()
+                    .is_some_and(|cell| cell.contains_call(tool_use_id))
+            })
+    }
+
+    fn exec_command_parts_for_tool(
+        tool: &crate::transcript::model::ToolCellModel,
+        cwd: &Path,
+    ) -> (String, Vec<String>, Vec<ParsedCommand>) {
+        let command = tool
+            .command
+            .clone()
+            .or_else(|| {
+                tool.input.as_ref().and_then(|input| {
+                    input
+                        .get("command")
+                        .or_else(|| input.get("cmd"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+            })
+            .unwrap_or_else(|| {
+                tool.tool_name
+                    .clone()
+                    .unwrap_or_else(|| "exec_command".into())
+            });
+        let command_parts = crate::exec_command::split_command_string(&command);
+        let mut parsed = tool.parsed_commands.clone();
+        crate::read_display::normalize_read_actions(&mut parsed, cwd);
+        (command, command_parts, parsed)
+    }
+
+    fn update_exec_cell_call(
+        &mut self,
+        tool_use_id: &str,
+        command_parts: Vec<String>,
+        parsed: Vec<ParsedCommand>,
+    ) -> bool {
+        if let Some(cell) = self
+            .active_cell
+            .as_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+            && cell.update_call(tool_use_id, command_parts.clone(), parsed.clone())
+        {
+            self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
+            self.frame_requester.schedule_frame();
+            return true;
+        }
+        self.history.iter_mut().rev().any(|cell| {
+            cell.as_any_mut()
+                .downcast_mut::<ExecCell>()
+                .is_some_and(|cell| {
+                    cell.update_call(tool_use_id, command_parts.clone(), parsed.clone())
+                })
+        })
+    }
+
+    pub(super) fn complete_exec_tool_from_committed(
+        &mut self,
+        tool: &crate::transcript::model::ToolCellModel,
+    ) -> bool {
+        if !tool.exec_like {
+            return false;
+        }
+        let tool_use_id = tool.tool_use_id.as_str();
+        let preview = tool
+            .tool_display_content
+            .clone()
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| tool.output_preview.clone());
+        let output = tool.tool_output.clone().unwrap_or_else(|| {
+            if preview.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(preview.clone())
+            }
+        });
+        let command_output = CommandOutput {
+            exit_code: if tool.is_error { 1 } else { 0 },
+            aggregated_output: preview.clone(),
+            formatted_output: preview,
+        };
+        let duration = std::time::Duration::from_millis(0);
+
+        if let (Some(tool_name), Some(input)) = (&tool.tool_name, &tool.input) {
+            if let Some(cell) = self
+                .active_cell
+                .as_mut()
+                .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+            {
+                cell.set_tool_io_input(tool_use_id, tool_name.clone(), input.clone());
+                cell.complete_tool_io(
+                    tool_use_id,
+                    output.clone(),
+                    tool.tool_display_content.clone(),
+                );
+            }
+        }
+
+        if let Some(cell) = self
+            .active_cell
+            .as_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+            && cell.complete_call(tool_use_id, command_output.clone(), duration)
+        {
+            if cell.is_exploring_cell() {
+                self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
+                self.frame_requester.schedule_frame();
+            } else if cell.should_flush() {
+                self.flush_active_cell();
+            } else {
+                self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
+                self.frame_requester.schedule_frame();
+            }
+            self.set_status_message(if tool.is_error {
+                "Tool returned an error"
+            } else {
+                "Tool completed"
+            });
+            return true;
+        }
+
+        for cell in self
+            .history
+            .iter_mut()
+            .rev()
+            .filter_map(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+        {
+            if cell.complete_call(tool_use_id, command_output.clone(), duration) {
+                self.frame_requester.schedule_frame();
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub(super) fn sync_exec_cells_from_projector(&mut self) {
+        use devo_protocol::protocol::ExecCommandSource;
+
+        let exec_tools: Vec<_> = self
+            .transcript_projector
+            .live_tools()
+            .filter(|tool| tool.exec_like)
+            .cloned()
+            .collect();
+        for tool in exec_tools {
+            let tool_use_id = tool.tool_use_id.clone();
+            let (_command, command_parts, parsed) =
+                Self::exec_command_parts_for_tool(&tool, &self.session.cwd);
+            if self.exec_cell_has_call(&tool_use_id) {
+                let _ = self.update_exec_cell_call(&tool_use_id, command_parts, parsed);
+                if !tool.output_preview.is_empty()
+                    && let Some(cell) = self
+                        .active_cell
+                        .as_mut()
+                        .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+                {
+                    let existing = cell
+                        .iter_calls()
+                        .find(|call| call.call_id == tool_use_id)
+                        .and_then(|call| call.output.as_ref())
+                        .map(|output| output.aggregated_output.len())
+                        .unwrap_or(0);
+                    if tool.output_preview.len() > existing {
+                        let delta = tool.output_preview[existing..].to_string();
+                        let _ = cell.append_output(&tool_use_id, &delta);
+                        self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
+                    }
+                }
+            } else if !self.exec_tool_result_targets_unfinished_call(&tool_use_id)
+                && !self.exec_cell_has_call(&tool_use_id)
+            {
+                let (command, command_parts, parsed) =
+                    Self::exec_command_parts_for_tool(&tool, &self.session.cwd);
+                self.start_command_execution_cell(
+                    tool_use_id.clone(),
+                    command,
+                    command_parts,
+                    parsed,
+                    tool.command_source.unwrap_or(ExecCommandSource::Agent),
+                    tool.input.clone(),
+                );
+            } else if let Some(call) = self.active_tool_calls.get_mut(&tool_use_id)
+                && tool.output_preview.len() > call.output.len()
+            {
+                let delta = tool.output_preview[call.output.len()..].to_string();
+                call.output.push_str(&delta);
+                if let Some(cell) = self
+                    .active_cell
+                    .as_mut()
+                    .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+                {
+                    let _ = cell.append_output(&tool_use_id, &delta);
+                    self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
+                }
+            }
+        }
+    }
+
     pub(crate) fn handle_worker_event(&mut self, event: WorkerEvent) {
+        if self.route_worker_event_through_projector(&event) {
+            return;
+        }
         match event {
             WorkerEvent::SessionActivated { .. } => {}
             WorkerEvent::TurnStarted {
@@ -192,7 +402,6 @@ impl ChatWidget {
                 self.busy = true;
                 self.active_text_items.clear();
                 self.active_proposed_plan = None;
-                self.stream_chunking_policy.reset();
                 self.bottom_pane.set_task_running(true);
             }
             WorkerEvent::InterruptFailed { message } => {
@@ -232,36 +441,6 @@ impl ChatWidget {
                 }
                 self.frame_requester.schedule_frame();
             }
-            WorkerEvent::TextItemStarted { item_id, kind } => {
-                self.flush_active_cell();
-                self.start_text_item(ActiveTextItemId::Server(item_id), kind);
-                self.set_status_message(match kind {
-                    TextItemKind::Assistant => "Generating",
-                    TextItemKind::Reasoning => "Thinking",
-                });
-            }
-            WorkerEvent::TextItemDelta {
-                item_id,
-                kind,
-                delta,
-            } => {
-                self.push_text_item_delta(ActiveTextItemId::Server(item_id), kind, &delta);
-                self.set_status_message(match kind {
-                    TextItemKind::Assistant => "Generating",
-                    TextItemKind::Reasoning => "Thinking",
-                });
-            }
-            WorkerEvent::TextItemCompleted {
-                item_id,
-                kind,
-                final_text,
-            } => {
-                self.complete_text_item(ActiveTextItemId::Server(item_id), kind, final_text);
-                self.set_status_message(match kind {
-                    TextItemKind::Assistant => "Generating",
-                    TextItemKind::Reasoning => "Thought",
-                });
-            }
             WorkerEvent::ProposedPlanStarted { item_id } => {
                 self.start_proposed_plan(item_id);
             }
@@ -275,490 +454,30 @@ impl ChatWidget {
                 self.complete_proposed_plan(item_id, final_text);
             }
             WorkerEvent::TextDelta(text) => {
-                if !self.has_server_active_item(TextItemKind::Assistant) {
-                    self.flush_active_cell();
-                    self.push_text_item_delta(
-                        ActiveTextItemId::Legacy(TextItemKind::Assistant),
-                        TextItemKind::Assistant,
-                        &text,
-                    );
-                }
+                self.apply_legacy_text_delta(TextItemKind::Assistant, text);
                 self.set_status_message("Generating");
             }
             WorkerEvent::ReasoningDelta(text) => {
-                if !self.has_server_active_item(TextItemKind::Reasoning) {
-                    self.flush_active_cell();
-                    self.push_text_item_delta(
-                        ActiveTextItemId::Legacy(TextItemKind::Reasoning),
-                        TextItemKind::Reasoning,
-                        &text,
-                    );
-                }
+                self.apply_legacy_text_delta(TextItemKind::Reasoning, text);
                 self.set_status_message("Thinking");
             }
             WorkerEvent::AssistantMessageCompleted(text) => {
                 if !self.committed_server_assistant_in_turn
-                    && !self.has_server_active_item(TextItemKind::Assistant)
+                    && !self.has_native_text_item(TextItemKind::Assistant)
                     && !self
                         .active_text_items
                         .iter()
                         .any(|item| item.kind == TextItemKind::Assistant)
                 {
-                    self.complete_text_item(
-                        ActiveTextItemId::Legacy(TextItemKind::Assistant),
-                        TextItemKind::Assistant,
-                        text,
-                    );
+                    self.apply_legacy_text_completed(TextItemKind::Assistant, text);
                 }
                 self.set_status_message("Generating");
             }
             WorkerEvent::ReasoningCompleted(text) => {
-                if !self.has_server_active_item(TextItemKind::Reasoning) {
-                    self.complete_text_item(
-                        ActiveTextItemId::Legacy(TextItemKind::Reasoning),
-                        TextItemKind::Reasoning,
-                        text,
-                    );
+                if !self.has_native_text_item(TextItemKind::Reasoning) {
+                    self.apply_legacy_text_completed(TextItemKind::Reasoning, text);
                 }
                 self.set_status_message("Thought");
-            }
-            WorkerEvent::ToolCall {
-                tool_use_id,
-                summary,
-                preparing,
-                parsed_commands,
-            } => {
-                let command = crate::exec_command::split_command_string(&summary);
-                let mut parsed = parsed_commands.unwrap_or_else(|| parse_command(&command));
-                crate::read_display::normalize_read_actions(&mut parsed, &self.session.cwd);
-                let exec_like = !parsed.is_empty()
-                    && parsed.iter().all(|parsed| {
-                        !matches!(
-                            parsed,
-                            devo_protocol::parse_command::ParsedCommand::Unknown { .. }
-                        )
-                    });
-                if exec_like && !preparing {
-                    self.start_command_execution_cell(
-                        tool_use_id,
-                        summary,
-                        command,
-                        parsed,
-                        ExecCommandSource::Agent,
-                        None,
-                    );
-                    return;
-                }
-
-                let title = if preparing
-                    && (summary.starts_with("write ")
-                        || summary.starts_with("write:")
-                        || summary == "apply_patch")
-                {
-                    if summary == "apply_patch" {
-                        "Preparing apply_patch...".to_string()
-                    } else {
-                        "Preparing write...".to_string()
-                    }
-                } else {
-                    summary
-                };
-                let seq = self.reserve_seq();
-                let tool_call = ActiveToolCall {
-                    tool_use_id: tool_use_id.clone(),
-                    seq,
-                    tool_name: None,
-                    input: None,
-                    title: title.clone(),
-                    lines: Vec::new(),
-                    output: String::new(),
-                    exec_like: false,
-                    start_time: None,
-                };
-                if preparing {
-                    self.active_tool_calls.remove(&tool_use_id);
-                    self.pending_tool_calls
-                        .retain(|pending| pending.tool_use_id != tool_use_id);
-                    self.pending_tool_calls.push(ActiveToolCall {
-                        lines: Vec::new(),
-                        start_time: Some(Instant::now()),
-                        ..tool_call
-                    });
-                } else {
-                    // Remove abandoned preparing entries from pending_tool_calls.
-                    // When the agent sends a preparing ToolCall for write/apply_patch
-                    // but then switches to a different tool, the preparing entry
-                    // was never added to active_tool_calls and would never be
-                    // cleaned up by ToolResultIo/ToolResult (which match by tool_use_id).
-                    self.pending_tool_calls
-                        .retain(|pc| self.active_tool_calls.contains_key(&pc.tool_use_id));
-                    self.active_tool_calls
-                        .insert(tool_use_id.clone(), tool_call);
-                }
-                self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-                self.frame_requester.schedule_frame();
-                self.set_status_message("Tool started");
-            }
-            WorkerEvent::ToolCallDetails {
-                tool_use_id,
-                tool_name,
-                input,
-            } => {
-                if let Some(tool_call) = self.active_tool_calls.get_mut(&tool_use_id) {
-                    tool_call.tool_name = Some(tool_name.clone());
-                    tool_call.input = Some(input.clone());
-                }
-                if let Some(pending) = self
-                    .pending_tool_calls
-                    .iter_mut()
-                    .find(|pending| pending.tool_use_id == tool_use_id)
-                {
-                    pending.tool_name = Some(tool_name.clone());
-                    pending.input = Some(input.clone());
-                }
-                let updated_active_cell = self
-                    .active_cell
-                    .as_mut()
-                    .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
-                    .is_some_and(|cell| {
-                        cell.set_tool_io_input(&tool_use_id, tool_name.clone(), input.clone())
-                    });
-                if !updated_active_cell {
-                    self.history.iter_mut().rev().any(|cell| {
-                        cell.as_any_mut()
-                            .downcast_mut::<ExecCell>()
-                            .is_some_and(|cell| {
-                                cell.set_tool_io_input(
-                                    &tool_use_id,
-                                    tool_name.clone(),
-                                    input.clone(),
-                                )
-                            })
-                    });
-                }
-                self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-                self.frame_requester.schedule_frame();
-            }
-            WorkerEvent::CommandExecutionStarted {
-                tool_use_id,
-                command,
-                input,
-                source,
-                mut command_actions,
-            } => {
-                let is_user_shell = matches!(&source, ExecCommandSource::UserShell);
-                crate::read_display::normalize_read_actions(
-                    &mut command_actions,
-                    &self.session.cwd,
-                );
-                let command_parts = crate::exec_command::split_command_string(&command);
-                self.start_command_execution_cell(
-                    tool_use_id,
-                    command,
-                    command_parts,
-                    command_actions,
-                    source,
-                    input,
-                );
-                if is_user_shell && self.active_turn_id.is_none() {
-                    self.busy = true;
-                    self.bottom_pane.set_task_running(true);
-                }
-            }
-            WorkerEvent::ToolCallUpdated {
-                tool_use_id,
-                summary,
-                mut parsed_commands,
-            } => {
-                crate::read_display::normalize_read_actions(
-                    &mut parsed_commands,
-                    &self.session.cwd,
-                );
-                if let Some(tool_call) = self.active_tool_calls.get_mut(&tool_use_id) {
-                    tool_call.title = summary.clone();
-                    tool_call.exec_like = true;
-                }
-                let command = crate::exec_command::split_command_string(&summary);
-                if let Some(cell) = self
-                    .active_cell
-                    .as_mut()
-                    .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
-                    && cell.update_call(&tool_use_id, command.clone(), parsed_commands.clone())
-                {
-                    self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-                    self.frame_requester.schedule_frame();
-                    self.set_status_message("Tool updated");
-                    return;
-                }
-                if self.history.iter_mut().rev().any(|cell| {
-                    cell.as_any_mut()
-                        .downcast_mut::<ExecCell>()
-                        .is_some_and(|cell| {
-                            cell.update_call(&tool_use_id, command.clone(), parsed_commands.clone())
-                        })
-                }) {
-                    self.frame_requester.schedule_frame();
-                    self.set_status_message("Tool updated");
-                }
-            }
-            WorkerEvent::ToolOutputDelta { tool_use_id, delta } => {
-                if let Some(tool_call) = self.active_tool_calls.get_mut(&tool_use_id) {
-                    tool_call.output.push_str(&delta);
-                    if tool_call.exec_like {
-                        if let Some(cell) = self
-                            .active_cell
-                            .as_mut()
-                            .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
-                            && cell.append_output(&tool_use_id, &delta)
-                        {
-                            self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-                            self.frame_requester.schedule_frame();
-                        }
-                        return;
-                    }
-                    let line = Line::from(delta).patch_style(Self::tool_text_style());
-                    if let Some(pending) = self
-                        .pending_tool_calls
-                        .iter_mut()
-                        .find(|pending| pending.tool_use_id == tool_use_id)
-                    {
-                        pending.lines.push(line);
-                    } else {
-                        tool_call.lines.push(line);
-                    }
-                    self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-                    self.frame_requester.schedule_frame();
-                }
-            }
-            WorkerEvent::ToolResultIo {
-                tool_use_id,
-                tool_name,
-                title,
-                input,
-                output,
-                display_content,
-                is_error,
-                truncated,
-            } => {
-                self.pending_tool_calls
-                    .retain(|pending| pending.tool_use_id != tool_use_id);
-                let dot_status = if is_error {
-                    DotStatus::Failed
-                } else {
-                    DotStatus::Completed
-                };
-                let seq = self.reserve_seq();
-                let resolved_tool_call =
-                    self.active_tool_calls
-                        .remove(&tool_use_id)
-                        .unwrap_or(ActiveToolCall {
-                            tool_use_id: tool_use_id.clone(),
-                            seq,
-                            tool_name: Some(tool_name.clone()),
-                            input: Some(input.clone()),
-                            title,
-                            lines: Vec::new(),
-                            output: String::new(),
-                            exec_like: false,
-                            start_time: None,
-                        });
-                let resolved_title = resolved_tool_call.title;
-                if resolved_tool_call.exec_like {
-                    let preview = display_content.clone().unwrap_or_else(|| match &output {
-                        serde_json::Value::String(text) => text.clone(),
-                        other => other.to_string(),
-                    });
-                    let command_output = CommandOutput {
-                        exit_code: if is_error { 1 } else { 0 },
-                        aggregated_output: preview.clone(),
-                        formatted_output: preview,
-                    };
-                    let duration = std::time::Duration::from_millis(0);
-                    if let Some(cell) = self
-                        .active_cell
-                        .as_mut()
-                        .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
-                    {
-                        cell.set_tool_io_input(&tool_use_id, tool_name.clone(), input.clone());
-                        cell.complete_tool_io(
-                            &tool_use_id,
-                            output.clone(),
-                            display_content.clone(),
-                        );
-                        if cell.complete_call(&tool_use_id, command_output.clone(), duration) {
-                            if cell.is_exploring_cell() {
-                                self.active_cell_revision =
-                                    self.active_cell_revision.wrapping_add(1);
-                                self.frame_requester.schedule_frame();
-                            } else if cell.should_flush() {
-                                self.flush_active_cell();
-                            } else {
-                                self.active_cell_revision =
-                                    self.active_cell_revision.wrapping_add(1);
-                                self.frame_requester.schedule_frame();
-                            }
-                            self.set_status_message(if is_error {
-                                "Tool returned an error"
-                            } else {
-                                "Tool completed"
-                            });
-                            return;
-                        }
-                    }
-                    for cell in self
-                        .history
-                        .iter_mut()
-                        .rev()
-                        .filter_map(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
-                    {
-                        cell.set_tool_io_input(&tool_use_id, tool_name.clone(), input.clone());
-                        cell.complete_tool_io(
-                            &tool_use_id,
-                            output.clone(),
-                            display_content.clone(),
-                        );
-                        if cell.complete_call(&tool_use_id, command_output.clone(), duration) {
-                            self.frame_requester.schedule_frame();
-                            self.set_status_message(if is_error {
-                                "Tool returned an error"
-                            } else {
-                                "Tool completed"
-                            });
-                            return;
-                        }
-                    }
-                }
-                let title_line =
-                    (!resolved_title.is_empty()).then(|| Self::ran_tool_line(&resolved_title));
-                if title_line.is_some()
-                    || display_content.is_some()
-                    || !output.is_null()
-                    || truncated
-                {
-                    self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-                    self.add_to_history(ToolIoCell::new(
-                        ToolIoCellOptions {
-                            title_line,
-                            dot_prefix: self.dot_prefix(dot_status),
-                            subsequent_prefix: Line::from("  "),
-                            output_style: Self::tool_text_style(),
-                            show_empty_ellipsis: truncated,
-                        },
-                        tool_name,
-                        input,
-                        Some(output),
-                        display_content,
-                    ));
-                }
-                self.set_status_message(if is_error {
-                    "Tool returned an error"
-                } else {
-                    "Tool completed"
-                });
-            }
-            WorkerEvent::ToolResult {
-                tool_use_id,
-                title,
-                preview,
-                is_error,
-                truncated,
-            } => {
-                // Remove from pending viewport entries — it will be committed to history below.
-                self.pending_tool_calls
-                    .retain(|pending| pending.tool_use_id != tool_use_id);
-                let dot_status = if is_error {
-                    DotStatus::Failed
-                } else {
-                    DotStatus::Completed
-                };
-                let seq = self.reserve_seq();
-                let resolved_title =
-                    self.active_tool_calls
-                        .remove(&tool_use_id)
-                        .unwrap_or(ActiveToolCall {
-                            tool_use_id: tool_use_id.clone(),
-                            seq,
-                            tool_name: None,
-                            input: None,
-                            title,
-                            lines: Vec::new(),
-                            output: String::new(),
-                            exec_like: false,
-                            start_time: None,
-                        });
-
-                if resolved_title.exec_like {
-                    let output = CommandOutput {
-                        exit_code: if is_error { 1 } else { 0 },
-                        aggregated_output: preview.clone(),
-                        formatted_output: preview.clone(),
-                    };
-                    let duration = std::time::Duration::from_millis(0);
-                    if let Some(cell) = self
-                        .active_cell
-                        .as_mut()
-                        .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
-                    {
-                        let completed = cell.complete_call(&tool_use_id, output.clone(), duration);
-                        if completed {
-                            if cell.is_exploring_cell() {
-                                self.active_cell_revision =
-                                    self.active_cell_revision.wrapping_add(1);
-                                self.frame_requester.schedule_frame();
-                            } else if cell.should_flush() {
-                                self.flush_active_cell();
-                            } else {
-                                self.active_cell_revision =
-                                    self.active_cell_revision.wrapping_add(1);
-                                self.frame_requester.schedule_frame();
-                            }
-                            self.set_status_message(if is_error {
-                                "Tool returned an error"
-                            } else {
-                                "Tool completed"
-                            });
-                            return;
-                        }
-                    }
-                    if let Some(cell) = self.history.iter_mut().rev().find_map(|cell| {
-                        cell.as_any_mut()
-                            .downcast_mut::<ExecCell>()
-                            .and_then(|cell| {
-                                cell.complete_call(&tool_use_id, output.clone(), duration)
-                                    .then_some(cell)
-                            })
-                    }) {
-                        let _ = cell;
-                        self.frame_requester.schedule_frame();
-                        self.set_status_message(if is_error {
-                            "Tool returned an error"
-                        } else {
-                            "Tool completed"
-                        });
-                        return;
-                    }
-                }
-
-                let resolved_title = resolved_title.title;
-
-                let title_line =
-                    (!resolved_title.is_empty()).then(|| Self::ran_tool_line(&resolved_title));
-                if title_line.is_some() || !preview.is_empty() || truncated {
-                    self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-                    self.add_to_history(ToolResultCell::new(
-                        title_line,
-                        preview,
-                        self.dot_prefix(dot_status),
-                        Line::from("  "),
-                        Self::tool_text_style(),
-                        truncated,
-                    ));
-                }
-                self.set_status_message(if is_error {
-                    "Tool returned an error"
-                } else {
-                    "Tool completed"
-                });
             }
             WorkerEvent::ShellCommandFinished { exit_code } => {
                 let standalone_shell = self.active_turn_id.is_none();
@@ -790,38 +509,6 @@ impl ChatWidget {
             WorkerEvent::PlanUpdated { explanation, steps } => {
                 self.on_plan_updated(explanation, steps);
                 self.set_status_message("Plan updated");
-            }
-            WorkerEvent::PatchAppliedIo {
-                tool_use_id,
-                tool_name,
-                input,
-                changes,
-            } => {
-                self.active_tool_calls.remove(&tool_use_id);
-                self.pending_tool_calls
-                    .retain(|pending| pending.tool_use_id != tool_use_id);
-                if has_visible_file_changes(&changes) {
-                    self.add_to_history(FileChangeToolIoCell::new(
-                        Some(Self::ran_tool_line(&tool_name)),
-                        tool_name,
-                        input,
-                        changes,
-                        self.session.cwd.clone(),
-                    ));
-                }
-                self.set_status_message("Patch applied");
-            }
-            WorkerEvent::PatchApplied {
-                tool_use_id,
-                changes,
-            } => {
-                self.active_tool_calls.remove(&tool_use_id);
-                self.pending_tool_calls
-                    .retain(|pending| pending.tool_use_id != tool_use_id);
-                if has_visible_file_changes(&changes) {
-                    self.add_to_history(history_cell::new_patch_event(changes, &self.session.cwd));
-                }
-                self.set_status_message("Patch applied");
             }
             WorkerEvent::ApprovalRequest {
                 session_id,
@@ -1006,6 +693,9 @@ impl ChatWidget {
                     };
                     self.commit_active_streams(stream_status);
                 }
+                if !failed_turn_was_finalized {
+                    self.clear_turn_live_projection();
+                }
                 if !failed_turn_was_finalized
                     && (was_interrupted || was_failed)
                     && let Some(cell) = self
@@ -1113,6 +803,7 @@ impl ChatWidget {
                 let failed_turn_was_finalized = self.failed_turn_visually_finalized;
                 if !failed_turn_was_finalized {
                     self.commit_active_streams(DotStatus::Failed);
+                    self.clear_turn_live_projection();
                     if let Some(cell) = self
                         .active_cell
                         .as_mut()
@@ -1391,7 +1082,6 @@ impl ChatWidget {
                 self.editing_queue_item_id = None;
                 self.bottom_pane.clear_pending_cells();
                 self.seen_approval_decisions.clear();
-                self.stream_chunking_policy.reset();
                 self.busy = false;
                 self.turn_count = 0;
                 self.total_input_tokens = 0;
@@ -1432,6 +1122,7 @@ impl ChatWidget {
                 collaboration_mode,
                 permission_preset,
                 effective_context_window,
+                last_context_occupancy,
             } => {
                 self.finish_session_resume();
                 self.session.cwd = cwd;
@@ -1465,14 +1156,13 @@ impl ChatWidget {
                 self.queued_input_modes.clear();
                 self.promoted_input_modes.clear();
                 self.editing_queue_item_id = None;
-                self.stream_chunking_policy.reset();
                 self.total_input_tokens = total_input_tokens;
                 self.total_output_tokens = total_output_tokens;
                 self.total_cache_read_tokens = total_cache_read_tokens;
                 self.last_query_total_tokens = last_query_total_tokens;
                 self.last_query_input_tokens = last_query_input_tokens;
                 self.prompt_token_estimate = prompt_token_estimate;
-                self.last_context_occupancy = None;
+                self.last_context_occupancy = last_context_occupancy;
                 self.effective_context_window = effective_context_window;
                 if !self.rebuild_restored_session_history_from_rich_items(
                     &rich_history_items,
@@ -1500,6 +1190,9 @@ impl ChatWidget {
                 } else {
                     self.set_status_message("Session switched");
                 }
+                self.sync_bottom_pane_summary();
+                self.refresh_header_box();
+                self.frame_requester.schedule_frame();
             }
             WorkerEvent::GoalStatusLoaded { goal } => {
                 self.show_goal_status(goal);
@@ -1670,6 +1363,7 @@ impl ChatWidget {
             WorkerEvent::SteerAccepted { .. } => {
                 self.set_status_message("Steer accepted");
             }
+            WorkerEvent::Transcript(_) => {}
         }
     }
 

@@ -93,6 +93,7 @@ describe("DesktopTerminalManager", () => {
 				env: {
 					DISABLE_AUTO_UPDATE: "true",
 					PATH: "/usr/bin",
+					POWERSHELL_UPDATECHECK: "Off",
 					SHELL: "/bin/zsh",
 					TERM: "xterm-256color",
 					COLORTERM: "truecolor",
@@ -161,7 +162,7 @@ describe("DesktopTerminalManager", () => {
 		expect(createOptions).toEqual([
 			{
 				shell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-				args: [],
+				args: ["-NoLogo"],
 				cwd: "C:\\repo\\devo",
 				env: {
 					COLORTERM: "truecolor",
@@ -169,6 +170,7 @@ describe("DesktopTerminalManager", () => {
 					LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local",
 					PATH: "C:\\Program Files\\PowerShell\\7",
 					PATHEXT: ".EXE",
+					POWERSHELL_UPDATECHECK: "Off",
 					TERM: "xterm-256color",
 				},
 				cols: 120,
@@ -223,6 +225,7 @@ describe("DesktopTerminalManager", () => {
 					COLORTERM: "truecolor",
 					DISABLE_AUTO_UPDATE: "true",
 					LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local",
+					POWERSHELL_UPDATECHECK: "Off",
 					SystemRoot: "C:\\Windows",
 					TERM: "xterm-256color",
 				},
@@ -296,7 +299,10 @@ describe("DesktopTerminalManager", () => {
 			"C:\\Program Files\\PowerShell\\7\\pwsh.exe",
 			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
 		]);
-		expect(createOptions.map((options) => options.args)).toEqual([[], []]);
+		expect(createOptions.map((options) => options.args)).toEqual([
+			["-NoLogo"],
+			["-NoLogo"],
+		]);
 	});
 
 	test("writes, resizes, and removes sessions when they close", async () => {

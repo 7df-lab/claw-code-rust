@@ -40,8 +40,8 @@ export const MessageContent = ({ children, className, ...props }: MessageContent
 	<div
 		className={cn(
 			"flex w-fit min-w-0 max-w-full flex-col gap-2 overflow-hidden",
-			"group-[.is-user]:max-w-[min(36rem,85%)] group-[.is-user]:rounded-2xl group-[.is-user]:bg-muted/75 group-[.is-user]:px-4 group-[.is-user]:py-2.5 group-[.is-user]:text-[15px] group-[.is-user]:leading-6 group-[.is-user]:text-foreground",
-			"group-[.is-assistant]:w-full group-[.is-assistant]:max-w-none group-[.is-assistant]:text-[15px] group-[.is-assistant]:leading-7 group-[.is-assistant]:text-foreground",
+			"group-[.is-user]:max-w-[min(36rem,85%)] group-[.is-user]:rounded-2xl group-[.is-user]:bg-muted/75 group-[.is-user]:px-4 group-[.is-user]:py-2.5 group-[.is-user]:text-[14px] group-[.is-user]:leading-[1.55] group-[.is-user]:tracking-[-0.01em] group-[.is-user]:text-foreground",
+			"group-[.is-assistant]:w-full group-[.is-assistant]:max-w-none group-[.is-assistant]:text-[14px] group-[.is-assistant]:leading-[1.6] group-[.is-assistant]:tracking-[-0.01em] group-[.is-assistant]:text-foreground",
 			className,
 		)}
 		{...props}
@@ -275,10 +275,14 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>
 const streamdownPlugins = { cjk, code, math, mermaid }
 
 // Product requirement: regular transcript Markdown tables should keep copy and
-// download controls, but not show a fullscreen control.
+// download controls, but not show a fullscreen control. Code blocks keep copy
+// but hide download — the transcript already has the source in context.
 const transcriptMarkdownControls: NonNullable<MessageResponseProps["controls"]> = {
 	table: {
 		fullscreen: false,
+	},
+	code: {
+		download: false,
 	},
 }
 
@@ -293,7 +297,7 @@ function TranscriptMarkdownHeading({
 		<p
 			className={cn(
 				className,
-				"my-2 border-0 pb-0 text-sm font-semibold leading-6 text-foreground",
+				"mt-3 mb-1 border-0 p-0 text-[14px] font-[530] leading-snug tracking-normal text-foreground first:mt-0",
 			)}
 			{...props}
 		/>
@@ -324,7 +328,7 @@ export const MessageResponse = memo(
 	({ className, ...props }: MessageResponseProps) => (
 		<Streamdown
 			className={cn(
-				"devo-message-response size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+				"devo-message-response size-full font-sans [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
 				className,
 			)}
 			components={transcriptMarkdownComponents}

@@ -104,7 +104,8 @@ impl ServerRuntime {
                 snapshot.session_totals.cache_creation_input_tokens;
             session_total_cache_read_tokens = snapshot.session_totals.cache_read_input_tokens;
         }
-        self.clear_active_turn_interrupt_handles(session_id).await;
+        // Leave ActiveTurnRegistry turn metadata until after MergeTurn so
+        // admission cannot race a free registry against an unmerged working set.
         match &result {
             Ok(()) => {
                 self.run_session_hook_for_actor_state(

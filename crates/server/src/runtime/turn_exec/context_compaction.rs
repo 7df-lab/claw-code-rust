@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use devo_core::ResponseItem;
 use devo_core::{ItemId, SessionId, TurnId};
+use devo_protocol::native::item::{CompactionTrigger, ContextUsage, Item};
+use devo_protocol::native::legacy_wire_from_native_item;
 
 use super::super::ServerRuntime;
 use crate::{
-    EventContext, ItemEnvelope, ItemEventPayload, ItemKind, ServerEvent,
-    SessionCompactionFailedPayload,
+    EventContext, ItemEnvelope, ItemEventPayload, ServerEvent, SessionCompactionFailedPayload,
 };
 
 #[derive(Default)]
@@ -33,7 +34,13 @@ impl ContextCompactionLifecycle {
         let item_id = ItemId::new();
         self.item_id = Some(item_id);
         runtime
-            .broadcast_event(started_event(session_id, turn_id, item_id))
+            .emit_native_item_started(
+                session_id,
+                turn_id,
+                item_id,
+                None,
+                compaction_started_item(),
+            )
             .await;
     }
 
@@ -51,7 +58,13 @@ impl ContextCompactionLifecycle {
             .persist_in_turn_compaction(session_id, turn_id, item_id, &compacted_items)
             .await;
         runtime
-            .broadcast_event(completed_event(session_id, turn_id, item_id, item_seq))
+            .emit_native_item_completed(
+                session_id,
+                turn_id,
+                item_id,
+                item_seq,
+                compaction_completed_item(),
+            )
             .await;
     }
 
@@ -96,34 +109,79 @@ impl ContextCompactionLifecycle {
     }
 }
 
+fn compaction_usage() -> ContextUsage {
+    ContextUsage {
+        measured: false,
+        ..ContextUsage::default()
+    }
+}
+
+fn compaction_started_item() -> Item {
+    Item::ContextCompaction {
+        trigger: CompactionTrigger::AutoThreshold,
+        before: compaction_usage(),
+        after: None,
+        summary: Some("Compaction started".to_string()),
+    }
+}
+
+fn compaction_completed_item() -> Item {
+    Item::ContextCompaction {
+        trigger: CompactionTrigger::AutoThreshold,
+        before: compaction_usage(),
+        after: None,
+        summary: Some("Context compacted".to_string()),
+    }
+}
+
+fn compaction_failed_item(message: &str) -> Item {
+    Item::ContextCompaction {
+        trigger: CompactionTrigger::AutoThreshold,
+        before: compaction_usage(),
+        after: None,
+        summary: Some(format!("Compaction failed: {message}")),
+    }
+}
+
+fn manual_compaction_item() -> Item {
+    Item::ContextCompaction {
+        trigger: CompactionTrigger::Manual,
+        before: compaction_usage(),
+        after: None,
+        summary: Some("Context Compaction".to_string()),
+    }
+}
+
+#[cfg(test)]
 pub(super) fn started_event(
     session_id: SessionId,
     turn_id: TurnId,
     item_id: ItemId,
 ) -> ServerEvent {
-    item_event(
+    item_event_from_native(
         session_id,
         turn_id,
         item_id,
         None,
         ServerEvent::ItemStarted,
-        serde_json::json!({ "title": "Compaction started" }),
+        compaction_started_item(),
     )
 }
 
+#[cfg(test)]
 pub(super) fn completed_event(
     session_id: SessionId,
     turn_id: TurnId,
     item_id: ItemId,
     item_seq: Option<u64>,
 ) -> ServerEvent {
-    item_event(
+    item_event_from_native(
         session_id,
         turn_id,
         item_id,
         item_seq,
         ServerEvent::ItemCompleted,
-        serde_json::json!({ "title": "Context compacted" }),
+        compaction_completed_item(),
     )
 }
 
@@ -134,17 +192,13 @@ pub(super) fn failed_events(
     message: String,
 ) -> [ServerEvent; 2] {
     [
-        item_event(
+        item_event_from_native(
             session_id,
             turn_id,
             item_id,
             None,
             ServerEvent::ItemCompleted,
-            serde_json::json!({
-                "title": "Compaction failed",
-                "status": "failed",
-                "message": message.clone(),
-            }),
+            compaction_failed_item(&message),
         ),
         ServerEvent::SessionCompactionFailed(SessionCompactionFailedPayload {
             session_id,
@@ -153,14 +207,48 @@ pub(super) fn failed_events(
     ]
 }
 
-fn item_event(
+pub(crate) fn manual_compaction_started_event(
+    session_id: SessionId,
+    turn_id: TurnId,
+    item_id: ItemId,
+    item_seq: u64,
+) -> ServerEvent {
+    item_event_from_native(
+        session_id,
+        turn_id,
+        item_id,
+        Some(item_seq),
+        ServerEvent::ItemStarted,
+        manual_compaction_item(),
+    )
+}
+
+pub(crate) fn manual_compaction_completed_event(
+    session_id: SessionId,
+    turn_id: TurnId,
+    item_id: ItemId,
+    item_seq: u64,
+) -> ServerEvent {
+    item_event_from_native(
+        session_id,
+        turn_id,
+        item_id,
+        Some(item_seq),
+        ServerEvent::ItemCompleted,
+        manual_compaction_item(),
+    )
+}
+
+fn item_event_from_native(
     session_id: SessionId,
     turn_id: TurnId,
     item_id: ItemId,
     item_seq: Option<u64>,
     wrap: impl FnOnce(ItemEventPayload) -> ServerEvent,
-    payload: serde_json::Value,
+    native_item: Item,
 ) -> ServerEvent {
+    let (item_kind, payload) =
+        legacy_wire_from_native_item(&native_item).expect("compaction item must reverse-project");
     wrap(ItemEventPayload {
         context: EventContext {
             session_id,
@@ -171,7 +259,7 @@ fn item_event(
         },
         item: ItemEnvelope {
             item_id,
-            item_kind: ItemKind::ContextCompaction,
+            item_kind,
             payload,
         },
     })

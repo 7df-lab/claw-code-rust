@@ -9,7 +9,6 @@ use crate::app_event_sender::AppEventSender;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ChatWidgetInit;
 use crate::chatwidget::TuiSessionState;
-use crate::events::WorkerEvent;
 use crate::tui::frame_requester::FrameRequester;
 
 fn widget_with_model(
@@ -63,65 +62,65 @@ fn streaming_read_and_glob_updates_render_in_one_explored_cell() {
     };
     let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
-    widget.handle_worker_event(WorkerEvent::ToolCall {
-        tool_use_id: "read-1".to_string(),
-        summary: "read {}".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "read-1".to_string(),
+        "read {}".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
             cmd: String::new(),
             name: String::new(),
             path: PathBuf::new(),
         }]),
-    });
+    ));
     assert_eq!(
         active_display(&widget).contains("Running read {}"),
         false,
         "read start must render as explored placeholder"
     );
 
-    widget.handle_worker_event(WorkerEvent::ToolCallUpdated {
-        tool_use_id: "read-1".to_string(),
-        summary: "read README.md".to_string(),
-        parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::Read {
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_updated(
+        "read-1".to_string(),
+        "read README.md".to_string(),
+        vec![devo_protocol::parse_command::ParsedCommand::Read {
             cmd: "read README.md".to_string(),
             name: "README.md".to_string(),
             path: PathBuf::from("README.md"),
         }],
-    });
-    widget.handle_worker_event(WorkerEvent::ToolResult {
-        tool_use_id: "read-1".to_string(),
-        title: "read README.md".to_string(),
-        preview: "# Devo".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "read-1".to_string(),
+        "read README.md".to_string(),
+        "# Devo".to_string(),
+        false,
+        false,
+    ));
 
-    widget.handle_worker_event(WorkerEvent::ToolCall {
-        tool_use_id: "glob-1".to_string(),
-        summary: "glob {}".to_string(),
-        preparing: false,
-        parsed_commands: Some(vec![
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "glob-1".to_string(),
+        "glob {}".to_string(),
+        false,
+        Some(vec![
             devo_protocol::parse_command::ParsedCommand::ListFiles {
                 cmd: "glob".to_string(),
                 path: Some("glob".to_string()),
             },
         ]),
-    });
-    widget.handle_worker_event(WorkerEvent::ToolCallUpdated {
-        tool_use_id: "glob-1".to_string(),
-        summary: "glob **/Cargo.toml in crates".to_string(),
-        parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::ListFiles {
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call_updated(
+        "glob-1".to_string(),
+        "glob **/Cargo.toml in crates".to_string(),
+        vec![devo_protocol::parse_command::ParsedCommand::ListFiles {
             cmd: "glob **/Cargo.toml in crates".to_string(),
             path: Some("**/Cargo.toml in crates".to_string()),
         }],
-    });
-    widget.handle_worker_event(WorkerEvent::ToolResult {
-        tool_use_id: "glob-1".to_string(),
-        title: "glob **/Cargo.toml in crates".to_string(),
-        preview: "crates/tools/Cargo.toml".to_string(),
-        is_error: false,
-        truncated: false,
-    });
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "glob-1".to_string(),
+        "glob **/Cargo.toml in crates".to_string(),
+        "crates/tools/Cargo.toml".to_string(),
+        false,
+        false,
+    ));
 
     let display = active_display(&widget);
     assert!(
@@ -133,7 +132,7 @@ fn streaming_read_and_glob_updates_render_in_one_explored_cell() {
         "expected final read file name:\n{display}"
     );
     assert!(
-        display.contains("List **/Cargo.toml in crates"),
+        display.contains("Found **/Cargo.toml in crates"),
         "expected final glob parameters:\n{display}"
     );
     assert!(

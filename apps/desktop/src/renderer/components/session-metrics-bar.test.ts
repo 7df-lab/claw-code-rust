@@ -12,20 +12,20 @@ describe("SessionMetricsBar top timer wiring", () => {
 			usesLatestTurnTimer: source.includes("computeLatestTurnTimerSplit(turns"),
 			omitsCompletedSessionWorkTime: !source.includes("completedMs={metrics.completedWorkTimeMs}"),
 			exportsOverviewButton: source.includes("export function SessionMetricsOverviewButton"),
-			headerUsesOverviewButton: agentDetailSource.includes("<SessionMetricsOverviewButton"),
+			headerUsesContextUsageButton: agentDetailSource.includes("<ContextUsageButton"),
 		}).toEqual({
 			acceptsTurnsProp: true,
 			acceptsIsWorkingProp: true,
 			usesLatestTurnTimer: true,
 			omitsCompletedSessionWorkTime: true,
 			exportsOverviewButton: true,
-			headerUsesOverviewButton: true,
+			headerUsesContextUsageButton: true,
 		})
 	})
 
 	test("session header keeps Open in and ends with the three transcript controls", () => {
 		const openInIndex = agentDetailSource.indexOf("<OpenInButton")
-		const overviewIndex = agentDetailSource.indexOf("<SessionMetricsOverviewButton")
+		const contextUsageIndex = agentDetailSource.indexOf("<ContextUsageButton")
 		const terminalIndex = agentDetailSource.indexOf("<TerminalToggleButton")
 		const changesIndex = agentDetailSource.indexOf("<ChangesPanelToggleButton")
 
@@ -38,11 +38,11 @@ describe("SessionMetricsBar top timer wiring", () => {
 			exposesTerminalButton: agentDetailSource.includes("function TerminalToggleButton"),
 			rightControlOrder:
 				openInIndex !== -1 &&
-				overviewIndex !== -1 &&
+				contextUsageIndex !== -1 &&
 				terminalIndex !== -1 &&
 				changesIndex !== -1 &&
-				openInIndex < overviewIndex &&
-				overviewIndex < terminalIndex &&
+				openInIndex < contextUsageIndex &&
+				contextUsageIndex < terminalIndex &&
 				terminalIndex < changesIndex,
 		}).toEqual({
 			keepsOpenInButton: true,
@@ -50,6 +50,26 @@ describe("SessionMetricsBar top timer wiring", () => {
 			exposesChangesPanelButton: true,
 			exposesTerminalButton: true,
 			rightControlOrder: true,
+		})
+	})
+
+	test("session header context usage button shows occupancy breakdown", () => {
+		const contextUsageSource = readFileSync(
+			new URL("./context-usage-button.tsx", import.meta.url),
+			"utf8",
+		)
+		expect({
+			headerUsesContextUsageButton: agentDetailSource.includes("<ContextUsageButton"),
+			replacesOverviewButtonInHeader: !agentDetailSource.includes("<SessionMetricsOverviewButton"),
+			opensPromptBreakdown: contextUsageSource.includes("Prompt breakdown"),
+			usesOccupancyCategories: contextUsageSource.includes("occupancyCategoryRows"),
+			doesNotReadBeforeResume: !contextUsageSource.includes("context.usage.read"),
+		}).toEqual({
+			headerUsesContextUsageButton: true,
+			replacesOverviewButtonInHeader: true,
+			opensPromptBreakdown: true,
+			usesOccupancyCategories: true,
+			doesNotReadBeforeResume: true,
 		})
 	})
 

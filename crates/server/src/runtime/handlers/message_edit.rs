@@ -584,6 +584,7 @@ impl ServerRuntime {
                 replacement_item.clone(),
                 Some(TurnStatus::Running),
                 None,
+                None,
             ),
         ) {
             return self.error_response(

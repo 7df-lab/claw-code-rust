@@ -2,6 +2,9 @@ use std::borrow::Cow;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use devo_protocol::native::item::Item as NativeItem;
+use devo_protocol::native::legacy_wire_from_native_item;
+
 use crate::titles::build_title_generation_request;
 use crate::titles::derive_provisional_title;
 use crate::titles::normalize_generated_title;
@@ -48,10 +51,10 @@ impl ServerRuntime {
 
     /// Spawns final (LLM) title generation in the background.
     ///
-    /// Safe to call at turn start: actor mailbox round-trips happen here, then
-    /// the model call runs on a detached task so it does not block `ExecuteTurn`.
-    /// Duplicate schedules for the same session are ignored while a generation
-    /// task is already in flight.
+    /// Safe to call at turn start: short mailbox round-trips happen here, then
+    /// the model call runs on a detached task (must not hold `state_change_gate`
+    /// across that await). Duplicate schedules for the same session are ignored
+    /// while a generation task is already in flight.
     pub(super) async fn maybe_schedule_final_title_generation(
         self: &Arc<Self>,
         session_id: SessionId,
@@ -266,7 +269,13 @@ impl ServerRuntime {
             let Some(session_handle) = self.session(session_id).await else {
                 return;
             };
-            let state_change_guard = session_handle.lock_state_change().await;
+            // Persist-first title apply: do not hold `state_change_gate` across
+            // mailbox or disk waits. The actor command is short; concurrent
+            // user renames last-write-wins via the title_state Final check.
+            let previous_title = session_handle
+                .summary()
+                .await
+                .and_then(|summary| summary.title);
             let Some(updated_summary) = session_handle
                 .update_title(
                     generated_title.clone(),
@@ -282,7 +291,7 @@ impl ServerRuntime {
                     &record,
                     generated_title.clone(),
                     SessionTitleState::Final(SessionTitleFinalSource::ModelGenerated),
-                    updated_summary.title.clone(),
+                    previous_title,
                 )
             {
                 tracing::warn!(session_id = %session_id, error = %error, "failed to persist title");
@@ -290,7 +299,6 @@ impl ServerRuntime {
 
             self.persist_session_summary_if_persistent(session_id, &updated_summary)
                 .await;
-            drop(state_change_guard);
 
             self.broadcast_event(ServerEvent::SessionTitleUpdated(SessionEventPayload {
                 session: updated_summary,
@@ -324,6 +332,27 @@ impl ServerRuntime {
         .await;
     }
 
+    pub(super) async fn emit_turn_native_item(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        native_item: NativeItem,
+        turn_item: TurnItem,
+    ) {
+        let (item_id, item_seq) = self
+            .start_native_item(session_id, turn_id, native_item.clone())
+            .await;
+        self.complete_native_item(
+            session_id,
+            turn_id,
+            item_id,
+            item_seq,
+            native_item,
+            turn_item,
+        )
+        .await;
+    }
+
     pub(super) async fn start_item(
         &self,
         session_id: SessionId,
@@ -333,6 +362,7 @@ impl ServerRuntime {
     ) -> (ItemId, u64) {
         let item_id = ItemId::new();
         let item_seq = self.allocate_item_sequence(session_id).await;
+        self.remember_item_started_at(session_id, item_id).await;
         self.emit_item_started(
             session_id,
             turn_id,
@@ -343,6 +373,60 @@ impl ServerRuntime {
         )
         .await;
         (item_id, item_seq)
+    }
+
+    pub(super) async fn start_native_item(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        native_item: NativeItem,
+    ) -> (ItemId, u64) {
+        let item_id = ItemId::new();
+        let item_seq = self.allocate_item_sequence(session_id).await;
+        self.remember_item_started_at(session_id, item_id).await;
+        self.emit_native_item_started(session_id, turn_id, item_id, Some(item_seq), native_item)
+            .await;
+        (item_id, item_seq)
+    }
+
+    async fn remember_item_started_at(&self, session_id: SessionId, item_id: ItemId) {
+        let Some(stream) = self.active_stream_state(session_id).await else {
+            return;
+        };
+        let mut stream = stream.lock().await;
+        if let Some(inline) = stream.turn_inline.as_mut() {
+            inline.item_started_at.insert(item_id, chrono::Utc::now());
+        }
+    }
+
+    async fn take_item_started_at(
+        &self,
+        session_id: SessionId,
+        item_id: ItemId,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let stream = self.active_stream_state(session_id).await?;
+        let mut stream = stream.lock().await;
+        stream
+            .turn_inline
+            .as_mut()
+            .and_then(|inline| inline.item_started_at.remove(&item_id))
+    }
+
+    fn payload_with_started_at(
+        mut payload: serde_json::Value,
+        started_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> serde_json::Value {
+        if let Some(started_at) = started_at
+            && let Some(object) = payload.as_object_mut()
+        {
+            object.insert(
+                "startedAt".to_string(),
+                serde_json::Value::String(
+                    started_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                ),
+            );
+        }
+        payload
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -399,6 +483,34 @@ impl ServerRuntime {
         .await;
     }
 
+    pub(super) async fn emit_native_item_started(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        item_id: ItemId,
+        item_seq: Option<u64>,
+        native_item: NativeItem,
+    ) {
+        let (item_kind, payload) =
+            legacy_wire_from_native_item(&native_item).expect("native item must reverse-project");
+        self.emit_item_started(session_id, turn_id, item_id, item_seq, item_kind, payload)
+            .await;
+    }
+
+    pub(super) async fn emit_native_item_completed(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        item_id: ItemId,
+        item_seq: Option<u64>,
+        native_item: NativeItem,
+    ) {
+        let (item_kind, payload) =
+            legacy_wire_from_native_item(&native_item).expect("native item must reverse-project");
+        self.emit_item_completed(session_id, turn_id, item_id, item_seq, item_kind, payload)
+            .await;
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn complete_item(
         &self,
@@ -410,6 +522,7 @@ impl ServerRuntime {
         turn_item: TurnItem,
         payload: serde_json::Value,
     ) {
+        let started_at = self.take_item_started_at(session_id, item_id).await;
         self.persist_item(
             session_id,
             turn_id,
@@ -418,6 +531,7 @@ impl ServerRuntime {
             turn_item,
             Some(TurnStatus::Running),
             None,
+            started_at,
         )
         .await;
         self.emit_item_completed(
@@ -426,7 +540,41 @@ impl ServerRuntime {
             item_id,
             Some(item_seq),
             item_kind,
-            payload,
+            Self::payload_with_started_at(payload, started_at),
+        )
+        .await;
+    }
+
+    pub(super) async fn complete_native_item(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        item_id: ItemId,
+        item_seq: u64,
+        native_item: NativeItem,
+        turn_item: TurnItem,
+    ) {
+        let started_at = self.take_item_started_at(session_id, item_id).await;
+        self.persist_item(
+            session_id,
+            turn_id,
+            item_id,
+            item_seq,
+            turn_item,
+            Some(TurnStatus::Running),
+            None,
+            started_at,
+        )
+        .await;
+        let (item_kind, payload) =
+            legacy_wire_from_native_item(&native_item).expect("native item must reverse-project");
+        self.emit_item_completed(
+            session_id,
+            turn_id,
+            item_id,
+            Some(item_seq),
+            item_kind,
+            Self::payload_with_started_at(payload, started_at),
         )
         .await;
     }
@@ -441,6 +589,7 @@ impl ServerRuntime {
         turn_item: TurnItem,
         turn_status: Option<TurnStatus>,
         worklog: Option<Worklog>,
+        started_at: Option<chrono::DateTime<chrono::Utc>>,
     ) {
         if let Some(stream) = self.active_stream_state(session_id).await {
             // Mutate inline state under the lock, then release before any
@@ -475,6 +624,7 @@ impl ServerRuntime {
                                 turn_item.clone(),
                                 turn_status.clone(),
                                 worklog.clone(),
+                                started_at,
                             ),
                         )
                     })
@@ -524,6 +674,7 @@ impl ServerRuntime {
                 turn_item,
                 turn_status,
                 worklog,
+                started_at,
             );
             if let Err(error) = self.rollout_store.append_item(&record, item) {
                 tracing::warn!(session_id = %session_id, error = %error, "failed to persist item line");

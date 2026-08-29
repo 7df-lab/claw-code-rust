@@ -3,6 +3,14 @@ import { atomWithStorage } from "jotai/utils"
 import type { DisplayMode, WindowChromeTier } from "../../preload/api"
 import { DEFAULT_APPEARANCE_SETTINGS } from "../../shared/app-settings"
 import type { ColorScheme } from "../lib/themes"
+import { SIDEBAR_DEFAULT_WIDTH_PX } from "../lib/sidebar-width"
+
+export {
+	clampSidebarWidth,
+	SIDEBAR_DEFAULT_WIDTH_PX,
+	SIDEBAR_MAX_WIDTH_PX,
+	SIDEBAR_MIN_WIDTH_PX,
+} from "../lib/sidebar-width"
 
 // ============================================================
 // Types
@@ -112,6 +120,15 @@ export const projectModelsAtom = atomWithStorage<Record<string, PersistedModelRe
 export const lastProjectDirectoryAtom = atomWithStorage<string | null>(
 	"devo:last-project-directory",
 	null,
+)
+
+/**
+ * User-resized app sidebar width in pixels.
+ * Applied as `--sidebar-width` on the sidebar wrapper.
+ */
+export const sidebarWidthAtom = atomWithStorage<number>(
+	"devo:sidebarWidth",
+	SIDEBAR_DEFAULT_WIDTH_PX,
 )
 
 /**

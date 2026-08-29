@@ -60,4 +60,23 @@ describe("sidebar layout window controls", () => {
 			opensTerminal: true,
 		})
 	})
+
+	test("sidebar width is drag-resizable and persisted", async () => {
+		const source = await readFile(sourcePath, "utf8")
+		expect({
+			importsResizeHandle: source.includes(
+				'import { SidebarResizeHandle } from "./sidebar/sidebar-resize-handle"',
+			),
+			importsWidthAtom: source.includes("sidebarWidthAtom"),
+			appliesSidebarWidthVar: source.includes('"--sidebar-width"'),
+			marksResizing: source.includes('data-resizing={sidebarResizing ? "true" : undefined}'),
+			rendersHandle: source.includes("<SidebarResizeHandle"),
+		}).toEqual({
+			importsResizeHandle: true,
+			importsWidthAtom: true,
+			appliesSidebarWidthVar: true,
+			marksResizing: true,
+			rendersHandle: true,
+		})
+	})
 })

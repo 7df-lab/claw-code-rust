@@ -34,8 +34,8 @@ pub(crate) struct SpawnSnapshot {
     pub(crate) steer_input_queue: Arc<StdMutex<VecDeque<devo_protocol::PendingInputItem>>>,
 }
 
-/// Approval caches cloned at turn start for permission checks while the actor
-/// is busy executing a turn.
+/// Approval caches cloned at turn start for permission checks while the turn
+/// task owns the working copy.
 #[derive(Clone, Default)]
 pub(crate) struct ApprovalCacheSnapshot {
     pub(crate) session_approval_cache: crate::execution::ApprovalGrantCache,

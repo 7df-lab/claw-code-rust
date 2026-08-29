@@ -230,6 +230,18 @@ function findExecutableOnPath(
 	return null;
 }
 
+function isPowerShellExecutable(shell: string): boolean {
+	const base = shell.replace(/^.*[\\/]/, "").toLowerCase();
+	return base === "pwsh.exe" || base === "powershell.exe" || base === "pwsh" || base === "powershell";
+}
+
+function withPowerShellNoLogo(command: ShellCommand): ShellCommand {
+	if (!isPowerShellExecutable(command.shell)) return command;
+	const hasNoLogo = command.args.some((arg) => arg.toLowerCase() === "-nologo");
+	if (hasNoLogo) return command;
+	return { shell: command.shell, args: ["-NoLogo", ...command.args] };
+}
+
 function resolveWindowsTerminalSourceShell(
 	source: string,
 	env: Record<string, string>,
@@ -238,14 +250,14 @@ function resolveWindowsTerminalSourceShell(
 	if (source === "Windows.Terminal.PowershellCore") {
 		return {
 			shell: findExecutableOnPath("pwsh.exe", env, deps) ?? "pwsh.exe",
-			args: [],
+			args: ["-NoLogo"],
 		};
 	}
 	if (source === "Windows.Terminal.WindowsPowerShell") {
 		return {
 			shell:
 				findExecutableOnPath("powershell.exe", env, deps) ?? "powershell.exe",
-			args: [],
+			args: ["-NoLogo"],
 		};
 	}
 	if (source === "Windows.Terminal.CommandPrompt") {
@@ -292,16 +304,18 @@ function resolveWindowsShellCommand(
 	deps: ShellResolutionDeps,
 ): ShellCommand {
 	const windowsTerminalShell = resolveWindowsTerminalShell(env, deps);
-	if (windowsTerminalShell) return windowsTerminalShell;
+	if (windowsTerminalShell) return withPowerShellNoLogo(windowsTerminalShell);
 
 	const configuredShell = getEnvValue(env, "SHELL");
-	if (configuredShell) return { shell: configuredShell, args: [] };
+	if (configuredShell) {
+		return withPowerShellNoLogo({ shell: configuredShell, args: [] });
+	}
 
 	const pwsh = findExecutableOnPath("pwsh.exe", env, deps);
-	if (pwsh) return { shell: pwsh, args: [] };
+	if (pwsh) return { shell: pwsh, args: ["-NoLogo"] };
 
 	const powershell = findExecutableOnPath("powershell.exe", env, deps);
-	if (powershell) return { shell: powershell, args: [] };
+	if (powershell) return { shell: powershell, args: ["-NoLogo"] };
 
 	return {
 		shell:
@@ -400,6 +414,8 @@ export class DesktopTerminalManager {
 		const env: Record<string, string> = {
 			...normalizeEnv(this.env),
 			DISABLE_AUTO_UPDATE: "true",
+			// Suppress PowerShell 7's startup update banner (dark ANSI block in light themes).
+			POWERSHELL_UPDATECHECK: "Off",
 			TERM: "xterm-256color",
 			COLORTERM: "truecolor",
 		};

@@ -46,6 +46,37 @@ type ReferenceSearchState = {
 	error: string | null
 }
 
+function parseReferenceResult(value: unknown): ReferenceSearchResult | null {
+	if (!value || typeof value !== "object") return null
+	const raw = value as Record<string, unknown>
+	const kind = raw.kind
+	if (kind !== "skill" && kind !== "mcp" && kind !== "file") return null
+	if (typeof raw.display_name !== "string" && typeof raw.displayName !== "string") return null
+	if (typeof raw.insert_text !== "string" && typeof raw.insertText !== "string") return null
+
+	const isDisabled = raw.is_disabled ?? raw.isDisabled
+	const disabledReason = raw.disabled_reason ?? raw.disabledReason
+	return {
+		kind,
+		display_name: (raw.display_name ?? raw.displayName) as string,
+		insert_text: (raw.insert_text ?? raw.insertText) as string,
+		description:
+			typeof raw.description === "string"
+				? raw.description
+				: undefined,
+		mention_path:
+			typeof (raw.mention_path ?? raw.mentionPath) === "string"
+				? ((raw.mention_path ?? raw.mentionPath) as string)
+				: undefined,
+		file_path:
+			typeof (raw.file_path ?? raw.filePath) === "string"
+				? ((raw.file_path ?? raw.filePath) as string)
+				: undefined,
+		is_disabled: isDisabled === true,
+		disabled_reason: typeof disabledReason === "string" ? disabledReason : undefined,
+	}
+}
+
 function parseSnapshot(payload: unknown): ReferenceSearchSnapshot | null {
 	if (!payload || typeof payload !== "object") return null
 	if ("snapshot" in payload) {
@@ -60,10 +91,15 @@ function parseSnapshot(payload: unknown): ReferenceSearchSnapshot | null {
 	if (typeof searchId !== "string" || typeof candidate.query !== "string") {
 		return null
 	}
+	const results = Array.isArray(candidate.results)
+		? candidate.results
+				.map(parseReferenceResult)
+				.filter((result): result is ReferenceSearchResult => result != null)
+		: []
 	return {
 		search_id: searchId,
 		query: candidate.query,
-		results: Array.isArray(candidate.results) ? (candidate.results as ReferenceSearchResult[]) : [],
+		results,
 		total_file_match_count: typeof totalFileMatchCount === "number" ? totalFileMatchCount : 0,
 		scanned_file_count: typeof scannedFileCount === "number" ? scannedFileCount : 0,
 		file_search_complete: typeof fileSearchComplete === "boolean" ? fileSearchComplete : false,

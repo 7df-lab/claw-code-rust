@@ -14,6 +14,10 @@ use crate::render::line_utils::push_owned_lines;
 use crate::tool_io_cell::ToolIoCell;
 use crate::tool_io_cell::ToolIoCellOptions;
 use crate::tool_io_cell::tool_input_lines;
+use crate::transcript::presentation::tool_status_done_style;
+use crate::transcript::presentation::tool_status_running_style;
+use crate::transcript::tool_state::shell_command_from_input;
+use crate::transcript::tool_state::shell_description_from_input;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line;
 use crate::wrapping::adaptive_wrap_lines;
@@ -259,11 +263,18 @@ impl HistoryCell for ExecCell {
     }
 
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
-        if let Some(lines) = self.tool_io_transcript_lines(width) {
+        if self.is_exploring_cell() {
+            let mut lines = self.exploring_display_lines(width);
+            if let Some(tool_io_lines) = self.exploring_tool_io_transcript_lines(width) {
+                if !lines.is_empty() && !tool_io_lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                lines.extend(tool_io_lines);
+            }
             return lines;
         }
-        if self.is_exploring_cell() {
-            return self.exploring_display_lines(width);
+        if let Some(lines) = self.tool_io_transcript_lines(width) {
+            return lines;
         }
         let mut lines: Vec<Line<'static>> = vec![];
         for (i, call) in self.iter_calls().enumerate() {
@@ -313,6 +324,9 @@ impl ExecCell {
     fn tool_io_transcript_lines(&self, width: u16) -> Option<Vec<Line<'static>>> {
         let mut lines = Vec::new();
         for call in self.iter_calls() {
+            if Self::is_exploring_call(call) {
+                continue;
+            }
             let (Some(tool_name), Some(input)) = (&call.tool_name, &call.tool_input) else {
                 continue;
             };
@@ -331,14 +345,7 @@ impl ExecCell {
                     serde_json::Value::String(text)
                 })
             });
-            let dot_prefix = Line::from(vec![
-                if call.output.is_some() {
-                    "▌".dim()
-                } else {
-                    spinner(call.start_time, self.animations_enabled())
-                },
-                " ".into(),
-            ]);
+            let dot_prefix = Line::from(vec!["▌".dim(), " ".into()]);
             lines.extend(
                 ToolIoCell::new(
                     ToolIoCellOptions {
@@ -357,6 +364,55 @@ impl ExecCell {
             );
         }
         (!lines.is_empty()).then_some(lines)
+    }
+
+    fn exploring_tool_io_transcript_lines(&self, width: u16) -> Option<Vec<Line<'static>>> {
+        let mut lines = Vec::new();
+        for call in self.iter_calls() {
+            if !Self::is_exploring_call(call)
+                || !Self::should_include_exploring_tool_io_transcript(call)
+            {
+                continue;
+            }
+            let (Some(tool_name), Some(input)) = (&call.tool_name, &call.tool_input) else {
+                continue;
+            };
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            let output = call.tool_output.clone().or_else(|| {
+                call.output.as_ref().map(|output| {
+                    let text = if output.formatted_output.is_empty() {
+                        output.aggregated_output.clone()
+                    } else {
+                        output.formatted_output.clone()
+                    };
+                    serde_json::Value::String(text)
+                })
+            });
+            let dot_prefix = Line::from(vec!["▌".dim(), " ".into()]);
+            lines.extend(
+                ToolIoCell::new(
+                    ToolIoCellOptions {
+                        title_line: None,
+                        dot_prefix,
+                        subsequent_prefix: Line::from("  "),
+                        output_style: Style::default(),
+                        show_empty_ellipsis: false,
+                    },
+                    tool_name.clone(),
+                    input.clone(),
+                    output,
+                    call.tool_display_content.clone(),
+                )
+                .transcript_lines(width),
+            );
+        }
+        (!lines.is_empty()).then_some(lines)
+    }
+
+    fn should_include_exploring_tool_io_transcript(call: &ExecCall) -> bool {
+        matches!(call.tool_name.as_deref(), Some("read"))
     }
 
     fn output_ellipsis_text(omitted: usize) -> String {
@@ -407,6 +463,7 @@ impl ExecCell {
                 .iter()
                 .all(|parsed| matches!(parsed, ParsedCommand::Read { .. }));
 
+            let call_active = call.output.is_none() && self.animations_enabled();
             let call_lines: Vec<(&str, Vec<Span<'static>>)> = if reads_only {
                 let mut lines = Vec::new();
                 let mut seen = std::collections::HashSet::new();
@@ -416,7 +473,8 @@ impl ExecCell {
                     };
                     let display = read_display_name(name, path, cmd);
                     if seen.insert(display.clone()) {
-                        lines.push(("Read", vec![display.into()]));
+                        let verb = if call_active { "Reading" } else { "Read" };
+                        lines.push((verb, vec![display.into()]));
                     }
                 }
                 lines
@@ -425,12 +483,15 @@ impl ExecCell {
                 for parsed in &call.parsed {
                     match parsed {
                         ParsedCommand::Read { cmd, name, path } => {
-                            lines.push(("Read", vec![read_display_name(name, path, cmd).into()]));
+                            let verb = if call_active { "Reading" } else { "Read" };
+                            lines.push((verb, vec![read_display_name(name, path, cmd).into()]));
                         }
                         ParsedCommand::ListFiles { cmd, path } => {
-                            lines.push(("List", vec![path.clone().unwrap_or(cmd.clone()).into()]));
+                            let verb = if call_active { "Finding" } else { "Found" };
+                            lines.push((verb, vec![path.clone().unwrap_or(cmd.clone()).into()]));
                         }
                         ParsedCommand::Search { cmd, query, path } => {
+                            let verb = if call_active { "Grepping" } else { "Grepped" };
                             let spans = match (query, path) {
                                 (Some(q), Some(p)) => {
                                     vec![q.clone().into(), " in ".dim(), p.clone().into()]
@@ -438,10 +499,11 @@ impl ExecCell {
                                 (Some(q), None) => vec![q.clone().into()],
                                 _ => vec![cmd.clone().into()],
                             };
-                            lines.push(("Search", spans));
+                            lines.push((verb, spans));
                         }
                         ParsedCommand::Unknown { cmd } => {
-                            lines.push(("Run", vec![cmd.clone().into()]));
+                            let verb = if call_active { "Running" } else { "Ran" };
+                            lines.push((verb, vec![cmd.clone().into()]));
                         }
                     }
                 }
@@ -479,28 +541,85 @@ impl ExecCell {
         let [call] = &self.calls.as_slice() else {
             panic!("Expected exactly one call in a command display cell");
         };
+        if call.is_agent_shell_tool_call() {
+            return self.agent_shell_display_lines(call, width);
+        }
+        self.legacy_command_display_lines(call, width)
+    }
+
+    fn agent_shell_display_lines(&self, call: &ExecCall, width: u16) -> Vec<Line<'static>> {
         let layout = EXEC_DISPLAY_LAYOUT;
-        let success = call.output.as_ref().map(|o| o.exit_code == 0);
-        let bullet = match success {
-            Some(true) => "▌".green().bold(),
-            Some(false) => "▌".red().bold(),
-            None => spinner(call.start_time, self.animations_enabled()),
+        let bullet = "▌".dim();
+        let status = if self.is_active() { "Running" } else { "Ran" };
+        let status_style = if self.is_active() {
+            tool_status_running_style()
+        } else {
+            tool_status_done_style()
         };
+        let explanation = shell_description_from_input(call.tool_input.as_ref())
+            .unwrap_or_else(|| strip_bash_lc_and_escape(&call.command));
+
+        let mut lines = vec![Line::from(vec![
+            bullet,
+            " ".into(),
+            Span::styled(status, status_style),
+            " ".into(),
+            explanation.into(),
+        ])];
+
+        let command_text = call
+            .tool_input
+            .as_ref()
+            .and_then(|input| shell_command_from_input(input))
+            .unwrap_or_else(|| strip_bash_lc_and_escape(&call.command));
+        if !command_text.is_empty() {
+            let command_line = Line::from(Span::styled(command_text, Style::default().dim()));
+            let wrapped = adaptive_wrap_lines(
+                std::slice::from_ref(&command_line),
+                RtOptions::new(layout.command_continuation.wrap_width(width))
+                    .word_splitter(WordSplitter::NoHyphenation),
+            );
+            lines.extend(prefix_lines(
+                wrapped,
+                Span::from("  ").dim(),
+                Span::from("    ").dim(),
+            ));
+        }
+
+        lines
+    }
+
+    fn legacy_command_display_lines(&self, call: &ExecCall, width: u16) -> Vec<Line<'static>> {
+        let layout = EXEC_DISPLAY_LAYOUT;
+        let bullet = "▌".dim();
         let is_interaction = call.is_unified_exec_interaction();
+        let running = self.is_active();
         let title = if is_interaction {
             ""
         } else if call.is_user_shell_command() {
             "$"
-        } else if self.is_active() {
+        } else if running {
             "Running"
         } else {
             "Ran"
+        };
+        let title_style = if is_interaction || call.is_user_shell_command() {
+            Style::default().bold()
+        } else if running {
+            tool_status_running_style()
+        } else {
+            tool_status_done_style()
         };
 
         let mut header_line = if is_interaction {
             Line::from(vec![bullet.clone(), " ".into()])
         } else {
-            Line::from(vec![bullet.clone(), " ".into(), title.bold(), " ".into()])
+            Line::from(vec![
+                bullet.clone(),
+                " ".into(),
+                Span::styled(title, title_style),
+                " ".into(),
+            ])
         };
         let header_prefix_width = header_line.width();
 
@@ -942,7 +1061,7 @@ mod tests {
             .map(render_line_text)
             .collect::<Vec<_>>();
 
-        assert_eq!(rendered, vec!["▌ Ran echo hi"]);
+        assert_eq!(rendered, vec!["▌ Ran echo hi", "  echo hi"]);
     }
 
     #[test]

@@ -4,8 +4,6 @@
  * Preserves server-ranked references and combines them with local agents.
  */
 
-import { ScrollArea } from "@devo/ui/components/scroll-area"
-import { cn } from "@devo/ui/lib/utils"
 import type { ReferenceSearchResult } from "@devo-ai/sdk/v2/client"
 import fuzzysort from "fuzzysort"
 import {
@@ -28,6 +26,16 @@ import {
 } from "react"
 import { useReferenceSearch } from "../../hooks/use-reference-search"
 import type { SdkAgent } from "../../hooks/use-devo-data"
+import {
+	composerPopoverEmptyClass,
+	composerPopoverGroupLabelClass,
+	composerPopoverHeaderClass,
+	composerPopoverIconClass,
+	composerPopoverItemClass,
+	composerPopoverListClass,
+	composerPopoverScrollClass,
+	composerPopoverShellClass,
+} from "./composer-popover-styles"
 
 // ============================================================
 // Types
@@ -97,9 +105,20 @@ export function isMentionOptionDisabled(option: MentionOption): boolean {
 	return option.type !== "agent" && option.disabled
 }
 
+/** Disabled MCPs are omitted from the popover entirely (not shown greyed-out). */
+export function isMentionOptionVisible(option: MentionOption): boolean {
+	return !(option.type === "mcp" && option.disabled)
+}
+
 export function mapReferenceSearchResults(results: ReferenceSearchResult[]): MentionOption[] {
 	return results.map((result) => {
-		const disabled = result.is_disabled === true || result.disabled_reason != null
+		const wire = result as ReferenceSearchResult & {
+			isDisabled?: boolean
+			disabledReason?: string
+		}
+		const disabledReason = wire.disabled_reason ?? wire.disabledReason
+		const disabled =
+			wire.is_disabled === true || wire.isDisabled === true || disabledReason != null
 		if (result.kind === "file") {
 			return {
 				type: "file",
@@ -107,7 +126,7 @@ export function mapReferenceSearchResults(results: ReferenceSearchResult[]): Men
 				display: result.display_name,
 				insertText: result.insert_text,
 				disabled,
-				disabledReason: result.disabled_reason,
+				disabledReason,
 			}
 		}
 		return {
@@ -118,7 +137,7 @@ export function mapReferenceSearchResults(results: ReferenceSearchResult[]): Men
 			insertText: result.insert_text,
 			mentionPath: result.mention_path,
 			disabled,
-			disabledReason: result.disabled_reason,
+			disabledReason,
 		}
 	})
 }
@@ -146,7 +165,10 @@ export const MentionPopover = memo(
 
 		// --- Data: server-ranked Skill, MCP, and File references ---
 		const { results, isLoading, error } = useReferenceSearch(directory, query, open)
-		const referenceOptions = useMemo(() => mapReferenceSearchResults(results), [results])
+		const referenceOptions = useMemo(
+			() => mapReferenceSearchResults(results).filter(isMentionOptionVisible),
+			[results],
+		)
 
 		// --- Merge and filter ---
 		const allOptions = useMemo<MentionOption[]>(() => {
@@ -238,25 +260,24 @@ export const MentionPopover = memo(
 		return (
 			<div
 				role="listbox"
-				className="absolute inset-x-0 bottom-full z-50 mb-2 origin-bottom-left overflow-hidden rounded-md border bg-popover shadow-md"
+				className={composerPopoverShellClass}
 				onMouseDown={(e) => e.preventDefault()}
 			>
-				{/* Search header */}
-				<div className="flex items-center gap-2 border-b px-3 py-2">
-					<SearchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-					<span className="text-sm text-muted-foreground">
-						{query ? `Searching for "${query}"` : "Mention references or agents"}
+				<div className={composerPopoverHeaderClass}>
+					<SearchIcon className={composerPopoverIconClass} aria-hidden="true" />
+					<span className="min-w-0 truncate text-[13px] leading-5 text-muted-foreground/70">
+						{query ? `Searching for “${query}”` : "Mention a file, skill, MCP, or agent"}
 					</span>
 				</div>
 
-				{/* Results */}
-				<ScrollArea className="max-h-64 overflow-hidden [&>[data-slot=scroll-area-viewport]]:max-h-[inherit]">
-					<div ref={listRef} className="py-1">
+				{/* Single outer scroll only — avoid nested ScrollArea scrollbars. */}
+				<div className={composerPopoverScrollClass}>
+					<div ref={listRef} className={composerPopoverListClass}>
 						{!hasResults && (
-							<div className="py-4 text-center text-sm text-muted-foreground">
+							<div className={composerPopoverEmptyClass}>
 								{showLoading
 									? query
-										? `Searching for "${query}"…`
+										? `Searching for “${query}”…`
 										: "Searching references and agents…"
 									: showError
 										? error
@@ -266,12 +287,9 @@ export const MentionPopover = memo(
 							</div>
 						)}
 
-						{/* Agent group */}
 						{agentItems.length > 0 && (
 							<div>
-								<div className="sticky top-0 z-10 border-b bg-popover px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-									Agents
-								</div>
+								<div className={composerPopoverGroupLabelClass}>Agents</div>
 								{agentItems.map((option) => {
 									const idx = selectableIndex(option)
 									return (
@@ -309,12 +327,9 @@ export const MentionPopover = memo(
 							/>
 						)}
 
-						{/* File group */}
 						{fileItems.length > 0 && (
 							<div>
-								<div className="sticky top-0 z-10 border-b bg-popover px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-									Files
-								</div>
+								<div className={composerPopoverGroupLabelClass}>Files</div>
 								{fileItems.map((option) => {
 									const idx = selectableIndex(option)
 									const path = option.type === "file" ? option.path : ""
@@ -333,7 +348,7 @@ export const MentionPopover = memo(
 							</div>
 						)}
 					</div>
-				</ScrollArea>
+				</div>
 			</div>
 		)
 	}),
@@ -356,9 +371,7 @@ const MentionGroup = memo(function MentionGroup({
 }) {
 	return (
 		<div>
-			<div className="sticky top-0 z-10 border-b bg-popover px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-				{label}
-			</div>
+			<div className={composerPopoverGroupLabelClass}>{label}</div>
 			{options.map((option) => {
 				const idx = selectableIndex(option)
 				return (
@@ -397,15 +410,12 @@ const MentionItem = memo(function MentionItem({
 			<button
 				type="button"
 				data-active={isActive}
-				className={cn(
-					"flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors",
-					isActive ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-				)}
+				className={composerPopoverItemClass(isActive)}
 				onClick={onSelect}
 				onMouseEnter={onHover}
 			>
-				<BrainIcon className="size-3.5 shrink-0 stroke-[1.5] text-blue-400" />
-				<span className="font-medium">@{option.name}</span>
+				<BrainIcon className={composerPopoverIconClass} aria-hidden="true" />
+				<span className="font-medium tracking-normal">@{option.name}</span>
 			</button>
 		)
 	}
@@ -413,34 +423,22 @@ const MentionItem = memo(function MentionItem({
 	if (option.type !== "file") {
 		const disabled = option.disabled
 		const Icon = option.type === "skill" ? SparklesIcon : PlugIcon
+		const detail = option.disabledReason ?? option.description
 		return (
 			<button
 				type="button"
 				data-active={isActive}
 				disabled={disabled}
-				title={disabled ? option.disabledReason : option.description}
-				className={cn(
-					"flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors",
-					isActive ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-					disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
-				)}
+				title={detail}
+				className={composerPopoverItemClass(isActive, disabled)}
 				onClick={onSelect}
 				onMouseEnter={onHover}
 			>
-				<Icon
-					className={cn(
-						"size-3.5 shrink-0 stroke-[1.5]",
-						option.type === "skill" ? "text-cyan-500" : "text-fuchsia-500",
-					)}
-				/>
-				<div className="min-w-0">
-					<div className="truncate font-medium">{option.display}</div>
-					{(option.description || option.disabledReason) && (
-						<div className="truncate text-xs text-muted-foreground">
-							{option.disabledReason ?? option.description}
-						</div>
-					)}
-				</div>
+				<Icon className={composerPopoverIconClass} aria-hidden="true" />
+				<span className="shrink-0 font-medium tracking-normal">{option.display}</span>
+				{detail && (
+					<span className="min-w-0 truncate text-muted-foreground/70">{detail}</span>
+				)}
 			</button>
 		)
 	}
@@ -456,22 +454,18 @@ const MentionItem = memo(function MentionItem({
 			data-active={isActive}
 			disabled={option.disabled}
 			title={option.disabled ? option.disabledReason : path}
-			className={cn(
-				"flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors",
-				isActive ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-				option.disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
-			)}
+			className={composerPopoverItemClass(isActive, option.disabled)}
 			onClick={onSelect}
 			onMouseEnter={onHover}
 		>
 			{isDir ? (
-				<FolderIcon className="size-3.5 shrink-0 stroke-[1.5] text-muted-foreground" />
+				<FolderIcon className={composerPopoverIconClass} aria-hidden="true" />
 			) : (
-				<FileIcon className="size-3.5 shrink-0 stroke-[1.5] text-muted-foreground" />
+				<FileIcon className={composerPopoverIconClass} aria-hidden="true" />
 			)}
-			<div className="flex min-w-0 items-center">
-				<span className="font-medium">{name}</span>
-				{dir && <span className="ml-1.5 truncate text-muted-foreground">{dir}</span>}
+			<div className="flex min-w-0 items-baseline gap-1.5">
+				<span className="shrink-0 font-medium tracking-normal">{name}</span>
+				{dir && <span className="truncate text-muted-foreground/70">{dir}</span>}
 			</div>
 		</button>
 	)

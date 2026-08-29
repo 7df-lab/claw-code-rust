@@ -817,9 +817,9 @@ impl HistoryCell for UnifiedExecInteractionCell {
         let waited_only = self.stdin.is_empty();
 
         let mut header_spans = if waited_only {
-            vec!["▌ ".cyan(), "Waited for background terminal".bold()]
+            vec!["▌ ".dim(), "Waited for background terminal".bold()]
         } else {
-            vec!["▌ ".cyan(), "Interacted with background terminal".bold()]
+            vec!["▌ ".dim(), "Interacted with background terminal".bold()]
         };
         if let Some(command) = &self.command_display
             && !command.is_empty()

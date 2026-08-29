@@ -17,7 +17,6 @@ use super::snapshots::{
     TitleGenerationContext, TurnPersistenceSnapshot, TurnReservationSnapshot,
 };
 use super::state::SessionActorState;
-use super::turn::execute_turn_in_actor;
 use crate::SessionRuntimeStatus;
 use crate::persistence::build_turn_record;
 use crate::runtime::protocol_preset_from_safety;
@@ -30,49 +29,20 @@ pub(super) async fn run_session_actor(
 ) {
     while let Some(command) = mailbox.recv().await {
         match command {
-            SessionCommand::ExecuteTurn {
-                runtime: turn_runtime,
-                request,
-                reply,
-            } => {
-                let session_id = request.session_id;
-                execute_turn_in_actor(&mut state, turn_runtime.clone(), request).await;
-                // Interrupted turns must not auto-start continuation here: that would
-                // re-block the actor mailbox before the interrupting handler finishes
-                // (goal replace/clear/cancel). Failed turns still enter maybe_start so
-                // `pause_goal_continuation_after_failed_turn` can suppress looping.
-                // Explicit restarts go through goal handlers' maybe_start calls.
-                let should_auto_continue_goal = state.latest_turn.as_ref().is_some_and(|turn| {
-                    matches!(turn.status, TurnStatus::Completed | TurnStatus::Failed)
-                });
+            SessionCommand::CheckoutTurnWorkingSet { turn, reply } => {
+                let working = state.checkout_turn_working_set(&turn);
+                {
+                    let mut stream = working.state.stream.lock().await;
+                    stream.turn_inline = Some(super::turn_inline::TurnInlineState::new(
+                        &working.state,
+                        &turn,
+                    ));
+                }
+                let _ = reply.send(working);
+            }
+            SessionCommand::MergeTurn { working, reply } => {
+                state.merge_turn_working_set(*working);
                 let _ = reply.send(());
-                tokio::spawn(async move {
-                    turn_runtime
-                        .maybe_schedule_final_title_generation(session_id, None)
-                        .await;
-                    if turn_runtime.chain_queued_followup_turn(session_id).await {
-                        return;
-                    }
-                    if turn_runtime.spawn_next_turn_from_queue(session_id).await {
-                        return;
-                    }
-                    if turn_runtime
-                        .child_parent_and_path(session_id)
-                        .await
-                        .is_some()
-                        && turn_runtime.child_can_accept_next_turn(session_id).await
-                    {
-                        let _ = turn_runtime
-                            .drain_child_mailbox_into_user_turns(session_id)
-                            .await;
-                        return;
-                    }
-                    if should_auto_continue_goal {
-                        turn_runtime
-                            .maybe_start_goal_continuation_turn(session_id)
-                            .await;
-                    }
-                });
             }
             SessionCommand::GetSummary { reply } => {
                 let _ = reply.send(state.summary.clone());

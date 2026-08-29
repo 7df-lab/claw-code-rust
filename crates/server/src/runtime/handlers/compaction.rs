@@ -373,15 +373,7 @@ impl ServerRuntime {
 
         // Snapshot under the gate, then release it before the model call so
         // admission / queue / metadata RPCs stay responsive (L2-DES-SERVER-002).
-        let (
-            items,
-            token_info,
-            model_slug,
-            request_model,
-            max_tokens,
-            provider_route,
-            budget,
-        ) = {
+        let (items, token_info, model_slug, request_model, max_tokens, provider_route, budget) = {
             let _state_change_guard = session_handle.lock_state_change().await;
             let Some(runtime_session) = session_handle.export_runtime_session().await else {
                 tracing::warn!(session_id = %session_id, "session compaction failed: session unavailable");
@@ -474,12 +466,8 @@ impl ServerRuntime {
             Some(turn.turn_id),
             devo_protocol::native::usage::UsagePurpose::Compaction,
         );
-        let summarizer = DefaultHistorySummarizer::with_models(
-            provider,
-            model_slug,
-            request_model,
-            max_tokens,
-        );
+        let summarizer =
+            DefaultHistorySummarizer::with_models(provider, model_slug, request_model, max_tokens);
 
         let config = CompactionConfig {
             budget,

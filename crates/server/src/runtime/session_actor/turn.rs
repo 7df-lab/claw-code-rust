@@ -116,9 +116,11 @@ pub(crate) async fn execute_turn_task(
         inline.merge_into(&mut working.state);
     }
 
-    let should_auto_continue_goal = working.state.latest_turn.as_ref().is_some_and(|turn| {
-        matches!(turn.status, TurnStatus::Completed | TurnStatus::Failed)
-    });
+    let should_auto_continue_goal = working
+        .state
+        .latest_turn
+        .as_ref()
+        .is_some_and(|turn| matches!(turn.status, TurnStatus::Completed | TurnStatus::Failed));
 
     if let Some(handle) = runtime.session(session_id).await {
         handle.merge_turn(working).await;
@@ -126,7 +128,9 @@ pub(crate) async fn execute_turn_task(
 
     runtime.clear_turn_spawn_snapshot(session_id, turn_id).await;
     runtime.unregister_active_stream(session_id).await;
-    runtime.clear_active_turn_interrupt_handles(session_id).await;
+    runtime
+        .clear_active_turn_interrupt_handles(session_id)
+        .await;
     runtime.clear_active_turn_runtime_handles(session_id).await;
 
     should_auto_continue_goal

@@ -33,8 +33,10 @@ pub(super) async fn run_session_actor(
                 let working = state.checkout_turn_working_set(&turn);
                 {
                     let mut stream = working.state.stream.lock().await;
-                    stream.turn_inline =
-                        Some(super::turn_inline::TurnInlineState::new(&working.state, &turn));
+                    stream.turn_inline = Some(super::turn_inline::TurnInlineState::new(
+                        &working.state,
+                        &turn,
+                    ));
                 }
                 let _ = reply.send(working);
             }

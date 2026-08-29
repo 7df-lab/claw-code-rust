@@ -49,7 +49,8 @@ pub(crate) struct TurnInlineState {
     pub(crate) last_model_request: devo_core::SharedLastModelRequest,
     /// Wall-clock start times for in-flight items (keyed by item id). Used so
     /// completion can persist/project a distinct `created_at` for duration UI.
-    pub(crate) item_started_at: std::collections::HashMap<devo_core::ItemId, chrono::DateTime<chrono::Utc>>,
+    pub(crate) item_started_at:
+        std::collections::HashMap<devo_core::ItemId, chrono::DateTime<chrono::Utc>>,
 }
 
 impl TurnInlineState {

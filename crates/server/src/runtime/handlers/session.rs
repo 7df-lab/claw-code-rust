@@ -285,11 +285,12 @@ impl ServerRuntime {
         // Parallel mailbox reads: the actor is short-command only, so this
         // stays bounded even when a turn is active on some sessions.
         let handles = self.list_session_handles().await;
-        let summaries =
-            futures::future::join_all(handles.into_iter().map(|handle| async move {
-                handle.summary().await
-            }))
-            .await;
+        let summaries = futures::future::join_all(
+            handles
+                .into_iter()
+                .map(|handle| async move { handle.summary().await }),
+        )
+        .await;
         for runtime_summary in summaries.into_iter().flatten() {
             if runtime_summary.ephemeral || runtime_summary.agent_path.is_some() {
                 continue;
@@ -1231,9 +1232,7 @@ impl ServerRuntime {
             Some(turn_id) => {
                 session.status = devo_protocol::native::session::SessionStatus::Active;
                 session.active_turn_id = Some(
-                    devo_protocol::native::ids::TurnId::from_legacy_uuid(uuid::Uuid::from(
-                        turn_id,
-                    )),
+                    devo_protocol::native::ids::TurnId::from_legacy_uuid(uuid::Uuid::from(turn_id)),
                 );
             }
             None => {

@@ -5853,7 +5853,10 @@ mod tests {
             .find(|session| session.id.as_str() == session_id.to_string())
             .expect("listed session");
         assert_eq!(listed_session.status, SessionStatus::Active);
-        assert_eq!(listed_session.active_turn_id.as_ref(), Some(&expected_turn_id));
+        assert_eq!(
+            listed_session.active_turn_id.as_ref(),
+            Some(&expected_turn_id)
+        );
 
         let read = history_request(
             &runtime,
@@ -5866,7 +5869,10 @@ mod tests {
         let read: devo_protocol::native::rpc_session::SessionReadResult =
             serde_json::from_value(read["result"].clone()).expect("session/read result");
         assert_eq!(read.session.status, SessionStatus::Active);
-        assert_eq!(read.session.active_turn_id.as_ref(), Some(&expected_turn_id));
+        assert_eq!(
+            read.session.active_turn_id.as_ref(),
+            Some(&expected_turn_id)
+        );
 
         open.store(true, std::sync::atomic::Ordering::SeqCst);
         let wait_idle = async {
@@ -5887,8 +5893,7 @@ mod tests {
         )
         .await;
         let listed_idle: devo_protocol::native::rpc_session::SessionListResult =
-            serde_json::from_value(listed_idle["result"].clone())
-                .expect("session/list after turn");
+            serde_json::from_value(listed_idle["result"].clone()).expect("session/list after turn");
         let listed_idle_session = listed_idle
             .data
             .iter()

@@ -603,7 +603,7 @@ mod tests {
         }
     }
 
-	#[test]
+    #[test]
     fn skill_sources_keep_only_enabled_repo_skills() {
         let skills = [
             SkillRecord {

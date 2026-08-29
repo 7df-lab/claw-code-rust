@@ -3302,7 +3302,10 @@ mod tests {
             .get_session_index(&session_id)
             .expect("get index")
             .expect("indexed session");
-        assert_eq!(index.metadata.created_at.timestamp(), created_at.timestamp());
+        assert_eq!(
+            index.metadata.created_at.timestamp(),
+            created_at.timestamp()
+        );
         assert!(
             index.metadata.last_activity_at.timestamp() >= before_item.timestamp(),
             "last_activity_at={:?} before_item={:?}",

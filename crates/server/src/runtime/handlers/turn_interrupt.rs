@@ -99,61 +99,60 @@ impl ServerRuntime {
             .interrupt_all_child_agents(params.session_id)
             .await;
 
-        let snapshot =
-            match tokio::time::timeout(TURN_INTERRUPT_TERMINAL_TIMEOUT, terminal_rx).await {
-                Ok(Ok(snapshot)) => snapshot,
-                Ok(Err(_)) | Err(_) => {
+        let snapshot = match tokio::time::timeout(TURN_INTERRUPT_TERMINAL_TIMEOUT, terminal_rx)
+            .await
+        {
+            Ok(Ok(snapshot)) => snapshot,
+            Ok(Err(_)) | Err(_) => {
+                if let Some(snapshot) = self.recent_terminal_turn_status(params.turn_id).await {
+                    snapshot
+                } else {
+                    // Cooperative cancel timed out: hard-abort, then claim
+                    // or recover any leftover active_turn without MergeTurn.
+                    self.active_turns.abort_task(params.session_id).await;
                     if let Some(snapshot) = self.recent_terminal_turn_status(params.turn_id).await {
                         snapshot
-                    } else {
-                        // Cooperative cancel timed out: hard-abort, then claim
-                        // or recover any leftover active_turn without MergeTurn.
-                        self.active_turns.abort_task(params.session_id).await;
-                        if let Some(snapshot) =
-                            self.recent_terminal_turn_status(params.turn_id).await
-                        {
-                            snapshot
-                        } else if let Some(interrupted_turn) =
-                            session_handle.interrupt_active_turn().await.flatten()
-                        {
-                            if interrupted_turn.turn_id != params.turn_id {
-                                return self.error_response(
-                                    request_id,
-                                    ProtocolErrorCode::TurnNotFound,
-                                    "turn does not exist",
-                                );
-                            }
-                            return self
-                                .finalize_claimed_interrupted_turn(
-                                    request_id,
-                                    &session_handle,
-                                    params.session_id,
-                                    interrupted_turn,
-                                )
-                                .await;
-                        } else if let Some(orphaned) = self
-                            .recover_orphaned_manual_compaction_interrupt(
-                                &session_handle,
-                                params.session_id,
-                                params.turn_id,
-                            )
-                            .await
-                        {
-                            return self.turn_interrupt_success(
-                                request_id,
-                                params.turn_id,
-                                orphaned.status,
-                            );
-                        } else {
+                    } else if let Some(interrupted_turn) =
+                        session_handle.interrupt_active_turn().await.flatten()
+                    {
+                        if interrupted_turn.turn_id != params.turn_id {
                             return self.error_response(
                                 request_id,
                                 ProtocolErrorCode::TurnNotFound,
-                                "turn is not active",
+                                "turn does not exist",
                             );
                         }
+                        return self
+                            .finalize_claimed_interrupted_turn(
+                                request_id,
+                                &session_handle,
+                                params.session_id,
+                                interrupted_turn,
+                            )
+                            .await;
+                    } else if let Some(orphaned) = self
+                        .recover_orphaned_manual_compaction_interrupt(
+                            &session_handle,
+                            params.session_id,
+                            params.turn_id,
+                        )
+                        .await
+                    {
+                        return self.turn_interrupt_success(
+                            request_id,
+                            params.turn_id,
+                            orphaned.status,
+                        );
+                    } else {
+                        return self.error_response(
+                            request_id,
+                            ProtocolErrorCode::TurnNotFound,
+                            "turn is not active",
+                        );
                     }
                 }
-            };
+            }
+        };
 
         tracing::info!(
             session_id = %params.session_id,

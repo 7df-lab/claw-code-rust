@@ -47,13 +47,13 @@ pub(crate) fn spawn_post_turn_scheduling(
         if runtime.child_parent_and_path(session_id).await.is_some()
             && runtime.child_can_accept_next_turn(session_id).await
         {
-            let _ = runtime.drain_child_mailbox_into_user_turns(session_id).await;
+            let _ = runtime
+                .drain_child_mailbox_into_user_turns(session_id)
+                .await;
             return;
         }
         if should_auto_continue_goal {
-            runtime
-                .maybe_start_goal_continuation_turn(session_id)
-                .await;
+            runtime.maybe_start_goal_continuation_turn(session_id).await;
         }
     });
 }

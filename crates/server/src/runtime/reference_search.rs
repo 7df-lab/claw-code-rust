@@ -27,6 +27,7 @@ use super::ServerRuntime;
 use crate::ProtocolErrorCode;
 use crate::ServerEvent;
 use crate::SkillRecord;
+use crate::SkillScope;
 use crate::SuccessResponse;
 use crate::session_context::SessionRuntimeContext;
 use devo_core::McpServerRecord;
@@ -372,9 +373,11 @@ impl ReferenceSearchState {
 }
 
 fn skill_sources(skills: &[SkillRecord]) -> Vec<SkillReferenceSource> {
+    // Composer `@` only surfaces workspace (repo) skills — not global / system /
+    // plugin / multi-agent catalog entries.
     skills
         .iter()
-        .filter(|skill| skill.enabled)
+        .filter(|skill| skill.enabled && skill.scope == SkillScope::Repo)
         .map(skill_source)
         .collect()
 }
@@ -467,6 +470,7 @@ fn skill_results(filter: &str, sources: &[SkillReferenceSource]) -> Vec<Referenc
 fn mcp_results(filter: &str, sources: &[McpReferenceSource]) -> Vec<ReferenceSearchResult> {
     let mut matches = sources
         .iter()
+        .filter(|source| source.enabled)
         .filter_map(|source| {
             let match_indices = reference_match_indices(
                 filter,
@@ -484,8 +488,8 @@ fn mcp_results(filter: &str, sources: &[McpReferenceSource]) -> Vec<ReferenceSea
                     mention_path: Some(format!("mcp://server/{}", source.id)),
                     file_path: None,
                     match_indices: match_indices.indices,
-                    is_disabled: !source.enabled,
-                    disabled_reason: (!source.enabled).then(|| "disabled".to_string()),
+                    is_disabled: false,
+                    disabled_reason: None,
                 },
             ))
         })
@@ -597,6 +601,96 @@ mod tests {
             root: PathBuf::from("."),
             indices: Some(vec![0, 1]),
         }
+    }
+
+	#[test]
+    fn skill_sources_keep_only_enabled_repo_skills() {
+        let skills = [
+            SkillRecord {
+                id: "repo".into(),
+                name: "repo-skill".into(),
+                description: "workspace".into(),
+                short_description: None,
+                interface: None,
+                dependencies: None,
+                path: PathBuf::from(".devo/skills/repo-skill/SKILL.md"),
+                enabled: true,
+                source: crate::SkillSource::Workspace {
+                    cwd: PathBuf::from("."),
+                },
+                scope: SkillScope::Repo,
+                plugin_id: None,
+            },
+            SkillRecord {
+                id: "user".into(),
+                name: "create-skill".into(),
+                description: "global".into(),
+                short_description: None,
+                interface: None,
+                dependencies: None,
+                path: PathBuf::from("/home/user/.devo/skills/create-skill/SKILL.md"),
+                enabled: true,
+                source: crate::SkillSource::User,
+                scope: SkillScope::User,
+                plugin_id: None,
+            },
+            SkillRecord {
+                id: "system".into(),
+                name: "multi-agent".into(),
+                description: "system".into(),
+                short_description: None,
+                interface: None,
+                dependencies: None,
+                path: PathBuf::from("/system/skills/multi-agent/SKILL.md"),
+                enabled: true,
+                source: crate::SkillSource::System,
+                scope: SkillScope::System,
+                plugin_id: None,
+            },
+            SkillRecord {
+                id: "disabled-repo".into(),
+                name: "disabled-repo".into(),
+                description: "off".into(),
+                short_description: None,
+                interface: None,
+                dependencies: None,
+                path: PathBuf::from(".devo/skills/disabled-repo/SKILL.md"),
+                enabled: false,
+                source: crate::SkillSource::Workspace {
+                    cwd: PathBuf::from("."),
+                },
+                scope: SkillScope::Repo,
+                plugin_id: None,
+            },
+        ];
+
+        assert_eq!(
+            skill_sources(&skills)
+                .into_iter()
+                .map(|source| source.display_name)
+                .collect::<Vec<_>>(),
+            vec!["repo-skill".to_string()]
+        );
+    }
+
+    #[test]
+    fn mcp_results_omit_disabled_servers() {
+        let sources = [
+            mcp("docs", "Docs"),
+            McpReferenceSource {
+                id: "off".to_string(),
+                display_name: "Off".to_string(),
+                enabled: false,
+            },
+        ];
+
+        assert_eq!(
+            mcp_results("", &sources)
+                .into_iter()
+                .map(|result| result.display_name)
+                .collect::<Vec<_>>(),
+            vec!["Docs".to_string()]
+        );
     }
 
     #[test]

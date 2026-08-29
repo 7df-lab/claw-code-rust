@@ -8,8 +8,6 @@
  * - Keyboard navigation (Arrow keys, Enter/Tab, Escape)
  */
 
-import { ScrollArea } from "@devo/ui/components/scroll-area"
-import { cn } from "@devo/ui/lib/utils"
 import fuzzysort from "fuzzysort"
 import {
 	GoalIcon,
@@ -28,6 +26,14 @@ import {
 	useRef,
 	useState,
 } from "react"
+import {
+	composerPopoverEmptyClass,
+	composerPopoverIconClass,
+	composerPopoverItemClass,
+	composerPopoverListClass,
+	composerPopoverScrollClass,
+	composerPopoverShellClass,
+} from "./composer-popover-styles"
 
 // ============================================================
 // Types
@@ -93,7 +99,8 @@ const CLIENT_COMMANDS: SlashCommand[] = [
 	},
 ]
 
-const commandIconClass = "size-3.5 shrink-0 stroke-[1.5] text-muted-foreground"
+/** Kept for sidebar / chip icon-stroke parity assertions. */
+const commandIconClass = composerPopoverIconClass
 
 // ============================================================
 // SlashCommandPopover
@@ -184,16 +191,14 @@ export const SlashCommandPopover = memo(
 		return (
 			<div
 				role="listbox"
-				className="absolute inset-x-0 bottom-full z-50 mb-2 origin-bottom-left overflow-hidden rounded-md border bg-popover shadow-md"
+				className={composerPopoverShellClass}
 				onMouseDown={(e) => e.preventDefault()}
 			>
 				{/* User requirement: keep this as a plain command list, without a search/header row. */}
-				<ScrollArea className="max-h-72 overflow-hidden [&>[data-slot=scroll-area-viewport]]:max-h-[inherit]">
-					<div ref={listRef} className="py-1">
+				<div className={composerPopoverScrollClass}>
+					<div ref={listRef} className={composerPopoverListClass}>
 						{flatList.length === 0 && (
-							<div className="py-4 text-center text-sm text-muted-foreground">
-								No commands found
-							</div>
+							<div className={composerPopoverEmptyClass}>No commands found</div>
 						)}
 
 						{flatList.map((cmd, idx) => (
@@ -206,7 +211,7 @@ export const SlashCommandPopover = memo(
 							/>
 						))}
 					</div>
-				</ScrollArea>
+				</div>
 			</div>
 		)
 	}),
@@ -233,20 +238,15 @@ const CommandItem = memo(function CommandItem({
 		<button
 			type="button"
 			data-active={isActive}
-			className={cn(
-				"flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm transition-colors",
-				isActive ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-			)}
+			className={composerPopoverItemClass(isActive)}
 			onClick={onSelect}
 			onMouseEnter={onHover}
 		>
-			<div className="flex min-w-0 items-center gap-2">
-				<Icon className={commandIconClass} aria-hidden="true" />
-				<span className="font-medium">/{command.name}</span>
-				{command.description && (
-					<span className="truncate text-muted-foreground">{command.description}</span>
-				)}
-			</div>
+			<Icon className={commandIconClass} aria-hidden="true" />
+			<span className="shrink-0 font-medium tracking-normal">/{command.name}</span>
+			{command.description && (
+				<span className="min-w-0 truncate text-muted-foreground/70">{command.description}</span>
+			)}
 		</button>
 	)
 })

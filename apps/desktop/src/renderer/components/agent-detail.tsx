@@ -353,19 +353,9 @@ function SessionPanelHeader({
 			data-slot="session-panel-header"
 			className="flex h-[44px] w-full min-w-0 shrink-0 items-center gap-2.5 border-b border-border/40 px-5"
 		>
-			{/* Breadcrumb: project / [branch badge] / session name */}
+			{/* Session title (+ optional worktree branch badge) */}
 			<div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-				{/* Project name */}
-				<span className="hidden shrink-0 text-[13px] font-medium leading-none text-foreground sm:inline">
-					{agent.project}
-				</span>
-
-				{/* Worktree branch badge */}
 				{agent.worktreeBranch && <WorktreeBranchBadge branch={agent.worktreeBranch} />}
-
-				<span className="hidden shrink-0 text-xs leading-none text-muted-foreground/40 sm:inline">
-					/
-				</span>
 
 				{/* Session name — click to edit */}
 				{isEditingTitle ? (

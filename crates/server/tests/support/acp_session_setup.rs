@@ -614,8 +614,11 @@ pub(crate) fn devo_command() -> Result<Command> {
 }
 
 fn devo_binary_path() -> Result<PathBuf> {
-    let workspace = workspace_root()?;
-    let mut binary = workspace.join("target").join("debug").join("devo");
+    let target_root = match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => workspace_root()?.join("target"),
+    };
+    let mut binary = target_root.join("debug").join("devo");
     if cfg!(windows) {
         binary.set_extension("exe");
     }

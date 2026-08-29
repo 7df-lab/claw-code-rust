@@ -7111,6 +7111,37 @@ mod tests {
             !read.preferences.available_efforts.is_empty(),
             "reasoning effort levels must be offered"
         );
+        assert!(
+            read.preferences
+                .available_models
+                .iter()
+                .any(|model| !model.available_efforts.is_empty()),
+            "available_models entries must carry per-model available_efforts"
+        );
+        let current_model = read
+            .preferences
+            .model
+            .as_deref()
+            .and_then(|current| {
+                read.preferences
+                    .available_models
+                    .iter()
+                    .find(|model| model.value == current)
+            })
+            .expect("current model must appear in available_models");
+        assert_eq!(
+            current_model
+                .available_efforts
+                .iter()
+                .map(|effort| effort.value.as_str())
+                .collect::<Vec<_>>(),
+            read.preferences
+                .available_efforts
+                .iter()
+                .map(|effort| effort.value.as_str())
+                .collect::<Vec<_>>(),
+            "top-level available_efforts must match the current model's efforts"
+        );
 
         let slug = read.preferences.available_models[0].value.clone();
         let written = history_request(

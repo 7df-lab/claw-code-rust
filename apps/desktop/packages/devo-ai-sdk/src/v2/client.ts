@@ -454,20 +454,38 @@ function legacyModelBindingFromCanonical(binding: Record<string, unknown>): Prov
 	}
 }
 
-/** Canonical `model/preferences` wire shape (ratified #12). */type ModelPreferencesWire = {
+/** Canonical `model/preferences` wire shape (ratified #12). */
+type PreferencesOptionWire = {
+	value: string
+	label: string
+	description?: string
+	/** Present on `availableModels` entries: that model's effort choices. */
+	availableEfforts?: PreferencesOptionWire[]
+}
+
+type ModelPreferencesWire = {
 	model?: string
 	reasoningEffort?: string
-	availableModels?: Array<{ value: string; label: string; description?: string }>
-	availableEfforts?: Array<{ value: string; label: string; description?: string }>
+	availableModels?: PreferencesOptionWire[]
+	availableEfforts?: PreferencesOptionWire[]
 }
 
 /** Canonical model preferences → the select options the config UI renders. */
 function sessionConfigOptionsFromModelPreferences(preferences: ModelPreferencesWire): SessionConfigOption[] {
-	const toSelectOptions = (entries?: Array<{ value: string; label: string; description?: string }>) =>
+	const toSelectOptions = (entries?: PreferencesOptionWire[]) =>
 		(entries ?? []).map((entry) => ({
 			value: entry.value,
 			name: entry.label,
 			...(entry.description !== undefined ? { description: entry.description } : {}),
+			...(entry.availableEfforts?.length
+				? {
+						availableEfforts: entry.availableEfforts.map((effort) => ({
+							value: effort.value,
+							name: effort.label,
+							...(effort.description !== undefined ? { description: effort.description } : {}),
+						})),
+					}
+				: {}),
 		}))
 	const options: SessionConfigOption[] = []
 	if (preferences.model !== undefined || (preferences.availableModels?.length ?? 0) > 0) {

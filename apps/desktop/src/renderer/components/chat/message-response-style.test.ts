@@ -12,19 +12,23 @@ const uiStylesSource = readFileSync(
 const rendererCssSource = readFileSync(new URL("../../index.css", import.meta.url), "utf8")
 
 describe("MessageResponse markdown surfaces", () => {
-	test("wires Inter Variable and IBM Plex Mono into theme font tokens", () => {
+	test("wires Inter Variable, Noto Sans SC Variable, and IBM Plex Mono into theme font tokens", () => {
 		expect({
 			sansInter: uiStylesSource.includes('"Inter Variable"'),
+			sansNoto: uiStylesSource.includes('"Noto Sans SC Variable"'),
 			monoPlex: uiStylesSource.includes('"IBM Plex Mono"'),
 			rendererImportsInter: rendererCssSource.includes("@fontsource-variable/inter"),
+			rendererImportsNoto: rendererCssSource.includes("@fontsource-variable/noto-sans-sc"),
 			rendererImportsPlex: rendererCssSource.includes("@fontsource/ibm-plex-mono"),
 			markdownReadingSurface: rendererCssSource.includes(
 				"Transcript markdown — European minimal reading surface",
 			),
 		}).toEqual({
 			sansInter: true,
+			sansNoto: true,
 			monoPlex: true,
 			rendererImportsInter: true,
+			rendererImportsNoto: true,
 			rendererImportsPlex: true,
 			markdownReadingSurface: true,
 		})
@@ -44,21 +48,25 @@ describe("MessageResponse markdown surfaces", () => {
 		})
 	})
 
-	test("keeps transcript markdown size aligned with chrome and strong weight visible for CJK", () => {
+	test("keeps transcript markdown size aligned with chrome and mid-weight strong for CJK", () => {
 		expect({
 			markdownBodySize: rendererCssSource.includes("font-size: 0.875rem;"),
 			strongWeight: rendererCssSource.includes(
-				".devo-message-response [data-streamdown=\"strong\"]",
+				'.devo-message-response [data-streamdown="strong"]',
 			),
-			strongUsesSemibold: /\[data-streamdown="strong"\]\s*\{[^}]*font-weight:\s*600/.test(
+			strongUsesMidWeight: /\[data-streamdown="strong"\]\s*\{[^}]*font-weight:\s*530/.test(
 				rendererCssSource,
 			),
-			cjkWeightNote: rendererCssSource.includes("CJK fallbacks"),
+			strongDisablesSynthesis: /\[data-streamdown="strong"\]\s*\{[^}]*font-synthesis:\s*none/.test(
+				rendererCssSource,
+			),
+			cjkNotoNote: rendererCssSource.includes("Noto Sans SC Variable"),
 		}).toEqual({
 			markdownBodySize: true,
 			strongWeight: true,
-			strongUsesSemibold: true,
-			cjkWeightNote: true,
+			strongUsesMidWeight: true,
+			strongDisablesSynthesis: true,
+			cjkNotoNote: true,
 		})
 	})
 
@@ -69,7 +77,7 @@ describe("MessageResponse markdown surfaces", () => {
 			),
 			headingComponents: messageSource.includes("const transcriptMarkdownComponents"),
 			headingStyle: messageSource.includes(
-				"mt-3 mb-1 border-0 p-0 text-[14px] font-semibold leading-snug tracking-normal text-foreground first:mt-0",
+				"mt-3 mb-1 border-0 p-0 text-[14px] font-[530] leading-snug tracking-normal text-foreground first:mt-0",
 			),
 			markdownRulesHidden: messageSource.includes("hr: TranscriptMarkdownRule"),
 			markdownRulesRequirementComment: messageSource.includes(

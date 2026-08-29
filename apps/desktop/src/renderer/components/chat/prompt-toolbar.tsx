@@ -269,13 +269,10 @@ export function ModelSelector({
 				disabled={disabled}
 			>
 				{activeModel ? (
-					<>
-						<ProviderIcon id={activeModel.providerID} name={activeModel.providerName} size="xs" />
-						<ModelSelectorTriggerLabel
-							displayName={activeModel.displayName}
-							variantLabel={variantTriggerLabel}
-						/>
-					</>
+					<ModelSelectorTriggerLabel
+						displayName={activeModel.displayName}
+						variantLabel={variantTriggerLabel}
+					/>
 				) : (
 					<span className="text-muted-foreground">Select model...</span>
 				)}

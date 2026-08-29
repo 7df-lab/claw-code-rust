@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs"
 import { describe, expect, test } from "bun:test"
 
 const popoverSource = readFileSync(new URL("./slash-command-popover.tsx", import.meta.url), "utf8")
+const popoverStylesSource = readFileSync(
+	new URL("./composer-popover-styles.ts", import.meta.url),
+	"utf8",
+)
 const chatViewSource = readFileSync(new URL("./chat-view.tsx", import.meta.url), "utf8")
 const newChatSource = readFileSync(new URL("../new-chat.tsx", import.meta.url), "utf8")
 const desktopChromeSource = readFileSync(new URL("../../desktop-chrome.css", import.meta.url), "utf8")
@@ -21,6 +25,11 @@ describe("Desktop slash command composer", () => {
 			omitsUserCommandDispatch: !chatViewSource.includes("session.command"),
 			omitsSearchHeader:
 				!popoverSource.includes("SearchIcon") && !popoverSource.includes("Commands</span>"),
+			usesSharedPopoverShell: popoverSource.includes("composerPopoverShellClass"),
+			usesSharedPopoverItem: popoverSource.includes("composerPopoverItemClass"),
+			singleOuterScroll:
+				!popoverSource.includes("@devo/ui/components/scroll-area") &&
+				popoverStylesSource.includes("overflow-y-auto"),
 		}).toEqual({
 			showsCompact: true,
 			showsGoal: true,
@@ -31,6 +40,9 @@ describe("Desktop slash command composer", () => {
 			omitsServerCommands: true,
 			omitsUserCommandDispatch: true,
 			omitsSearchHeader: true,
+			usesSharedPopoverShell: true,
+			usesSharedPopoverItem: true,
+			singleOuterScroll: true,
 		})
 	})
 
@@ -58,8 +70,8 @@ describe("Desktop slash command composer", () => {
 			shiftTabToggle: chatViewSource.includes('e.key === "Tab" && e.shiftKey'),
 			triggeredPrompt: chatViewSource.includes("text: `/${trigger} ${text.trim()}`"),
 			iconStrokeMatchesSidebar:
-				popoverSource.includes('commandIconClass = "size-3.5') &&
-				popoverSource.includes("stroke-[1.5]") &&
+				popoverSource.includes("composerPopoverIconClass") &&
+				popoverStylesSource.includes("stroke-[1.5]") &&
 				chatViewSource.includes("size-3.5 stroke-[1.5]"),
 		}).toEqual({
 			requirementComment: true,

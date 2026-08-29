@@ -293,7 +293,7 @@ function TranscriptMarkdownHeading({
 		<p
 			className={cn(
 				className,
-				"mt-3 mb-1 border-0 p-0 text-[14px] font-semibold leading-snug tracking-normal text-foreground first:mt-0",
+				"mt-3 mb-1 border-0 p-0 text-[14px] font-[530] leading-snug tracking-normal text-foreground first:mt-0",
 			)}
 			{...props}
 		/>

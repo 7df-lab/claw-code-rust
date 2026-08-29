@@ -1,5 +1,6 @@
-/* Fonts — Inter (sans) + IBM Plex Mono (mono), available as fallback */
+/* Fonts — Inter (sans) + Noto Sans SC Variable (CJK) + IBM Plex Mono */
 @import "@fontsource-variable/inter";
+@import "@fontsource-variable/noto-sans-sc";
 @import "@fontsource/ibm-plex-mono/400.css";
 @import "@fontsource/ibm-plex-mono/500.css";
 @import "@fontsource/ibm-plex-mono/600.css";
@@ -19,8 +20,8 @@ body {
 
 /* Transcript markdown — European minimal reading surface.
  * Chat body stays near chrome (13–14px), not a larger “document” size.
- * Strong weight must stay at 600+: CJK fallbacks (e.g. YaHei) snap mid
- * weights to Regular, so 500–550 often looks unbolded. */
+ * Mid weights (≈530) work for CJK via Noto Sans SC Variable in --font-sans;
+ * Inter still covers Latin. */
 .devo-message-response {
 	--devo-markdown-surface: color-mix(in srgb, var(--muted) 55%, var(--background));
 	--devo-markdown-surface-subtle: color-mix(in srgb, var(--muted) 70%, transparent);
@@ -45,7 +46,8 @@ body {
 }
 
 .devo-message-response [data-streamdown="strong"] {
-	font-weight: 600;
+	font-weight: 530;
+	font-synthesis: none;
 	letter-spacing: 0;
 	color: var(--foreground);
 }
@@ -183,7 +185,8 @@ body {
 }
 
 .devo-message-response [data-streamdown="table-header-cell"] {
-	font-weight: 600;
+	font-weight: 530;
+	font-synthesis: none;
 }
 
 /* Streamdown renders code actions as a sibling of the language header; keep

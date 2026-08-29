@@ -101,4 +101,41 @@ describe("ReferenceSearchSession", () => {
 
 		expect(session.filePaths()).toEqual(["src/lib.rs"])
 	})
+
+	it("normalizes camelCase wire disabled MCP flags", async () => {
+		const request = vi.fn(async () => ({
+			snapshot: {
+				searchId: "search-1",
+				query: "docs",
+				results: [
+					{
+						kind: "mcp",
+						displayName: "Docs",
+						insertText: "@mcp:docs",
+						mentionPath: "mcp://server/docs",
+						isDisabled: true,
+						disabledReason: "Server is disconnected",
+					},
+				],
+				totalFileMatchCount: 0,
+				scannedFileCount: 0,
+				fileSearchComplete: true,
+			},
+		}))
+		const session = new ReferenceSearchSession(request, "/workspace")
+		const snapshot = await session.startOrUpdate("docs")
+
+		expect(snapshot.results).toEqual([
+			{
+				kind: "mcp",
+				display_name: "Docs",
+				insert_text: "@mcp:docs",
+				description: undefined,
+				mention_path: "mcp://server/docs",
+				file_path: undefined,
+				is_disabled: true,
+				disabled_reason: "Server is disconnected",
+			},
+		])
+	})
 })

@@ -81,12 +81,15 @@ export function providerDataFromConfigOptions(configOptions: SessionConfigOption
 	if (!modelOption) return { default: {}, providers: [] }
 	const currentValue = typeof modelOption.currentValue === "string" ? modelOption.currentValue : undefined
 	const reasoningOption = configOptions.find((option) => option.id === "thought_level")
-	const reasoningVariants = variantsFromConfigOption(reasoningOption)
+	const fallbackReasoningVariants = variantsFromConfigOption(reasoningOption)
 	const currentVariant =
 		typeof reasoningOption?.currentValue === "string" ? reasoningOption.currentValue : undefined
-	const hasReasoningVariants = Object.keys(reasoningVariants).length > 0
 	const models = Object.fromEntries(
 		flattenSelectOptions(modelOption.options).map((option) => {
+			const perModelVariants = variantsFromAvailableEfforts(option.availableEfforts)
+			const reasoningVariants =
+				Object.keys(perModelVariants).length > 0 ? perModelVariants : fallbackReasoningVariants
+			const hasReasoningVariants = Object.keys(reasoningVariants).length > 0
 			const model = {
 				name: option.name,
 				description: option.description,
@@ -96,16 +99,20 @@ export function providerDataFromConfigOptions(configOptions: SessionConfigOption
 					attachment: false,
 				},
 			}
+			if (!hasReasoningVariants) return [option.value, model]
+			const isCurrentModel = option.value === currentValue
+			const variantOnCurrent =
+				isCurrentModel && currentVariant && currentVariant in reasoningVariants
+					? currentVariant
+					: undefined
 			return [
 				option.value,
-				hasReasoningVariants
-					? {
-							...model,
-							variants: reasoningVariants,
-							currentVariant,
-							allowDefaultVariant: false,
-						}
-					: model,
+				{
+					...model,
+					variants: reasoningVariants,
+					...(variantOnCurrent !== undefined ? { currentVariant: variantOnCurrent } : {}),
+					allowDefaultVariant: false,
+				},
 			]
 		}),
 	)
@@ -441,27 +448,49 @@ function flattenSelectOptions(options: unknown): Array<{
 	value: string
 	name: string
 	description?: string
+	availableEfforts?: unknown
 }> {
 	if (!Array.isArray(options)) return []
-	const result: Array<{ value: string; name: string; description?: string }> = []
+	const result: Array<{
+		value: string
+		name: string
+		description?: string
+		availableEfforts?: unknown
+	}> = []
 	for (const option of options) {
 		if (!option || typeof option !== "object") continue
-		const value = (option as Record<string, unknown>).value
-		const nestedOptions = (option as Record<string, unknown>).options
+		const record = option as Record<string, unknown>
+		const value = record.value
+		const nestedOptions = record.options
 		if (typeof value === "string") {
 			result.push({
 				value,
-				name: String((option as Record<string, unknown>).name ?? value),
-				description:
-					typeof (option as Record<string, unknown>).description === "string"
-						? String((option as Record<string, unknown>).description)
-						: undefined,
+				name: String(record.name ?? value),
+				description: typeof record.description === "string" ? String(record.description) : undefined,
+				...(record.availableEfforts !== undefined
+					? { availableEfforts: record.availableEfforts }
+					: {}),
 			})
 			continue
 		}
 		result.push(...flattenSelectOptions(nestedOptions))
 	}
 	return result
+}
+
+function variantsFromAvailableEfforts(
+	availableEfforts: unknown,
+): Record<string, { name: string; description?: string }> {
+	if (!Array.isArray(availableEfforts)) return {}
+	return Object.fromEntries(
+		flattenSelectOptions(availableEfforts).map((selectOption) => [
+			selectOption.value,
+			{
+				name: selectOption.name,
+				description: selectOption.description,
+			},
+		]),
+	)
 }
 
 function variantsFromConfigOption(option?: SessionConfigOption): Record<string, { name: string; description?: string }> {

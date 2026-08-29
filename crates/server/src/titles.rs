@@ -60,13 +60,13 @@ pub(crate) fn build_title_generation_request(
         model_slug: devo_protocol::ModelProfileKey::CatalogSlug(model_slug),
         model,
         system: Some(
-            "Generate a short session title. Respond with only the title in sentence case. Use 3 to 8 words. No markdown, no quotes, no trailing punctuation unless required by a proper noun.".to_string(),
+            "Generate a short session title. Respond with only the title. Match the language of the first user message exactly — do not translate. Prefer 3 to 8 words (or a similarly short phrase in that language). Use sentence case when the language has case. No markdown, no quotes, no trailing punctuation unless required by a proper noun.".to_string(),
         ),
         messages: vec![RequestMessage {
             role: "user".to_string(),
             content: vec![RequestContent::Text {
                 text: format!(
-                    "First user message:\n{user_input}\n\nReturn only the best concise title."
+                    "First user message:\n{user_input}\n\nReturn only the best concise title in the same language as the message above."
                 ),
             }],
         }],

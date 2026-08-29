@@ -88,6 +88,7 @@ export const TranscriptDisclosure = memo(function TranscriptDisclosure({
 	)
 })
 
+/** Shared process-row trigger: one line height for Thought / tools / groups. */
 const triggerClassName =
 	"group/row flex w-full max-w-full items-center gap-1.5 rounded-md border-0 bg-transparent px-0 py-0.5 m-0 text-left text-[13px] leading-5 text-muted-foreground transition-colors hover:text-foreground"
 
@@ -157,10 +158,15 @@ export const TranscriptDisclosureTrigger = memo(function TranscriptDisclosureTri
 export interface TranscriptDisclosureContentProps {
 	children: ReactNode
 	className?: string
-	/** Indent content under a left guide line (aligned with the chevron) instead of a bordered box. */
+	/** Indent content under a left guide line instead of a bordered box. */
 	rail?: boolean
 }
 
+/**
+ * Expanded body for a transcript row.
+ * Spacing uses padding inside the panel (not margin) so Base UI's height
+ * collapse to 0 does not leave uneven gaps between process rows.
+ */
 export const TranscriptDisclosureContent = memo(function TranscriptDisclosureContent({
 	children,
 	className,
@@ -168,14 +174,18 @@ export const TranscriptDisclosureContent = memo(function TranscriptDisclosureCon
 }: TranscriptDisclosureContentProps) {
 	return (
 		<CollapsibleContent
-			className={cn(
-				"outline-none data-closed:mt-0 data-closed:mb-0 data-closed:h-0 data-closed:overflow-hidden data-open:mt-1.5",
-				rail && "border-l border-border/40 pl-3",
-				className,
-			)}
+			className="outline-none overflow-hidden"
 			keepMounted={false}
 		>
-			{children}
+			<div
+				className={cn(
+					"pt-1",
+					rail && "border-l border-border/40 pl-3",
+					className,
+				)}
+			>
+				{children}
+			</div>
 		</CollapsibleContent>
 	)
 })

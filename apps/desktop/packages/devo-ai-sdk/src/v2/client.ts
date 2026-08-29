@@ -1427,7 +1427,7 @@ class NativeClient {
 			sessionId,
 		})) as { session: Record<string, unknown>; lastContextOccupancy?: unknown; last_context_occupancy?: unknown }
 		this.rememberNativeSession(resumed.session)
-		await this.hydrateContextOccupancy(
+		this.emitContextUsage(
 			sessionId,
 			resumed.lastContextOccupancy ?? resumed.last_context_occupancy,
 		)
@@ -2985,18 +2985,6 @@ class NativeClient {
 		}
 		this.rememberDirectoryConfigOptions(directory, sessionConfigOptionsFromModelPreferences(result.preferences ?? {}))
 		return this.currentConfigOptions()
-	}
-
-	private async hydrateContextOccupancy(sessionId: string, occupancy: unknown): Promise<void> {
-		if (this.emitContextUsage(sessionId, occupancy)) return
-		try {
-			const result = (await this.requestCanonical("context/usage/read", {
-				sessionId,
-			})) as { occupancy?: unknown }
-			this.emitContextUsage(sessionId, result.occupancy)
-		} catch {
-			// Occupancy is optional chrome; live context/usageUpdated still hydrates later.
-		}
 	}
 
 	private emitContextUsage(sessionId: string, occupancyValue: unknown): boolean {

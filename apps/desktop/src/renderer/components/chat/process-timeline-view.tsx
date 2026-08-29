@@ -49,13 +49,14 @@ const TranscriptToolGroupRow = memo(function TranscriptToolGroupRow({
 					) : undefined
 				}
 			/>
-			<TranscriptDisclosureContent rail className="space-y-0.5">
+			<TranscriptDisclosureContent rail className="space-y-0">
 				{tools.map((tool) => (
 					<ChatToolCall
 						key={tool.id}
 						part={tool}
 						projectRoot={projectRoot}
 						turnWorking={turnWorking}
+						compact
 					/>
 				))}
 			</TranscriptDisclosureContent>
@@ -98,7 +99,7 @@ export const ProcessTimelineView = memo(function ProcessTimelineView({
 	)
 
 	return (
-		<div className="space-y-1">
+		<div className="flex flex-col gap-0.5">
 			{items.map((item, index) => {
 				const rowId = processTimelineRowId(item, index)
 

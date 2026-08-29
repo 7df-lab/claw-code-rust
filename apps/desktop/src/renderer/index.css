@@ -17,10 +17,139 @@ body {
 	background: color-mix(in srgb, var(--background) var(--glass-body), transparent) !important;
 }
 
+/* Transcript markdown — European minimal reading surface.
+ * Chat body stays near chrome (13–14px), not a larger “document” size.
+ * Strong weight must stay at 600+: CJK fallbacks (e.g. YaHei) snap mid
+ * weights to Regular, so 500–550 often looks unbolded. */
+.devo-message-response {
+	--devo-markdown-surface: color-mix(in srgb, var(--muted) 55%, var(--background));
+	--devo-markdown-surface-subtle: color-mix(in srgb, var(--muted) 70%, transparent);
+	--devo-markdown-code-bg: color-mix(in srgb, var(--muted) 40%, var(--background));
+	--devo-markdown-inline-code-bg: color-mix(in srgb, var(--muted) 72%, transparent);
+	color: var(--foreground);
+	font-size: 0.875rem;
+	line-height: 1.6;
+	letter-spacing: -0.01em;
+	font-weight: 400;
+}
+
 :root.dark .devo-message-response {
 	--devo-markdown-surface: color-mix(in srgb, var(--card) 92%, transparent);
 	--devo-markdown-surface-subtle: color-mix(in srgb, var(--muted) 86%, transparent);
 	--devo-markdown-code-bg: var(--background);
+	--devo-markdown-inline-code-bg: color-mix(in srgb, var(--muted) 78%, transparent);
+}
+
+.devo-message-response p {
+	margin-block: 0.7em;
+}
+
+.devo-message-response [data-streamdown="strong"] {
+	font-weight: 600;
+	letter-spacing: 0;
+	color: var(--foreground);
+}
+
+.devo-message-response em {
+	font-style: italic;
+	font-synthesis: none;
+}
+
+.devo-message-response [data-streamdown="link"] {
+	color: var(--primary);
+	font-weight: 500;
+	text-decoration-line: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 0.18em;
+	text-decoration-color: color-mix(in srgb, var(--primary) 45%, transparent);
+	transition: text-decoration-color 120ms ease;
+}
+
+.devo-message-response [data-streamdown="link"]:hover {
+	text-decoration-color: var(--primary);
+}
+
+.devo-message-response [data-streamdown="unordered-list"],
+.devo-message-response [data-streamdown="ordered-list"] {
+	margin-block: 0.65em;
+	padding-inline-start: 1.35em;
+	list-style-position: outside;
+	white-space: normal;
+}
+
+.devo-message-response [data-streamdown="unordered-list"] {
+	list-style-type: disc;
+}
+
+.devo-message-response [data-streamdown="ordered-list"] {
+	list-style-type: decimal;
+}
+
+.devo-message-response [data-streamdown="list-item"] {
+	margin: 0;
+	padding-block: 0.18em;
+	padding-inline-start: 0.15em;
+}
+
+.devo-message-response [data-streamdown="list-item"]::marker {
+	color: color-mix(in srgb, var(--muted-foreground) 75%, var(--foreground));
+}
+
+.devo-message-response [data-streamdown="list-item"] > p {
+	margin-block: 0.25em;
+}
+
+.devo-message-response [data-streamdown="blockquote"] {
+	margin-block: 0.9em;
+	border-left: 2px solid color-mix(in srgb, var(--border) 55%, var(--muted-foreground));
+	padding-block: 0.15em;
+	padding-inline-start: 1rem;
+	color: var(--muted-foreground);
+	font-style: normal;
+	letter-spacing: -0.008em;
+}
+
+.devo-message-response [data-streamdown="blockquote"] p {
+	margin-block: 0.35em;
+}
+
+.devo-message-response [data-streamdown="inline-code"] {
+	border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+	border-radius: 0.3rem;
+	background: var(--devo-markdown-inline-code-bg);
+	padding: 0.1em 0.38em;
+	font-family: var(--font-mono);
+	font-size: 0.84em;
+	font-weight: 450;
+	letter-spacing: 0;
+	line-height: 1.35;
+	color: var(--foreground);
+}
+
+.devo-message-response [data-streamdown="code-block"],
+.devo-message-response [data-streamdown="mermaid-block"] {
+	margin-block: 0.9em;
+	border-radius: calc(var(--radius) + 2px);
+	border-color: var(--border);
+	background: var(--devo-markdown-surface);
+}
+
+.devo-message-response [data-streamdown="code-block-body"] {
+	border-color: var(--border);
+	background: var(--devo-markdown-code-bg);
+	font-family: var(--font-mono);
+	font-size: 0.8125rem;
+	line-height: 1.55;
+	letter-spacing: 0;
+}
+
+.devo-message-response [data-streamdown="code-block-header"] {
+	padding-right: 5rem;
+	font-family: var(--font-sans);
+	font-size: 0.75rem;
+	font-weight: 500;
+	letter-spacing: -0.01em;
+	color: var(--muted-foreground);
 }
 
 :root.dark .devo-message-response [data-streamdown="code-block"],
@@ -38,8 +167,23 @@ body {
 	position: relative;
 }
 
-.devo-message-response [data-streamdown="code-block-header"] {
-	padding-right: 5rem;
+.devo-message-response [data-streamdown="table-wrapper"],
+.devo-message-response [data-streamdown="table"] {
+	margin-block: 0.9em;
+	border-color: var(--border);
+	border-radius: var(--radius);
+}
+
+.devo-message-response [data-streamdown="table-header-cell"],
+.devo-message-response [data-streamdown="table-cell"] {
+	padding: 0.55rem 0.85rem;
+	font-size: 0.875rem;
+	line-height: 1.45;
+	letter-spacing: -0.01em;
+}
+
+.devo-message-response [data-streamdown="table-header-cell"] {
+	font-weight: 600;
 }
 
 /* Streamdown renders code actions as a sibling of the language header; keep
@@ -88,6 +232,11 @@ body {
 
 .devo-read-output pre {
 	padding: 0.75rem;
+}
+
+.devo-read-output code {
+	display: block;
+	white-space: pre;
 }
 
 .devo-splash-brand {

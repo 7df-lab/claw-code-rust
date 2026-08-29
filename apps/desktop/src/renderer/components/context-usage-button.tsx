@@ -7,7 +7,7 @@
 import { Popover, PopoverContent, PopoverTrigger } from "@devo/ui/components/popover"
 import { cn } from "@devo/ui/lib/utils"
 import { useAtomValue } from "jotai"
-import { useEffect, useMemo } from "react"
+import { useMemo } from "react"
 import { sessionNativeFamily } from "../atoms/session-native"
 import {
 	occupancyCategoryRows,
@@ -15,7 +15,6 @@ import {
 	type ContextCategoryId,
 } from "../lib/context-occupancy"
 import { formatTokens } from "../lib/session-metrics"
-import { getBaseClient, getProjectClient } from "../services/connection-manager"
 
 const CATEGORY_COLORS: Record<ContextCategoryId, string> = {
 	base: "bg-muted-foreground/45",
@@ -27,10 +26,9 @@ const CATEGORY_COLORS: Record<ContextCategoryId, string> = {
 
 interface ContextUsageButtonProps {
 	sessionId: string
-	directory?: string
 }
 
-export function ContextUsageButton({ sessionId, directory }: ContextUsageButtonProps) {
+export function ContextUsageButton({ sessionId }: ContextUsageButtonProps) {
 	const native = useAtomValue(sessionNativeFamily(sessionId))
 	const occupancy = native.occupancy
 	const used = occupancy?.totalTokens ?? Number(native.usage?.used ?? 0)
@@ -40,13 +38,6 @@ export function ContextUsageButton({ sessionId, directory }: ContextUsageButtonP
 	const filledRows = rows.filter((row) => row.tokens > 0)
 	const strokeClass =
 		percent >= 90 ? "text-red-400" : percent >= 70 ? "text-yellow-400" : "text-muted-foreground"
-
-	useEffect(() => {
-		if (occupancy) return
-		const client = (directory ? getProjectClient(directory) : null) ?? getBaseClient()
-		if (!client?.context?.usage?.read) return
-		void client.context.usage.read({ sessionID: sessionId }).catch(() => {})
-	}, [directory, occupancy, sessionId])
 
 	const size = 14
 	const strokeWidth = 2.5

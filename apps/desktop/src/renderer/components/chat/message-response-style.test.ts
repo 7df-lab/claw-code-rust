@@ -12,6 +12,24 @@ const uiStylesSource = readFileSync(
 const rendererCssSource = readFileSync(new URL("../../index.css", import.meta.url), "utf8")
 
 describe("MessageResponse markdown surfaces", () => {
+	test("wires Inter Variable and IBM Plex Mono into theme font tokens", () => {
+		expect({
+			sansInter: uiStylesSource.includes('"Inter Variable"'),
+			monoPlex: uiStylesSource.includes('"IBM Plex Mono"'),
+			rendererImportsInter: rendererCssSource.includes("@fontsource-variable/inter"),
+			rendererImportsPlex: rendererCssSource.includes("@fontsource/ibm-plex-mono"),
+			markdownReadingSurface: rendererCssSource.includes(
+				"Transcript markdown — European minimal reading surface",
+			),
+		}).toEqual({
+			sansInter: true,
+			monoPlex: true,
+			rendererImportsInter: true,
+			rendererImportsPlex: true,
+			markdownReadingSurface: true,
+		})
+	})
+
 	test("uses desktop dark theme surfaces for streamdown markdown cells", () => {
 		expect({
 			responseClass: messageSource.includes("devo-message-response"),
@@ -26,6 +44,24 @@ describe("MessageResponse markdown surfaces", () => {
 		})
 	})
 
+	test("keeps transcript markdown size aligned with chrome and strong weight visible for CJK", () => {
+		expect({
+			markdownBodySize: rendererCssSource.includes("font-size: 0.875rem;"),
+			strongWeight: rendererCssSource.includes(
+				".devo-message-response [data-streamdown=\"strong\"]",
+			),
+			strongUsesSemibold: /\[data-streamdown="strong"\]\s*\{[^}]*font-weight:\s*600/.test(
+				rendererCssSource,
+			),
+			cjkWeightNote: rendererCssSource.includes("CJK fallbacks"),
+		}).toEqual({
+			markdownBodySize: true,
+			strongWeight: true,
+			strongUsesSemibold: true,
+			cjkWeightNote: true,
+		})
+	})
+
 	test("keeps transcript markdown headings visually compact", () => {
 		expect({
 			requirementComment: messageSource.includes(
@@ -33,7 +69,7 @@ describe("MessageResponse markdown surfaces", () => {
 			),
 			headingComponents: messageSource.includes("const transcriptMarkdownComponents"),
 			headingStyle: messageSource.includes(
-				"my-2 border-0 pb-0 text-sm font-semibold leading-6 text-foreground",
+				"mt-3 mb-1 border-0 p-0 text-[14px] font-semibold leading-snug tracking-normal text-foreground first:mt-0",
 			),
 			markdownRulesHidden: messageSource.includes("hr: TranscriptMarkdownRule"),
 			markdownRulesRequirementComment: messageSource.includes(

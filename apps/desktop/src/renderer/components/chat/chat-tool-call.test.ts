@@ -139,11 +139,13 @@ describe("read tool output density source", () => {
 			preRule: rendererCssSource.includes(".devo-read-output pre"),
 			codeRule: rendererCssSource.includes(".devo-read-output code"),
 			lineHeight: rendererCssSource.includes("line-height: 1.35"),
+			preservesWhitespace: rendererCssSource.includes("white-space: pre"),
 		}).toEqual({
 			readClass: true,
 			preRule: true,
 			codeRule: true,
 			lineHeight: true,
+			preservesWhitespace: true,
 		})
 	})
 })

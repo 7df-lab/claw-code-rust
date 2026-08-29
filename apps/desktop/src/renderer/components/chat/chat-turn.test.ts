@@ -235,6 +235,9 @@ describe("ChatTurnComponent transcript controls", () => {
   test("uses transcript disclosure rows for thoughts and tools", () => {
     expect({
       definesThoughtRow: thoughtRowSource.includes("export const ThoughtRow"),
+      thoughtContentUsesRail: thoughtRowSource.includes(
+        "<TranscriptDisclosureContent rail>",
+      ),
       usesTranscriptDisclosureTrigger: transcriptDisclosureSource.includes(
         "export const TranscriptDisclosureTrigger",
       ),
@@ -259,6 +262,15 @@ describe("ChatTurnComponent transcript controls", () => {
       timelineRendersSeparateThoughtRows: processTimelineViewSource.includes(
         'item.kind === "thought"',
       ),
+      toolGroupRowsHaveReadableSpacing: processTimelineViewSource.includes(
+        'rail className="space-y-0"',
+      ) && processTimelineViewSource.includes("compact"),
+      timelineUsesEvenRowGap: processTimelineViewSource.includes(
+        'className="flex flex-col gap-0.5"',
+      ),
+      disclosureContentUsesPaddingNotMargin:
+        transcriptDisclosureSource.includes('"pt-1"') &&
+        !transcriptDisclosureSource.includes("data-open:mt-"),
       disclosureDoesNotShiftLeft:
         !transcriptDisclosureSource.includes("-mx-1.5") &&
         transcriptDisclosureSource.includes("px-0 py-0.5"),
@@ -283,6 +295,7 @@ describe("ChatTurnComponent transcript controls", () => {
       ),
     }).toEqual({
       definesThoughtRow: true,
+      thoughtContentUsesRail: true,
       usesTranscriptDisclosureTrigger: true,
       usesCollapsedThoughtChevron: true,
       removesBareReasoningTrigger: true,
@@ -293,6 +306,9 @@ describe("ChatTurnComponent transcript controls", () => {
       toolsUseTranscriptDisclosure: true,
       toolsOmitDurationTrailing: true,
       timelineRendersSeparateThoughtRows: true,
+      toolGroupRowsHaveReadableSpacing: true,
+      timelineUsesEvenRowGap: true,
+      disclosureContentUsesPaddingNotMargin: true,
       disclosureDoesNotShiftLeft: true,
       thoughtHasNoLeadingSpacer: true,
       assistantColumnHasNoProcessIndent: true,

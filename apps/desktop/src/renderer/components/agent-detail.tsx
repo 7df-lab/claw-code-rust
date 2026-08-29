@@ -416,7 +416,7 @@ function SessionPanelHeader({
 					</div>
 
 					<div className="flex shrink-0 items-center gap-0.5">
-						<ContextUsageButton sessionId={agent.sessionId} directory={agent.directory} />
+						<ContextUsageButton sessionId={agent.sessionId} />
 						<TerminalToggleButton />
 						<ChangesPanelToggleButton
 							reviewPanelOpen={reviewPanelOpen}

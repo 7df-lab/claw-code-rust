@@ -63,13 +63,13 @@ describe("SessionMetricsBar top timer wiring", () => {
 			replacesOverviewButtonInHeader: !agentDetailSource.includes("<SessionMetricsOverviewButton"),
 			opensPromptBreakdown: contextUsageSource.includes("Prompt breakdown"),
 			usesOccupancyCategories: contextUsageSource.includes("occupancyCategoryRows"),
-			readsCanonicalUsage: contextUsageSource.includes("context.usage.read"),
+			doesNotReadBeforeResume: !contextUsageSource.includes("context.usage.read"),
 		}).toEqual({
 			headerUsesContextUsageButton: true,
 			replacesOverviewButtonInHeader: true,
 			opensPromptBreakdown: true,
 			usesOccupancyCategories: true,
-			readsCanonicalUsage: true,
+			doesNotReadBeforeResume: true,
 		})
 	})
 

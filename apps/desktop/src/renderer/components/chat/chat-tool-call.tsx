@@ -643,34 +643,40 @@ function ReadContent({ part }: { part: ToolPart }) {
 	)
 }
 
-/** Search tools (glob/grep/list): shows pattern + results */
+/** Search tools (glob/grep/list): shows results; pattern stays in the row subtitle. */
 function SearchContent({ part }: { part: ToolPart }) {
 	const pattern = (part.state.input?.pattern as string) ?? undefined
-	const include = (part.state.input?.include as string) ?? undefined
+	const include = (part.state.input?.include as string) ?? (part.state.input?.glob as string) ?? undefined
 	const path = (part.state.input?.path as string) ?? undefined
 	const output = part.state.status === "completed" ? part.state.output : undefined
+	// Grep/Glob already put `pattern` in the tool-row subtitle ("Grep · …").
+	const patternInSubtitle = part.tool === "grep" || part.tool === "glob"
+	const showPattern = Boolean(pattern) && !patternInSubtitle
+	const hasMeta = showPattern || Boolean(include) || Boolean(path)
 
 	return (
 		<div className="space-y-1.5 px-3.5 py-2.5">
-			<div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground/70">
-				{pattern && (
-					<span>
-						pattern: <span className="font-mono text-foreground/60">{pattern}</span>
-					</span>
-				)}
-				{include && (
-					<span>
-						include: <span className="font-mono text-foreground/60">{include}</span>
-					</span>
-				)}
-				{path && (
-					<span>
-						in: <span className="font-mono text-foreground/60">{shortenPathForDisplay(path)}</span>
-					</span>
-				)}
-			</div>
+			{hasMeta && (
+				<div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground/70">
+					{showPattern && (
+						<span>
+							pattern: <span className="font-mono text-foreground/60">{pattern}</span>
+						</span>
+					)}
+					{include && (
+						<span>
+							include: <span className="font-mono text-foreground/60">{include}</span>
+						</span>
+					)}
+					{path && (
+						<span>
+							in: <span className="font-mono text-foreground/60">{shortenPathForDisplay(path)}</span>
+						</span>
+					)}
+				</div>
+			)}
 			{output && (
-				<pre className="max-h-48 overflow-auto rounded bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+				<pre className="max-h-48 overflow-auto rounded bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground whitespace-pre">
 					<code>{truncateOutput(output)}</code>
 				</pre>
 			)}
@@ -1013,6 +1019,8 @@ interface ChatToolCallProps {
 	onDelete?: (part: ToolPart) => void
 	/** Project root used only for display-only path labels. */
 	projectRoot?: string | null
+	/** Tighter row rhythm for nested items inside a tool group. */
+	compact?: boolean
 	open?: boolean
 	defaultOpen?: boolean
 	onOpenChange?: (open: boolean) => void
@@ -1061,6 +1069,7 @@ export const ChatToolCall = memo(
 		turnWorking = true,
 		onDelete,
 		projectRoot,
+		compact = false,
 		open,
 		defaultOpen: defaultOpenProp,
 		onOpenChange,
@@ -1195,7 +1204,7 @@ export const ChatToolCall = memo(
 		const showViewDiff = editFilePath != null && status === "completed"
 
 		return (
-			<div className="space-y-1.5">
+			<div className={attachments.length > 0 && !compact ? "space-y-1.5" : undefined}>
 				<TranscriptDisclosure
 					defaultOpen={defaultOpen}
 					expandable={hasContent}
@@ -1203,6 +1212,7 @@ export const ChatToolCall = memo(
 					onOpenChange={onOpenChange}
 				>
 					<TranscriptDisclosureTrigger
+						className={compact ? "py-0" : undefined}
 						label={label}
 						trailing={finalTrailing}
 					/>
@@ -1235,6 +1245,7 @@ export const ChatToolCall = memo(
 		// open is controlled by the parent timeline (expandedRowIds); without this
 		// comparison the memo blocks the re-render and the row can never expand.
 		if (prev.open !== next.open) return false
+		if (prev.compact !== next.compact) return false
 		if (prev.turnHasError !== next.turnHasError) return false
 		if (prev.turnWorking !== next.turnWorking) return false
 		if (prev.projectRoot !== next.projectRoot) return false

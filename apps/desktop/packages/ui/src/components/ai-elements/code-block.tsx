@@ -84,6 +84,10 @@ const LineSpan = ({
 		{keyedLine.tokens.length === 0
 			? "\n"
 			: keyedLine.tokens.map(({ token, key }) => <TokenSpan key={key} token={token} />)}
+		{/* Always terminate non-empty lines with a real newline. Relying only on
+		    display:block inside an inline <code> is fragile under <pre> and can
+		    collapse multi-line Read output into a single visual line. */}
+		{keyedLine.tokens.length > 0 ? "\n" : null}
 	</span>
 )
 
@@ -275,7 +279,10 @@ const CodeBlockBody = memo(
 				style={preStyle}
 			>
 				<code
-					className={cn("font-mono text-sm", showLineNumbers && "[counter-increment:line_0]")}
+					className={cn(
+						"block font-mono text-sm whitespace-pre",
+						showLineNumbers && "[counter-increment:line_0]",
+					)}
 					style={showLineNumbers ? { counterReset: `line ${counterReset}` } : undefined}
 				>
 					{keyedLines.map((keyedLine) => (

@@ -42,6 +42,12 @@
 	width: 0;
 }
 
+/* While dragging the sidebar split, snap width without the collapse animation. */
+[data-slot="sidebar-wrapper"][data-resizing="true"] [data-slot="sidebar"],
+[data-slot="sidebar-wrapper"][data-resizing="true"] [data-slot="sidebar-container"] {
+	transition: none !important;
+}
+
 [data-slot="content-area"] {
 	background: var(--devo-transcript-background);
 }

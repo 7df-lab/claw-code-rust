@@ -26,7 +26,6 @@ export const ThoughtRow = memo(function ThoughtRow({
 
 	return (
 		<TranscriptDisclosure
-			className="mb-0"
 			defaultOpen={defaultOpen}
 			open={open}
 			onOpenChange={onOpenChange}
@@ -41,8 +40,11 @@ export const ThoughtRow = memo(function ThoughtRow({
 					)
 				}
 			/>
-			<TranscriptDisclosureContent>
-				<div aria-label="Reasoning details" className="text-sm text-muted-foreground/80">
+			<TranscriptDisclosureContent rail>
+				<div
+					aria-label="Reasoning details"
+					className="text-[13px] leading-5 text-muted-foreground/80 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_p]:my-0"
+				>
 					<ReasoningText animated={isStreaming}>{text}</ReasoningText>
 				</div>
 			</TranscriptDisclosureContent>

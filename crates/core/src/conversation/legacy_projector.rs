@@ -813,26 +813,35 @@ pub fn canonical_turn_from_record(record: &TurnRecord) -> Result<Turn, LegacyPro
         projected
     });
 
-    let usage = record.usage.as_ref().map(|usage| CanonicalTurnUsage {
-        query: UsageTotals {
-            total_tokens: u64::from(
-                usage
-                    .total_tokens
-                    .unwrap_or(usage.input_tokens + usage.output_tokens),
-            ),
-            input_tokens: u64::from(usage.input_tokens),
-            output_tokens: u64::from(usage.output_tokens),
-            reasoning_tokens: u64::from(usage.reasoning_output_tokens.unwrap_or(0)),
-            cache_read_input_tokens: u64::from(usage.cache_read_input_tokens.unwrap_or(0)),
-            cache_creation_input_tokens: u64::from(usage.cache_creation_input_tokens.unwrap_or(0)),
-            call_count: 0,
-            // The provider reported usage, so the turn had at least one
-            // metered call.
-            metered_call_count: 1,
-            ..UsageTotals::default()
-        },
-        overhead: UsageTotals::default(),
-    });
+    // Prefer latest-query usage when present: that is the display total the
+    // context bar and resume path need. Aggregate `usage` remains only as a
+    // fallback for older rollouts that never recorded a per-query snapshot.
+    let usage = record
+        .latest_query_usage
+        .as_ref()
+        .or(record.usage.as_ref())
+        .map(|usage| CanonicalTurnUsage {
+            query: UsageTotals {
+                total_tokens: u64::from(
+                    usage
+                        .total_tokens
+                        .unwrap_or(usage.input_tokens + usage.output_tokens),
+                ),
+                input_tokens: u64::from(usage.input_tokens),
+                output_tokens: u64::from(usage.output_tokens),
+                reasoning_tokens: u64::from(usage.reasoning_output_tokens.unwrap_or(0)),
+                cache_read_input_tokens: u64::from(usage.cache_read_input_tokens.unwrap_or(0)),
+                cache_creation_input_tokens: u64::from(
+                    usage.cache_creation_input_tokens.unwrap_or(0),
+                ),
+                call_count: 0,
+                // The provider reported usage, so the turn had at least one
+                // metered call.
+                metered_call_count: 1,
+                ..UsageTotals::default()
+            },
+            overhead: UsageTotals::default(),
+        });
 
     Ok(Turn {
         id: TurnId::from_legacy_uuid(legacy_uuid(record.id)?),

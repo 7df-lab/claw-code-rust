@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use devo_core::{ItemId, SessionId, TextItem, TurnId, TurnItem};
+use devo_protocol::native::item::{Item, PlanEntry, PlanStepStatus};
 
 use super::super::ServerRuntime;
 use super::super::proposed_plan::ProposedPlanSegment;
 use crate::runtime::session_actor::state::SessionStreamState;
-use crate::{ItemDeltaKind, ItemDeltaPayload, ItemKind, ServerEvent};
+use crate::{ItemDeltaKind, ItemDeltaPayload, ServerEvent};
 
 pub(super) async fn complete_reasoning_item(
     runtime: &Arc<ServerRuntime>,
@@ -16,14 +17,16 @@ pub(super) async fn complete_reasoning_item(
     text: String,
 ) {
     runtime
-        .complete_item(
+        .complete_native_item(
             session_id,
             turn_id,
             item_id,
             item_seq,
-            ItemKind::Reasoning,
-            TurnItem::Reasoning(TextItem { text: text.clone() }),
-            serde_json::json!({ "title": "Reasoning", "text": text }),
+            Item::Reasoning {
+                text: text.clone(),
+                provider_payload_ref: None,
+            },
+            TurnItem::Reasoning(TextItem { text }),
         )
         .await;
 }
@@ -40,14 +43,16 @@ pub(super) async fn complete_assistant_item(
         return;
     }
     runtime
-        .complete_item(
+        .complete_native_item(
             session_id,
             turn_id,
             item_id,
             item_seq,
-            ItemKind::AgentMessage,
-            TurnItem::AgentMessage(TextItem { text: text.clone() }),
-            serde_json::json!({ "title": "Assistant", "text": text }),
+            Item::AssistantMessage {
+                text: text.clone(),
+                phase: None,
+            },
+            TurnItem::AgentMessage(TextItem { text }),
         )
         .await;
 }
@@ -72,11 +77,15 @@ impl ProposedPlanStreamItem {
             return;
         }
         let (item_id, item_seq) = runtime
-            .start_item(
+            .start_native_item(
                 session_id,
                 turn_id,
-                ItemKind::Plan,
-                serde_json::json!({ "title": "Proposed Plan", "text": "" }),
+                Item::Plan {
+                    entries: vec![PlanEntry {
+                        step: String::new(),
+                        status: PlanStepStatus::Completed,
+                    }],
+                },
             )
             .await;
         self.item_id = Some(item_id);
@@ -128,14 +137,18 @@ impl ProposedPlanStreamItem {
         };
         let text = std::mem::take(&mut self.text);
         runtime
-            .complete_item(
+            .complete_native_item(
                 session_id,
                 turn_id,
                 item_id,
                 item_seq,
-                ItemKind::Plan,
-                TurnItem::Plan(TextItem { text: text.clone() }),
-                serde_json::json!({ "title": "Proposed Plan", "text": text }),
+                Item::Plan {
+                    entries: vec![PlanEntry {
+                        step: text.clone(),
+                        status: PlanStepStatus::Completed,
+                    }],
+                },
+                TurnItem::Plan(TextItem { text }),
             )
             .await;
     }
@@ -160,11 +173,13 @@ pub(super) async fn push_assistant_text_delta(
         (Some(item_id), Some(item_seq)) => (item_id, item_seq),
         (None, None) => {
             let (item_id, item_seq) = runtime
-                .start_item(
+                .start_native_item(
                     session_id,
                     turn_id,
-                    ItemKind::AgentMessage,
-                    serde_json::json!({ "title": "Assistant", "text": "" }),
+                    Item::AssistantMessage {
+                        text: String::new(),
+                        phase: None,
+                    },
                 )
                 .await;
             *assistant_item_id = Some(item_id);

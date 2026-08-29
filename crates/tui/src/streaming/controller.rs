@@ -14,13 +14,14 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::{self};
 use crate::markdown::render_markdown_with_metadata;
 use crate::markdown_render::RenderedMarkdownLine;
-use ratatui::style::Stylize;
-#[cfg(test)]
 use ratatui::text::Line;
+use ratatui::text::Span;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
+
+use crate::ui_consts::REPLY_MARKER_COLOR;
 
 use super::StreamState;
 
@@ -315,7 +316,10 @@ impl StreamController {
             history_cell::AgentMessageCell::new_with_rendered_lines(
                 lines,
                 if is_first_line {
-                    "▌ ".dim()
+                    Line::from(vec![
+                        Span::styled("▌", ratatui::style::Style::default().fg(REPLY_MARKER_COLOR)),
+                        " ".into(),
+                    ])
                 } else {
                     "  ".into()
                 },

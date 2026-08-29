@@ -357,6 +357,13 @@ enum PromptJsonlEvent<'a> {
         tool_call_id: &'a str,
         delta: &'a str,
     },
+    #[serde(rename = "item.updated")]
+    ToolCallInputDelta {
+        session_id: &'a str,
+        item_type: &'static str,
+        tool_call_id: &'a str,
+        delta: &'a str,
+    },
     #[serde(rename = "item.completed")]
     ToolResult {
         session_id: &'a str,
@@ -520,6 +527,14 @@ fn write_query_event_jsonl(session_id: &str, event: &QueryEvent) -> Result<()> {
                 tool_call_id: id,
                 tool_name: name,
                 input,
+            })
+        }
+        QueryEvent::ToolUseInputDelta { id, partial_json } => {
+            write_jsonl(&PromptJsonlEvent::ToolCallInputDelta {
+                session_id,
+                item_type: "tool_call",
+                tool_call_id: id,
+                delta: partial_json,
             })
         }
         QueryEvent::ToolExecutionStart { .. } => Ok(()),

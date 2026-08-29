@@ -2,6 +2,9 @@ use std::borrow::Cow;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use devo_protocol::native::item::Item as NativeItem;
+use devo_protocol::native::legacy_wire_from_native_item;
+
 use crate::titles::build_title_generation_request;
 use crate::titles::derive_provisional_title;
 use crate::titles::normalize_generated_title;
@@ -324,6 +327,27 @@ impl ServerRuntime {
         .await;
     }
 
+    pub(super) async fn emit_turn_native_item(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        native_item: NativeItem,
+        turn_item: TurnItem,
+    ) {
+        let (item_id, item_seq) = self
+            .start_native_item(session_id, turn_id, native_item.clone())
+            .await;
+        self.complete_native_item(
+            session_id,
+            turn_id,
+            item_id,
+            item_seq,
+            native_item,
+            turn_item,
+        )
+        .await;
+    }
+
     pub(super) async fn start_item(
         &self,
         session_id: SessionId,
@@ -342,6 +366,19 @@ impl ServerRuntime {
             payload,
         )
         .await;
+        (item_id, item_seq)
+    }
+
+    pub(super) async fn start_native_item(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        native_item: NativeItem,
+    ) -> (ItemId, u64) {
+        let item_id = ItemId::new();
+        let item_seq = self.allocate_item_sequence(session_id).await;
+        self.emit_native_item_started(session_id, turn_id, item_id, Some(item_seq), native_item)
+            .await;
         (item_id, item_seq)
     }
 
@@ -399,6 +436,34 @@ impl ServerRuntime {
         .await;
     }
 
+    pub(super) async fn emit_native_item_started(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        item_id: ItemId,
+        item_seq: Option<u64>,
+        native_item: NativeItem,
+    ) {
+        let (item_kind, payload) =
+            legacy_wire_from_native_item(&native_item).expect("native item must reverse-project");
+        self.emit_item_started(session_id, turn_id, item_id, item_seq, item_kind, payload)
+            .await;
+    }
+
+    pub(super) async fn emit_native_item_completed(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        item_id: ItemId,
+        item_seq: Option<u64>,
+        native_item: NativeItem,
+    ) {
+        let (item_kind, payload) =
+            legacy_wire_from_native_item(&native_item).expect("native item must reverse-project");
+        self.emit_item_completed(session_id, turn_id, item_id, item_seq, item_kind, payload)
+            .await;
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn complete_item(
         &self,
@@ -429,6 +494,29 @@ impl ServerRuntime {
             payload,
         )
         .await;
+    }
+
+    pub(super) async fn complete_native_item(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        item_id: ItemId,
+        item_seq: u64,
+        native_item: NativeItem,
+        turn_item: TurnItem,
+    ) {
+        self.persist_item(
+            session_id,
+            turn_id,
+            item_id,
+            item_seq,
+            turn_item,
+            Some(TurnStatus::Running),
+            None,
+        )
+        .await;
+        self.emit_native_item_completed(session_id, turn_id, item_id, Some(item_seq), native_item)
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]

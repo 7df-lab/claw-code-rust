@@ -12,6 +12,7 @@ pub mod event;
 pub mod goal;
 pub mod ids;
 pub mod item;
+pub mod legacy_projector;
 pub mod methods;
 pub mod model;
 pub mod page;
@@ -26,3 +27,5 @@ pub mod session;
 pub mod turn;
 pub mod usage;
 pub mod wire_projector;
+
+pub use legacy_projector::legacy_wire_from_native_item;

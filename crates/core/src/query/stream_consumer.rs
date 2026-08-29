@@ -92,6 +92,7 @@ struct StreamAccumulation {
     tool_uses: Vec<(usize, String, String, serde_json::Value, String, bool)>,
     hosted_tool_inputs: HashMap<String, (usize, String, serde_json::Value)>,
     emitted_tool_use_starts: HashSet<String>,
+    emitted_early_tool_use_starts: HashSet<String>,
     emitted_hosted_tool_starts: HashSet<String>,
     emitted_hosted_tool_results: HashSet<String>,
     final_response: Option<ModelResponse>,
@@ -112,6 +113,7 @@ async fn consume_provider_stream(
         tool_uses: Vec::new(),
         hosted_tool_inputs: HashMap::new(),
         emitted_tool_use_starts: HashSet::new(),
+        emitted_early_tool_use_starts: HashSet::new(),
         emitted_hosted_tool_starts: HashSet::new(),
         emitted_hosted_tool_results: HashSet::new(),
         final_response: None,
@@ -152,7 +154,29 @@ async fn consume_provider_stream(
                         name,
                         input,
                     }) => {
-                        acc.tool_uses.push((index, id, name, input, String::new(), false));
+                        acc.tool_uses.push((
+                            index,
+                            id.clone(),
+                            name.clone(),
+                            input.clone(),
+                            String::new(),
+                            false,
+                        ));
+                        if acc.emitted_early_tool_use_starts.insert(id.clone()) {
+                            let should_emit_early = input.is_null()
+                                || matches!(&input, serde_json::Value::Object(map) if map.is_empty());
+                            if should_emit_early {
+                                emit_query_event(
+                                    on_event,
+                                    QueryEvent::ToolUseStart {
+                                        id,
+                                        name,
+                                        input: serde_json::json!({}),
+                                    },
+                                )
+                                .await;
+                            }
+                        }
                     }
                     Ok(StreamEvent::HostedToolCallStart {
                         index,
@@ -213,13 +237,22 @@ async fn consume_provider_stream(
                         index,
                         partial_json,
                     }) => {
-                        if let Some(tool_use) = acc.tool_uses
+                        if let Some(tool_use) = acc
+                            .tool_uses
                             .iter_mut()
                             .rev()
                             .find(|(tool_index, ..)| *tool_index == index)
                         {
                             tool_use.4.push_str(&partial_json);
                             tool_use.5 = true;
+                            emit_query_event(
+                                on_event,
+                                QueryEvent::ToolUseInputDelta {
+                                    id: tool_use.1.clone(),
+                                    partial_json,
+                                },
+                            )
+                            .await;
                         }
                     }
                     Ok(StreamEvent::MessageDone { response }) => {
@@ -284,6 +317,7 @@ async fn assemble_model_turn(
         mut tool_uses,
         mut hosted_tool_inputs,
         mut emitted_tool_use_starts,
+        emitted_early_tool_use_starts,
         mut emitted_hosted_tool_starts,
         mut emitted_hosted_tool_results,
         final_response,
@@ -518,7 +552,17 @@ async fn assemble_model_turn(
         } else {
             final_tool_inputs.get(&id).cloned().unwrap_or(initial_input)
         };
-        if emitted_tool_use_starts.insert(id.clone()) {
+        if emitted_early_tool_use_starts.contains(&id) {
+            emit_query_event(
+                on_event,
+                QueryEvent::ToolUseStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                },
+            )
+            .await;
+        } else if emitted_tool_use_starts.insert(id.clone()) {
             emit_query_event(
                 on_event,
                 QueryEvent::ToolUseStart {

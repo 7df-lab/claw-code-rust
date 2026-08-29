@@ -15,5 +15,8 @@ pub(crate) const REASONING_ACCENT_COLOR: ratatui::style::Color =
     ratatui::style::Color::Rgb(210, 150, 60);
 /// Orange used for soft alert history lines (`■ …`).
 pub(crate) const ALERT_COLOR: ratatui::style::Color = ratatui::style::Color::Rgb(245, 142, 53);
+/// Blue used for the pending-state dot prefix and assistant reply marker.
+pub(crate) const REPLY_MARKER_COLOR: ratatui::style::Color =
+    ratatui::style::Color::Rgb(110, 200, 255);
 /// Green used for completed, idle, and done indicators.
 pub(crate) const COMPLETED_COLOR: ratatui::style::Color = ratatui::style::Color::Rgb(120, 220, 160);

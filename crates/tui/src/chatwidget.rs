@@ -36,8 +36,8 @@ use crate::history_cell::HistoryCell;
 use crate::onboarding_widget::OnboardingWidget;
 use crate::startup_header::STARTUP_HEADER_ANIMATION_INTERVAL;
 use crate::startup_logo_cell::StartupLogoCell;
-use crate::streaming::chunking::AdaptiveChunkingPolicy;
 use crate::theme::ThemeSet;
+use crate::transcript::TranscriptProjector;
 use crate::tui::frame_requester::FrameRequester;
 
 mod diff_rules;
@@ -71,6 +71,8 @@ mod sandbox_profiles;
 
 mod text_stream;
 
+mod history_commit;
+mod transcript_sync;
 mod transcript_view;
 
 mod reasoning_effort;
@@ -208,6 +210,7 @@ struct ActiveToolCall {
     title: String,
     lines: Vec<Line<'static>>,
     output: String,
+    parsed_commands: Vec<devo_protocol::parse_command::ParsedCommand>,
     exec_like: bool,
     start_time: Option<Instant>,
 }
@@ -244,6 +247,11 @@ pub(crate) struct ChatWidget {
     reasoning_effort_selection: Option<String>,
     // sub widget, bottom pane, including such input textarea, slash command popup, status summary.
     bottom_pane: BottomPane,
+    /// Unified transcript projection (live + restored).
+    transcript_projector: TranscriptProjector,
+    /// Stable item ids for legacy wire events without server item ids.
+    legacy_assistant_item_id: ItemId,
+    legacy_reasoning_item_id: ItemId,
     active_cell: Option<Box<dyn HistoryCell>>,
     active_cell_revision: u64,
     last_terminal_assistant_visible_hash: Option<(String, u64)>,
@@ -255,7 +263,6 @@ pub(crate) struct ChatWidget {
     external_editor_state: ExternalEditorState,
     status_message: String,
     active_text_items: Vec<ActiveTextItem>,
-    stream_chunking_policy: AdaptiveChunkingPolicy,
     available_models: Vec<Model>,
     saved_models: Vec<SavedModelEntry>,
     current_model_binding_id: Option<String>,
@@ -521,6 +528,9 @@ impl ChatWidget {
             session: initial_session,
             reasoning_effort_selection,
             bottom_pane,
+            transcript_projector: TranscriptProjector::default(),
+            legacy_assistant_item_id: ItemId::new(),
+            legacy_reasoning_item_id: ItemId::new(),
             active_cell: None,
             active_cell_revision: 0,
             last_terminal_assistant_visible_hash: None,
@@ -532,7 +542,6 @@ impl ChatWidget {
             external_editor_state: ExternalEditorState::Closed,
             status_message: "Ready".to_string(),
             active_text_items: Vec::new(),
-            stream_chunking_policy: AdaptiveChunkingPolicy::default(),
             available_models,
             current_model_binding_id,
             saved_models,

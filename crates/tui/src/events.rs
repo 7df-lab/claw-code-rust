@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -24,9 +23,6 @@ use devo_protocol::SessionHistoryItem;
 use devo_protocol::SessionRuntimeStatus;
 use devo_protocol::ThreadGoal;
 use devo_protocol::native::item::ContextOccupancy;
-use devo_protocol::parse_command::ParsedCommand;
-use devo_protocol::protocol::ExecCommandSource;
-use devo_protocol::protocol::FileChange;
 const TOOL_RESULT_FOLD_FINAL_STAGE: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,23 +219,6 @@ pub(crate) enum WorkerEvent {
         phase: ProviderRetryPhase,
         message: String,
     },
-    /// A streamed assistant or reasoning text item started.
-    TextItemStarted {
-        item_id: ItemId,
-        kind: TextItemKind,
-    },
-    /// Incremental text for a streamed assistant or reasoning item.
-    TextItemDelta {
-        item_id: ItemId,
-        kind: TextItemKind,
-        delta: String,
-    },
-    /// A streamed assistant or reasoning text item completed.
-    TextItemCompleted {
-        item_id: ItemId,
-        kind: TextItemKind,
-        final_text: String,
-    },
     /// A streamed Plan Mode proposal item started.
     ProposedPlanStarted {
         item_id: ItemId,
@@ -262,92 +241,10 @@ pub(crate) enum WorkerEvent {
     AssistantMessageCompleted(String),
     /// Final reasoning text for a completed item.
     ReasoningCompleted(String),
-    /// A tool call started.
-    ToolCall {
-        /// Stable identifier used to match the later tool result.
-        tool_use_id: String,
-        /// Human-readable summary line for the tool execution.
-        summary: String,
-        /// Whether this early tool signal should render as a live-only preparing state.
-        preparing: bool,
-        /// Optional parsed command semantics for command-like and exploration-like tools.
-        parsed_commands: Option<Vec<ParsedCommand>>,
-    },
-    /// Full input metadata for a tool call shown by the Ctrl+T transcript.
-    ToolCallDetails {
-        tool_use_id: String,
-        tool_name: String,
-        input: serde_json::Value,
-    },
-    /// A command-execution item started.
-    CommandExecutionStarted {
-        /// Stable identifier used to match later output and result events.
-        tool_use_id: String,
-        /// The command text executed by the server.
-        command: String,
-        /// Full command tool input for transcript rendering.
-        input: Option<serde_json::Value>,
-        /// Whether this command came from the agent, Shell Mode, or unified exec.
-        source: ExecCommandSource,
-        /// Parsed command semantics supplied by the server.
-        command_actions: Vec<ParsedCommand>,
-    },
-    /// Updated metadata for a previously started tool call.
-    ToolCallUpdated {
-        /// Stable identifier matching the original tool call.
-        tool_use_id: String,
-        /// Updated human-readable summary line.
-        summary: String,
-        /// Parsed command semantics derived from finalized tool metadata.
-        parsed_commands: Vec<ParsedCommand>,
-    },
-    /// Incremental output delta from a running tool.
-    ToolOutputDelta {
-        /// Stable identifier matching the corresponding tool call.
-        tool_use_id: String,
-        /// Streaming output text chunk.
-        delta: String,
-    },
-    /// A tool call finished.
-    ToolResult {
-        /// Stable identifier used to match the corresponding tool call.
-        tool_use_id: String,
-        /// Human-readable title for the tool result when no prior tool-call row is cached.
-        title: String,
-        /// Human-readable output preview shown in the transcript.
-        preview: String,
-        /// Whether the tool returned an error.
-        is_error: bool,
-        /// Whether the preview was truncated for display.
-        truncated: bool,
-    },
-    /// Full input/output metadata for a completed generic tool call.
-    ToolResultIo {
-        tool_use_id: String,
-        tool_name: String,
-        title: String,
-        input: serde_json::Value,
-        output: serde_json::Value,
-        display_content: Option<String>,
-        is_error: bool,
-        truncated: bool,
-    },
     /// A user-shell command/process finished outside the model turn loop.
     ShellCommandFinished {
         /// Process exit code when known.
         exit_code: Option<i32>,
-    },
-    /// A structured patch/edit summary derived from apply_patch output.
-    PatchApplied {
-        tool_use_id: String,
-        changes: HashMap<PathBuf, FileChange>,
-    },
-    /// A structured patch/edit summary with paired tool input for Ctrl+T.
-    PatchAppliedIo {
-        tool_use_id: String,
-        tool_name: String,
-        input: serde_json::Value,
-        changes: HashMap<PathBuf, FileChange>,
     },
     /// A structured plan or todo list update.
     PlanUpdated {
@@ -680,6 +577,8 @@ pub(crate) enum WorkerEvent {
         permission_preset: Option<devo_protocol::PermissionPreset>,
         /// Session auto-compaction token limit override, when one is set.
         effective_context_window: Option<u64>,
+        /// Latest context-window occupancy restored from rollout or session stats.
+        last_context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
     },
     /// The current session title changed.
     SessionRenamed {
@@ -747,6 +646,8 @@ pub(crate) enum WorkerEvent {
         /// History entry text, or `None` if there is no matching entry.
         text: Option<String>,
     },
+    /// Native-first transcript lifecycle event for [`crate::transcript::TranscriptProjector`].
+    Transcript(crate::transcript::lifecycle::ItemLifecycleEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

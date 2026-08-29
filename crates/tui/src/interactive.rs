@@ -861,17 +861,13 @@ fn handle_worker_event(
         WorkerEvent::SessionActivated { session_id } => {
             loop_state.session_id = Some(*session_id);
         }
-        // Streaming deltas are handled entirely within the ChatWidget
-        WorkerEvent::ToolOutputDelta { .. } => {}
-        WorkerEvent::CommandExecutionStarted { source, .. }
-            if matches!(
-                source,
-                &devo_protocol::protocol::ExecCommandSource::UserShell
-            ) =>
-        {
+        WorkerEvent::Transcript(crate::transcript::lifecycle::ItemLifecycleEvent::ToolOpened {
+            command_source: Some(devo_protocol::protocol::ExecCommandSource::UserShell),
+            ..
+        }) => {
             loop_state.busy = true;
         }
-        WorkerEvent::CommandExecutionStarted { .. } => {}
+        WorkerEvent::Transcript(_) => {}
         WorkerEvent::ShellCommandFinished { .. } => {
             loop_state.busy = false;
         }
@@ -962,22 +958,12 @@ fn handle_worker_event(
             loop_state.total_cache_read_tokens = *total_cache_read_tokens;
         }
         WorkerEvent::TextDelta(_)
-        | WorkerEvent::TextItemStarted { .. }
-        | WorkerEvent::TextItemDelta { .. }
-        | WorkerEvent::TextItemCompleted { .. }
         | WorkerEvent::ProposedPlanStarted { .. }
         | WorkerEvent::ProposedPlanDelta { .. }
         | WorkerEvent::ProposedPlanCompleted { .. }
         | WorkerEvent::ReasoningDelta(_)
         | WorkerEvent::AssistantMessageCompleted(_)
         | WorkerEvent::ReasoningCompleted(_)
-        | WorkerEvent::ToolCall { .. }
-        | WorkerEvent::ToolCallDetails { .. }
-        | WorkerEvent::ToolCallUpdated { .. }
-        | WorkerEvent::ToolResult { .. }
-        | WorkerEvent::ToolResultIo { .. }
-        | WorkerEvent::PatchApplied { .. }
-        | WorkerEvent::PatchAppliedIo { .. }
         | WorkerEvent::PlanUpdated { .. }
         | WorkerEvent::ProviderVendorsListed { .. }
         | WorkerEvent::SessionsListed { .. }

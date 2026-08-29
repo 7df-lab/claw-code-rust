@@ -1277,6 +1277,7 @@ fn recorded_compaction_events(events: &[QueryEvent]) -> Vec<RecordedCompactionEv
             | QueryEvent::ReasoningCompleted
             | QueryEvent::UsageDelta { .. }
             | QueryEvent::ToolUseStart { .. }
+            | QueryEvent::ToolUseInputDelta { .. }
             | QueryEvent::ToolExecutionStart { .. }
             | QueryEvent::ToolProgress { .. }
             | QueryEvent::ToolResult { .. }
@@ -1503,6 +1504,7 @@ async fn query_retries_transient_stream_event_errors_before_content() {
             | QueryEvent::ReasoningCompleted
             | QueryEvent::UsageDelta { .. }
             | QueryEvent::ToolUseStart { .. }
+            | QueryEvent::ToolUseInputDelta { .. }
             | QueryEvent::ToolExecutionStart { .. }
             | QueryEvent::ToolProgress { .. }
             | QueryEvent::ToolResult { .. }
@@ -1595,6 +1597,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
             | QueryEvent::ReasoningCompleted
             | QueryEvent::UsageDelta { .. }
             | QueryEvent::ToolUseStart { .. }
+            | QueryEvent::ToolUseInputDelta { .. }
             | QueryEvent::ToolExecutionStart { .. }
             | QueryEvent::ToolProgress { .. }
             | QueryEvent::ToolResult { .. }
@@ -4358,7 +4361,9 @@ async fn query_tool_start_event_includes_final_tool_input() {
     let callback: EventCallback = Arc::new(move |event: QueryEvent| {
         let seen_clone = Arc::clone(&seen_clone);
         Box::pin(async move {
-            if let QueryEvent::ToolUseStart { id, input, .. } = event {
+            if let QueryEvent::ToolUseStart { id, input, .. } = event
+                && !input.as_object().is_some_and(|object| object.is_empty())
+            {
                 seen_clone.lock().unwrap().push((id, input));
             }
         })

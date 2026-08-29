@@ -28,8 +28,7 @@ use super::ChatWidget;
 use super::DotStatus;
 use super::STATUS_LINE_BRANCH_REFRESH_INTERVAL;
 
-/// Blue used for the pending-state dot prefix.
-pub(super) const PENDING_DOT_COLOR: Color = Color::Rgb(110, 200, 255);
+use crate::ui_consts::REPLY_MARKER_COLOR;
 /// Blue used for running/active state text.
 pub(super) const RUNNING_COLOR: Color = Color::Rgb(106, 200, 255);
 /// Red used for failed/interrupted state.
@@ -103,30 +102,28 @@ impl ChatWidget {
         }
     }
 
+    pub(super) fn muted_dot_prefix() -> Line<'static> {
+        Line::from(vec![Span::styled("▌", Style::default().dim()), " ".into()])
+    }
+
+    /// Accent marker for assistant reply text (live and committed).
+    pub(super) fn reply_dot_prefix() -> Line<'static> {
+        Self::pending_dot_prefix()
+    }
+
     pub(super) fn completed_dot_prefix() -> Line<'static> {
-        Line::from(vec![
-            Span::styled("▌", Style::default().fg(COMPLETED_COLOR)),
-            " ".into(),
-        ])
+        Self::muted_dot_prefix()
     }
 
     pub(super) fn pending_dot_prefix() -> Line<'static> {
         Line::from(vec![
-            Span::styled("▌", Style::default().fg(PENDING_DOT_COLOR)),
+            Span::styled("▌", Style::default().fg(REPLY_MARKER_COLOR)),
             " ".into(),
         ])
     }
 
-    pub(super) fn reasoning_dot_prefix(status: DotStatus) -> Line<'static> {
-        let color = match status {
-            DotStatus::Pending => REASONING_ACCENT_COLOR,
-            DotStatus::Completed => COMPLETED_COLOR,
-            DotStatus::Failed => FAILED_COLOR,
-        };
-        Line::from(vec![
-            Span::styled("▌", Style::default().fg(color)),
-            " ".into(),
-        ])
+    pub(super) fn reasoning_dot_prefix(_status: DotStatus) -> Line<'static> {
+        Self::muted_dot_prefix()
     }
 
     pub(super) fn truncate_display_text(value: &str, max_width: usize) -> String {
@@ -211,24 +208,18 @@ impl ChatWidget {
     }
 
     pub(super) fn tool_dot_prefix() -> Line<'static> {
-        Line::from(vec![
-            Span::styled("▌", Style::default().fg(COMPLETED_COLOR)),
-            " ".into(),
-        ])
+        Self::muted_dot_prefix()
     }
 
     pub(super) fn failed_dot_prefix() -> Line<'static> {
-        Line::from(vec![
-            Span::styled("▌", Style::default().fg(REASONING_ACCENT_COLOR)),
-            " ".into(),
-        ])
+        Self::muted_dot_prefix()
     }
 
     pub(super) fn dot_prefix(&self, status: DotStatus) -> Line<'static> {
         match status {
-            DotStatus::Pending => Self::pending_dot_prefix(),
-            DotStatus::Completed => Self::completed_dot_prefix(),
-            DotStatus::Failed => Self::failed_dot_prefix(),
+            DotStatus::Pending => Self::reply_dot_prefix(),
+            DotStatus::Completed => Self::reply_dot_prefix(),
+            DotStatus::Failed => Self::reply_dot_prefix(),
         }
     }
 
@@ -260,6 +251,8 @@ impl ChatWidget {
         };
         let used = if self.last_query_total_tokens > 0 {
             self.last_query_total_tokens
+        } else if self.prompt_token_estimate > 0 {
+            self.prompt_token_estimate
         } else if let Some(occupancy) = self.last_context_occupancy.as_ref() {
             occupancy.total_tokens as usize
         } else {
@@ -549,11 +542,10 @@ impl ChatWidget {
     }
 
     #[cfg(test)]
-    #[cfg(test)]
-    pub(crate) fn has_stream_controller(&self) -> bool {
+    pub(crate) fn has_live_assistant_text(&self) -> bool {
         self.active_text_items
             .iter()
-            .any(|item| item.stream_controller.is_some())
+            .any(|item| item.kind == crate::events::TextItemKind::Assistant)
     }
 
     #[cfg(test)]
@@ -604,7 +596,7 @@ impl ChatWidget {
     }
 
     pub(super) fn reasoning_completed_dot_prefix() -> Line<'static> {
-        Line::from(vec![Span::styled("▌", Style::default().dim()), " ".into()])
+        Self::muted_dot_prefix()
     }
 
     pub(super) fn patch_lines_style(lines: &mut [Line<'static>], style: Style) {
@@ -752,6 +744,44 @@ mod tests {
         widget.last_query_total_tokens = 9;
 
         assert_eq!(widget.context_usage(), Some((9, 190_000, 0)));
+    }
+
+    #[test]
+    fn session_switched_restores_context_usage_from_resume_payload() {
+        let mut widget = widget_for_summary_bench();
+        let occupancy = ContextOccupancy::from_category_tokens(
+            /*context_window_tokens*/ 190_000, /*base*/ 10_000, /*skills*/ 0,
+            /*tools_builtin*/ 0, /*tools_mcp*/ 0, /*conversation*/ 48_000,
+        );
+
+        widget.handle_worker_event(crate::events::WorkerEvent::SessionSwitched {
+            session_id: "session-1".to_string(),
+            cwd: PathBuf::from("."),
+            title: Some("Resumed".to_string()),
+            model: Some("test-model".to_string()),
+            model_binding_id: None,
+            reasoning_effort_selection: None,
+            reasoning_effort: None,
+            active_agent_label: None,
+            total_input_tokens: 1_000,
+            total_output_tokens: 200,
+            total_tokens: 1_200,
+            total_cache_read_tokens: 0,
+            last_query_total_tokens: 58_000,
+            last_query_input_tokens: 40_000,
+            prompt_token_estimate: 40_000,
+            history_items: Vec::new(),
+            rich_history_items: Vec::new(),
+            loaded_item_count: 0,
+            pending_texts: Vec::new(),
+            collaboration_mode: devo_protocol::CollaborationMode::Build,
+            permission_preset: None,
+            effective_context_window: None,
+            last_context_occupancy: Some(occupancy),
+        });
+
+        assert_eq!(widget.context_usage(), Some((58_000, 190_000, 31)));
+        assert!(widget.status_summary_text().contains("58.0k/190.0k"));
     }
 
     #[test]

@@ -295,7 +295,12 @@ fn normalize_session(session: &SessionRecord) -> SessionRecord {
 }
 
 /// TurnRecord fields the canonical model does not carry.
+///
+/// Aggregate `usage` is replaced by `latest_query_usage` when that field is
+/// present: the forward projector prefers the latest query for canonical
+/// `Turn.usage`, so the inverse cannot recover a distinct aggregate.
 fn normalize_turn(turn: &TurnRecord) -> TurnRecord {
+    let usage_source = turn.latest_query_usage.as_ref().or(turn.usage.as_ref());
     TurnRecord {
         status: match turn.status.clone() {
             TurnStatus::Pending | TurnStatus::Running | TurnStatus::WaitingApproval => {
@@ -312,7 +317,7 @@ fn normalize_turn(turn: &TurnRecord) -> TurnRecord {
         } else {
             turn.request_model.clone()
         },
-        usage: turn.usage.as_ref().map(|usage| devo_core::TurnUsage {
+        usage: usage_source.map(|usage| devo_core::TurnUsage {
             cache_creation_input_tokens: usage.cache_creation_input_tokens.filter(|v| *v > 0),
             cache_read_input_tokens: usage.cache_read_input_tokens.filter(|v| *v > 0),
             reasoning_output_tokens: usage.reasoning_output_tokens.filter(|v| *v > 0),

@@ -60,12 +60,7 @@ fn line_text(line: &Line<'static>) -> String {
 }
 
 fn drain_assistant_stream(widget: &mut ChatWidget) {
-    for _ in 0..16 {
-        if widget.assistant_stream_queued_lines_for_test() == 0 {
-            break;
-        }
-        widget.pre_draw_tick();
-    }
+    widget.pre_draw_tick();
 }
 
 #[test]
@@ -87,17 +82,17 @@ fn overflowing_live_assistant_viewport_follows_latest_tail() {
         reasoning_effort: None,
         turn_id: Default::default(),
     });
-    widget.handle_worker_event(WorkerEvent::TextItemStarted {
-        item_id: assistant_id,
-        kind: TextItemKind::Assistant,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        assistant_id,
+        TextItemKind::Assistant,
+    ));
 
     for index in 0..28 {
-        widget.handle_worker_event(WorkerEvent::TextItemDelta {
-            item_id: assistant_id,
-            kind: TextItemKind::Assistant,
-            delta: format!("stream-tail-line-{index:02}\n"),
-        });
+        widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+            assistant_id,
+            TextItemKind::Assistant,
+            format!("stream-tail-line-{index:02}\n"),
+        ));
         widget.pre_draw_tick();
         drain_assistant_stream(&mut widget);
     }
@@ -148,17 +143,17 @@ fn working_keeps_content_sized_height_and_grows_with_stream() {
     assert!(widget.desired_height(80) >= idle_height);
 
     let assistant_id = ItemId::new();
-    widget.handle_worker_event(WorkerEvent::TextItemStarted {
-        item_id: assistant_id,
-        kind: TextItemKind::Assistant,
-    });
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        assistant_id,
+        TextItemKind::Assistant,
+    ));
     let height_before_stream = widget.desired_height(80);
     for index in 0..8 {
-        widget.handle_worker_event(WorkerEvent::TextItemDelta {
-            item_id: assistant_id,
-            kind: TextItemKind::Assistant,
-            delta: format!("pin-line-{index}\n"),
-        });
+        widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+            assistant_id,
+            TextItemKind::Assistant,
+            format!("pin-line-{index}\n"),
+        ));
         widget.pre_draw_tick();
         drain_assistant_stream(&mut widget);
     }

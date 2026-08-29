@@ -134,6 +134,12 @@ pub struct SessionResumeParams {
 #[serde(rename_all = "camelCase")]
 pub struct SessionResumeResult {
     pub session: Session,
+    /// Latest context-window occupancy from rollout replay or session stats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_context_occupancy: Option<crate::native::item::ContextOccupancy>,
+    /// Latest completed model-query display total, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_query_total_tokens: Option<u64>,
 }
 
 // ── session/fork ──

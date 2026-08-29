@@ -349,6 +349,7 @@ pub enum ItemDeltaKind {
     CommandExecutionOutputDelta,
     FileChangeOutputDelta,
     PlanDelta,
+    ToolCallInputDelta,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -536,6 +537,7 @@ impl ServerEvent {
                 ItemDeltaKind::CommandExecutionOutputDelta => "item/commandExecution/outputDelta",
                 ItemDeltaKind::FileChangeOutputDelta => "item/fileChange/outputDelta",
                 ItemDeltaKind::PlanDelta => "item/plan/delta",
+                ItemDeltaKind::ToolCallInputDelta => "item/toolCall/inputDelta",
             },
             Self::ServerRequestResolved(_) => "serverRequest/resolved",
             Self::ReferenceSearchUpdated(_) => "search/updated",

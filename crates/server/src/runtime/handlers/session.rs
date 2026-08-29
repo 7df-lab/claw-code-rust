@@ -1464,9 +1464,66 @@ impl ServerRuntime {
         if response.get("error").is_some() {
             return response;
         }
-        self.native_session_snapshot_response(request_id, legacy_session_id)
+        self.native_session_resume_response(request_id, legacy_session_id)
             .await
             .unwrap_or(response)
+    }
+
+    async fn native_session_resume_response(
+        &self,
+        request_id: serde_json::Value,
+        session_id: SessionId,
+    ) -> Option<serde_json::Value> {
+        let session = self.native_session_snapshot(session_id).await?;
+        let stats = self.deps.db.get_stats(&session_id).ok().flatten();
+        let rollout_occupancy = self.native_rollout_context_occupancy(session_id).await;
+        let last_context_occupancy = stats
+            .as_ref()
+            .and_then(|stats| stats.last_context_occupancy.clone())
+            .or(rollout_occupancy);
+        let last_query_total_tokens = last_context_occupancy
+            .as_ref()
+            .map(|occupancy| occupancy.total_tokens)
+            .filter(|tokens| *tokens > 0)
+            .or_else(|| {
+                stats
+                    .as_ref()
+                    .map(|stats| stats.prompt_token_estimate as u64)
+                    .filter(|tokens| *tokens > 0)
+            });
+        Some(
+            serde_json::to_value(SuccessResponse {
+                id: request_id,
+                result: devo_protocol::native::rpc_session::SessionResumeResult {
+                    session,
+                    last_context_occupancy,
+                    last_query_total_tokens,
+                },
+            })
+            .expect("serialize canonical session/resume response"),
+        )
+    }
+
+    async fn native_rollout_context_occupancy(
+        &self,
+        session_id: SessionId,
+    ) -> Option<devo_protocol::native::item::ContextOccupancy> {
+        let rollout_path = self
+            .deps
+            .db
+            .get_session_index(&session_id)
+            .ok()
+            .flatten()
+            .and_then(|index| index.rollout_path)
+            .or_else(|| {
+                self.rollout_store
+                    .find_rollout_by_session_id(&session_id)
+                    .ok()
+                    .flatten()
+            })?;
+        devo_core::read_canonical_history(&rollout_path)
+            .ok()
+            .and_then(|history| history.latest_context_occupancy)
     }
 
     pub(crate) async fn restore_existing_session_with_tool_registry_update(

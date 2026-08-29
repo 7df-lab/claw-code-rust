@@ -670,37 +670,14 @@ impl ServerRuntime {
                 runtime_session.loaded_item_count += 1;
                 runtime_session.next_item_seq += 1;
 
-                let payload = serde_json::json!({ "title": "Context Compaction" });
-                self.broadcast_event(ServerEvent::ItemStarted(ItemEventPayload {
-                    context: EventContext {
-                        session_id,
-                        turn_id: Some(turn_id),
-                        item_id: Some(item_id),
-                        seq: item_seq,
-                        item_seq: Some(item_seq),
-                    },
-                    item: ItemEnvelope {
-                        item_id,
-                        item_kind: ItemKind::ContextCompaction,
-                        payload: payload.clone(),
-                    },
-                }))
+                self.broadcast_event(super::super::turn_exec::manual_compaction_started_event(
+                    session_id, turn_id, item_id, item_seq,
+                ))
                 .await;
 
-                self.broadcast_event(ServerEvent::ItemCompleted(ItemEventPayload {
-                    context: EventContext {
-                        session_id,
-                        turn_id: Some(turn_id),
-                        item_id: Some(item_id),
-                        seq: item_seq,
-                        item_seq: Some(item_seq),
-                    },
-                    item: ItemEnvelope {
-                        item_id,
-                        item_kind: ItemKind::ContextCompaction,
-                        payload,
-                    },
-                }))
+                self.broadcast_event(super::super::turn_exec::manual_compaction_completed_event(
+                    session_id, turn_id, item_id, item_seq,
+                ))
                 .await;
 
                 let summary_turn_item = summary_turn_item_from_compacted(&compacted_items);

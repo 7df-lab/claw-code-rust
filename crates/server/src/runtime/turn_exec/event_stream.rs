@@ -80,6 +80,8 @@ pub(crate) fn spawn_turn_event_stream(
         let mut reasoning_delta_seq = 0_u64;
         let mut command_output_delta_seqs: std::collections::HashMap<String, u64> =
             std::collections::HashMap::new();
+        let mut tool_input_delta_seqs: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
         let mut tool_names_by_id = std::collections::HashMap::new();
         let mut pending_tool_calls: std::collections::HashMap<String, PendingToolCall> =
             std::collections::HashMap::new();
@@ -214,6 +216,18 @@ pub(crate) fn spawn_turn_event_stream(
                         &mut assistant_item_seq,
                         &mut assistant_text,
                         &event_tool_registry,
+                    )
+                    .await;
+                }
+                devo_core::QueryEvent::ToolUseInputDelta { id, partial_json } => {
+                    handle_tool_input_delta(
+                        &runtime,
+                        session_id,
+                        turn_for_events.turn_id,
+                        id,
+                        partial_json,
+                        &pending_tool_calls,
+                        &mut tool_input_delta_seqs,
                     )
                     .await;
                 }
@@ -511,6 +525,11 @@ async fn handle_tool_use_start(
     event_tool_registry: &Arc<devo_core::tools::ToolRegistry>,
 ) {
     tool_names_by_id.insert(id.clone(), name.clone());
+    if let Some(pending) = pending_tool_calls.get_mut(&id) {
+        pending.input = input.clone();
+        pending.command = command_display_from_input(&name, &input);
+        return;
+    }
     if let (Some(item_id), Some(item_seq)) = (reasoning_item_id.take(), reasoning_item_seq.take()) {
         complete_reasoning_item(
             runtime,
@@ -714,6 +733,50 @@ async fn complete_pending_tool_calls_as_interrupted(
             .await;
         }
     }
+}
+
+async fn handle_tool_input_delta(
+    runtime: &Arc<ServerRuntime>,
+    session_id: SessionId,
+    turn_id: TurnId,
+    tool_use_id: String,
+    partial_json: String,
+    pending_tool_calls: &std::collections::HashMap<String, PendingToolCall>,
+    tool_input_delta_seqs: &mut std::collections::HashMap<String, u64>,
+) {
+    let Some(pending) = pending_tool_calls.get(&tool_use_id) else {
+        return;
+    };
+    let Some(item_id) = pending.item_id.clone() else {
+        return;
+    };
+    let chunk_index = tool_input_delta_seqs
+        .get(&tool_use_id)
+        .copied()
+        .unwrap_or(0);
+    tool_input_delta_seqs.insert(tool_use_id.clone(), chunk_index + 1);
+    let _ = runtime
+        .broadcast_event(ServerEvent::ItemDelta {
+            delta_kind: ItemDeltaKind::ToolCallInputDelta,
+            payload: ItemDeltaPayload {
+                context: crate::EventContext {
+                    session_id,
+                    turn_id: Some(turn_id),
+                    item_id: Some(item_id),
+                    seq: 0,
+                    item_seq: None,
+                },
+                delta: serde_json::json!({
+                    "tool_use_id": tool_use_id,
+                    "partial_json": partial_json,
+                })
+                .to_string(),
+                stream_index: None,
+                channel: None,
+                chunk_index: Some(chunk_index),
+            },
+        })
+        .await;
 }
 
 async fn handle_tool_progress(

@@ -19,6 +19,7 @@ use super::snapshots::{
     TurnPersistenceSnapshot, TurnReservationSnapshot,
 };
 use super::state::{ApprovalCacheSnapshot, DeferredItems, SessionActorState, SpawnSnapshot};
+use super::turn_working::TurnWorkingSet;
 use crate::execution::PendingApproval;
 use crate::execution::PersistedTurnItem;
 use crate::runtime::subagent_usage::ParentUsageSnapshot;
@@ -82,22 +83,57 @@ impl SessionHandle {
         Arc::clone(&self.state_change_gate).lock_owned().await
     }
 
-    /// Non-blocking enqueue. Used by turn event streams so they never park on a
-    /// session actor that is itself waiting for that stream to finish.
+    /// Non-blocking enqueue for fire-and-forget updates from turn streams.
+    /// Prefer this over `send().await` when the caller is on a path the actor
+    /// might still be waiting on (legacy stream↔mailbox deadlock avoidance).
     fn try_send(&self, command: SessionCommand) -> bool {
         self.tx.try_send(command).is_ok()
     }
 
+    /// Checks out a turn working copy (short mailbox), runs the turn on this
+    /// task, then merges results. The actor mailbox stays free during query I/O.
     pub(crate) async fn execute_turn(
         &self,
         runtime: Arc<crate::runtime::ServerRuntime>,
         request: ExecuteTurnRequest,
     ) {
+        let session_id = request.session_id;
+        let Some(working) = self.checkout_turn_working_set(request.turn.clone()).await else {
+            return;
+        };
+        let should_auto_continue_goal =
+            super::turn::execute_turn_task(working, Arc::clone(&runtime), request).await;
+        // Sync helper: keeps the spawn's Send check outside this async fn's
+        // opaque type so follow-up → execute_turn cannot form a rustc cycle.
+        crate::runtime::turn_exec::spawn_post_turn_scheduling(
+            runtime,
+            session_id,
+            should_auto_continue_goal,
+        );
+    }
+
+    pub(crate) async fn checkout_turn_working_set(
+        &self,
+        turn: TurnMetadata,
+    ) -> Option<TurnWorkingSet> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if !self
-            .send(SessionCommand::ExecuteTurn {
-                runtime,
-                request,
+            .send(SessionCommand::CheckoutTurnWorkingSet {
+                turn,
+                reply: reply_tx,
+            })
+            .await
+        {
+            return None;
+        }
+        reply_rx.await.ok()
+    }
+
+    pub(crate) async fn merge_turn(&self, working: TurnWorkingSet) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if !self
+            .send(SessionCommand::MergeTurn {
+                working: Box::new(working),
                 reply: reply_tx,
             })
             .await
@@ -564,9 +600,9 @@ impl SessionHandle {
 
     /// Best-effort permission-profile notification for the persist-first
     /// settings write path (L2-DES-CONV-002 Phase 2): the change is already
-    /// durable, so the actor must not be waited on (it may be running a turn).
-    /// Mailbox FIFO still guarantees the actor applies it before the next
-    /// `ExecuteTurn`, so the next turn always sees the new profile.
+    /// durable, so the actor must not be waited on. Mailbox FIFO still
+    /// guarantees the actor applies it before the next turn checkout, so the
+    /// next turn always sees the new profile.
     pub(crate) fn notify_permission_profile(&self, profile: devo_safety::RuntimePermissionProfile) {
         let (reply_tx, _reply_rx) = oneshot::channel();
         let _ = self.try_send(SessionCommand::ApplyPermissionProfile {

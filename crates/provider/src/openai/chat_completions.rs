@@ -178,7 +178,9 @@ pub(super) struct OpenAIChatCompletionMessage {
     function_call: Option<OpenAIChatCompletionFunctionCall>,
     #[serde(default, deserialize_with = "deserialize_null_vec")]
     tool_calls: Vec<OpenAIChatCompletionMessageToolCall>,
-    #[serde(default)]
+    /// DeepSeek / vLLM use `reasoning_content`; Ollama's OpenAI-compat layer
+    /// currently emits the same payload under `reasoning`.
+    #[serde(default, alias = "reasoning")]
     reasoning_content: Option<String>,
 }
 
@@ -1478,6 +1480,37 @@ mod tests {
             }
             other => panic!("expected text response, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_response_reads_ollama_reasoning_field_alias() {
+        let response = parse_response(
+            json!({
+                "id": "chatcmpl-ollama",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "Hello!",
+                            "reasoning": "plan via ollama"
+                        },
+                        "finish_reason": "stop"
+                    }
+                ]
+            }),
+            &DsmlToolCallHealer::for_model("qwen3"),
+        )
+        .expect("parse response");
+
+        assert_eq!(
+            response.content,
+            vec![ResponseContent::Text("Hello!".to_string())]
+        );
+        assert!(response.metadata.extras.iter().any(|extra| matches!(
+            extra,
+            ResponseExtra::ReasoningText { text } if text == "plan via ollama"
+        )));
     }
 
     #[test]

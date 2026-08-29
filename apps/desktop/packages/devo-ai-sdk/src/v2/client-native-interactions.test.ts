@@ -631,4 +631,21 @@ describe("Native desktop SDK interactions", () => {
 
 		expect((await client.session.status()).data["session-1"]).toEqual({ type: "idle" })
 	})
+
+	test("session/list does not clear busy status while a turn is in flight", async () => {
+		const transport = new FakeNativeTransport()
+		const client = createDevoClient({ directory: "/repo", transport })
+		await client.session.create()
+
+		await client.session.promptAsync({
+			sessionID: "session-1",
+			parts: [{ type: "text", text: "hello" }],
+		})
+		expect((await client.session.status()).data["session-1"]).toEqual({ type: "busy" })
+
+		// Delete-refill and sidebar pagination re-list; durable snapshots stay Idle.
+		await client.session.list({ limit: 5, roots: true })
+
+		expect((await client.session.status()).data["session-1"]).toEqual({ type: "busy" })
+	})
 })

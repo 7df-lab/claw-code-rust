@@ -21,11 +21,45 @@ pub(crate) use types::ExecuteTurnRequest;
 use std::sync::Arc;
 
 use anyhow::Context;
+use devo_core::SessionId;
 
 use super::*;
 
+/// Schedules queue drain / goal continuation after a turn merges.
+///
+/// Must stay a sync function so callers' async opaque types do not recursively
+/// include this spawn's future (rustc Send-cycle with `execute_turn`).
+pub(crate) fn spawn_post_turn_scheduling(
+    runtime: Arc<ServerRuntime>,
+    session_id: SessionId,
+    should_auto_continue_goal: bool,
+) {
+    tokio::spawn(async move {
+        runtime
+            .maybe_schedule_final_title_generation(session_id, None)
+            .await;
+        if runtime.chain_queued_followup_turn(session_id).await {
+            return;
+        }
+        if runtime.spawn_next_turn_from_queue(session_id).await {
+            return;
+        }
+        if runtime.child_parent_and_path(session_id).await.is_some()
+            && runtime.child_can_accept_next_turn(session_id).await
+        {
+            let _ = runtime.drain_child_mailbox_into_user_turns(session_id).await;
+            return;
+        }
+        if should_auto_continue_goal {
+            runtime
+                .maybe_start_goal_continuation_turn(session_id)
+                .await;
+        }
+    });
+}
+
 impl ServerRuntime {
-    /// Execute one turn end-to-end via the session actor.
+    /// Execute one turn on a spawned working copy; the session actor stays free.
     pub(in crate::runtime) async fn execute_turn(self: Arc<Self>, request: ExecuteTurnRequest) {
         let Some(handle) = self.session(request.session_id).await else {
             return;

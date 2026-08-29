@@ -188,19 +188,16 @@ impl ServerRuntime {
                 ..ToolExecutionOptions::default()
             },
         );
-        // Turns execute inline on the session actor's own task rather than as a
-        // separately spawned task, so an external `JoinHandle::abort()` can no
-        // longer stop an in-flight query: it only cancels the caller waiting on
-        // the actor's reply, not the actor itself. Race the query against the
-        // turn's cancellation token so interrupting a turn actually unblocks the
-        // actor's mailbox instead of hanging it forever.
+        // Turn I/O runs on the spawned active-turn task (not the session actor).
+        // Race the query against the turn cancel token so interrupt unblocks
+        // promptly even when the join handle has not been aborted yet.
         //
         // The stream-loop's biased select! checks the cancel token before every
         // chunk.  On interrupt it breaks immediately, the post-processing stage
         // commits partial assistant/reasoning text to session, then the cancel
         // guard before tool execution skips incomplete tool calls and ends the
         // turn cleanly.  The tool-execution cancel guard already handles the
-        // "cancel during tools" case (line ~1827).
+        // "cancel during tools" case.
         let result = {
             let provider = self.usage_ledger.instrumented_provider(
                 runtime_context.provider_for_route(turn_config.provider_route.clone()),

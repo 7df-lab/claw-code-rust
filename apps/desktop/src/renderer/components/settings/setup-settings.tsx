@@ -141,13 +141,7 @@ function MigrationSection() {
 	const migratedFrom = onboardingState.migratedFrom ?? []
 
 	if (!onboardingState.migrationPerformed || migratedFrom.length === 0) {
-		return (
-			<SettingsSection title="Configuration Migration">
-				<SettingsRow label="Status" description="No migration has been performed">
-					<span className="text-sm text-muted-foreground">N/A</span>
-				</SettingsRow>
-			</SettingsSection>
-		)
+		return null
 	}
 
 	const migratedLabels = migratedFrom.map((p) => PROVIDER_LABELS[p] ?? p).join(", ")

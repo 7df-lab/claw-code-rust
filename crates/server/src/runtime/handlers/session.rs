@@ -282,10 +282,15 @@ impl ServerRuntime {
             }
         };
 
-        for handle in self.list_session_handles().await {
-            let Some(runtime_summary) = handle.summary().await else {
-                continue;
-            };
+        // Parallel mailbox reads: the actor is short-command only, so this
+        // stays bounded even when a turn is active on some sessions.
+        let handles = self.list_session_handles().await;
+        let summaries =
+            futures::future::join_all(handles.into_iter().map(|handle| async move {
+                handle.summary().await
+            }))
+            .await;
+        for runtime_summary in summaries.into_iter().flatten() {
             if runtime_summary.ephemeral || runtime_summary.agent_path.is_some() {
                 continue;
             }
@@ -1212,6 +1217,32 @@ impl ServerRuntime {
         history.session.map(|session| *session)
     }
 
+    /// Overlays live runtime pointers onto a durable session snapshot.
+    ///
+    /// Rollout / index snapshots almost always report `Idle`; in-flight turns
+    /// live in `ActiveTurnRegistry`. List/read must project that truth so
+    /// clients (e.g. delete-refill) do not treat a working session as idle.
+    async fn apply_live_session_runtime_fields(
+        &self,
+        session_id: SessionId,
+        session: &mut devo_protocol::native::session::Session,
+    ) {
+        match self.runtime_active_turn_id(session_id).await {
+            Some(turn_id) => {
+                session.status = devo_protocol::native::session::SessionStatus::Active;
+                session.active_turn_id = Some(
+                    devo_protocol::native::ids::TurnId::from_legacy_uuid(uuid::Uuid::from(
+                        turn_id,
+                    )),
+                );
+            }
+            None => {
+                session.status = devo_protocol::native::session::SessionStatus::Idle;
+                session.active_turn_id = None;
+            }
+        }
+    }
+
     /// Native `session/read` (L2-DES-APP-008): one session's
     /// rollout-backed canonical snapshot.
     pub(crate) async fn handle_native_session_read(
@@ -1237,13 +1268,15 @@ impl ServerRuntime {
                 "session id is not addressable by this server",
             );
         };
-        let Some(session) = self.native_session_snapshot(session_id).await else {
+        let Some(mut session) = self.native_session_snapshot(session_id).await else {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::SessionNotFound,
                 "session does not exist",
             );
         };
+        self.apply_live_session_runtime_fields(session_id, &mut session)
+            .await;
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: devo_protocol::native::rpc_session::SessionReadResult { session },
@@ -1308,6 +1341,8 @@ impl ServerRuntime {
                 .unwrap_or_else(|| {
                     Self::native_session_from_index_metadata(&summary, summary.session_id)
                 });
+            self.apply_live_session_runtime_fields(summary.session_id, &mut session)
+                .await;
             let rollout_path = self
                 .deps
                 .db

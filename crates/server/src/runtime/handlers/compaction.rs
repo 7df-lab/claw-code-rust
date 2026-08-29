@@ -63,9 +63,9 @@ impl ServerRuntime {
             );
         };
         // `spawn_active_turn_task` has already registered runtime metadata.
-        // Compaction does not run `ExecuteTurn`, so the mailbox snapshot can
-        // miss the active turn (no spawn snapshot / no stream). Read the
-        // registry the same way native `turn/start` does.
+        // Compaction may not yet have a stream/spawn snapshot, so the mailbox
+        // reservation can miss the active turn. Read the registry the same
+        // way native `turn/start` does.
         let Some(metadata) = self
             .active_turns
             .active_turn_metadata(legacy_session_id)
@@ -371,15 +371,20 @@ impl ServerRuntime {
             .await
             .unwrap_or_else(CancellationToken::new);
 
-        // Compaction computes a replacement from a history snapshot. Keep the
-        // session mutation gate for the whole summarize-and-apply operation so
-        // rollback, turn admission, and metadata edits cannot make that
-        // replacement stale while the model call is in flight.
-        let state_change_guard = session_handle.lock_state_change().await;
-        let result = {
+        // Snapshot under the gate, then release it before the model call so
+        // admission / queue / metadata RPCs stay responsive (L2-DES-SERVER-002).
+        let (
+            items,
+            token_info,
+            model_slug,
+            request_model,
+            max_tokens,
+            provider_route,
+            budget,
+        ) = {
+            let _state_change_guard = session_handle.lock_state_change().await;
             let Some(runtime_session) = session_handle.export_runtime_session().await else {
                 tracing::warn!(session_id = %session_id, "session compaction failed: session unavailable");
-                drop(state_change_guard);
                 self.finalize_manual_compaction_turn(
                     &session_handle,
                     session_id,
@@ -420,57 +425,83 @@ impl ServerRuntime {
                 .get(&model_slug)
                 .and_then(|m| m.max_tokens.map(|t| t as usize))
                 .unwrap_or(4096);
-
-            tracing::debug!(
-                session_id = %session_id,
-                turn_id = %turn.turn_id,
-                model = %model_slug,
-                request_model = %request_model,
-                item_count = items.len(),
-                input_tokens = token_info.input_tokens,
-                cached_input_tokens = token_info.cached_input_tokens,
-                output_tokens = token_info.output_tokens,
-                "starting compaction summarization"
-            );
-            let provider = self.usage_ledger.instrumented_provider(
-                runtime_session
-                    .runtime_context
-                    .provider_for_route(turn_config.provider_route.clone()),
-                session_id,
-                Some(turn.turn_id),
-                devo_protocol::native::usage::UsagePurpose::Compaction,
-            );
-            let summarizer = DefaultHistorySummarizer::with_models(
-                provider,
+            let budget = core_session.config.token_budget.clone();
+            let provider_route = turn_config.provider_route.clone();
+            drop(core_session);
+            drop(runtime_session);
+            (
+                items,
+                token_info,
                 model_slug,
                 request_model,
                 max_tokens,
-            );
-
-            let config = CompactionConfig {
-                budget: core_session.config.token_budget.clone(),
-                // Proactive: user-requested /compact; preserve latest user suffix.
-                // Example: [user1, asst1, user2, asst2, user3] -> [summary, user3].
-                kind: CompactionKind::Proactive,
-            };
-
-            // Drop the core_session lock before the long summarizer await.
-            drop(core_session);
-            drop(runtime_session);
-
-            compact_history(
-                &items,
-                &token_info,
-                &summarizer,
-                &config,
-                Some(&cancel_token),
+                provider_route,
+                budget,
             )
-            .await
         };
+
+        tracing::debug!(
+            session_id = %session_id,
+            turn_id = %turn.turn_id,
+            model = %model_slug,
+            request_model = %request_model,
+            item_count = items.len(),
+            input_tokens = token_info.input_tokens,
+            cached_input_tokens = token_info.cached_input_tokens,
+            output_tokens = token_info.output_tokens,
+            "starting compaction summarization"
+        );
+        let provider = self.usage_ledger.instrumented_provider(
+            {
+                // Resolve provider without holding the session gate.
+                let Some(runtime_session) = session_handle.export_runtime_session().await else {
+                    self.finalize_manual_compaction_turn(
+                        &session_handle,
+                        session_id,
+                        turn,
+                        CompactionTurnOutcome::Failed {
+                            message: "compaction failed: session unavailable".to_string(),
+                        },
+                    )
+                    .await;
+                    return;
+                };
+                runtime_session
+                    .runtime_context
+                    .provider_for_route(provider_route)
+            },
+            session_id,
+            Some(turn.turn_id),
+            devo_protocol::native::usage::UsagePurpose::Compaction,
+        );
+        let summarizer = DefaultHistorySummarizer::with_models(
+            provider,
+            model_slug,
+            request_model,
+            max_tokens,
+        );
+
+        let config = CompactionConfig {
+            budget,
+            // Proactive: user-requested /compact; preserve latest user suffix.
+            kind: CompactionKind::Proactive,
+        };
+
+        let result = compact_history(
+            &items,
+            &token_info,
+            &summarizer,
+            &config,
+            Some(&cancel_token),
+        )
+        .await;
 
         // Summarize is done: detach abort so interrupt cannot kill mid-terminalize.
         // Cancel token still works for any remaining cooperative checks.
         self.detach_active_turn_abort(session_id).await;
+
+        // Apply under the gate so replace_state cannot race admission/edit.
+        let state_change_guard = session_handle.lock_state_change().await;
 
         match result {
             Err(devo_core::history::compaction::CompactionError::Canceled) => {

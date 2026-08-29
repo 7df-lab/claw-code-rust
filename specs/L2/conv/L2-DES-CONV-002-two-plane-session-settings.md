@@ -33,16 +33,20 @@ This document does **not** cover:
 
 ## Current State (Audit Summary)
 
-Settings writes today flow through the session actor mailbox, which is blocked for the entire duration of an active turn (`crates/server/src/runtime/session_actor/actor_loop.rs`, `ExecuteTurn` awaits `execute_turn_in_actor` inline). Consequences:
+**Historical (pre L2-DES-SERVER-002):** settings writes and many reads flowed through the session actor mailbox while `ExecuteTurn` ran unbounded model/tool I/O inline on that same task. Mid-turn RPCs that awaited the mailbox appeared to hang for the turn duration.
+
+**Current (after L2-DES-SERVER-002):** turns check out a `TurnWorkingSet` and run on a spawned task; the actor mailbox stays short-command only. Settings writes use the persist-first path below. Remaining risks are incomplete control-plane coverage and merge races—not a blocked mailbox.
 
 - `session/metadata/update` is the unified settings write. It persists first,
   notifies the actor best-effort, and returns without waiting for an active turn
   to finish.
-- Persistence is record-level and actor-dependent: the handler waits for the actor, then appends a full-record `SessionMeta` rollout line (`crates/server/src/runtime/handlers/session.rs:391`). The crash-loss window equals the turn duration.
-- The same setting has up to five independently captured copies with no synchronization discipline: actor `state.config` / `state.core.config`, `TurnInlineState.hook_context.config` (turn-start snapshot; updated by approval grants but not by preset changes), the by-value `permission_mode` captured in `build_permission_checker` (`crates/server/src/runtime/turn_exec/query.rs:98`), the by-value `TurnConfig` in the core query loop, and `ToolRuntimeContext.sandbox_profile` (consumed per tool call at `crates/core/src/tools/router.rs:277`).
-- The implicit, undocumented promise for every setting is: *blocks until turn end; effective next turn; persisted after actor processing.*
-
-Already aligned with the target model: queue (session plane, durable) vs steer (turn plane, ephemeral channel); the two-level session/turn approval caches; mid-turn approval grants applied directly to `TurnInlineState` (`crates/server/src/runtime/approval.rs:512`); per-turn cancellation tokens.
+- Persistence uses field-level `InternalRecordV2::SessionSettings` lines (plus
+  legacy dual-write where still present); crash loss is bounded by the sync
+  append, not the turn duration.
+- Live mid-turn effect rides `TurnInlineState` overlays (`sandbox_profile_live`,
+  `live_turn_settings`) per DD-5/DD-6.
+- Queue (session plane, durable) vs steer (turn plane, ephemeral channel);
+  two-level session/turn approval caches; per-turn cancellation tokens.
 
 ## Design Decisions
 
@@ -68,7 +72,7 @@ Promises of the call:
 
 **Decision**: the handler, holding the per-session `state_change_gate`, performs: (1) synchronous append of field-level settings lines to the rollout store; (2) best-effort mailbox notification to the actor (epoch-tagged) to refresh its cached copies, update summary/record, clear caches, and broadcast; (3) when a turn is active, delivery of the override to the turn control plane (DD-5). Success is returned after step (1).
 
-Why the mailbox notification can be best-effort: mailbox FIFO guarantees the notification is processed before the next `ExecuteTurn`, so the next turn's baseline snapshot always includes the change; a crash is covered by the recovery path (DD-4). The actor never writes the live override channel; handlers do.
+Why the mailbox notification can be best-effort: after L2-DES-SERVER-002 the actor mailbox stays short-command only, so `notify_*` is processed before the next turn's `CheckoutTurnWorkingSet` baseline snapshot; a crash is covered by the recovery path (DD-4). The actor never writes the live override channel; handlers do.
 
 ### DD-4: Field-level append-only settings log with epochs
 

@@ -126,30 +126,34 @@ impl ServerRuntime {
         })
     }
 
-    /// Finds the rollout file for a session, loaded or cold: a resumed/live
-    /// session knows its path; otherwise the SQLite index, then the
-    /// file-name scan. Ephemeral sessions have no persisted history and
-    /// resolve to `None` (reported as not found — they have no history to
-    /// page).
+    /// Finds the rollout file for a session, loaded or cold. Prefer durable
+    /// indexes (SQLite, file scan) so history reads never depend on a
+    /// mailbox round-trip. Fall back to the live actor record when the
+    /// session is loaded and the index has no path yet.
     pub(crate) async fn resolve_rollout_path(
         &self,
         session_id: &devo_protocol::native::ids::SessionId,
     ) -> Option<PathBuf> {
         let legacy_id = SessionId::try_from(session_id.as_str()).ok()?;
-        if let Some(handle) = self.session(legacy_id).await
-            && let Some(record) = handle.record().await.flatten()
-        {
-            return Some(record.rollout_path);
-        }
         if let Ok(Some(index)) = self.deps.db.get_session_index(&legacy_id)
             && let Some(path) = index.rollout_path
         {
             return Some(path);
         }
-        self.rollout_store
+        if let Some(path) = self
+            .rollout_store
             .find_rollout_by_session_id(&legacy_id)
             .ok()
             .flatten()
+        {
+            return Some(path);
+        }
+        if let Some(handle) = self.session(legacy_id).await
+            && let Some(record) = handle.record().await.flatten()
+        {
+            return Some(record.rollout_path);
+        }
+        None
     }
 }
 

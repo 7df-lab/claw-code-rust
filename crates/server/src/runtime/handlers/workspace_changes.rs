@@ -106,7 +106,13 @@ impl ServerRuntime {
                 "session does not exist".to_string(),
             ));
         };
-        let Some(reservation) = session_handle.turn_reservation_snapshot().await else {
+        // Prefer the registry/spawn fast path when a turn is active so reads
+        // never wait on turn I/O; falls through to the mailbox when idle.
+        let Some(reservation) = self
+            .session_turn_reservation_snapshot(params.session_id)
+            .await
+            .or(session_handle.turn_reservation_snapshot().await)
+        else {
             return Err((
                 ProtocolErrorCode::SessionNotFound,
                 "session does not exist".to_string(),

@@ -16,10 +16,11 @@ use crate::turn::TurnMetadata;
 use super::SessionActorState;
 use super::snapshots::HookContextSnapshot;
 
-/// Mutable session fields updated during an in-actor turn without mailbox round-trips.
+/// Mutable session fields updated during an active turn without mailbox round-trips.
 ///
-/// Transient scratch state registered in `ActiveTurnRegistry` while the actor
-/// mailbox is blocked. Merges into durable actor state when the turn completes.
+/// Transient scratch state registered in `ActiveTurnRegistry` while the turn
+/// task owns a [`super::TurnWorkingSet`]. Merges into durable actor state when
+/// the turn completes via `MergeTurn`.
 pub(crate) struct TurnInlineState {
     pub(crate) turn_id: TurnId,
     pub(crate) turn_kind: TurnKind,

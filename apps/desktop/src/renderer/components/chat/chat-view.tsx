@@ -20,7 +20,6 @@ import { cn } from "@devo/ui/lib/utils"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import {
-	ArrowUpToLineIcon,
 	GitForkIcon,
 	GoalIcon,
 	ListTodoIcon,
@@ -330,7 +329,7 @@ interface ScrollHandle {
  * Bridge that exposes the StickToBottom `scrollToBottom` to the parent
  * via a ref so imperative callers (handleSend, question reply, etc.)
  * can force a scroll-to-bottom even when the user has scrolled away.
- * Also exposes scroll position helpers for the "jump to start" feature.
+ * Also exposes scroll position helpers for load-earlier anchor restore.
  */
 function ScrollBridge({ scrollRef }: { scrollRef: React.RefObject<ScrollHandle | null> }) {
 	const ctx = useStickToBottomContext()
@@ -522,81 +521,6 @@ function VirtualizedTurnList({ turns, renderTurn }: VirtualizedTurnListProps) {
 				)
 			})}
 		</div>
-	)
-}
-
-/**
- * Floating pill button that appears when the agent finishes working.
- * Scrolls to the beginning of the last assistant response so the user
- * can read it from the top. Dismisses on click or after 8 seconds.
- *
- * Captures the scroll container's scrollHeight when the agent starts
- * working (idle-to-working transition). This position corresponds to
- * "where the new response began" regardless of whether the agent
- * started from a fresh message, a question answer, or a permission grant.
- *
- * Must be rendered inside `<Conversation>` to position correctly.
- */
-function ScrollToResponseStart({
-	isWorking,
-	scrollRef,
-}: {
-	isWorking: boolean
-	scrollRef: React.RefObject<ScrollHandle | null>
-}) {
-	const [visible, setVisible] = useState(false)
-	const prevWorkingRef = useRef(isWorking)
-	// Saved scrollHeight at the moment the agent started working.
-	// This is the Y position where the new response content begins.
-	const savedScrollTopRef = useRef(0)
-
-	useEffect(() => {
-		const wasWorking = prevWorkingRef.current
-		prevWorkingRef.current = isWorking
-
-		if (!wasWorking && isWorking) {
-			// Agent just started working -- snapshot where the response will begin.
-			// scrollHeight is the total content height; subtracting a small offset
-			// so the scroll lands slightly above the first new content.
-			const handle = scrollRef.current
-			if (handle) {
-				savedScrollTopRef.current = Math.max(0, handle.getScrollHeight() - 80)
-			}
-		}
-
-		if (wasWorking && !isWorking) {
-			// Agent finished -- show the pill
-			setVisible(true)
-		}
-
-		if (isWorking) {
-			setVisible(false)
-		}
-	}, [isWorking, scrollRef])
-
-	// Auto-dismiss after 8 seconds
-	useEffect(() => {
-		if (!visible) return
-		const timer = setTimeout(() => setVisible(false), 8000)
-		return () => clearTimeout(timer)
-	}, [visible])
-
-	const handleClick = useCallback(() => {
-		scrollRef.current?.scrollToPosition(savedScrollTopRef.current)
-		setVisible(false)
-	}, [scrollRef])
-
-	if (!visible) return null
-
-	return (
-		<button
-			type="button"
-			onClick={handleClick}
-			className="absolute bottom-[calc(var(--chat-composer-inset)+3.5rem)] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground shadow-md transition-colors hover:bg-muted hover:text-foreground"
-		>
-			<ArrowUpToLineIcon className="size-3" />
-			<span>Jump to start of response</span>
-		</button>
 	)
 }
 
@@ -1108,7 +1032,6 @@ export function ChatView({
 							)}
 						</div>
 					</ConversationContent>
-					<ScrollToResponseStart isWorking={isWorking} scrollRef={scrollRef} />
 					<ConversationScrollButton className="!bottom-[calc(var(--chat-composer-inset)+1rem)]" />
 				</Conversation>
 

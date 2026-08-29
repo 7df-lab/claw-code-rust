@@ -918,9 +918,9 @@ impl ServerRuntime {
                     persisted: pending.persisted,
                     tx: scope_tx,
                 };
-                // ExecuteTurn owns the session mailbox, so ApplyApprovalScope cannot
-                // run until the turn ends. Update live TurnInlineState here so the
-                // same turn's later tool calls see PathPrefix/Session grants.
+                // Apply durable scope via the mailbox, and update live
+                // TurnInlineState so the same turn's later tool calls see
+                // PathPrefix/Session grants without waiting on MergeTurn.
                 self.apply_approval_scope_to_turn_inline(
                     host_session_id,
                     &scope,

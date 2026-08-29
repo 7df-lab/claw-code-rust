@@ -163,11 +163,8 @@ impl ServerRuntime {
                 "session already has an active prompt turn",
             );
         };
-        // `spawn_active_turn_task` has already queued `ExecuteTurn`, so the
-        // actor mailbox is unresponsive until that turn ends. Read the
-        // runtime registry instead of `session_turn_reservation_snapshot`
-        // (mailbox) or the TUI's second `turn/start` times out while the
-        // turn continues in the background.
+        // Prefer runtime registry metadata over a mailbox reservation read:
+        // `spawn_active_turn_task` registers before the turn task checkouts.
         let Some(metadata) = self
             .active_turns
             .active_turn_metadata(legacy_session_id)
@@ -217,8 +214,8 @@ impl ServerRuntime {
             );
         };
         // Registry presence is mailbox-free: `spawn_active_turn_task`
-        // records the turn before `ExecuteTurn` registers a stream. Native
-        // busy clients must reject here instead of waiting on the actor.
+        // records the turn before the stream is registered. Native busy
+        // clients must reject here instead of waiting on the actor.
         if queue_policy == TurnStartQueuePolicy::RejectActive
             && self
                 .runtime_active_turn_id(params.session_id)
@@ -232,10 +229,7 @@ impl ServerRuntime {
             );
         }
         // A busy session needs no state-change gate to enqueue: the queue
-        // mutex is the serialization point for queue ops, and the gate can
-        // be held for the rest of a turn (final title generation parking
-        // on the busy actor mailbox) or across a compaction provider call,
-        // which would park every push behind it without responding.
+        // mutex is the serialization point for queue ops (01 §4.3).
         let Some(mut reservation) = self
             .session_turn_reservation_snapshot(params.session_id)
             .await
@@ -398,11 +392,9 @@ impl ServerRuntime {
                 now,
             );
             let queued_input_id = item.id;
-            // Push into the shared queue directly instead of the actor
-            // mailbox: a busy actor does not service its mailbox until the
-            // turn finishes, and callers must see their entry synchronously
-            // (01 §4.3 last-write-wins). The actor reads the same shared
-            // queue at drain time.
+            // Push into the shared queue directly (01 §4.3 last-write-wins):
+            // callers must see their entry synchronously at decision points.
+            // The actor / turn drain reads the same shared queue.
             reservation
                 .pending_turn_queue
                 .lock()

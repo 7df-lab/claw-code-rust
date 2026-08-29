@@ -1480,7 +1480,18 @@ class NativeClient {
 		}
 		this.sessions.set(id, session)
 		this.sessionDirectories.set(id, session.directory ?? defaultCwd())
-		this.sessionStatuses.set(id, String(info.status).toLowerCase() === "active" ? { type: "busy" } : { type: "idle" })
+		// Durable snapshots (session/list, resume, metadata) often report Idle
+		// even while a turn is live; live busy/idle rides turn/* and
+		// session/statusChanged. Never downgrade a known in-flight status from
+		// a snapshot — otherwise delete-refill list calls clear "working" UI.
+		const snapshotBusy = String(info.status).toLowerCase() === "active"
+		const existingStatus = this.sessionStatuses.get(id)
+		const existingInFlight =
+			existingStatus?.type === "busy" || existingStatus?.type === "retry"
+		this.sessionStatuses.set(
+			id,
+			snapshotBusy ? { type: "busy" } : existingInFlight ? existingStatus : { type: "idle" },
+		)
 		return session
 	}
 

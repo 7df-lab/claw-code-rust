@@ -537,12 +537,8 @@ impl ServerRuntime {
     }
 
     async fn apply_parent_usage_snapshot(&self, snapshot: ParentUsageSnapshot) {
-        // The turn event stream runs while the session actor is blocked inside
-        // `execute_turn_in_actor` awaiting that same stream. Any mailbox send to
-        // `snapshot.session_id` here can fill the actor mailbox and then block
-        // forever on `send().await`, which stops the event stream from `recv`ing,
-        // fills the event channel, and wedges the whole turn. Prefer the in-flight
-        // turn inline state whenever it is registered.
+        // Prefer the in-flight turn inline state whenever it is registered so
+        // usage lands without a mailbox hop from the event stream task.
         let applied_inline =
             if let Some(stream) = self.active_stream_state(snapshot.session_id).await {
                 let mut stream = stream.lock().await;
@@ -561,10 +557,7 @@ impl ServerRuntime {
             };
         if !applied_inline {
             // Child agent event streams publish usage onto the parent session.
-            // The parent actor may be inside `execute_turn_in_actor` (or in the
-            // brief window after it unregisters its active stream but before it
-            // resumes polling). Blocking `send().await` here can fill the parent
-            // mailbox and deadlock the child stream, so only try-send.
+            // Use try-send so a full mailbox cannot deadlock the child stream.
             if let Some(session_handle) = self.session(snapshot.session_id).await {
                 let _ = session_handle.try_apply_parent_usage_snapshot(snapshot);
             }

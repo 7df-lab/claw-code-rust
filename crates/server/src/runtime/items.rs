@@ -51,10 +51,10 @@ impl ServerRuntime {
 
     /// Spawns final (LLM) title generation in the background.
     ///
-    /// Safe to call at turn start: actor mailbox round-trips happen here, then
-    /// the model call runs on a detached task so it does not block `ExecuteTurn`.
-    /// Duplicate schedules for the same session are ignored while a generation
-    /// task is already in flight.
+    /// Safe to call at turn start: short mailbox round-trips happen here, then
+    /// the model call runs on a detached task (must not hold `state_change_gate`
+    /// across that await). Duplicate schedules for the same session are ignored
+    /// while a generation task is already in flight.
     pub(super) async fn maybe_schedule_final_title_generation(
         self: &Arc<Self>,
         session_id: SessionId,
@@ -269,7 +269,13 @@ impl ServerRuntime {
             let Some(session_handle) = self.session(session_id).await else {
                 return;
             };
-            let state_change_guard = session_handle.lock_state_change().await;
+            // Persist-first title apply: do not hold `state_change_gate` across
+            // mailbox or disk waits. The actor command is short; concurrent
+            // user renames last-write-wins via the title_state Final check.
+            let previous_title = session_handle
+                .summary()
+                .await
+                .and_then(|summary| summary.title);
             let Some(updated_summary) = session_handle
                 .update_title(
                     generated_title.clone(),
@@ -285,7 +291,7 @@ impl ServerRuntime {
                     &record,
                     generated_title.clone(),
                     SessionTitleState::Final(SessionTitleFinalSource::ModelGenerated),
-                    updated_summary.title.clone(),
+                    previous_title,
                 )
             {
                 tracing::warn!(session_id = %session_id, error = %error, "failed to persist title");
@@ -293,7 +299,6 @@ impl ServerRuntime {
 
             self.persist_session_summary_if_persistent(session_id, &updated_summary)
                 .await;
-            drop(state_change_guard);
 
             self.broadcast_event(ServerEvent::SessionTitleUpdated(SessionEventPayload {
                 session: updated_summary,

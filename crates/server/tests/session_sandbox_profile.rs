@@ -148,20 +148,18 @@ async fn start_session(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": null,
-                    "model": "test-model"
+                    "idempotencyKey": "sandbox-profile-session"
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let response: SuccessResponse<devo_server::SessionStartResult> =
+        .context("session/new response")?;
+    let response: SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult> =
         serde_json::from_value(response)?;
-    Ok(response.result.session.session_id)
+    Ok(SessionId::try_from(response.result.session.id.as_str())?)
 }
 
 async fn new_acp_session(

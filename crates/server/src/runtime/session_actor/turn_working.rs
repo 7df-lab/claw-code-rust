@@ -80,8 +80,8 @@ impl SessionActorState {
         }
         if session_model.is_some() {
             self.summary.model = session_model;
-        }
-        if session_model_binding_id.is_some() {
+            self.summary.model_binding_id = session_model_binding_id;
+        } else if session_model_binding_id.is_some() {
             self.summary.model_binding_id = session_model_binding_id;
         }
         if session_effort.is_some() {
@@ -121,8 +121,8 @@ impl SessionActorState {
                 }
                 if actor_record.model.is_some() {
                     turn_record.model = actor_record.model;
-                }
-                if actor_record.model_binding_id.is_some() {
+                    turn_record.model_binding_id = actor_record.model_binding_id;
+                } else if actor_record.model_binding_id.is_some() {
                     turn_record.model_binding_id = actor_record.model_binding_id;
                 }
                 if actor_record.reasoning_effort_selection.is_some() {

@@ -15,14 +15,11 @@ import {
 	usePromptInputAttachments,
 	usePromptInputController,
 } from "@devo/ui/components/ai-elements/prompt-input"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@devo/ui/components/tooltip"
 import { cn } from "@devo/ui/lib/utils"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import {
 	GitForkIcon,
-	GoalIcon,
-	ListTodoIcon,
 	Loader2Icon,
 	PlusIcon,
 	Redo2Icon,
@@ -32,7 +29,9 @@ import {
 } from "lucide-react"
 import {
 	type CSSProperties,
+	Fragment,
 	type ReactNode,
+	type MutableRefObject,
 	type RefObject,
 	useCallback,
 	useEffect,
@@ -42,10 +41,16 @@ import {
 	useRef,
 	useState,
 } from "react"
-import { collaborationModeFamily } from "../../atoms/collaboration-mode"
+import { collaborationModeFamily, type CollaborationMode } from "../../atoms/collaboration-mode"
 import { compactionStatusFamily } from "../../atoms/compaction"
 import { messagesFamily } from "../../atoms/messages"
 import { projectModelsAtom, setProjectModelAtom } from "../../atoms/preferences"
+import {
+	composerFromSessionModel,
+	hydrateSessionComposerState,
+	sessionComposerFamily,
+	setSessionComposerAtom,
+} from "../../atoms/session-composer"
 import type { ProviderRetryStatus, SessionSetupPhase } from "../../atoms/sessions"
 import { removePermissionAtom, sessionFamily } from "../../atoms/sessions"
 import {
@@ -53,7 +58,7 @@ import {
 	effectiveQuestionFamily,
 } from "../../atoms/derived/session-requests"
 import { appStore } from "../../atoms/store"
-import { sessionScrollTopFamily, settingsOverlayOpenAtom } from "../../atoms/ui"
+import { sessionScrollSnapshotFamily, settingsOverlayOpenAtom } from "../../atoms/ui"
 import { useDraftActions, useDraftSnapshot } from "../../hooks/use-draft"
 import {
 	freezeSessionScroll,
@@ -64,6 +69,12 @@ import {
 	setPendingRestoreScrollTop,
 	trackSettingsOverlayOpen,
 } from "../../lib/settings-scroll-freeze"
+import {
+	isRestoringSessionScroll,
+	planSessionScrollRestore,
+	restoreSessionScrollWhenReady,
+	snapshotFromScrollElement,
+} from "../../lib/session-scroll-restore"
 import type {
 	ConfigData,
 	ModelRef,
@@ -74,6 +85,7 @@ import type {
 import {
 	getModelInputCapabilities,
 	getModelVariants,
+	modelRefFromSlug,
 	resolveEffectiveModel,
 	useModelState,
 } from "../../hooks/use-devo-data"
@@ -81,10 +93,15 @@ import type { ChatTurn } from "../../hooks/use-session-chat"
 import { createLogger } from "../../lib/logger"
 import { computeTurnWorkTimeSplit, formatWorkDuration } from "../../lib/session-metrics"
 import type { Agent, FileAttachment, PermissionResponse, QuestionAnswer } from "../../lib/types"
-import { persistRuntimeModelConfigOption, persistRuntimeModelSelection } from "../../lib/model-config-options"
-import { getProjectClient } from "../../services/connection-manager"
+import { getBaseClient, getProjectClient } from "../../services/connection-manager"
 
 const log = createLogger("chat-view")
+
+/** Session ids whose collaboration mode was already seeded from persisted settings this run. */
+const seededCollaborationModes = new Set<string>()
+
+/** Debounce for persist-on-selection: coalesces rapid model/effort/mode changes. */
+const SELECTION_PERSIST_DEBOUNCE_MS = 500
 
 const VIRTUALIZE_TURN_THRESHOLD = 30
 const VIRTUAL_TURN_GAP = 40
@@ -96,7 +113,10 @@ import {
 } from "../review/review-comments"
 import { PermissionItem } from "./chat-permission"
 import { ChatQuestionFlow } from "./chat-question"
-import { ChatTurnComponent } from "./chat-turn"
+import { ChatTurnComponent, isSyntheticMessage } from "./chat-turn"
+import { ForkBoundaryDivider } from "./fork-boundary-divider"
+import { forkBoundaryAfterTurnIndex } from "./fork-boundary"
+import { ChatLoadingSkeleton } from "./chat-turn-skeleton"
 import {
 	ComposerStatusStack,
 	type ComposerGoal,
@@ -114,6 +134,7 @@ import {
 	type PromptMention,
 	reconcileMentions,
 } from "./prompt-mentions"
+import { ComposerModeChip } from "./composer-mode-chip"
 import { PromptToolbar } from "./prompt-toolbar"
 import { SessionTaskList } from "./session-task-list"
 import { SkillPickerDialog } from "./skill-picker-dialog"
@@ -163,84 +184,49 @@ function AttachButton({ disabled }: { disabled?: boolean }) {
 	)
 }
 
-function ComposerTriggerChip({
-	trigger,
-	onRemove,
-}: {
-	trigger: ComposerTrigger
-	onRemove: () => void
-}) {
-	const isPlan = trigger === "plan"
-	const Icon = isPlan ? ListTodoIcon : GoalIcon
-	const label = isPlan ? "Plan" : "Goal"
-	const description = isPlan ? "Create a plan" : "Set a goal"
-
-	return (
-		<Tooltip>
-			<TooltipTrigger
-				render={
-					<div className="group inline-flex h-7 items-center gap-1 rounded-full px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" />
-				}
-			>
-				<button
-					type="button"
-					aria-label={`Remove ${label} trigger`}
-					onClick={onRemove}
-					// User requirement: hover replaces the trigger icon in-place with
-					// the close affordance, so the chip text never shifts.
-					className="pointer-events-none relative inline-flex size-3.5 shrink-0 items-center justify-center text-muted-foreground transition-colors group-focus-within:pointer-events-auto group-focus-within:text-foreground group-hover:pointer-events-auto group-hover:text-foreground focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-				>
-					<Icon
-						className="size-3.5 stroke-[1.5] opacity-100 transition-opacity group-focus-within:opacity-0 group-hover:opacity-0"
-						aria-hidden="true"
-					/>
-					<XIcon
-						className="absolute size-3.5 stroke-[1.5] opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
-						aria-hidden="true"
-					/>
-				</button>
-				<span>{label}</span>
-			</TooltipTrigger>
-			<TooltipContent side="top" align="start">
-				<div>{description}</div>
-				{isPlan && <div className="text-[11px] opacity-70">Shift + Tab to toggle</div>}
-			</TooltipContent>
-		</Tooltip>
-	)
-}
-
 /**
- * Instant-scroll when session content finishes loading.
- *
- * The `<Conversation>` (StickToBottom) uses `initial="instant"` for the first
- * paint, but messages are fetched async — by the time they arrive and render,
- * the library treats the content growth as a *resize* and applies
- * `resize="smooth"`, causing a visible scroll animation from top → bottom.
- *
- * This component sits inside `<Conversation>` so it can access the
- * StickToBottom context. It watches for the loading→loaded transition
- * and forces an instant scroll-to-bottom.
+ * Restores scroll position when session content finishes loading or the session
+ * remounts after LRU eviction. Respects saved scrollTop unless the user was at bottom.
  */
-function ScrollOnLoad({ loading, sessionId }: { loading: boolean; sessionId: string }) {
-	const { scrollToBottom } = useStickToBottomContext()
+function ScrollOnLoad({
+	loading,
+	sessionId,
+	isActive,
+}: {
+	loading: boolean
+	sessionId: string
+	isActive: boolean
+}) {
+	const { scrollToBottom, scrollRef, stopScroll } = useStickToBottomContext()
 	const settingsOverlayOpen = useAtomValue(settingsOverlayOpenAtom)
 	const prevLoadingRef = useRef(loading)
-	const prevSessionRef = useRef(sessionId)
+	const prevActiveRef = useRef(isActive)
 
 	useLayoutEffect(() => {
 		const wasLoading = prevLoadingRef.current
-		const sessionChanged = prevSessionRef.current !== sessionId
+		const becameActive = !prevActiveRef.current && isActive
 		prevLoadingRef.current = loading
-		prevSessionRef.current = sessionId
+		prevActiveRef.current = isActive
 
-		if (settingsOverlayOpen || getPendingRestoreScrollTop() != null) return
+		if (!isActive || settingsOverlayOpen || getPendingRestoreScrollTop() != null) return
 
-		// Instant scroll when: loading just finished, or session changed while not loading
-		// (e.g. messages were already cached in the Jotai store)
-		if ((wasLoading && !loading) || (sessionChanged && !loading)) {
-			scrollToBottom("instant")
+		if ((wasLoading && !loading) || becameActive) {
+			const snapshot = appStore.get(sessionScrollSnapshotFamily(sessionId))
+			const plan = planSessionScrollRestore(snapshot)
+			if (plan.action === "bottom") {
+				scrollToBottom("instant")
+			} else {
+				markScrollRestored(plan.scrollTop)
+				restoreSessionScrollWhenReady({
+					sessionId,
+					getElement: () => scrollRef.current,
+					scrollTop: plan.scrollTop,
+					stopScroll,
+					onRestored: markScrollRestored,
+				})
+			}
 		}
-	}, [loading, sessionId, scrollToBottom, settingsOverlayOpen])
+	}, [loading, sessionId, isActive, scrollToBottom, scrollRef, stopScroll, settingsOverlayOpen])
 
 	return null
 }
@@ -249,23 +235,29 @@ function ScrollOnLoad({ loading, sessionId }: { loading: boolean; sessionId: str
  * Tracks scroll position while the session is visible so it can be restored
  * after returning from Settings (StickToBottom may reset on layout changes).
  */
-function ScrollPositionTracker({ sessionId }: { sessionId: string }) {
+function ScrollPositionTracker({
+	sessionId,
+	isActive,
+}: {
+	sessionId: string
+	isActive: boolean
+}) {
 	const { scrollRef } = useStickToBottomContext()
-	const setScrollTop = useSetAtom(sessionScrollTopFamily(sessionId))
+	const setSnapshot = useSetAtom(sessionScrollSnapshotFamily(sessionId))
 	const settingsOverlayOpen = useAtomValue(settingsOverlayOpenAtom)
 
 	useEffect(() => {
 		const element = scrollRef.current
-		if (!element) return
+		if (!element || !isActive) return
 
 		const onScroll = () => {
 			if (settingsOverlayOpen) return
-			setScrollTop(element.scrollTop)
+			setSnapshot(snapshotFromScrollElement(element))
 		}
 
 		element.addEventListener("scroll", onScroll, { passive: true })
 		return () => element.removeEventListener("scroll", onScroll)
-	}, [scrollRef, sessionId, setScrollTop, settingsOverlayOpen])
+	}, [scrollRef, sessionId, isActive, setSnapshot, settingsOverlayOpen])
 
 	return null
 }
@@ -315,7 +307,7 @@ function SettingsScrollGuard({ sessionId }: { sessionId: string }) {
 	return null
 }
 
-interface ScrollHandle {
+export interface ChatScrollHandle {
 	scrollToBottom: (behavior?: "instant" | "smooth") => void
 	/** Returns the current scrollHeight of the scroll container */
 	getScrollHeight: () => number
@@ -331,7 +323,7 @@ interface ScrollHandle {
  * can force a scroll-to-bottom even when the user has scrolled away.
  * Also exposes scroll position helpers for load-earlier anchor restore.
  */
-function ScrollBridge({ scrollRef }: { scrollRef: React.RefObject<ScrollHandle | null> }) {
+function ScrollBridge({ scrollRef }: { scrollRef: React.RefObject<ChatScrollHandle | null> }) {
 	const ctx = useStickToBottomContext()
 	useImperativeHandle(
 		scrollRef,
@@ -364,7 +356,7 @@ function LoadEarlierOnScroll({
 	hasEarlierMessages: boolean
 	loadingEarlier: boolean
 	onLoadEarlier?: () => void | Promise<void>
-	scrollRef: RefObject<ScrollHandle | null>
+	scrollRef: RefObject<ChatScrollHandle | null>
 }) {
 	const { scrollRef: containerRef, stopScroll } = useStickToBottomContext()
 	const sentinelRef = useRef<HTMLDivElement>(null)
@@ -474,9 +466,10 @@ function turnListRevision(turns: ChatTurn[]): string {
 interface VirtualizedTurnListProps {
 	turns: ChatTurn[]
 	renderTurn: (turn: ChatTurn, index: number) => ReactNode
+	sessionId: string
 }
 
-function VirtualizedTurnList({ turns, renderTurn }: VirtualizedTurnListProps) {
+function VirtualizedTurnList({ turns, renderTurn, sessionId }: VirtualizedTurnListProps) {
 	const { scrollRef } = useStickToBottomContext()
 	const turnsRevision = useMemo(() => turnListRevision(turns), [turns])
 	const virtualizer = useVirtualizer({
@@ -484,12 +477,26 @@ function VirtualizedTurnList({ turns, renderTurn }: VirtualizedTurnListProps) {
 		getScrollElement: () => scrollRef.current,
 		getItemKey: (index) => turns[index]?.id ?? index,
 		estimateSize: (index) => estimateTurnSize(turns[index]),
-		overscan: 8,
+		overscan: 5,
 	})
 
 	useLayoutEffect(() => {
+		if (!isRestoringSessionScroll(sessionId)) {
+			virtualizer.measure()
+			return
+		}
+		const pending = getPendingRestoreScrollTop()
+		const snapshot = appStore.get(sessionScrollSnapshotFamily(sessionId))
+		const plan = planSessionScrollRestore(
+			pending != null
+				? { scrollTop: pending, atBottom: false, hasSnapshot: true }
+				: snapshot,
+		)
+		if (plan.action === "restore" && scrollRef.current) {
+			scrollRef.current.scrollTop = plan.scrollTop
+		}
 		virtualizer.measure()
-	}, [turnsRevision, virtualizer])
+	}, [turnsRevision, virtualizer, scrollRef, sessionId])
 
 	return (
 		<div
@@ -651,6 +658,8 @@ function MentionReconciler({
 interface ChatViewProps {
 	turns: ChatTurn[]
 	loading: boolean
+	/** True when fetching with no cached turns to display yet. */
+	showLoading?: boolean
 	/** Whether earlier messages are currently being loaded */
 	loadingEarlier: boolean
 	/** Whether there are earlier messages that can be loaded */
@@ -691,14 +700,41 @@ interface ChatViewProps {
 	onUndo?: () => Promise<string | undefined>
 	onRedo?: () => Promise<void>
 	isReverted?: boolean
-	/** Revert to a specific message (for per-turn undo) */
-	onRevertToMessage?: (messageId: string) => Promise<void>
-	/** Fork from a turn boundary (messageId of the next turn's user message, or undefined for full fork) */
-	onForkFromTurn?: (messageId?: string) => Promise<void>
+	/** Fork from a turn boundary (protocol turn id, or undefined for tip fork) */
+	onForkFromTurn?: (turnId?: string) => Promise<void>
+	/** Edit and resend the latest user message */
+	onEditUserMessage?: (messageId: string, text: string) => Promise<void>
 	/** Delete a specific part from a message (for error recovery) */
 	onDeletePart?: (sessionId: string, messageId: string, partId: string) => Promise<void>
 	/** Whether the review panel is open (removes max-w constraint) */
 	reviewPanelOpen?: boolean
+	/** Parent session title for fork boundary marker */
+	parentSessionName?: string
+	/** Whether this session is the visible panel (gates scroll tracking). */
+	isActive?: boolean
+	/** When false, only render the transcript (used by SessionShell). */
+	showComposer?: boolean
+	/** When false, only render the composer (used by SessionShell). */
+	showTranscript?: boolean
+	/** Shared scroll handle when composer is rendered outside the transcript. */
+	externalScrollRef?: RefObject<ChatScrollHandle | null>
+	/** Composer height when rendered outside this ChatView instance. */
+	composerInsetPx?: number
+	/** Registers /side handler when transcript and composer are split. */
+	sideQuestionHandlerRef?: MutableRefObject<((question: string) => Promise<void>) | null>
+}
+
+type SideCard = {
+	id: string
+	question: string
+	answer: string
+	status: "running" | "done" | "failed"
+}
+
+type SelectionPersistPatch = {
+	modelID?: string
+	reasoningEffort?: string
+	mode?: string
 }
 
 /**
@@ -713,6 +749,7 @@ interface ChatViewProps {
 export function ChatView({
 	turns,
 	loading,
+	showLoading = false,
 	loadingEarlier,
 	hasEarlierMessages,
 	onLoadEarlier,
@@ -732,10 +769,17 @@ export function ChatView({
 	onUndo,
 	onRedo,
 	isReverted,
-	onRevertToMessage,
 	onForkFromTurn,
+	onEditUserMessage,
 	onDeletePart,
 	reviewPanelOpen,
+	parentSessionName,
+	isActive = true,
+	showComposer = true,
+	showTranscript = true,
+	externalScrollRef,
+	composerInsetPx,
+	sideQuestionHandlerRef,
 }: ChatViewProps) {
 	const isWorking = agent.status === "running"
 	const settingsOverlayOpen = useAtomValue(settingsOverlayOpenAtom)
@@ -757,19 +801,123 @@ export function ChatView({
 
 	// Ref to imperatively scroll the conversation to bottom from outside the
 	// <Conversation> tree (e.g. after sending a message or answering a question).
-	const scrollRef = useRef<ScrollHandle | null>(null)
+	const internalScrollRef = useRef<ChatScrollHandle | null>(null)
+	const scrollRef = externalScrollRef ?? internalScrollRef
 	const composerRef = useRef<HTMLDivElement | null>(null)
-	const [composerInset, setComposerInset] = useState(0)
+	const [measuredComposerInset, setMeasuredComposerInset] = useState(0)
+	const composerInset = composerInsetPx ?? measuredComposerInset
 
 	// Session-level error and setup phase from the session atom
 	const sessionEntry = useAtomValue(sessionFamily(agent.sessionId))
 	const sessionError = sessionEntry?.error
 	const setupPhase = sessionEntry?.setupPhase
 	const compactionStatus = useAtomValue(compactionStatusFamily(agent.sessionId))
+	const [sideCards, setSideCards] = useState<SideCard[]>([])
+
+	const startSideQuestion = useCallback(
+		async (question: string) => {
+			if (!agent.directory) return
+			const client = getProjectClient(agent.directory)
+			if (!client?.task?.startAgent) {
+				log.error("task.startAgent unavailable", { sessionId: agent.sessionId })
+				return
+			}
+			const cardId = crypto.randomUUID()
+			setSideCards((prev) => [
+				...prev,
+				{ id: cardId, question, answer: "", status: "running" },
+			])
+			const prompt =
+				"You are answering a /side side question in a lightweight forked agent.\n" +
+				"The inherited conversation is reference context only. Do not continue or modify the " +
+				"main session task. Answer only this side question.\n" +
+				"You cannot use tools in this fork: do not read files, run commands, search, or modify code. " +
+				"Produce one concise answer and stop.\n\n" +
+				`Side question:\n${question}`
+			try {
+				const result = await client.task.startAgent({
+					sessionID: agent.sessionId,
+					prompt,
+					forkTurns: "all",
+					maxTurns: 1,
+					toolPolicy: "deny_all",
+					ephemeral: true,
+				})
+				const itemId = result.data.itemId
+				const childSessionId = itemId.startsWith("item_") ? itemId.slice("item_".length) : itemId
+				let answer = ""
+				for (let attempt = 0; attempt < 40; attempt++) {
+					await new Promise((resolve) => setTimeout(resolve, 250))
+					try {
+						const messages = await client.session.messages({
+							sessionID: childSessionId,
+							limit: 50,
+						})
+						const texts: string[] = []
+						for (const entry of messages.data ?? []) {
+							if (entry.info.role !== "assistant") continue
+							for (const part of entry.parts ?? []) {
+								if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
+									texts.push(part.text)
+								}
+							}
+						}
+						answer = texts.join("\n").trim()
+						if (answer) break
+					} catch {
+						// Child may still be starting; keep polling.
+					}
+				}
+				setSideCards((prev) =>
+					prev.map((card) =>
+						card.id === cardId
+							? {
+									...card,
+									answer: answer || "No answer returned.",
+									status: answer ? "done" : "failed",
+								}
+							: card,
+					),
+				)
+			} catch (err) {
+				log.error("slash /side failed", { sessionId: agent.sessionId }, err)
+				setSideCards((prev) =>
+					prev.map((card) =>
+						card.id === cardId
+							? {
+									...card,
+									answer: err instanceof Error ? err.message : "Side question failed.",
+									status: "failed",
+								}
+							: card,
+					),
+				)
+			}
+		},
+		[agent.directory, agent.sessionId],
+	)
+
+	// Clear ephemeral side cards when switching sessions.
+	useEffect(() => {
+		setSideCards([])
+	}, [agent.sessionId])
+
+	useEffect(() => {
+		if (!sideQuestionHandlerRef || !isActive || showComposer) return
+		sideQuestionHandlerRef.current = startSideQuestion
+		return () => {
+			if (sideQuestionHandlerRef.current === startSideQuestion) {
+				sideQuestionHandlerRef.current = null
+			}
+		}
+	}, [isActive, showComposer, sideQuestionHandlerRef, startSideQuestion])
 
 	useLayoutEffect(() => {
+		if (composerInsetPx != null || !showComposer) {
+			return
+		}
 		if (setupPhase) {
-			setComposerInset(0)
+			setMeasuredComposerInset(0)
 			return
 		}
 
@@ -778,7 +926,7 @@ export function ChatView({
 
 		const updateComposerInset = () => {
 			const nextInset = Math.ceil(composer.getBoundingClientRect().height)
-			setComposerInset((currentInset) =>
+			setMeasuredComposerInset((currentInset) =>
 				currentInset === nextInset ? currentInset : nextInset,
 			)
 		}
@@ -808,7 +956,7 @@ export function ChatView({
 				window.removeEventListener("resize", updateComposerInset)
 			}
 		}
-	}, [setupPhase])
+	}, [composerInsetPx, setupPhase, showComposer])
 	const effectivePermission = useAtomValue(effectivePermissionFamily(agent.sessionId))
 	const removePermission = useSetAtom(removePermissionAtom)
 
@@ -903,6 +1051,23 @@ export function ChatView({
 		: "mx-auto w-full min-w-0 max-w-3xl"
 
 	const retryStatus = sessionEntry?.retryStatus
+	const latestEditableUserTurnIndex = useMemo(() => {
+		for (let index = turns.length - 1; index >= 0; index--) {
+			if (!isSyntheticMessage(turns[index].userMessage)) return index
+		}
+		return -1
+	}, [turns])
+
+	const forkBoundaryAfterIndex = useMemo(
+		() =>
+			forkBoundaryAfterTurnIndex(
+				turns,
+				agent.forkFromId,
+				agent.atTurnId,
+				agent.createdAt,
+			),
+		[agent.atTurnId, agent.createdAt, agent.forkFromId, turns],
+	)
 
 	const renderTurn = useCallback(
 		(turn: ChatTurn, index: number) => {
@@ -920,8 +1085,8 @@ export function ChatView({
 							? retryStatus
 							: undefined
 			return (
+			<Fragment key={turn.id}>
 			<ChatTurnComponent
-				key={turn.id}
 				turn={turn}
 				isLast={isLastTurn}
 				isWorking={isWorking}
@@ -932,13 +1097,14 @@ export function ChatView({
 				retryStatus={activeRetryStatus}
 				onApprovePermission={handleApprovePermission}
 				onDenyPermission={handleDenyPermission}
-				onRevertToMessage={onRevertToMessage}
 				onForkFromTurn={
 					onForkFromTurn
-						? () => {
-								const nextTurn = turns[index + 1]
-								return onForkFromTurn(nextTurn?.userMessage.info.id)
-							}
+						? () => onForkFromTurn(turn.turnId)
+						: undefined
+				}
+				onEditUserMessage={
+					index === latestEditableUserTurnIndex && onEditUserMessage
+						? (text) => onEditUserMessage(turn.userMessage.info.id, text)
 						: undefined
 				}
 				onDeletePart={onDeletePart}
@@ -954,20 +1120,31 @@ export function ChatView({
 					appStore.set(collaborationModeFamily(agent.sessionId), "plan")
 				}}
 			/>
+			{index === forkBoundaryAfterIndex ? (
+				<ForkBoundaryDivider
+					parentName={parentSessionName}
+					sourceSessionId={agent.forkFromId}
+					projectSlug={agent.projectSlug}
+				/>
+			) : null}
+			</Fragment>
 			)
 		},
 		[
 			agent,
 			effectivePermission,
 			compactionStatus,
+			forkBoundaryAfterIndex,
 			handleApprovePermission,
 			handleDenyPermission,
 			isConnected,
 			isWorking,
+			latestEditableUserTurnIndex,
 			onDeletePart,
 			onForkFromTurn,
-			onRevertToMessage,
+			onEditUserMessage,
 			onSendMessage,
+			parentSessionName,
 			retryStatus,
 			turns,
 		],
@@ -983,21 +1160,22 @@ export function ChatView({
 			}
 		>
 			{/* Chat messages -- constrained width for readability */}
+			{showTranscript ? (
 			<div className="relative min-h-0 min-w-0 flex-1">
 				<Conversation
 					key={agent.sessionId}
 					className="h-full"
 					targetScrollTop={conversationTargetScrollTop}
 				>
-					<ScrollOnLoad loading={loading} sessionId={agent.sessionId} />
+					<ScrollOnLoad loading={loading} sessionId={agent.sessionId} isActive={isActive} />
 					<SettingsScrollGuard sessionId={agent.sessionId} />
-					<ScrollPositionTracker sessionId={agent.sessionId} />
+					<ScrollPositionTracker sessionId={agent.sessionId} isActive={isActive} />
 					<ScrollBridge scrollRef={scrollRef} />
 					<ConversationContent
-						scrollClassName="scrollbar-comfort"
+						scrollClassName="scrollbar-chat"
 						className="gap-12 px-6 pt-4 pb-[calc(var(--chat-composer-inset)+1rem)] sm:px-10 sm:pt-8 sm:pb-[calc(var(--chat-composer-inset)+1.5rem)] lg:px-12"
 					>
-						<div className={cn(contentWidthClass, "space-y-12")}>
+						<div className={cn(contentWidthClass, "animate-in fade-in space-y-12 duration-150")}>
 							<LoadEarlierOnScroll
 								hasEarlierMessages={hasEarlierMessages}
 								loadingEarlier={loadingEarlier}
@@ -1005,14 +1183,15 @@ export function ChatView({
 								scrollRef={scrollRef}
 							/>
 
-							{loading ? (
-								<div className="flex items-center justify-center py-8">
-									<Loader2Icon className="size-5 animate-spin text-muted-foreground" />
-									<span className="ml-2 text-sm text-muted-foreground">Loading chat...</span>
-								</div>
+							{showLoading ? (
+								<ChatLoadingSkeleton />
 							) : turns.length > 0 ? (
 								turns.length > VIRTUALIZE_TURN_THRESHOLD ? (
-									<VirtualizedTurnList turns={turns} renderTurn={renderTurn} />
+									<VirtualizedTurnList
+										turns={turns}
+										renderTurn={renderTurn}
+										sessionId={agent.sessionId}
+									/>
 								) : (
 									turns.map(renderTurn)
 								)
@@ -1023,6 +1202,26 @@ export function ChatView({
 									<p className="text-sm text-muted-foreground">No messages yet</p>
 								</div>
 							)}
+
+							{sideCards.map((card) => (
+								<div
+									key={card.id}
+									className="rounded-lg border border-border/80 bg-muted/20 px-3 py-2.5 text-sm"
+								>
+									<div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+										<span>Side</span>
+										{card.status === "running" ? (
+											<Loader2Icon className="size-3 animate-spin" />
+										) : null}
+									</div>
+									<p className="mb-2 text-foreground/90">{card.question}</p>
+									{card.answer ? (
+										<p className="whitespace-pre-wrap text-muted-foreground">{card.answer}</p>
+									) : (
+										<p className="text-xs text-muted-foreground">Thinking…</p>
+									)}
+								</div>
+							))}
 
 							{/* Session-level error from session.error events */}
 							{showSessionError && sessionErrorText && (
@@ -1048,12 +1247,9 @@ export function ChatView({
 					className="pointer-events-none absolute inset-x-0 bottom-[var(--chat-composer-inset)] z-10 h-6 bg-gradient-to-t from-background/30 to-transparent"
 				/>
 			</div>
+			) : null}
 
-			{/* Bottom input section — hidden during worktree setup since the stub session
-			   cannot accept prompts yet. Extracted into its own component so toolbar,
-			   popover, mention, and model-selection state changes don't re-render the
-			   conversation turn list above. */}
-			{!setupPhase && (
+			{showComposer && !setupPhase && (
 				<div
 					ref={composerRef}
 					className="pointer-events-none absolute bottom-0 left-0 right-3.5 z-30 overflow-visible pt-3"
@@ -1072,6 +1268,8 @@ export function ChatView({
 						onDeny={handleDenyPermission}
 						onReplyQuestion={onReplyQuestion}
 						onRejectQuestion={onRejectQuestion}
+						onForkFromTurn={onForkFromTurn}
+						onStartSideQuestion={startSideQuestion}
 						canRedo={canRedo}
 						onRedo={onRedo}
 						isReverted={isReverted}
@@ -1107,14 +1305,16 @@ interface ChatInputSectionProps {
 	onDeny?: (agent: Agent, permissionSessionId: string, permissionId: string) => Promise<void>
 	onReplyQuestion?: ChatViewProps["onReplyQuestion"]
 	onRejectQuestion?: ChatViewProps["onRejectQuestion"]
+	onForkFromTurn?: ChatViewProps["onForkFromTurn"]
+	onStartSideQuestion?: (question: string) => Promise<void>
 	canRedo?: boolean
 	onRedo?: () => Promise<void>
 	isReverted?: boolean
-	scrollRef: React.RefObject<ScrollHandle | null>
+	scrollRef: React.RefObject<ChatScrollHandle | null>
 	reviewPanelOpen?: boolean
 }
 
-function ChatInputSection({
+export function ChatInputSection({
 	agent,
 	turns,
 	isConnected,
@@ -1128,6 +1328,8 @@ function ChatInputSection({
 	onDeny,
 	onReplyQuestion,
 	onRejectQuestion,
+	onForkFromTurn,
+	onStartSideQuestion,
 	canRedo,
 	onRedo,
 	isReverted,
@@ -1139,7 +1341,7 @@ function ChatInputSection({
 	const [activeGoal, setActiveGoal] = useState<ComposerGoal | null>(null)
 	const [goalAction, setGoalAction] = useState<ComposerGoalAction | null>(null)
 	const [skillPickerOpen, setSkillPickerOpen] = useState(false)
-	const [collaborationMode, setCollaborationMode] = useAtom(
+	const [collaborationMode, setCollaborationModeAtom] = useAtom(
 		collaborationModeFamily(agent.sessionId),
 	)
 
@@ -1276,69 +1478,150 @@ function ChatInputSection({
 	const [, setInterruptCount] = useState(0)
 	const interruptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-	// Toolbar state
-	const [selectedModel, setSelectedModel] = useState<ModelRef | null>(null)
-	const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
-	const [selectedVariant, setSelectedVariant] = useState<string | undefined>(undefined)
-
-	// Initialize model, variant, and agent from the session's last user message.
+	// Per-session composer settings (model / variant / agent).
 	const sessionMessages = useAtomValue(messagesFamily(agent.sessionId))
 	const projectModels = useAtomValue(projectModelsAtom)
-	const initializedForSessionRef = useRef<string | null>(null)
-	const resetForSessionRef = useRef<string | null>(null)
+	const composerState = useAtomValue(sessionComposerFamily(agent.sessionId))
+	const setComposerState = useSetAtom(setSessionComposerAtom)
+	const hydratedForMessagesRef = useRef<string | null>(null)
+	const sessionEntry = useAtomValue(sessionFamily(agent.sessionId))
+
 	useEffect(() => {
-		if (resetForSessionRef.current !== agent.sessionId) {
-			resetForSessionRef.current = agent.sessionId
-			initializedForSessionRef.current = null
-			const stored = agent.directory ? projectModels[agent.directory] : undefined
-			if (stored?.providerID && stored?.modelID) {
-				setSelectedModel(stored)
-				setSelectedVariant(stored.variant)
-			} else {
-				setSelectedModel(null)
-				setSelectedVariant(undefined)
+		const wireSession = sessionEntry?.session as {
+			model?: {
+				provider?: string
+				model?: string
+				reasoningEffort?: string
+				reasoning_effort?: string
 			}
-			setSelectedAgent(stored?.agent || null)
-		}
-
-		if (initializedForSessionRef.current === agent.sessionId) return
-		if (!sessionMessages || sessionMessages.length === 0) return
-		initializedForSessionRef.current = agent.sessionId
-
-		let foundModel = false
-		let foundAgent = false
-		for (let i = sessionMessages.length - 1; i >= 0; i--) {
-			const msg = sessionMessages[i]
-			if (msg.role !== "user") continue
-			const dynamic = msg as Record<string, unknown>
-
-			if (!foundModel && "model" in msg && msg.model) {
-				const model = msg.model as { providerID: string; modelID: string }
-				if (model.providerID && model.modelID) {
-					setSelectedModel(model)
-					foundModel = true
-					const variant = dynamic.variant as string | undefined
-					if (variant) {
-						setSelectedVariant(variant)
-					} else {
-						setSelectedVariant(undefined)
-					}
+			settings?: {
+				mode?: string
+				reasoningEffort?: string
+				reasoning_effort?: string
+			}
+		} | null | undefined
+		const persistedReasoningEffort =
+			wireSession?.model?.reasoningEffort ??
+			wireSession?.model?.reasoning_effort ??
+			wireSession?.settings?.reasoningEffort ??
+			wireSession?.settings?.reasoning_effort
+		// Include the wire seed fingerprint so enrichment (session/resume
+		// replaces the cold list snapshot with full model/settings) re-runs
+		// the hydration even when the message count has not changed.
+		const messageKey = `${agent.sessionId}:${sessionMessages.length}:${
+			wireSession?.model?.provider ??
+			""
+		}|${wireSession?.model?.model ?? ""}|${persistedReasoningEffort ?? ""}|${
+			wireSession?.settings?.mode ?? ""
+		}`
+		if (hydratedForMessagesRef.current === messageKey) return
+		const projectDefault = agent.directory ? projectModels[agent.directory] : undefined
+		// Persisted per-session turn settings survive restarts (the server
+		// restores them on resume); history messages do not carry model
+		// metadata, so without this seed every restored session would show
+		// the project-default model / reasoning effort.
+		const wireModel = wireSession?.model
+		const wireModelSeed = wireModel
+			? {
+					provider: wireModel.provider,
+					model: wireModel.model,
+					reasoningEffort: persistedReasoningEffort,
+			  }
+			: undefined
+		const sessionSeed = composerFromSessionModel(wireModelSeed, (seed) => {
+			const providerList = providers?.providers ?? []
+			// Prefer the wire provider id when it names a provider that actually
+			// serves the model (session/resume carries a real binding); cold
+			// list snapshots may only carry "unknown", so fall back to a
+			// reverse lookup by model slug.
+			if (seed.provider && seed.provider !== "unknown") {
+				const provider = providerList.find((p) => p.id === seed.provider)
+				if (provider?.models?.[seed.model ?? ""]) {
+					return { providerID: seed.provider, modelID: seed.model ?? "" }
 				}
 			}
-
-			if (
-				!foundAgent &&
-				dynamic.agent &&
-				typeof dynamic.agent === "string" &&
-				dynamic.agent.length > 0
-			) {
-				setSelectedAgent(dynamic.agent)
-				foundAgent = true
-			}
-
-			if (foundModel && foundAgent) break
+			return seed.model ? modelRefFromSlug(seed.model, providerList) : null
+		})
+		const next = hydrateSessionComposerState(
+			composerState,
+			sessionMessages,
+			projectDefault,
+			sessionSeed,
+		)
+		if (
+			next.model?.providerID !== composerState.model?.providerID ||
+			next.model?.modelID !== composerState.model?.modelID ||
+			next.variant !== composerState.variant ||
+			next.agent !== composerState.agent
+		) {
+			setComposerState({ sessionId: agent.sessionId, patch: next })
 		}
-	}, [sessionMessages, agent.sessionId, agent.directory, projectModels])
+		// Record the guard key only once hydration is conclusive. A wire seed
+		// that exists but could not be resolved yet (provider list still
+		// loading, slug unmatched against current providers) must retry on the
+		// next dep change — recording the key now would lock the composer into
+		// the default model/effort forever. Writing the ref does not render,
+		// so retries are driven purely by dep changes and cannot loop.
+		if (next.model || !wireSession?.model?.model || composerState.hasUserOverride) {
+			hydratedForMessagesRef.current = messageKey
+		}
+		// Seed the collaboration mode (build/plan) once per session per run so
+		// restarts restore it without fighting in-run user toggles.
+		const wireMode = wireSession?.settings?.mode
+		if (
+			(wireMode === "plan" || wireMode === "build") &&
+			!seededCollaborationModes.has(agent.sessionId)
+		) {
+			seededCollaborationModes.add(agent.sessionId)
+			appStore.set(collaborationModeFamily(agent.sessionId), wireMode)
+		}
+	}, [
+		agent.directory,
+		agent.sessionId,
+		composerState,
+		projectModels,
+		providers,
+		sessionEntry,
+		sessionMessages,
+		setComposerState,
+	])
+
+	const selectedModel = composerState.model
+	const selectedAgent = composerState.agent
+	const selectedVariant = composerState.variant
+
+	const setSelectedModel = useCallback(
+		(model: ModelRef | null) => {
+			setComposerState({
+				sessionId: agent.sessionId,
+				patch: { model, variant: undefined },
+				userOverride: true,
+			})
+		},
+		[agent.sessionId, setComposerState],
+	)
+
+	const setSelectedAgent = useCallback(
+		(agentName: string | null) => {
+			setComposerState({
+				sessionId: agent.sessionId,
+				patch: { agent: agentName },
+				userOverride: true,
+			})
+		},
+		[agent.sessionId, setComposerState],
+	)
+
+	const setSelectedVariant = useCallback(
+		(variant: string | undefined) => {
+			setComposerState({
+				sessionId: agent.sessionId,
+				patch: { variant },
+				userOverride: true,
+			})
+		},
+		[agent.sessionId, setComposerState],
+	)
 
 	const { addRecent: addRecentModel } = useModelState()
 
@@ -1369,36 +1652,108 @@ function ChatInputSection({
 		if (!available.includes(selectedVariant)) {
 			setSelectedVariant(undefined)
 		}
-	}, [selectedVariant, effectiveModel, providers])
+	}, [selectedVariant, effectiveModel, providers, setSelectedVariant])
 
 	const modelCapabilities = useMemo(
 		() => getModelInputCapabilities(effectiveModel, providers?.providers ?? []),
 		[effectiveModel, providers],
 	)
 
+	// ── Persist-on-selection ─────────────────────────────────────────────
+	// Composer selections (model / reasoning effort / mode) are persisted to
+	// the session record the moment they change, debounced and coalesced into
+	// one session/metadata/update per burst, so they survive a restart even
+	// if no message is ever sent. The send path still passes them per turn
+	// (and re-persists), acting as a backstop.
+	const pendingSelectionPersistRef = useRef<SelectionPersistPatch | null>(null)
+	const selectionPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+	const flushSelectionPersist = useCallback((): Promise<void> => {
+		if (selectionPersistTimerRef.current !== null) {
+			clearTimeout(selectionPersistTimerRef.current)
+			selectionPersistTimerRef.current = null
+		}
+		const pending = pendingSelectionPersistRef.current
+		pendingSelectionPersistRef.current = null
+		if (!pending || !agent.sessionId) return Promise.resolve()
+		try {
+			const client =
+				(agent.directory ? getProjectClient(agent.directory) : null) ?? getBaseClient()
+			if (!client) {
+				log.warn("session settings persist skipped: not connected", {
+					sessionId: agent.sessionId,
+				})
+				return Promise.resolve()
+			}
+			const updateSettings = client.session?.updateSettings
+			if (typeof updateSettings !== "function") {
+				log.warn("session settings persist skipped: client API unavailable", {
+					sessionId: agent.sessionId,
+				})
+				return Promise.resolve()
+			}
+			// Resolved (not rejected) when the write lands or has failed and
+			// been logged — callers await this to order the flush ahead of a
+			// turn without taking on error handling.
+			return Promise.resolve()
+				.then(() => updateSettings.call(client.session, { sessionID: agent.sessionId, ...pending }))
+				.catch((error: unknown) => {
+					log.warn("session settings persist failed", { sessionId: agent.sessionId }, error)
+				})
+		} catch (error) {
+			log.warn("session settings persist failed", { sessionId: agent.sessionId }, error)
+			return Promise.resolve()
+		}
+	}, [agent.directory, agent.sessionId])
+
+	const scheduleSelectionPersist = useCallback(
+		(patch: SelectionPersistPatch) => {
+			pendingSelectionPersistRef.current = { ...pendingSelectionPersistRef.current, ...patch }
+			if (selectionPersistTimerRef.current !== null) {
+				clearTimeout(selectionPersistTimerRef.current)
+			}
+			selectionPersistTimerRef.current = setTimeout(
+				() => flushSelectionPersist(),
+				SELECTION_PERSIST_DEBOUNCE_MS,
+			)
+		},
+		[flushSelectionPersist],
+	)
+
+	// Unmount / session switch flushes whatever is still pending.
+	useEffect(() => {
+		return () => {
+			flushSelectionPersist()
+		}
+	}, [flushSelectionPersist])
+
 	const handleModelSelect = useCallback(
 		(model: ModelRef | null) => {
 			setSelectedModel(model)
-			setSelectedVariant(undefined)
 			if (!model) return
 			addRecentModel(model)
-			if (!agent.directory) return
-			void persistRuntimeModelSelection(agent.directory, model).catch((err) => {
-				console.error("Failed to persist model selection:", err)
-			})
+			scheduleSelectionPersist({ modelID: model.modelID })
 		},
-		[addRecentModel, agent.directory],
+		[addRecentModel, scheduleSelectionPersist, setSelectedModel],
 	)
 
 	const handleVariantSelect = useCallback(
 		(variant: string | undefined) => {
 			setSelectedVariant(variant)
-			if (!variant || !agent.directory) return
-			void persistRuntimeModelConfigOption(agent.directory, "thought_level", variant).catch((err) => {
-				console.error("Failed to persist reasoning effort selection:", err)
-			})
+			if (typeof variant === "string" && variant.length > 0) {
+				scheduleSelectionPersist({ reasoningEffort: variant })
+			}
 		},
-		[agent.directory],
+		[scheduleSelectionPersist, setSelectedVariant],
+	)
+
+	/** Mode toggle that also persists the choice to the session record. */
+	const changeCollaborationMode = useCallback(
+		(next: CollaborationMode) => {
+			setCollaborationModeAtom(next)
+			scheduleSelectionPersist({ mode: next })
+		},
+		[scheduleSelectionPersist, setCollaborationModeAtom],
 	)
 
 	const slashCommandRef = useRef<{
@@ -1472,10 +1827,11 @@ function ChatInputSection({
 
 			const spaceIndex = trimmed.indexOf(" ")
 			const cmdName = spaceIndex === -1 ? trimmed.slice(1) : trimmed.slice(1, spaceIndex)
+			const args = spaceIndex === -1 ? "" : trimmed.slice(spaceIndex + 1).trim()
 
 			// Product requirement: Desktop slash commands are limited to first-party
-			// entries. Compact executes immediately; Goal/Plan become footer trigger
-			// chips; Research stays as slash text so Native can run it after a question.
+			// entries. Compact executes immediately; Goal becomes a footer trigger
+			// chip; /plan switches collaboration mode; Research stays as slash text.
 			switch (cmdName.toLowerCase()) {
 				case "compact":
 					if (agent.directory && effectiveModel) {
@@ -1493,12 +1849,29 @@ function ChatInputSection({
 						}
 					}
 					return true
+				case "fork":
+					if (onForkFromTurn) {
+						try {
+							await onForkFromTurn()
+						} catch (err) {
+							log.error("slash /fork failed", { sessionId: agent.sessionId }, err)
+						}
+					}
+					return true
+				case "side":
+				case "btw": {
+					if (!args) {
+						slashCommandRef.current?.setText("/side ")
+						return true
+					}
+					await onStartSideQuestion?.(args)
+					return true
+				}
 				case "goal":
 					setActiveTrigger("goal")
 					return true
 				case "plan":
-					setActiveTrigger("plan")
-					setCollaborationMode("plan")
+					changeCollaborationMode("plan")
 					return true
 				case "skills":
 					setSkillPickerOpen(true)
@@ -1509,7 +1882,14 @@ function ChatInputSection({
 					return false
 			}
 		},
-		[agent.directory, agent.sessionId, effectiveModel, setCollaborationMode],
+		[
+			agent.directory,
+			agent.sessionId,
+			changeCollaborationMode,
+			effectiveModel,
+			onForkFromTurn,
+			onStartSideQuestion,
+		],
 	)
 
 	const submitTriggeredPrompt = useCallback(
@@ -1533,17 +1913,29 @@ function ChatInputSection({
 					url: file.url,
 				})
 			}
+			// Flush any still-debounced composer selection so the turn starts
+			// from exactly what the UI shows, then send only the explicit
+			// selection — never a fallback-resolved model, which would
+			// overwrite the persisted per-session choice.
+			await flushSelectionPersist()
 			await client.session.promptAsync({
 				sessionID: agent.sessionId,
 				parts,
-				model: effectiveModel
-					? { providerID: effectiveModel.providerID, modelID: effectiveModel.modelID }
+				model: selectedModel
+					? { providerID: selectedModel.providerID, modelID: selectedModel.modelID }
 					: undefined,
 				agent: selectedAgent || undefined,
 				variant: selectedVariant,
 			})
 		},
-		[agent.directory, agent.sessionId, effectiveModel, selectedAgent, selectedVariant],
+		[
+			agent.directory,
+			agent.sessionId,
+			flushSelectionPersist,
+			selectedModel,
+			selectedAgent,
+			selectedVariant,
+		],
 	)
 
 	const handleSend = useCallback(
@@ -1575,11 +1967,15 @@ function ChatInputSection({
 
 			setSending(true)
 			try {
-				if (effectiveModel && agent.directory) {
+				// Only an explicit composer selection may become the project's
+				// default model — a fallback-resolved model would poison the
+				// preference (and then every future fallback) with request
+				// slugs or defaults the user never chose.
+				if (selectedModel && agent.directory) {
 					appStore.set(setProjectModelAtom, {
 						directory: agent.directory,
 						model: {
-							...effectiveModel,
+							...selectedModel,
 							variant: selectedVariant,
 							agent: selectedAgent || undefined,
 						},
@@ -1611,8 +2007,12 @@ function ChatInputSection({
 						setTimeout(() => void refreshGoalStatus(), 1_200)
 					}
 				} else {
+					// Land any still-debounced selection before the turn, and
+					// send only the explicit selection — the server keeps the
+					// session's persisted model otherwise.
+					await flushSelectionPersist()
 					await onSendMessage?.(agent, finalText, {
-						model: effectiveModel ?? undefined,
+						model: selectedModel ?? undefined,
 						agentName: selectedAgent || undefined,
 						variant: selectedVariant,
 						files,
@@ -1640,7 +2040,8 @@ function ChatInputSection({
 			onSendMessage,
 			sending,
 			agent,
-			effectiveModel,
+			selectedModel,
+			flushSelectionPersist,
 			selectedAgent,
 			selectedVariant,
 			clearDraft,
@@ -1791,7 +2192,7 @@ function ChatInputSection({
 				e.preventDefault()
 				handleSlashClose()
 				handleMentionClose()
-				setCollaborationMode((current) => (current === "plan" ? "build" : "plan"))
+				changeCollaborationMode(collaborationMode === "plan" ? "build" : "plan")
 				return
 			}
 
@@ -1806,7 +2207,7 @@ function ChatInputSection({
 				handleEscapeAbort()
 			}
 		},
-		[handleEscapeAbort, handleSlashClose, handleMentionClose, setCollaborationMode],
+		[handleEscapeAbort, handleSlashClose, handleMentionClose, changeCollaborationMode, collaborationMode],
 	)
 
 	// Width constraint class: remove max-w when review panel is open
@@ -1958,26 +2359,17 @@ function ChatInputSection({
 												onSelectVariant={handleVariantSelect}
 												disabled={!isConnected}
 											/>
-											<button
-												type="button"
-												onClick={() =>
-													setCollaborationMode(collaborationMode === "plan" ? "build" : "plan")
-												}
-												disabled={!isConnected}
-												className={cn(
-													"flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors",
-													collaborationMode === "plan"
-														? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-														: "text-muted-foreground hover:bg-muted hover:text-foreground",
-												)}
-												title="Toggle plan mode"
-											>
-												<ListTodoIcon className="size-3.5 stroke-[1.5]" aria-hidden="true" />
-												<span className="capitalize">{collaborationMode}</span>
-											</button>
-											{activeTrigger && (
-												<ComposerTriggerChip
-													trigger={activeTrigger}
+											{collaborationMode === "plan" && (
+												<ComposerModeChip
+													variant="plan"
+													disabled={!isConnected}
+													onRemove={() => changeCollaborationMode("build")}
+												/>
+											)}
+											{activeTrigger === "goal" && (
+												<ComposerModeChip
+													variant="goal"
+													disabled={!isConnected}
 													onRemove={() => setActiveTrigger(null)}
 												/>
 											)}

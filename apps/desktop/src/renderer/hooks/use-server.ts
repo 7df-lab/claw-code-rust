@@ -339,14 +339,19 @@ export function useAgentActions() {
 	)
 
 	const forkSession = useCallback(
-		async (directory: string, sessionId: string, messageId?: string): Promise<Session> => {
+		async (
+			directory: string,
+			sessionId: string,
+			options?: { atTurnId?: string; cut?: "through" | "before" },
+		): Promise<Session> => {
 			const client = getProjectClient(directory)
 			if (!client) throw new Error("Not connected to Devo server")
-			log.debug("forkSession", { sessionId, messageId })
+			log.debug("forkSession", { sessionId, options })
 			try {
 				const result = await client.session.fork({
 					sessionID: sessionId,
-					messageID: messageId,
+					atTurnId: options?.atTurnId,
+					cut: options?.cut,
 				})
 				const session = result.data as Session
 				if (session) {
@@ -355,7 +360,27 @@ export function useAgentActions() {
 				log.debug("forkSession succeeded", { forkedSessionId: session?.id })
 				return session
 			} catch (err) {
-				log.error("forkSession failed", { sessionId, messageId }, err)
+				log.error("forkSession failed", { sessionId, options }, err)
+				throw err
+			}
+		},
+		[],
+	)
+
+	const editMessage = useCallback(
+		async (directory: string, sessionId: string, messageId: string, text: string) => {
+			const client = getProjectClient(directory)
+			if (!client) throw new Error("Not connected to Devo server")
+			log.debug("editMessage", { sessionId, messageId, textLength: text.length })
+			try {
+				await client.session.editMessage({
+					sessionID: sessionId,
+					itemID: messageId,
+					text,
+				})
+				log.debug("editMessage succeeded", { sessionId, messageId })
+			} catch (err) {
+				log.error("editMessage failed", { sessionId, messageId }, err)
 				throw err
 			}
 		},
@@ -377,5 +402,6 @@ export function useAgentActions() {
 		executeCommand,
 		summarize,
 		forkSession,
+		editMessage,
 	}
 }

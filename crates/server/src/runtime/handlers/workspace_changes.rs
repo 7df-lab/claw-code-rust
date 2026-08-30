@@ -61,32 +61,8 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        // Dual-shape boundary (L2-DES-APP-008 DD-4): the canonical shape is
-        // detected by its camelCase `sessionId` key, so both protocol
-        // surfaces can use it (the desktop client stays ACP-surface).
-        if params.get("sessionId").is_some() {
-            return self
-                .handle_native_workspace_changes_read(request_id, params)
-                .await;
-        }
-        let params: WorkspaceChangesReadParams = match serde_json::from_value(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    format!("invalid workspace/changes/read params: {error}"),
-                );
-            }
-        };
-        match self.workspace_changes_read_views(params).await {
-            Ok(views) => serde_json::to_value(SuccessResponse {
-                id: request_id,
-                result: WorkspaceChangesReadResult { views },
-            })
-            .expect("serialize workspace/changes/read response"),
-            Err((code, message)) => self.error_response(request_id, code, message),
-        }
+        self.handle_native_workspace_changes_read(request_id, params)
+            .await
     }
 
     async fn workspace_changes_read_views(

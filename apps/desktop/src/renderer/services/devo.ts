@@ -393,18 +393,18 @@ function filePathsFromReferenceSnapshot(snapshot: ReferenceSearchSnapshot): stri
 }
 
 /**
- * Fork a session, optionally at a specific message boundary.
- * Copies all messages up to (but not including) the given messageId.
- * If no messageId is provided, copies the entire conversation.
+ * Fork a session, optionally through a specific user turn.
+ * When `atTurnId` is omitted, forks at the session tip.
  */
 export async function forkSession(
 	client: DevoClient,
 	sessionId: string,
-	messageId?: string,
+	options?: { atTurnId?: string; cut?: "through" | "before" },
 ): Promise<Session> {
 	const result = await client.session.fork({
 		sessionID: sessionId,
-		messageID: messageId,
+		atTurnId: options?.atTurnId,
+		cut: options?.cut,
 	})
 	return result.data as Session
 }

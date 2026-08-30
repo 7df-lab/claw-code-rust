@@ -19,7 +19,6 @@ import {
 	EyeOffIcon,
 	FilmIcon,
 	GitBranchIcon,
-	GitForkIcon,
 	MonitorIcon,
 	MoonIcon,
 	PaletteIcon,
@@ -28,6 +27,7 @@ import {
 	RefreshCwIcon,
 	ScanEyeIcon,
 	SparklesIcon,
+	SplitIcon,
 	SunIcon,
 	SunMoonIcon,
 	Undo2Icon,
@@ -213,7 +213,7 @@ export function CommandPalette({ open, onOpenChange, agents, onForkSession }: Co
 							await onForkSession()
 						}}
 					>
-						<GitForkIcon />
+						<SplitIcon />
 						<span>Fork Session</span>
 					</CommandItem>
 				)}

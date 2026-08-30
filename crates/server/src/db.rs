@@ -12,7 +12,7 @@ use serde_json;
 use devo_protocol::native::item::ContextOccupancy;
 use devo_protocol::{
     PendingInputId, PendingInputItem, PendingInputKind, SessionId, SessionMetadata,
-    SessionRuntimeStatus, SessionTitleState,
+    SessionRuntimeStatus, SessionTitleState, TurnId,
 };
 
 /// Queue type for pending messages.
@@ -288,6 +288,26 @@ impl Database {
             conn.execute("ALTER TABLE sessions ADD COLUMN agent_path TEXT", [])
                 .context("failed to add agent_path column")?;
         }
+        if !sessions_has_column(&conn, "fork_from_id")? {
+            conn.execute("ALTER TABLE sessions ADD COLUMN fork_from_id TEXT", [])
+                .context("failed to add fork_from_id column")?;
+        }
+        if !sessions_has_column(&conn, "fork_at_turn_id")? {
+            conn.execute("ALTER TABLE sessions ADD COLUMN fork_at_turn_id TEXT", [])
+                .context("failed to add fork_at_turn_id column")?;
+        }
+        // User forks used to reuse parent_session_id. Move those rows onto
+        // fork_from_id so delete/list treat them as independent sessions.
+        conn.execute(
+            "UPDATE sessions
+             SET fork_from_id = COALESCE(fork_from_id, parent_session_id),
+                 parent_session_id = NULL
+             WHERE parent_session_id IS NOT NULL
+               AND agent_path IS NULL
+               AND (fork_from_id IS NULL OR fork_from_id = '')",
+            [],
+        )
+        .context("failed to migrate user-fork parent_session_id into fork_from_id")?;
         // Queue entries have an explicit position so `session/queue/update`
         // can reorder without rewriting row ids (P4c); existing rows keep
         // their insertion order (position = id).
@@ -556,11 +576,13 @@ impl Database {
             .context("failed to serialize session additional directories")?;
         let title_state_str = match &meta.title_state {
             SessionTitleState::Unset => "unset",
-            SessionTitleState::Provisional => "provisional",
+            SessionTitleState::Generating => "generating",
             SessionTitleState::Final(_) => "final",
         };
         let rollout_path_str = rollout_path.map(|path| path.to_string_lossy().into_owned());
         let parent_session_id = meta.parent_session_id.map(|id| id.to_string());
+        let fork_from_id = meta.fork_from_id.map(|id| id.to_string());
+        let fork_at_turn_id = meta.fork_at_turn_id.map(|id| id.to_string());
         let agent_path = meta.agent_path.clone();
         let update_clause = match source {
             SessionUpsertSource::RuntimeLive => {
@@ -576,6 +598,8 @@ impl Database {
                 updated_at = excluded.updated_at,
                 last_activity_at = excluded.last_activity_at,
                 parent_session_id = COALESCE(excluded.parent_session_id, sessions.parent_session_id),
+                fork_from_id = COALESCE(excluded.fork_from_id, sessions.fork_from_id),
+                fork_at_turn_id = COALESCE(excluded.fork_at_turn_id, sessions.fork_at_turn_id),
                 agent_path = COALESCE(excluded.agent_path, sessions.agent_path),
                 rollout_path = COALESCE(excluded.rollout_path, sessions.rollout_path)"
             }
@@ -593,13 +617,15 @@ impl Database {
                 updated_at = excluded.updated_at,
                 last_activity_at = MAX(excluded.last_activity_at, sessions.last_activity_at),
                 parent_session_id = COALESCE(excluded.parent_session_id, sessions.parent_session_id),
+                fork_from_id = COALESCE(excluded.fork_from_id, sessions.fork_from_id),
+                fork_at_turn_id = COALESCE(excluded.fork_at_turn_id, sessions.fork_at_turn_id),
                 agent_path = COALESCE(excluded.agent_path, sessions.agent_path),
                 rollout_path = COALESCE(excluded.rollout_path, sessions.rollout_path)"
             }
         };
         let sql = format!(
-            "INSERT INTO sessions (id, title, title_state, model, thinking, cwd, additional_directories, ephemeral, created_at, updated_at, last_activity_at, rollout_path, parent_session_id, agent_path, schema_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 3)
+            "INSERT INTO sessions (id, title, title_state, model, thinking, cwd, additional_directories, ephemeral, created_at, updated_at, last_activity_at, rollout_path, parent_session_id, fork_from_id, fork_at_turn_id, agent_path, schema_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 3)
              ON CONFLICT(id) DO UPDATE SET {update_clause}"
         );
         conn.execute(
@@ -618,6 +644,8 @@ impl Database {
                 meta.last_activity_at.timestamp(),
                 rollout_path_str,
                 parent_session_id,
+                fork_from_id,
+                fork_at_turn_id,
                 agent_path,
             ],
         )
@@ -644,7 +672,7 @@ impl Database {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, title_state, model, thinking, cwd, additional_directories, ephemeral, created_at, updated_at, last_activity_at, parent_session_id, agent_path
+                "SELECT id, title, title_state, model, thinking, cwd, additional_directories, ephemeral, created_at, updated_at, last_activity_at, parent_session_id, fork_from_id, fork_at_turn_id, agent_path
                  FROM sessions WHERE id = ?1",
             )
             .context("failed to prepare get_session statement")?;
@@ -664,14 +692,14 @@ impl Database {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, title_state, model, thinking, cwd, additional_directories, ephemeral, created_at, updated_at, last_activity_at, parent_session_id, agent_path, rollout_path
+                "SELECT id, title, title_state, model, thinking, cwd, additional_directories, ephemeral, created_at, updated_at, last_activity_at, parent_session_id, fork_from_id, fork_at_turn_id, agent_path, rollout_path
                  FROM sessions WHERE id = ?1",
             )
             .context("failed to prepare get_session_index statement")?;
         let result = stmt.query_row(params![id.to_string()], |row| {
             let metadata = parse_session_metadata_row(row, true)?;
             let rollout_path = row
-                .get::<_, Option<String>>(13)?
+                .get::<_, Option<String>>(15)?
                 .map(PathBuf::from)
                 .filter(|path| !path.as_os_str().is_empty());
             Ok(SessionIndexRecord {
@@ -692,7 +720,7 @@ impl Database {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, title_state, model, thinking, cwd, additional_directories, ephemeral, created_at, updated_at, last_activity_at, parent_session_id, agent_path
+                "SELECT id, title, title_state, model, thinking, cwd, additional_directories, ephemeral, created_at, updated_at, last_activity_at, parent_session_id, fork_from_id, fork_at_turn_id, agent_path
                  FROM sessions
                  WHERE ephemeral = 0 AND agent_path IS NULL
                  ORDER BY last_activity_at DESC, updated_at DESC",
@@ -714,7 +742,7 @@ impl Database {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, title_state, model, thinking, cwd, additional_directories, ephemeral, created_at, updated_at, last_activity_at, parent_session_id, agent_path
+                "SELECT id, title, title_state, model, thinking, cwd, additional_directories, ephemeral, created_at, updated_at, last_activity_at, parent_session_id, fork_from_id, fork_at_turn_id, agent_path
                  FROM sessions ORDER BY last_activity_at DESC, updated_at DESC",
             )
             .context("failed to prepare list_sessions statement")?;
@@ -1114,13 +1142,23 @@ fn parse_session_metadata_row(
         .get::<_, Option<String>>(11)?
         .map(|value| parse_session_id_column(value, 11))
         .transpose()?;
-    let agent_path = row
+    let fork_from_id = row
         .get::<_, Option<String>>(12)?
+        .map(|value| parse_session_id_column(value, 12))
+        .transpose()?;
+    let fork_at_turn_id = row
+        .get::<_, Option<String>>(13)?
+        .map(|value| parse_turn_id_column(value, 13))
+        .transpose()?;
+    let agent_path = row
+        .get::<_, Option<String>>(14)?
         .filter(|path| !path.is_empty());
 
     let title_state = match title_state_str.as_str() {
-        "provisional" => SessionTitleState::Provisional,
+        "generating" => SessionTitleState::Generating,
         "final" => SessionTitleState::Final(devo_protocol::SessionTitleFinalSource::ModelGenerated),
+        // Legacy persisted rows used "provisional" for in-flight auto titles.
+        "provisional" => SessionTitleState::Unset,
         _ => SessionTitleState::Unset,
     };
 
@@ -1143,6 +1181,8 @@ fn parse_session_metadata_row(
         title,
         title_state,
         parent_session_id,
+        fork_from_id,
+        fork_at_turn_id,
         agent_path,
         agent_nickname: None,
         agent_role: None,
@@ -1171,6 +1211,16 @@ fn parse_session_metadata_row(
 
 fn parse_session_id_column(id: String, column: usize) -> rusqlite::Result<SessionId> {
     SessionId::from_str(&id).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+        )
+    })
+}
+
+fn parse_turn_id_column(id: String, column: usize) -> rusqlite::Result<TurnId> {
+    TurnId::from_str(&id).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
             column,
             Type::Text,
@@ -1431,8 +1481,10 @@ mod tests {
             updated_at: Utc::now(),
             last_activity_at: Utc::now(),
             title: Some("Test Session".into()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,

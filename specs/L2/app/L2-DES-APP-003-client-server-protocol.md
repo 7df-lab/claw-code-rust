@@ -336,7 +336,7 @@ Execution rules:
 - File changes from shell commands should be restored only when a reliable turn-level checkpoint or attribution record exists.
 - A git-based hidden checkpoint or ghost commit may be used internally, but the protocol must expose restoration outcome rather than git implementation details. It must not publish, stage, or rewrite user-visible git history unless the user explicitly requests that.
 - If the target message is a queued message that has not started, the server may update the queue item's effective content through an edit record and preserve the original revision for audit.
-- If the target message belongs to an active running turn, the server must not mutate the already-started model or tool execution. It must reject the edit or require an interruption-oriented `edit_mode`; clients may offer `steer` as the lower-friction alternative.
+- If the target message belongs to an active running turn, `session/message/edit` must interrupt that turn, wait until it is terminal, then continue with the normal completed/interrupted-turn edit path (workspace restoration where safe, supersede, replacement turn). The server must not mutate already-started model or tool execution in place. If interruption fails, the edit request fails and no replacement turn starts. Clients that want lower-friction mid-turn guidance should use `steer` instead of message editing.
 - If a superseded turn produced non-file tool side effects, those side effects remain visible in the superseded turn. Message editing does not imply rollback for external APIs, processes, network actions, published git operations, or other non-file effects.
 
 Broadcast rules:

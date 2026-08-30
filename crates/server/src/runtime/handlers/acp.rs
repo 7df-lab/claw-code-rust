@@ -240,9 +240,10 @@ impl ServerRuntime {
         tracing::info!(
             connection_id,
             protocol_version = params.protocol_version,
+            protocol = surface.as_str(),
             client = ?params.client_info.as_ref().map(|info| info.name.as_str()),
             typed_items,
-            "accepted ACP initialize request"
+            "accepted initialize request"
         );
         let mut meta = serde_json::Map::new();
         meta.insert(

@@ -16,9 +16,8 @@ import {
 	ChevronRightIcon,
 	CopyIcon,
 	FileIcon,
-	GitForkIcon,
 	Loader2Icon,
-	Undo2Icon,
+	SplitIcon,
 	XIcon,
 } from "lucide-react"
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
@@ -52,6 +51,7 @@ import {
 } from "./compaction-status-divider"
 import { PermissionItem } from "./chat-permission"
 import { PlanBlock, isPlanTextPart } from "./plan-block"
+import { UserMessageBlock } from "./user-message-block"
 
 // ============================================================
 // Utility functions
@@ -120,7 +120,7 @@ function computeStatus(parts: Part[]): string {
 // Synthetic message helpers
 // ============================================================
 
-function isSyntheticMessage(entry: ChatMessageEntry): boolean {
+export function isSyntheticMessage(entry: ChatMessageEntry): boolean {
 	const textParts = entry.parts.filter((p): p is TextPart => p.type === "text")
 	// All text parts are synthetic (e.g. compaction continuation, shell execution)
 	if (textParts.length > 0 && textParts.every((p) => p.synthetic === true)) return true
@@ -531,10 +531,10 @@ interface ChatTurnProps {
 		permissionSessionId: string,
 		permissionId: string,
 	) => Promise<void>
-	/** Revert to this turn's user message (for per-turn undo) */
-	onRevertToMessage?: (messageId: string) => Promise<void>
 	/** Fork the conversation from this turn boundary */
 	onForkFromTurn?: () => Promise<void>
+	/** Edit and resend this turn's user message */
+	onEditUserMessage?: (text: string) => Promise<void>
 	/** Delete a specific part from a message (for error recovery) */
 	onDeletePart?: (sessionId: string, messageId: string, partId: string) => Promise<void>
 	onImplementPlan?: () => void
@@ -663,8 +663,8 @@ export const ChatTurnComponent = memo(
 		retryStatus,
 		onApprovePermission,
 		onDenyPermission,
-		onRevertToMessage,
 		onForkFromTurn,
+		onEditUserMessage,
 		onDeletePart,
 		onImplementPlan,
 		onRevisePlan,
@@ -793,11 +793,6 @@ export const ChatTurnComponent = memo(
 			setTimeout(() => setCopied(false), 2000)
 		}, [responseText])
 
-		const handleRevertHere = useCallback(async () => {
-			if (!onRevertToMessage) return
-			await onRevertToMessage(turn.userMessage.info.id)
-		}, [onRevertToMessage, turn.userMessage.info.id])
-
 		const handleScrollToTop = useCallback(() => {
 			turnRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
 		}, [])
@@ -842,17 +837,18 @@ export const ChatTurnComponent = memo(
 						<span>{syntheticLabel}</span>
 					</div>
 				) : (
-					<Message from="user">
-						<MessageContent>
-							{userFiles.length > 0 && (
-								<AttachmentGrid
-									files={userFiles}
-									onDelete={onDeletePart ? handleDeleteFile : undefined}
-								/>
-							)}
-							<p className="whitespace-pre-wrap">{userText}</p>
-						</MessageContent>
-					</Message>
+					<UserMessageBlock
+						text={userText}
+						canEdit={!!onEditUserMessage}
+						onEdit={onEditUserMessage}
+					>
+						{userFiles.length > 0 && (
+							<AttachmentGrid
+								files={userFiles}
+								onDelete={onDeletePart ? handleDeleteFile : undefined}
+							/>
+						)}
+					</UserMessageBlock>
 				)}
 
 				{working && <WorkingTurnStatusStrip turn={turn} retryStatus={retryStatus} />}
@@ -978,12 +974,7 @@ export const ChatTurnComponent = memo(
 							onClick={handleFork}
 							disabled={forking}
 						>
-							<GitForkIcon className="size-3" />
-						</MessageAction>
-					)}
-					{onRevertToMessage && !working && (
-						<MessageAction tooltip="Undo from here" onClick={handleRevertHere}>
-							<Undo2Icon className="size-3" />
+							<SplitIcon className="size-3" />
 						</MessageAction>
 					)}
 					</MessageActions>

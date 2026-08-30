@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test"
 import {
 	ProtocolValidationError,
 	assertValidProtocolPayload,
+	dropUnknownReplayEnvelopes,
+	knownServerNotificationMethods,
 } from "./protocol-validation"
 
 describe("desktop protocol runtime validation", () => {
@@ -75,6 +77,78 @@ describe("desktop protocol runtime validation", () => {
 				direction: "incomingResult",
 				method: "session/list",
 				payload: { sessions: [] },
+			}),
+		).toThrow(ProtocolValidationError)
+	})
+
+	/**
+	 * The settings snapshot carries the raw reasoning-effort selection —
+	 * including the toggle keywords toggle/variant-style models use — while
+	 * the ModelBinding on `session.model` keeps the typed enum. Locks the
+	 * regenerated schema so neither side regresses back to a shared enum.
+	 */
+	test("accepts toggle-keyword reasoning selections in session snapshots", () => {
+		const baseSession = {
+			id: "session-1",
+			version: 1,
+			cwd: "/repo",
+			createdAt: "2026-08-30T00:00:00Z",
+			lastActivityAt: "2026-08-30T00:00:00Z",
+			status: "idle",
+			flags: [],
+			archived: false,
+			ephemeral: false,
+			queuedCount: 0,
+			title: null,
+			titleState: "unset",
+			parent: null,
+			forkFromId: null,
+			atTurnId: null,
+			preview: "",
+			model: { provider: "test", model: "alt-model" },
+			settings: {
+				permissionProfile: "default",
+				reasoningEffort: "enabled",
+				mode: "plan",
+			},
+			usage: {
+				total: {
+					inputTokens: 0,
+					outputTokens: 0,
+					cacheCreationInputTokens: 0,
+					cacheReadInputTokens: 0,
+					reasoningTokens: 0,
+					totalTokens: 0,
+					callCount: 0,
+					meteredCallCount: 0,
+					failedCallCount: 0,
+					cancelledCallCount: 0,
+				},
+				byPurpose: [],
+				updatedAt: "2026-08-30T00:00:00Z",
+			},
+		}
+
+		const payload = { session: baseSession }
+		expect(
+			assertValidProtocolPayload({
+				direction: "incomingResult",
+				method: "session/resume",
+				payload,
+			}),
+		).toBe(payload)
+
+		// The request-parameter slot on the binding is still the typed enum.
+		expect(() =>
+			assertValidProtocolPayload({
+				direction: "incomingResult",
+				method: "session/resume",
+				payload: {
+					session: {
+						...baseSession,
+						model: { provider: "test", model: "alt-model", reasoningEffort: "enabled" },
+					},
+				},
 			}),
 		).toThrow(ProtocolValidationError)
 	})
@@ -211,5 +285,43 @@ describe("desktop protocol runtime validation", () => {
 				payload: {},
 			}),
 		).toThrow(/unknown protocol method/)
+	})
+
+	test("knows the canonical server notification methods", () => {
+		const known = knownServerNotificationMethods()
+		expect(known.has("session/metadataUpdated")).toBe(true)
+		expect(known.has("item/completed")).toBe(true)
+		expect(known.has("workspace/changes/updated")).toBe(true)
+		expect(known.has("session/title/updated")).toBe(false)
+	})
+
+	test("drops replay envelopes with unknown notification methods only", () => {
+		const validEnvelope = {
+			event: { eventId: "e1", streamId: "session:s1", emittedAt: 0, persisted: true, schemaVersion: 1 },
+			notification: { method: "item/completed", params: { item: {} } },
+		}
+		const unknownEnvelope = {
+			event: { eventId: "e2", streamId: "session:s1", emittedAt: 1, persisted: true, schemaVersion: 1 },
+			notification: { method: "session/title/updated", params: { session: {} } },
+		}
+		const payload = {
+			subscriptionId: "sub_1",
+			cursors: [],
+			replay: [validEnvelope, unknownEnvelope, validEnvelope],
+		}
+
+		const { payload: sanitized, dropped } = dropUnknownReplayEnvelopes(payload)
+		expect(dropped).toEqual([unknownEnvelope])
+		expect((sanitized as { replay: unknown[] }).replay).toEqual([validEnvelope, validEnvelope])
+		// Nothing dropped → same reference, no copy.
+		const cleanPayload = { replay: [validEnvelope] }
+		expect(dropUnknownReplayEnvelopes(cleanPayload).payload).toBe(cleanPayload)
+	})
+
+	test("leaves non-replay payloads untouched", () => {
+		const payload = { data: [], nextCursor: null }
+		const { payload: sanitized, dropped } = dropUnknownReplayEnvelopes(payload)
+		expect(sanitized).toBe(payload)
+		expect(dropped).toEqual([])
 	})
 })

@@ -211,8 +211,9 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<SessionHistoryMetadata>(&cfg, &mut output);
     push_decl::<SessionHistoryToolIo>(&cfg, &mut output);
     push_decl::<SessionHistoryItem>(&cfg, &mut output);
-    push_decl::<SessionForkParams>(&cfg, &mut output);
-    push_decl::<SessionForkResult>(&cfg, &mut output);
+    push_decl::<native::rpc_session::SessionForkCut>(&cfg, &mut output);
+    push_decl::<native::rpc_session::SessionForkParams>(&cfg, &mut output);
+    push_decl::<native::rpc_session::SessionForkResult>(&cfg, &mut output);
     // Keep the Native subscription event graph opaque in this compatibility
     // declaration file; the generated JSON Schema bundle remains precise.
     output.push_str(
@@ -794,8 +795,9 @@ fn register_devo_protocol_schemas(
     schema::<SessionEffectiveContextWindowUpdatedPayload>(schemas);
     schema::<SessionResumeParams>(schemas);
     schema::<SessionResumeResult>(schemas);
-    schema::<SessionForkParams>(schemas);
-    schema::<SessionForkResult>(schemas);
+    schema::<native::rpc_session::SessionForkCut>(schemas);
+    schema::<native::rpc_session::SessionForkParams>(schemas);
+    schema::<native::rpc_session::SessionForkResult>(schemas);
     schema::<native::rpc_admin::SkillListParams>(schemas);
     schema::<native::rpc_admin::SkillListResult>(schemas);
     schema::<native::rpc_admin::SkillInfo>(schemas);
@@ -895,7 +897,10 @@ fn register_devo_protocol_schemas(
         },
     );
     native_method::<SessionResumeParams, SessionResumeResult>(methods, "session/resume");
-    native_method::<SessionForkParams, SessionForkResult>(methods, "session/fork");
+    native_method::<native::rpc_session::SessionForkParams, native::rpc_session::SessionForkResult>(
+        methods,
+        "session/fork",
+    );
     native_method::<native::rpc_admin::SkillListParams, native::rpc_admin::SkillListResult>(
         methods,
         "skill/list",

@@ -151,6 +151,8 @@ impl ServerRuntime {
             title: Some(nickname.clone()),
             title_state: SessionTitleState::Final(SessionTitleFinalSource::ExplicitCreate),
             parent_session_id: Some(parent_session_id),
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: Some(agent_path.clone()),
             agent_nickname: Some(nickname.clone()),
             agent_role: Some(role.clone()),

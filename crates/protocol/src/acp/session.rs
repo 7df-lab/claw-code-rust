@@ -207,6 +207,8 @@ mod tests {
             title: Some("Work".to_string()),
             title_state: SessionTitleState::Unset,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,

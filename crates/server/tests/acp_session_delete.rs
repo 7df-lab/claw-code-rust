@@ -281,7 +281,7 @@ async fn acp_session_delete_cancels_running_session_before_removal() -> Result<(
 }
 
 #[tokio::test]
-async fn acp_session_delete_cascades_to_forked_children() -> Result<()> {
+async fn acp_session_delete_keeps_user_fork_children() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
     let (acp_connection_id, mut notifications_rx) = initialize_acp_connection(&runtime).await?;
@@ -309,16 +309,32 @@ async fn acp_session_delete_cascades_to_forked_children() -> Result<()> {
 
     delete_acp_session(&runtime, acp_connection_id, 12, &root.session_id).await?;
 
-    assert_eq!(
-        list_acp_sessions(&runtime, acp_connection_id, 13, data_root.path()).await?,
-        AcpListSessionsResult {
-            sessions: Vec::new(),
-            next_cursor: None,
-            meta: None,
-        }
-    );
+    let listed = list_acp_sessions(&runtime, acp_connection_id, 13, data_root.path()).await?;
+    assert_eq!(listed.sessions.len(), 1);
+    assert_eq!(listed.sessions[0].session_id, child_session_id);
     assert!(!session_rollout_exists(data_root.path(), root.session_id)?);
-    assert!(!session_rollout_exists(data_root.path(), child_session_id)?);
+    assert!(session_rollout_exists(data_root.path(), child_session_id)?);
+
+    let rebuilt = build_runtime(data_root.path())?;
+    rebuilt.load_persisted_sessions().await?;
+    let (rebuilt_connection_id, _) = initialize_native_connection(&rebuilt).await?;
+    let resume_response = rebuilt
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 14,
+                "method": "session/resume",
+                "params": {
+                    "sessionId": child_session_id
+                }
+            }),
+        )
+        .await
+        .context("session/resume forked child after parent delete")?;
+    assert!(
+        resume_response.get("result").is_some(),
+        "forked child must remain resumable after parent delete: {resume_response}"
+    );
     Ok(())
 }
 

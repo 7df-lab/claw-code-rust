@@ -58,7 +58,7 @@ import {
 } from "./sidebar/sidebar-session-delete"
 import { CreateFolderDialog } from "./sidebar/sidebar-folder-dialogs"
 import { useSidebarSlot } from "./sidebar-slot-context"
-import { SessionView } from "./session-view"
+import { SessionShell } from "./session-shell"
 import { UpdateBanner } from "./update-banner"
 
 // ============================================================
@@ -150,7 +150,7 @@ function AppMenuBar() {
 				<button
 					key={item.id}
 					type="button"
-					className="h-7 rounded-md px-2 text-sm font-normal text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+					className="h-7 rounded-md px-2 text-[13px] font-normal text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
 					onClick={(event) => handleMenuClick(event, item.id)}
 					style={{
 						// @ts-expect-error -- vendor-prefixed CSS property
@@ -256,6 +256,7 @@ export function SidebarLayout() {
 	const [createFolderPending, setCreateFolderPending] = useState(false)
 	const [createFolderError, setCreateFolderError] = useState<string | null>(null)
 	const loadedProjectDirectoriesRef = useRef<Set<string>>(new Set())
+	const evictKeepAliveSessionRef = useRef<(sessionId: string) => void>(() => {})
 	useEffect(() => {
 		if (!projectSlug) return
 		const project = projects.find((item) => item.slug === projectSlug)
@@ -302,6 +303,7 @@ export function SidebarLayout() {
 		setDeleteError(null)
 		try {
 			await deleteSession(deleteTarget.directory, deleteTarget.sessionId)
+			evictKeepAliveSessionRef.current(deleteTarget.sessionId)
 			await refillProjectSessionsAfterDelete(
 				deleteTarget.projectDirectory,
 				deleteTarget.sessionId,
@@ -655,7 +657,10 @@ export function SidebarLayout() {
 								aria-hidden={isSettingsOpen || customizeOpen}
 							>
 								{sessionToKeepAlive ? (
-									<SessionView sessionId={sessionToKeepAlive} />
+									<SessionShell
+										activeSessionId={sessionToKeepAlive}
+										evictRef={evictKeepAliveSessionRef}
+									/>
 								) : (
 									!isSettingsOpen && !customizeOpen && <Outlet />
 								)}

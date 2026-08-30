@@ -261,33 +261,6 @@ impl ServerRuntime {
         }
 
         let response = match method.as_str() {
-            "session/start" => {
-                let request_id = id?;
-                let params: SessionStartParams = match serde_json::from_value(params) {
-                    Ok(params) => params,
-                    Err(error) => {
-                        return Some(IncomingResponse::new(self.error_response(
-                            request_id,
-                            ProtocolErrorCode::InvalidParams,
-                            format!("invalid session/start params: {error}"),
-                        )));
-                    }
-                };
-                let response = self
-                    .start_session_with_registry(connection_id, request_id, params, None)
-                    .await;
-                if let Ok(success) =
-                    serde_json::from_value::<SuccessResponse<SessionStartResult>>(response.clone())
-                {
-                    self.subscribe_connection_to_session(
-                        connection_id,
-                        success.result.session.session_id,
-                        None,
-                    )
-                    .await;
-                }
-                Some(response)
-            }
             // Update session metadata, including the current model and reasoning effort.
             "session/metadata/update" => Some(
                 self.handle_native_session_metadata_update(id?, params)
@@ -342,9 +315,10 @@ impl ServerRuntime {
             "session/goal/update" => {
                 Some(self.handle_native_session_goal_update(id?, params).await)
             }
-            "session/message/edit" => {
-                Some(self.handle_native_session_message_edit(id?, params).await)
-            }
+            "session/message/edit" => Some(
+                self.handle_native_session_message_edit(connection_id, id?, params)
+                    .await,
+            ),
             "task/start" => Some(
                 self.handle_native_task_start(connection_id, id?, params)
                     .await,
@@ -3382,8 +3356,10 @@ mod tests {
                 updated_at: now,
                 last_activity_at: now,
                 title: Some("subscribed session".into()),
-                title_state: devo_protocol::SessionTitleState::Provisional,
+                title_state: devo_protocol::SessionTitleState::Generating,
                 parent_session_id: None,
+                fork_from_id: None,
+                fork_at_turn_id: None,
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
@@ -3794,23 +3770,22 @@ mod tests {
                 connection_id,
                 serde_json::json!({
                     "id": 100,
-                    "method": "session/start",
+                    "method": "session/new",
                     "params": {
                         "cwd": data_root,
-                        "ephemeral": false,
-                        "title": "queue session",
-                        "model": "test-model"
+                        "idempotencyKey": format!("test-session-{}", Uuid::new_v4())
                     }
                 }),
             )
             .await
-            .expect("session/start response");
-        Ok(
-            serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(response)?
-                .result
-                .session
-                .session_id,
-        )
+            .expect("session/new response");
+        let native_session = serde_json::from_value::<
+            crate::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
+        >(response.clone())
+        .map_err(|error| anyhow::anyhow!("session/new response {response}: {error}"))?
+        .result
+        .session;
+        Ok(SessionId::try_from(native_session.id.as_str())?)
     }
 
     async fn start_turn(
@@ -3826,20 +3801,18 @@ mod tests {
                     "id": 101,
                     "method": "turn/start",
                     "params": {
-                        "session_id": session_id,
+                        "sessionId": session_id,
                         "input": [{ "type": "text", "text": text }],
-                        "model": null,
-                        "sandbox": null,
-                        "approval_policy": null,
-                        "cwd": null
+                        "idempotencyKey": format!("test-turn-{}", Uuid::new_v4())
                     }
                 }),
             )
             .await
             .expect("turn/start response");
-        let result: crate::SuccessResponse<crate::TurnStartResult> =
-            serde_json::from_value(response)?;
-        Ok(result.result.turn_id().expect("turn started"))
+        let result: crate::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
+            serde_json::from_value(response.clone())
+                .map_err(|error| anyhow::anyhow!("turn/start response {response}: {error}"))?;
+        Ok(TurnId::try_from(result.result.turn.id.as_str())?)
     }
 
     #[tokio::test]
@@ -4086,12 +4059,9 @@ mod tests {
                         "id": 300,
                         "method": "turn/start",
                         "params": {
-                            "session_id": session_id,
+                            "sessionId": session_id,
                             "input": [{ "type": "text", "text": "wait" }],
-                            "model": null,
-                            "sandbox": null,
-                            "approval_policy": null,
-                            "cwd": null
+                            "idempotencyKey": "turn-start-state-change-gate"
                         }
                     }),
                 )
@@ -4514,54 +4484,48 @@ mod tests {
         let stream_open = Arc::clone(&provider.stream_open);
         let stream_started = Arc::clone(&provider.stream_started);
         let completion_open = Arc::clone(&provider.completion_open);
-        let completion_requested = Arc::clone(&provider.completion_requested);
+        let _completion_requested = Arc::clone(&provider.completion_requested);
         let runtime = build_runtime_with_provider(data_root.path(), provider);
         let connection_id = initialized_connection(&runtime).await;
-        // No `title` param: final title generation runs on the first turn.
+        // Untitled session: title is awaited before turn work. Open the title
+        // gate first so turn/start can finish title gen and enter the stream.
+        completion_open.store(true, std::sync::atomic::Ordering::SeqCst);
         let response = runtime
             .handle_incoming(
                 connection_id,
                 serde_json::json!({
                     "id": 100,
-                    "method": "session/start",
+                    "method": "session/new",
                     "params": {
                         "cwd": data_root.path(),
-                        "ephemeral": false,
-                        "model": "test-model"
+                        "idempotencyKey": "queue-push-session"
                     }
                 }),
             )
             .await
-            .expect("session/start response");
-        let session_id =
-            serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(response)?
-                .result
-                .session
-                .session_id;
+            .expect("session/new response");
+        let native_session = serde_json::from_value::<
+            crate::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
+        >(response)?
+        .result
+        .session
+        .id;
+        let session_id = SessionId::try_from(native_session.as_str())?;
         start_turn(&runtime, connection_id, session_id, "first prompt").await?;
 
-        // The title task reaching its provider call proves it passed every
-        // actor mailbox round-trip; the turn is executing inside the actor.
+        // Wait until the turn is executing inside the actor.
         for _ in 0..500 {
-            if completion_requested.load(std::sync::atomic::Ordering::SeqCst)
-                && stream_started.load(std::sync::atomic::Ordering::SeqCst)
-            {
+            if stream_started.load(std::sync::atomic::Ordering::SeqCst) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
-            completion_requested.load(std::sync::atomic::Ordering::SeqCst),
-            "title generation should have requested its completion"
-        );
-        assert!(
             stream_started.load(std::sync::atomic::Ordering::SeqCst),
             "turn should be executing"
         );
 
-        // Title apply no longer holds `state_change_gate`. Queue push must
-        // still answer `Queued` immediately while the turn stream is gated.
-        completion_open.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Queue push must answer `Queued` immediately while the turn stream is gated.
         let push_runtime = Arc::clone(&runtime);
         let push = tokio::spawn(async move {
             push_runtime
@@ -4612,44 +4576,45 @@ mod tests {
         let stream_open = Arc::clone(&provider.stream_open);
         let stream_started = Arc::clone(&provider.stream_started);
         let completion_open = Arc::clone(&provider.completion_open);
-        let completion_requested = Arc::clone(&provider.completion_requested);
+        let _completion_requested = Arc::clone(&provider.completion_requested);
         let runtime = build_runtime_with_provider(data_root.path(), provider);
         let connection_id = initialized_connection(&runtime).await;
+        // Title is awaited before turn work; open the title gate so the first
+        // turn can start and hold the stream gate for the busy-path checks.
+        completion_open.store(true, std::sync::atomic::Ordering::SeqCst);
         let response = runtime
             .handle_incoming(
                 connection_id,
                 serde_json::json!({
                     "id": 100,
-                    "method": "session/start",
+                    "method": "session/new",
                     "params": {
                         "cwd": data_root.path(),
-                        "ephemeral": false,
-                        "model": "test-model"
+                        "idempotencyKey": "busy-turn-session"
                     }
                 }),
             )
             .await
-            .expect("session/start response");
-        let session_id =
-            serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(response)?
-                .result
-                .session
-                .session_id;
+            .expect("session/new response");
+        let native_session = serde_json::from_value::<
+            crate::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
+        >(response)?
+        .result
+        .session
+        .id;
+        let session_id = SessionId::try_from(native_session.as_str())?;
         start_turn(&runtime, connection_id, session_id, "first prompt").await?;
 
         for _ in 0..500 {
-            if completion_requested.load(std::sync::atomic::Ordering::SeqCst)
-                && stream_started.load(std::sync::atomic::Ordering::SeqCst)
-            {
+            if stream_started.load(std::sync::atomic::Ordering::SeqCst) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
-            completion_requested.load(std::sync::atomic::Ordering::SeqCst),
-            "title generation should have requested its completion"
+            stream_started.load(std::sync::atomic::Ordering::SeqCst),
+            "turn should be executing"
         );
-        completion_open.store(true, std::sync::atomic::Ordering::SeqCst);
 
         let start_runtime = Arc::clone(&runtime);
         let native_start = tokio::spawn(async move {
@@ -4708,11 +4673,10 @@ mod tests {
         Ok(())
     }
 
-    /// Same gate holder, same fix: a manual compaction task takes
-    /// `state_change_gate` across the `compact_history` provider call
-    /// (runtime/handlers/compaction.rs), but the compaction turn is the
-    /// active turn, so a `session/queue/push` takes the gate-free busy
-    /// path and responds immediately.
+    /// A manual compaction task releases `state_change_gate` before the
+    /// `compact_history` provider call (runtime/handlers/compaction.rs), so
+    /// admission and queue operations remain responsive while the compaction
+    /// turn is active.
     #[tokio::test]
     async fn queue_push_responds_immediately_during_manual_compaction() -> Result<()> {
         let data_root = TempDir::new()?;
@@ -4759,37 +4723,20 @@ mod tests {
             Some(compaction_turn_id)
         );
 
-        // Wait until the compaction task actually holds `state_change_gate`
-        // inside `compact_history` (a push that slips in beforehand queues
-        // fine — the stall only applies while the summarizer is in flight).
+        // Compaction snapshots state under the gate, then releases it before
+        // entering the provider call. Verify the long-running summarizer does
+        // not retain the admission gate.
         let session_handle = runtime.session(session_id).await.expect("session");
-        let mut gate_held = false;
-        for _ in 0..50 {
-            match tokio::time::timeout(
-                Duration::from_millis(100),
-                session_handle.lock_state_change(),
-            )
-            .await
-            {
-                Ok(guard) => {
-                    drop(guard);
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(_) => {
-                    gate_held = true;
-                    break;
-                }
-            }
-        }
-        assert!(
-            gate_held,
-            "compaction should be holding state_change_gate across compact_history"
-        );
+        let gate = tokio::time::timeout(
+            Duration::from_millis(100),
+            session_handle.lock_state_change(),
+        )
+        .await
+        .expect("compaction model call must not hold state_change_gate");
+        drop(gate);
 
-        // Fixed behavior: the compaction turn is the active turn, so the
-        // push takes the gate-free busy path and answers `Queued`
-        // immediately even while compaction holds `state_change_gate`
-        // across `compact_history`.
+        // The compaction turn is active, so the push takes the busy path and
+        // answers `Queued` immediately while compaction is in flight.
         let push_runtime = Arc::clone(&runtime);
         let push = tokio::spawn(async move {
             push_runtime
@@ -6546,9 +6493,15 @@ mod tests {
         let result: devo_protocol::native::rpc_session::SessionForkResult =
             serde_json::from_value(forked["result"].clone()).expect("native fork result");
         assert_ne!(result.session.id.as_str(), session_id.to_string());
+        let source_session_id = session_id.to_string();
         assert!(
-            result.session.parent.is_some(),
-            "fork must record parentage"
+            result.session.parent.is_none(),
+            "user fork must not use subagent parentage"
+        );
+        assert_eq!(
+            result.session.fork_from_id.as_ref().map(|id| id.as_str()),
+            Some(source_session_id.as_str()),
+            "user fork must record forkFromId"
         );
 
         let missing = history_request(
@@ -7535,6 +7488,146 @@ mod tests {
             Some("WORKSPACE_VERSION_CONFLICT"),
             "stale revision must conflict: {stale}"
         );
+        Ok(())
+    }
+
+    struct HangTurnStreamProvider {
+        started: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl ModelProviderSDK for HangTurnStreamProvider {
+        async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            Ok(ModelResponse {
+                id: "title".into(),
+                content: vec![devo_protocol::ResponseContent::Text("title".into())],
+                stop_reason: Some(devo_protocol::StopReason::EndTurn),
+                usage: devo_protocol::Usage::default(),
+                metadata: devo_protocol::ResponseMetadata::default(),
+            })
+        }
+
+        async fn completion_stream(
+            &self,
+            _request: ModelRequest,
+        ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent>> + Send>>>
+        {
+            self.started.notify_one();
+            Ok(Box::pin(futures::stream::once(async {
+                std::future::pending::<()>().await;
+                unreachable!("hanging turn stream should be canceled by interrupt")
+            })))
+        }
+
+        fn name(&self) -> &str {
+            "hang-turn-stream"
+        }
+    }
+
+    /// Trace: L1-REQ-CONV-005, L2-DES-APP-003
+    /// Verifies: session/message/edit interrupts an in-flight turn, then
+    /// accepts the edit and starts a replacement turn.
+    #[tokio::test]
+    async fn native_session_message_edit_interrupts_active_turn() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(HangTurnStreamProvider {
+                started: Arc::clone(&started),
+            }),
+        );
+        let connection_id = initialized_native_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+
+        let turn_started = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "turn/start",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "original message" }],
+                "idempotencyKey": "edit-active-turn",
+            }),
+        )
+        .await;
+        assert!(
+            turn_started.get("error").is_none(),
+            "turn/start must succeed: {turn_started}"
+        );
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .context("provider should enter hanging stream")?;
+        assert!(
+            runtime.runtime_active_turn_id(session_id).await.is_some(),
+            "provider hang should keep the turn active"
+        );
+
+        let mut user_item = None;
+        for _ in 0..50 {
+            let items = history_request(
+                &runtime,
+                connection_id,
+                8,
+                "session/items/list",
+                serde_json::json!({ "sessionId": session_id.to_string() }),
+            )
+            .await;
+            let items: devo_protocol::native::page::Page<
+                devo_protocol::native::item::ItemEnvelope,
+            > = serde_json::from_value(items["result"].clone()).expect("items/list result");
+            user_item = items.data.into_iter().find(|item| {
+                matches!(
+                    &item.item,
+                    devo_protocol::native::item::Item::UserMessage { .. }
+                )
+            });
+            if user_item.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let user_item = user_item.expect("user message item should be durable before model hang");
+
+        let edited = history_request(
+            &runtime,
+            connection_id,
+            9,
+            "session/message/edit",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "itemId": user_item.id.as_str(),
+                "expectedRevision": 0,
+                "content": [{ "type": "text", "text": "edited while running" }],
+                "workspaceRestore": "skip",
+                "idempotencyKey": "edit-while-active",
+            }),
+        )
+        .await;
+        assert!(
+            edited.get("error").is_none(),
+            "edit during active turn must interrupt then accept: {edited}"
+        );
+        let edited: devo_protocol::native::rpc_session::SessionMessageEditResult =
+            serde_json::from_value(edited["result"].clone())
+                .expect("native session/message/edit result");
+        assert_eq!(
+            edited.edit_state,
+            devo_protocol::native::rpc_session::MessageEditState::Accepted
+        );
+        assert!(
+            edited.replacement_turn_id.is_some(),
+            "replacement turn must start after interrupt"
+        );
+        match &edited.item.item {
+            devo_protocol::native::item::Item::UserMessage { content, .. } => {
+                assert!(
+                    matches!(&content[0], devo_protocol::native::item::UserInput::Text { text } if text == "edited while running")
+                );
+            }
+            other => panic!("edited item must be a UserMessage: {other:?}"),
+        }
         Ok(())
     }
 

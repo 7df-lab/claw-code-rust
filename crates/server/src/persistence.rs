@@ -147,6 +147,37 @@ impl RolloutStore {
         model_provider: String,
         parent_session_id: Option<SessionId>,
     ) -> SessionRecord {
+        self.create_session_record_with_fork(
+            id,
+            created_at,
+            cwd,
+            additional_directories,
+            title,
+            model,
+            model_binding_id,
+            reasoning_effort_selection,
+            model_provider,
+            parent_session_id,
+            /*fork_from_id*/ None,
+            /*fork_at_turn_id*/ None,
+        )
+    }
+
+    pub(crate) fn create_session_record_with_fork(
+        &self,
+        id: SessionId,
+        created_at: chrono::DateTime<Utc>,
+        cwd: PathBuf,
+        additional_directories: Vec<PathBuf>,
+        title: Option<String>,
+        model: Option<String>,
+        model_binding_id: Option<String>,
+        reasoning_effort_selection: Option<String>,
+        model_provider: String,
+        parent_session_id: Option<SessionId>,
+        fork_from_id: Option<SessionId>,
+        fork_at_turn_id: Option<TurnId>,
+    ) -> SessionRecord {
         let rollout_path = self.rollout_path(created_at, id);
         let title_state = title
             .as_ref()
@@ -181,6 +212,8 @@ impl RolloutStore {
             git_branch: None,
             git_origin_url: None,
             parent_session_id,
+            fork_from_id,
+            fork_at_turn_id,
             session_context: None,
             latest_turn_context: None,
             collaboration_mode: None,
@@ -203,25 +236,30 @@ impl RolloutStore {
     /// Appends one field-level session settings line without requiring the
     /// actor-owned session record (L2-DES-CONV-002 Phase 2 persist-first
     /// path: the handler must not wait on the actor mailbox to persist).
-    pub(crate) fn append_session_settings_at(
+    /// Appends a settings patch as one locked rollout batch. Keeping all
+    /// changed fields under the same file lock prevents concurrent metadata
+    /// updates from interleaving their field lines and splitting one logical
+    /// patch across settings epochs.
+    pub(crate) fn append_session_settings_batch_at(
         &self,
         rollout_path: &Path,
         session_id: SessionId,
-        field: SessionSettingsField,
-        value: serde_json::Value,
+        settings: &[(SessionSettingsField, serde_json::Value)],
     ) -> Result<()> {
-        self.append_line(
-            rollout_path,
-            &RolloutLine::SessionSettings(SessionSettingsLine {
-                timestamp: Utc::now(),
-                session_id,
-                field,
-                value,
-                // Placeholder: the per-file projector assigns the
-                // authoritative epoch at write time.
-                epoch: 0,
-            }),
-        )
+        let lines = settings
+            .iter()
+            .map(|(field, value)| {
+                RolloutLine::SessionSettings(SessionSettingsLine {
+                    timestamp: Utc::now(),
+                    session_id,
+                    field: *field,
+                    value: value.clone(),
+                    epoch: 0,
+                })
+            })
+            .collect::<Vec<_>>();
+        let line_refs = lines.iter().collect::<Vec<_>>();
+        self.append_lines(rollout_path, &line_refs)
     }
 
     /// Appends one turn line to the durable rollout journal.
@@ -779,6 +817,10 @@ impl RolloutStore {
     }
 
     fn append_line(&self, rollout_path: &Path, line: &RolloutLine) -> Result<()> {
+        self.append_lines(rollout_path, std::slice::from_ref(&line))
+    }
+
+    fn append_lines(&self, rollout_path: &Path, lines: &[&RolloutLine]) -> Result<()> {
         if let Some(parent) = rollout_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create rollout directory {}", parent.display()))?;
@@ -810,10 +852,14 @@ impl RolloutStore {
                     .or_insert(state)
             }
         };
-        let v2_lines = state
-            .projector
-            .project_line(line)
-            .with_context(|| format!("project rollout line for {}", rollout_path.display()))?;
+        let mut v2_lines = Vec::new();
+        for line in lines {
+            v2_lines.extend(
+                state.projector.project_line(line).with_context(|| {
+                    format!("project rollout line for {}", rollout_path.display())
+                })?,
+            );
+        }
         self.write_v2_lines(rollout_path, state, &v2_lines)
     }
 
@@ -1105,17 +1151,14 @@ fn apply_optional_string_setting(
             return;
         }
     };
-    let Some(new_value) = parsed else {
-        return;
-    };
-    if target.as_ref().is_some_and(|current| *current != new_value) {
+    if target.as_ref() != parsed.as_ref() {
         tracing::warn!(
             session_id = %session_id,
             field = field_name,
             "settings field line disagrees with SessionMeta value; field line wins"
         );
     }
-    *target = Some(new_value);
+    *target = parsed;
 }
 
 /// Auto-compact / status pressure restored on resume.
@@ -1439,6 +1482,12 @@ impl ReplayState {
         record.last_activity_at = Some(last_activity_at);
         // Field-level settings lines win over the whole-record SessionMeta
         // values (L2-DES-CONV-002 Phase 1); apply before the derivations below.
+        let has_model_setting = self
+            .session_settings
+            .contains_key(&SessionSettingsField::Model);
+        let has_model_binding_setting = self
+            .session_settings
+            .contains_key(&SessionSettingsField::ModelBindingId);
         self.apply_session_settings(&mut record);
         let sandbox_profile_override = self.sandbox_profile_override();
         let runtime_context = deps.context_for_workspace(&record.cwd).await?;
@@ -1553,18 +1602,34 @@ impl ReplayState {
         core_session.last_turn_tokens = last_turn_tokens;
         let pending_turn_queue = std::sync::Arc::clone(&core_session.pending_turn_queue);
         let steer_input_queue = std::sync::Arc::clone(&core_session.steer_input_queue);
-        let summary_model_selection = self
-            .latest_turn_metadata
-            .as_ref()
-            .and_then(|turn| turn.model_binding_id.clone())
-            .or_else(|| {
-                self.latest_turn_metadata
-                    .as_ref()
-                    .map(|turn| turn.model.clone())
-            })
-            .or_else(|| record.model_binding_id.clone())
-            .or_else(|| record.model.clone())
-            .unwrap_or_else(|| runtime_context.default_model.clone());
+        // A session-level model update supersedes the binding captured by an
+        // older turn. With no explicit binding line, use the slug directly;
+        // this also repairs rollouts written before slug updates cleared the
+        // stale binding. When a binding line is present, its value remains
+        // authoritative (including an explicit null, which falls back to the
+        // paired model slug).
+        let summary_model_selection = if has_model_setting || has_model_binding_setting {
+            if has_model_binding_setting {
+                record
+                    .model_binding_id
+                    .clone()
+                    .or_else(|| record.model.clone())
+            } else {
+                record.model.clone()
+            }
+        } else {
+            self.latest_turn_metadata
+                .as_ref()
+                .and_then(|turn| turn.model_binding_id.clone())
+                .or_else(|| {
+                    self.latest_turn_metadata
+                        .as_ref()
+                        .map(|turn| turn.model.clone())
+                })
+                .or_else(|| record.model_binding_id.clone())
+                .or_else(|| record.model.clone())
+        }
+        .unwrap_or_else(|| runtime_context.default_model.clone());
         let turn_config = runtime_context.resolve_turn_config(Some(&summary_model_selection), None);
         let concrete_selection = |selection: Option<&str>| {
             selection
@@ -1631,6 +1696,8 @@ impl ReplayState {
             title: record.title.clone(),
             title_state: record.title_state.clone(),
             parent_session_id: record.parent_session_id,
+            fork_from_id: record.fork_from_id,
+            fork_at_turn_id: record.fork_at_turn_id,
             agent_path: record.agent_path.clone(),
             agent_nickname: record.agent_nickname.clone(),
             agent_role: record.agent_role.clone(),
@@ -2483,6 +2550,8 @@ pub(crate) fn session_metadata_from_record(
         title: record.title.clone(),
         title_state: record.title_state.clone(),
         parent_session_id: record.parent_session_id,
+        fork_from_id: record.fork_from_id,
+        fork_at_turn_id: record.fork_at_turn_id,
         agent_path: record.agent_path.clone(),
         agent_nickname: record.agent_nickname.clone(),
         agent_role: record.agent_role.clone(),
@@ -3367,6 +3436,8 @@ mod tests {
                     devo_core::SessionTitleFinalSource::ModelGenerated,
                 ),
                 parent_session_id: None,
+                fork_from_id: None,
+                fork_at_turn_id: None,
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
@@ -3780,6 +3851,8 @@ mod tests {
                     git_branch: None,
                     git_origin_url: None,
                     parent_session_id: None,
+                    fork_from_id: None,
+                    fork_at_turn_id: None,
                     session_context: None,
                     latest_turn_context: None,
                     collaboration_mode: None,
@@ -3904,6 +3977,8 @@ mod tests {
                     git_branch: None,
                     git_origin_url: None,
                     parent_session_id: None,
+                    fork_from_id: None,
+                    fork_at_turn_id: None,
                     session_context: None,
                     latest_turn_context: None,
                     collaboration_mode: None,
@@ -4014,6 +4089,8 @@ mod tests {
                     git_branch: None,
                     git_origin_url: None,
                     parent_session_id: None,
+                    fork_from_id: None,
+                    fork_at_turn_id: None,
                     session_context: None,
                     latest_turn_context: None,
                     collaboration_mode: None,
@@ -5043,11 +5120,13 @@ mod tests {
         let (_dir, store, record) = settings_test_record();
         store.append_session_meta(&record).expect("append meta");
         store
-            .append_session_settings_at(
+            .append_session_settings_batch_at(
                 &record.rollout_path,
                 record.id,
-                devo_core::SessionSettingsField::SandboxProfile,
-                serde_json::Value::String("workspace".into()),
+                &[(
+                    devo_core::SessionSettingsField::SandboxProfile,
+                    serde_json::Value::String("workspace".into()),
+                )],
             )
             .expect("append settings line");
 

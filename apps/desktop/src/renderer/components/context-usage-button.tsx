@@ -36,8 +36,6 @@ export function ContextUsageButton({ sessionId }: ContextUsageButtonProps) {
 	const percent = windowFillPercent(used, windowTokens)
 	const rows = useMemo(() => occupancyCategoryRows(occupancy), [occupancy])
 	const filledRows = rows.filter((row) => row.tokens > 0)
-	const strokeClass =
-		percent >= 90 ? "text-red-400" : percent >= 70 ? "text-yellow-400" : "text-muted-foreground"
 
 	const size = 14
 	const strokeWidth = 2.5
@@ -53,8 +51,7 @@ export function ContextUsageButton({ sessionId }: ContextUsageButtonProps) {
 						type="button"
 						aria-label={`Context usage ${percent}%`}
 						className={cn(
-							"inline-flex size-8 items-center justify-center rounded-md transition-colors hover:bg-muted hover:text-foreground",
-							strokeClass,
+							"inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
 						)}
 					/>
 				}

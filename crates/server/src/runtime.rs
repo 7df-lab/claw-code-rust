@@ -38,8 +38,7 @@ use devo_core::tools::ToolCallError;
 use devo_core::tools::ToolPermissionRequest;
 use devo_protocol::{
     SessionDeletedPayload, WorkspaceChangeAttribution, WorkspaceChangeScope, WorkspaceChangeView,
-    WorkspaceChangesReadParams, WorkspaceChangesReadResult, WorkspaceChangesUpdatedPayload,
-    WorkspaceDiffDetail,
+    WorkspaceChangesReadParams, WorkspaceChangesUpdatedPayload, WorkspaceDiffDetail,
 };
 use devo_safety::PermissionMode;
 
@@ -67,7 +66,6 @@ use crate::ServerRequestResolvedPayload;
 use crate::SessionCompactionFailedPayload;
 use crate::SessionEffectiveContextWindowUpdatedPayload;
 use crate::SessionEventPayload;
-use crate::SessionForkParams;
 use crate::SessionForkResult;
 use crate::SessionMetadata;
 use crate::SessionResumeParams;
@@ -143,6 +141,7 @@ mod reference_search;
 mod session_actor;
 mod session_cache;
 mod session_interactive;
+mod session_title;
 mod skills;
 mod subagent_usage;
 mod turn_exec;
@@ -239,6 +238,9 @@ pub struct ServerRuntime {
     session_lru: Mutex<session_cache::ParentSessionLru>,
     /// Per-session gate that serializes lazy parent session hydration.
     parent_session_load_gate: Arc<session_cache::SessionLoadGate>,
+    /// Per-session gate that serializes durable metadata reads and writes
+    /// without waiting for a session actor or an active turn.
+    session_metadata_write_gate: Arc<session_cache::SessionLoadGate>,
     /// User exec-policy rules loaded from `$DEVO_HOME/rules/*.rules`.
     user_exec_policy: std::sync::Mutex<Option<devo_execpolicy::Policy>>,
     /// Localhost HTTP CONNECT proxy for restricted sandbox profiles.
@@ -274,8 +276,11 @@ impl TerminalTurnSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TurnStartQueuePolicy {
-    Queue,
     RejectActive,
+    /// Accept a busy session by materializing the input into its Native
+    /// session queue. This is used only by `session/queue/push` after the
+    /// request has been decoded on the canonical protocol surface.
+    Queue,
 }
 
 impl TurnInputMode {
@@ -407,6 +412,7 @@ impl ServerRuntime {
                 session_cache::PARENT_SESSION_LRU_CAPACITY,
             )),
             parent_session_load_gate: Arc::new(session_cache::SessionLoadGate::default()),
+            session_metadata_write_gate: Arc::new(session_cache::SessionLoadGate::default()),
             user_exec_policy: std::sync::Mutex::new(
                 crate::exec_policy_store::load_user_exec_policy(),
             ),

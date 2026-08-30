@@ -126,6 +126,44 @@ export function modelAllowsDefaultVariant(
 	return true
 }
 
+/**
+ * Reverse lookup: which provider owns a bare model id (slug). Persisted
+ * sessions store only the model slug — the provider binding may be "unknown"
+ * on cold-restored sessions — but the provider list keyed by model id is
+ * enough to rebuild a full ModelRef for the composer.
+ *
+ * Sessions whose last state came from a turn report the RESOLVED request
+ * slug, so when the exact id misses, fall back to the longest known model id
+ * at a dash boundary on either side: `<config-id>-<provider-name>` (e.g.
+ * `deepseek-v4-flash-deepseek-ac`) and provider-prefixed ids (e.g.
+ * `ollama-qwen3.6-35b-a3b`) both resolve back to the configured model.
+ */
+export function modelRefFromSlug(
+	modelID: string,
+	providers: SdkProvider[],
+): ModelRef | null {
+	if (!modelID) return null
+	for (const provider of providers) {
+		if (provider?.models && provider.models[modelID]) {
+			return { providerID: provider.id, modelID }
+		}
+	}
+	let best: { providerID: string; modelID: string } | null = null
+	for (const provider of providers) {
+		for (const candidate of Object.keys(provider?.models ?? {})) {
+			if (
+				candidate.length > (best?.modelID.length ?? 0) &&
+				(modelID === candidate ||
+					modelID.startsWith(`${candidate}-`) ||
+					modelID.endsWith(`-${candidate}`))
+			) {
+				best = { providerID: provider.id, modelID: candidate }
+			}
+		}
+	}
+	return best
+}
+
 export function resolveEffectiveModel(
 	selectedModel: ModelRef | null,
 	agent: SdkAgent | null,
@@ -140,7 +178,10 @@ export function resolveEffectiveModel(
 	}
 	if (configModel) {
 		const ref = parseModelRef(configModel)
-		if (ref) return ref
+		// Skip a preference the provider list cannot serve — historically the
+		// preference could be poisoned with resolved request slugs, and using
+		// them here would re-propagate the slug into every fallback consumer.
+		if (ref && providers.some((p) => p.models[ref.modelID])) return ref
 	}
 	if (recentModels) {
 		for (const recent of recentModels) {

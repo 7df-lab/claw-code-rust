@@ -171,6 +171,8 @@ fn session_projection_maps_core_record() {
         git_branch: None,
         git_origin_url: None,
         parent_session_id: None,
+        fork_from_id: None,
+        fork_at_turn_id: None,
         session_context: None,
         latest_turn_context: None,
         collaboration_mode: None,
@@ -241,12 +243,12 @@ fn event_enum_carries_delta_kind() {
 fn request_envelope_keeps_method_and_id() {
     let request = ClientRequest {
         id: serde_json::json!(1),
-        method: "session/start".into(),
+        method: "session/new".into(),
         params: serde_json::json!({"cwd":"C:/repo"}),
     };
 
     let json = serde_json::to_string(&request).expect("serialize");
-    assert!(json.contains("\"method\":\"session/start\""));
+    assert!(json.contains("\"method\":\"session/new\""));
     assert!(json.contains("\"id\":1"));
 }
 
@@ -263,6 +265,8 @@ fn session_title_updated_event_serializes_expected_kind() {
             title: Some("Renamed session".into()),
             title_state: SessionTitleState::Final(SessionTitleFinalSource::UserRename),
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
@@ -303,6 +307,8 @@ fn session_compaction_events_serialize_expected_kinds() {
         title: Some("Compacting session".into()),
         title_state: SessionTitleState::Unset,
         parent_session_id: None,
+        fork_from_id: None,
+        fork_at_turn_id: None,
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
@@ -377,6 +383,8 @@ fn compaction_lifecycle_events_project_to_native_notifications() {
         title: Some("Compacting session".into()),
         title_state: SessionTitleState::Unset,
         parent_session_id: None,
+        fork_from_id: None,
+        fork_at_turn_id: None,
         agent_path: None,
         agent_nickname: None,
         agent_role: None,

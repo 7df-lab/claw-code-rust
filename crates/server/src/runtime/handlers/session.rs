@@ -34,6 +34,16 @@ pub(crate) struct RuntimeSessionTurnCutOptions {
     pub(crate) created_at: chrono::DateTime<Utc>,
 }
 
+/// Internal params shared by legacy and native `session/fork` entry points.
+struct TranslatedForkParams {
+    session_id: SessionId,
+    title: Option<String>,
+    cwd: Option<PathBuf>,
+    user_turn_index: Option<u32>,
+    fork_at_turn_id: Option<TurnId>,
+    cut: devo_protocol::native::rpc_session::SessionForkCut,
+}
+
 /// Resolve occupancy and latest-query usage for a history cut.
 ///
 /// Prefers a compaction snapshot that still applies to the kept turns; otherwise
@@ -132,6 +142,8 @@ impl ServerRuntime {
                 .map(|_| SessionTitleState::Final(SessionTitleFinalSource::ExplicitCreate))
                 .unwrap_or(SessionTitleState::Unset),
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
@@ -394,6 +406,7 @@ impl ServerRuntime {
                     }
                 };
                 {
+                    self.cancel_auto_title_generation(legacy_session_id).await;
                     let _state_change_guard = session_handle.lock_state_change().await;
                     let previous_title = session_handle
                         .summary()
@@ -433,13 +446,14 @@ impl ServerRuntime {
                 }
             }
         }
-        let Some(session_handle) = self.session(legacy_session_id).await else {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::SessionNotFound,
-                "session does not exist",
-            );
-        };
+        // Metadata updates target the durable session record: the live actor
+        // is an implementation detail, not a precondition. Keep the actor
+        // optional so a cold session can be updated before `session/resume`.
+        let session_handle = self.session(legacy_session_id).await;
+        let _metadata_write_permit = self
+            .session_metadata_write_gate
+            .acquire(legacy_session_id)
+            .await;
         // Persist-first: never wait on the session actor, and never take
         // the state-change gate for a settings patch. Title generation and
         // finalize hold that gate across mailbox waits; taking it here
@@ -450,12 +464,26 @@ impl ServerRuntime {
         // index metadata also supplies the current model/binding/effort
         // values, needed because the actor's metadata command overwrites
         // absent fields unless they are re-sent with their current values.
-        let session_index = self
-            .deps
-            .db
-            .get_session_index(&legacy_session_id)
-            .ok()
-            .flatten();
+        let session_index = match self.deps.db.get_session_index(&legacy_session_id) {
+            Ok(index) => index,
+            Err(error) => {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::InternalError,
+                    format!("failed to read session index: {error}"),
+                );
+            }
+        };
+        let ephemeral_without_rollout = session_index
+            .as_ref()
+            .is_some_and(|index| index.metadata.ephemeral);
+        let subagent_parent_session_id = session_index.as_ref().and_then(|index| {
+            index
+                .metadata
+                .agent_path
+                .as_ref()
+                .and(index.metadata.parent_session_id)
+        });
         let current_model_slug = session_index
             .as_ref()
             .and_then(|index| index.metadata.model.clone());
@@ -466,20 +494,52 @@ impl ServerRuntime {
             .as_ref()
             .and_then(|index| index.metadata.reasoning_effort_selection.clone());
         let mut index_metadata = session_index.as_ref().map(|index| index.metadata.clone());
-        let rollout_path = session_index
-            .and_then(|index| index.rollout_path)
-            .or_else(|| {
-                self.rollout_store
-                    .find_rollout_by_session_id(&legacy_session_id)
-                    .ok()
-                    .flatten()
-            });
+        let indexed_rollout_path = session_index.and_then(|index| index.rollout_path);
+        let rollout_path = match indexed_rollout_path {
+            Some(path) if path.exists() => Some(path),
+            Some(_) | None => match self
+                .rollout_store
+                .find_rollout_by_session_id(&legacy_session_id)
+            {
+                Ok(path) => path.filter(|path| path.exists()),
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InternalError,
+                        format!("failed to locate session rollout: {error}"),
+                    );
+                }
+            },
+        };
+        if let Some(parent_session_id) = subagent_parent_session_id {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InvalidParams,
+                format!(
+                    "subagent sessions cannot be updated directly; update the parent session {parent_session_id} instead"
+                ),
+            );
+        }
+        if rollout_path.is_none() && ephemeral_without_rollout && session_handle.is_none() {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "ephemeral session is not live",
+            );
+        }
         // Ephemeral sessions have neither rollout nor an index row: the only
         // metadata source left is the actor summary (a mailbox read — the
         // blocking is scoped to the ephemeral degrade; durable paths never
         // wait on the actor).
         if index_metadata.is_none() && rollout_path.is_none() {
-            index_metadata = session_handle.summary().await;
+            let Some(handle) = session_handle.as_ref() else {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::SessionNotFound,
+                    "session does not exist",
+                );
+            };
+            index_metadata = handle.summary().await;
         }
         // Ephemeral degrade: no rollout → no field lines and an index-built
         // snapshot; durable → history-backed snapshot with version checks.
@@ -552,7 +612,7 @@ impl ServerRuntime {
                     reasoning_effort: index_metadata
                         .reasoning_effort_selection
                         .as_deref()
-                        .and_then(|selection| selection.parse().ok()),
+                        .map(devo_protocol::normalize_reasoning_effort_literal),
                     mode: Some(
                         serde_json::to_value(index_metadata.collaboration_mode)
                             .ok()
@@ -578,6 +638,7 @@ impl ServerRuntime {
         let mut overlay_compact_limit: Option<usize> = None;
         let mut overlay_mode: Option<devo_protocol::CollaborationMode> = None;
         let mut applied_window: Option<u64> = None;
+        let mut settings_changes = Vec::new();
         if let Some(settings) = &params.settings {
             if let Some(profile) = settings.permission_profile
                 && profile != current.permission_profile
@@ -593,26 +654,17 @@ impl ServerRuntime {
                         devo_protocol::PermissionPreset::FullAccess
                     }
                 };
-                if let Some(path) = &rollout_path
-                    && let Err(error) = self.rollout_store.append_session_settings_at(
-                        path,
-                        legacy_session_id,
+                if rollout_path.is_some() {
+                    settings_changes.push((
                         SessionSettingsField::PermissionPreset,
                         serde_json::to_value(preset).expect("serialize permission preset setting"),
-                    )
-                {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InternalError,
-                        format!("failed to persist permission preset settings line: {error}"),
-                    );
+                    ));
                 }
                 let profile = safety_profile_from_protocol(
                     preset,
                     session_cwd.clone(),
                     session_additional_dirs.clone(),
                 );
-                session_handle.notify_permission_profile(profile.clone());
                 overlay_profile = Some(profile);
             }
             if settings.sandbox_profile != current.sandbox_profile
@@ -631,41 +683,24 @@ impl ServerRuntime {
                         );
                     }
                 };
-                if let Some(path) = &rollout_path
-                    && let Err(error) = self.rollout_store.append_session_settings_at(
-                        path,
-                        legacy_session_id,
+                if rollout_path.is_some() {
+                    settings_changes.push((
                         SessionSettingsField::SandboxProfile,
                         serde_json::Value::String(native_name.clone()),
-                    )
-                {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InternalError,
-                        format!("failed to persist sandbox profile settings line: {error}"),
-                    );
+                    ));
                 }
-                session_handle.notify_sandbox_profile(native_name.clone());
                 overlay_sandbox = Some(native_name);
             }
-            let current_effort = current.reasoning_effort.map(|effort| effort.to_string());
+            let current_effort = current.reasoning_effort.clone();
             if let Some(effort) = &settings.reasoning_effort
                 && current_effort.as_ref() != Some(effort)
             {
-                if let Some(path) = &rollout_path
-                    && let Err(error) = self.rollout_store.append_session_settings_at(
-                        path,
-                        legacy_session_id,
+                if rollout_path.is_some() {
+                    settings_changes.push((
                         SessionSettingsField::ReasoningEffortSelection,
                         serde_json::to_value(Some(effort.clone()))
                             .expect("serialize reasoning effort setting"),
-                    )
-                {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InternalError,
-                        format!("failed to persist reasoning effort settings line: {error}"),
-                    );
+                    ));
                 }
                 overlay_effort = Some(effort.clone());
             }
@@ -684,19 +719,11 @@ impl ServerRuntime {
                         );
                     }
                 };
-                if let Some(path) = &rollout_path
-                    && let Err(error) = self.rollout_store.append_session_settings_at(
-                        path,
-                        legacy_session_id,
+                if rollout_path.is_some() {
+                    settings_changes.push((
                         SessionSettingsField::CollaborationMode,
                         serde_json::to_value(mode).expect("serialize collaboration mode setting"),
-                    )
-                {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InternalError,
-                        format!("failed to persist collaboration mode settings line: {error}"),
-                    );
+                    ));
                 }
                 overlay_mode = Some(mode);
             }
@@ -747,7 +774,9 @@ impl ServerRuntime {
                         Some(window),
                         &model,
                     );
-                    session_handle.notify_effective_context_window(applied as usize);
+                    if let Some(handle) = session_handle.as_ref() {
+                        handle.notify_effective_context_window(applied as usize);
+                    }
                     overlay_compact_limit = Some(applied as usize);
                     applied_window = Some(applied);
                 }
@@ -756,38 +785,56 @@ impl ServerRuntime {
         if let Some(binding) = &params.model
             && binding.model != session_model_slug
         {
-            if let Some(path) = &rollout_path
-                && let Err(error) = self.rollout_store.append_session_settings_at(
-                    path,
-                    legacy_session_id,
+            if rollout_path.is_some() {
+                settings_changes.push((
                     SessionSettingsField::Model,
                     serde_json::to_value(Some(binding.model.clone()))
                         .expect("serialize model setting"),
-                )
-            {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InternalError,
-                    format!("failed to persist model settings line: {error}"),
-                );
+                ));
             }
             overlay_model = Some(binding.model.clone());
         }
-        if let Some(model_binding_id) = &params.model_binding_id
-            && let Some(path) = &rollout_path
-            && let Err(error) = self.rollout_store.append_session_settings_at(
+
+        // A model slug and its provider binding are one logical selection. A
+        // slug-only update must clear the previous binding; otherwise the
+        // next turn's binding-first resolution keeps selecting the old model.
+        // An explicitly supplied binding remains authoritative when both are
+        // present in the same update.
+        let model_binding_update = if overlay_model.is_some() {
+            Some(params.model_binding_id.clone())
+        } else {
+            params.model_binding_id.clone().map(Some)
+        };
+        if let Some(model_binding_id) = &model_binding_update {
+            if rollout_path.is_some() {
+                settings_changes.push((
+                    SessionSettingsField::ModelBindingId,
+                    serde_json::to_value(model_binding_id)
+                        .expect("serialize model binding setting"),
+                ));
+            }
+        }
+        if let Some(path) = rollout_path.as_ref()
+            && !settings_changes.is_empty()
+            && let Err(error) = self.rollout_store.append_session_settings_batch_at(
                 path,
                 legacy_session_id,
-                SessionSettingsField::ModelBindingId,
-                serde_json::to_value(Some(model_binding_id.clone()))
-                    .expect("serialize model binding setting"),
+                &settings_changes,
             )
         {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::InternalError,
-                format!("failed to persist model binding settings line: {error}"),
+                format!("failed to persist session settings: {error}"),
             );
+        }
+        if let Some(handle) = session_handle.as_ref() {
+            if let Some(profile) = &overlay_profile {
+                handle.notify_permission_profile(profile.clone());
+            }
+            if let Some(name) = &overlay_sandbox {
+                handle.notify_sandbox_profile(name.clone());
+            }
         }
         // One consolidated metadata notification carrying every field's new
         // or current value: the actor overwrites absent fields on non-
@@ -795,19 +842,23 @@ impl ServerRuntime {
         if overlay_model.is_some()
             || overlay_effort.is_some()
             || overlay_mode.is_some()
-            || params.model_binding_id.is_some()
+            || model_binding_update.is_some()
         {
-            session_handle.notify_session_metadata(
-                Some(
-                    overlay_model
+            if let Some(handle) = session_handle.as_ref() {
+                handle.notify_session_metadata(
+                    Some(
+                        overlay_model
+                            .clone()
+                            .or(current_model_slug)
+                            .unwrap_or_else(|| session_model_slug.clone()),
+                    ),
+                    model_binding_update
                         .clone()
-                        .or(current_model_slug)
-                        .unwrap_or_else(|| session_model_slug.clone()),
-                ),
-                params.model_binding_id.clone().or(current_binding_id),
-                overlay_effort.clone().or(current_effort),
-                overlay_mode,
-            );
+                        .unwrap_or_else(|| current_binding_id.clone()),
+                    overlay_effort.clone().or(current_effort),
+                    overlay_mode,
+                );
+            }
         }
 
         // Phase 3: deliver the override to the running turn's inline state,
@@ -907,8 +958,8 @@ impl ServerRuntime {
                 index_metadata.model = Some(model.clone());
                 touched = true;
             }
-            if let Some(binding_id) = &params.model_binding_id {
-                index_metadata.model_binding_id = Some(binding_id.clone());
+            if let Some(binding_id) = model_binding_update {
+                index_metadata.model_binding_id = binding_id;
                 touched = true;
             }
             if let Some(effort) = &overlay_effort {
@@ -1031,14 +1082,36 @@ impl ServerRuntime {
             version: 1,
             cwd: metadata.cwd.clone(),
             additional_directories: metadata.additional_directories.clone(),
-            parent: metadata.parent_session_id.map(|parent| {
-                devo_protocol::native::session::SessionParent::Fork {
+            parent: metadata.parent_session_id.and_then(|parent| {
+                if metadata.agent_path.is_none()
+                    && metadata.agent_role.is_none()
+                    && metadata.agent_nickname.is_none()
+                {
+                    return None;
+                }
+                Some(devo_protocol::native::session::SessionParent::Agent {
                     session_id: devo_protocol::native::ids::SessionId::from_string(
                         parent.to_string(),
                     ),
-                    at_turn_id: None,
-                }
+                    role: metadata.agent_role.clone(),
+                })
             }),
+            fork_from_id: metadata
+                .fork_from_id
+                .or_else(|| {
+                    if metadata.agent_path.is_none()
+                        && metadata.agent_role.is_none()
+                        && metadata.agent_nickname.is_none()
+                    {
+                        metadata.parent_session_id
+                    } else {
+                        None
+                    }
+                })
+                .map(|id| devo_protocol::native::ids::SessionId::from_string(id.to_string())),
+            at_turn_id: metadata
+                .fork_at_turn_id
+                .map(|id| devo_protocol::native::ids::TurnId::from_string(id.to_string())),
             ephemeral: metadata.ephemeral,
             created_at: metadata.created_at,
             status: devo_protocol::native::session::SessionStatus::Idle,
@@ -1047,6 +1120,7 @@ impl ServerRuntime {
             active_turn_id: None,
             queued_count: 0,
             title: metadata.title.clone(),
+            title_state: metadata.title_state.clone(),
             model: devo_protocol::native::model::ModelBinding {
                 provider: metadata
                     .model_binding_id
@@ -1073,7 +1147,7 @@ impl ServerRuntime {
                 reasoning_effort: metadata
                     .reasoning_effort_selection
                     .as_deref()
-                    .and_then(|selection| selection.parse().ok()),
+                    .map(devo_protocol::normalize_reasoning_effort_literal),
                 mode: Some(
                     serde_json::to_value(metadata.collaboration_mode)
                         .ok()
@@ -1215,7 +1289,23 @@ impl ServerRuntime {
                     .flatten()
             })?;
         let history = devo_core::read_canonical_history(&rollout_path).ok()?;
-        history.session.map(|session| *session)
+        let mut session = history.session.map(|session| *session)?;
+        let global_compaction_limit = self
+            .deps
+            .config_store
+            .lock()
+            .expect("app config store mutex should not be poisoned")
+            .effective_config()
+            .compaction_token_limit;
+        if let Some(model) = self.deps.model_catalog.get(&session.model.model) {
+            session.settings.effective_context_window = Some(
+                crate::runtime::context_occupancy::resolved_compaction_limit(
+                    global_compaction_limit,
+                    model,
+                ),
+            );
+        }
+        Some(session)
     }
 
     /// Overlays live runtime pointers onto a durable session snapshot.
@@ -1429,34 +1519,12 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        // Dual-shape boundary (L2-DES-APP-008 DD-4): the canonical shape is
-        // detected by its camelCase `sessionId` key.
-        if params.get("sessionId").is_some() {
-            return self
-                .handle_native_session_resume(connection_id, request_id, params)
-                .await;
-        }
-        let params: SessionResumeParams = match serde_json::from_value(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    format!("invalid session/resume params: {error}"),
-                );
-            }
-        };
-        self.restore_existing_session_with_tool_registry_update(
-            connection_id,
-            request_id,
-            params,
-            RuntimeSessionToolRegistryUpdate::KeepCurrent,
-        )
-        .await
+        self.handle_native_session_resume(connection_id, request_id, params)
+            .await
     }
 
     /// Native `session/resume` (L2-DES-APP-008 Phase B): hydrates the
-    /// session via the legacy flow and answers with the rollout-backed
+    /// session actor and answers with the rollout-backed
     /// canonical session snapshot. Transcript restore is intentionally not
     /// part of this result — canonical clients page `session/items/list` or
     /// use `subscription/*` snapshots (Phase C rework of the TUI restore
@@ -1669,29 +1737,12 @@ impl ServerRuntime {
     }
 
     pub(crate) async fn handle_session_fork(
-        &self,
+        self: &Arc<Self>,
         connection_id: u64,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        // Dual-shape boundary (L2-DES-APP-008 DD-4): the canonical shape is
-        // detected by its camelCase `sessionId` key.
-        if params.get("sessionId").is_some() {
-            return self
-                .handle_native_session_fork(connection_id, request_id, params)
-                .await;
-        }
-        let params: SessionForkParams = match serde_json::from_value(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    format!("invalid session/fork params: {error}"),
-                );
-            }
-        };
-        self.handle_session_fork_translated(connection_id, request_id, params)
+        self.handle_native_session_fork(connection_id, request_id, params)
             .await
     }
 
@@ -1700,7 +1751,7 @@ impl ServerRuntime {
     /// the legacy user-turn index with the same rule the fork machinery
     /// uses (turns containing a `UserMessage` item, in order).
     async fn handle_native_session_fork(
-        &self,
+        self: &Arc<Self>,
         connection_id: u64,
         request_id: serde_json::Value,
         params: serde_json::Value,
@@ -1723,30 +1774,63 @@ impl ServerRuntime {
                 "session id is not addressable by this server",
             );
         };
-        let user_turn_index = match &params.at_turn_id {
+        let cut = params
+            .cut
+            .unwrap_or(devo_protocol::native::rpc_session::SessionForkCut::Through);
+        let fork_at_turn_id = match &params.at_turn_id {
             None => None,
-            Some(at_turn_id) => {
-                let Ok(legacy_turn_id) = TurnId::try_from(at_turn_id.as_str()) else {
+            Some(at_turn_id) => match TurnId::try_from(at_turn_id.as_str()) {
+                Ok(turn_id) => Some(turn_id),
+                Err(_) => {
                     return self.error_response(
                         request_id,
                         ProtocolErrorCode::ForkTurnNotFound,
                         "turn id is not addressable by this server",
                     );
-                };
-                let Some(source_handle) = self.session(legacy_session_id).await else {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::SessionNotFound,
-                        "session does not exist",
-                    );
-                };
-                let Some(source) = source_handle.export_runtime_session().await else {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::SessionNotFound,
-                        "session does not exist",
-                    );
-                };
+                }
+            },
+        };
+
+        // Tip fork while a turn is running: interrupt first so we copy only
+        // completed history (Codex tip-fork semantics).
+        if fork_at_turn_id.is_none()
+            && self
+                .runtime_active_turn_id(legacy_session_id)
+                .await
+                .is_some()
+        {
+            self.await_session_turn_interrupt_before_delete(legacy_session_id)
+                .await;
+        }
+
+        let Some(source_handle) = self.session(legacy_session_id).await else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session does not exist",
+            );
+        };
+        let Some(source) = source_handle.export_runtime_session().await else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session does not exist",
+            );
+        };
+
+        if let Some(legacy_turn_id) = fork_at_turn_id {
+            if self.runtime_active_turn_id(legacy_session_id).await == Some(legacy_turn_id) {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::ForkTurnNotStable,
+                    "atTurnId names an in-progress turn",
+                );
+            }
+        }
+
+        let user_turn_index = match fork_at_turn_id {
+            None => None,
+            Some(legacy_turn_id) => {
                 let mut user_turn_ids: Vec<TurnId> = Vec::new();
                 for item in &source.persisted_turn_items {
                     if matches!(item.turn_item, devo_core::TurnItem::UserMessage(_))
@@ -1768,15 +1852,18 @@ impl ServerRuntime {
                 Some(u32::try_from(index).unwrap_or(u32::MAX))
             }
         };
+
         let response = self
             .handle_session_fork_translated(
                 connection_id,
                 request_id.clone(),
-                SessionForkParams {
+                TranslatedForkParams {
                     session_id: legacy_session_id,
                     title: None,
                     cwd: None,
                     user_turn_index,
+                    fork_at_turn_id,
+                    cut,
                 },
             )
             .await;
@@ -1791,10 +1878,10 @@ impl ServerRuntime {
     }
 
     async fn handle_session_fork_translated(
-        &self,
+        self: &Arc<Self>,
         connection_id: u64,
         request_id: serde_json::Value,
-        params: SessionForkParams,
+        params: TranslatedForkParams,
     ) -> serde_json::Value {
         let Some(source_handle) = self.session(params.session_id).await else {
             return self.error_response(
@@ -1810,51 +1897,31 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
-        let source = &source;
-        let now = Utc::now();
-        let forked_id = SessionId::new();
-        let mut forked_runtime = match self
-            .build_runtime_session_from_user_turn_cut(
-                source,
-                RuntimeSessionTurnCutOptions {
-                    session_id: forked_id,
+        let forked_runtime = match self
+            .create_durable_user_fork(
+                &source,
+                super::session_fork::DurableForkOptions {
+                    source_session_id: params.session_id,
+                    fork_at_turn_id: params.fork_at_turn_id,
                     user_turn_index: params.user_turn_index,
-                    rollback_mode: RollbackMode::ThroughUserTurn,
-                    cwd_override: params.cwd.clone(),
+                    cut: params.cut,
                     title_override: params.title.clone(),
-                    created_at: now,
+                    cwd_override: params.cwd.clone(),
                 },
             )
             .await
         {
             Ok(runtime) => runtime,
             Err(message) => {
-                return self.error_response(request_id, ProtocolErrorCode::InvalidParams, message);
+                let code = if message.contains("selected turn") {
+                    ProtocolErrorCode::InvalidParams
+                } else {
+                    ProtocolErrorCode::InternalError
+                };
+                return self.error_response(request_id, code, message);
             }
         };
-        forked_runtime.summary.parent_session_id = Some(params.session_id);
-        if !forked_runtime.summary.ephemeral {
-            let record = self.rollout_store.create_session_record(
-                forked_id,
-                now,
-                forked_runtime.summary.cwd.clone(),
-                forked_runtime.summary.additional_directories.clone(),
-                forked_runtime.summary.title.clone(),
-                forked_runtime.summary.model.clone(),
-                forked_runtime.summary.model_binding_id.clone(),
-                forked_runtime.summary.reasoning_effort_selection.clone(),
-                forked_runtime.runtime_context.provider.name().to_string(),
-                Some(params.session_id),
-            );
-            if let Err(error) = self.rollout_store.append_session_meta(&record) {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InternalError,
-                    format!("failed to persist forked session metadata: {error}"),
-                );
-            }
-            forked_runtime.record = Some(record);
-        }
+        let forked_id = forked_runtime.summary.session_id;
         let summary = forked_runtime.summary.clone();
         let rollout_path_for_db = forked_runtime
             .record
@@ -2076,6 +2143,8 @@ impl ServerRuntime {
             title: title_override.or_else(|| source.summary.title.clone()),
             title_state: source.summary.title_state.clone(),
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,

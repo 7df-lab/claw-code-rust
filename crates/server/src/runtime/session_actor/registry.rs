@@ -224,6 +224,7 @@ impl ServerRuntime {
 
     /// Reads a session's parent id, preferring the in-flight turn inline snapshot
     /// and agent-registry hierarchy over a mailbox round-trip.
+    #[allow(dead_code)]
     pub(crate) async fn session_parent_id_snapshot(
         &self,
         session_id: SessionId,

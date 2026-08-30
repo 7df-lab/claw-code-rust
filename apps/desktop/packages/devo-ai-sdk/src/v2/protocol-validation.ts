@@ -89,6 +89,70 @@ function bindingForMethod(method: string): MethodSchemaBinding | undefined {
 	return bundle.methods[method]
 }
 
+const serverNotificationMethods = new Set<string>()
+let serverNotificationMethodsLoaded = false
+
+/**
+ * Notification methods the generated schema accepts inside an
+ * `EventEnvelope.notification` (the `ServerNotification` oneOf). Extracted
+ * lazily from the generated bundle so it always matches the compiled schema.
+ */
+export function knownServerNotificationMethods(): ReadonlySet<string> {
+	if (!serverNotificationMethodsLoaded) {
+		serverNotificationMethodsLoaded = true
+		const schema = (
+			(bundle.schemas.SubscriptionCreateResult as
+				| { definitions?: Record<string, unknown> }
+				| undefined)?.definitions?.ServerNotification as
+			| { oneOf?: Array<{ properties?: { method?: { enum?: unknown[] } } }> }
+			| undefined
+		)
+		for (const branch of schema?.oneOf ?? []) {
+			for (const method of branch.properties?.method?.enum ?? []) {
+				if (typeof method === "string") serverNotificationMethods.add(method)
+			}
+		}
+	}
+	return serverNotificationMethods
+}
+
+export type ReplaySanitizeResult = {
+	/** Original payload when nothing was dropped, otherwise a shallow copy. */
+	payload: unknown
+	/** Envelopes removed because their notification method is unknown here. */
+	dropped: Array<unknown>
+}
+
+/**
+ * Forward compatibility for subscription replay (Postel: be liberal in what
+ * you accept). The server derives persisted replay events from rollout facts,
+ * so a server build one generation ahead of (or behind) this client's schema
+ * can legitimately carry a notification method this bundle does not know.
+ * Replay processing ignores unknown methods anyway — dropping them before
+ * validation is semantically identical and keeps a single unknown envelope
+ * from failing the whole subscription.
+ */
+export function dropUnknownReplayEnvelopes(payload: unknown): ReplaySanitizeResult {
+	const record = payload as { replay?: unknown } | null
+	if (typeof record !== "object" || record === null || !Array.isArray(record.replay)) {
+		return { payload, dropped: [] }
+	}
+	const known = knownServerNotificationMethods()
+	const kept: unknown[] = []
+	const dropped: Array<unknown> = []
+	for (const envelope of record.replay) {
+		const method = (envelope as { notification?: { method?: unknown } } | null)?.notification
+			?.method
+		if (typeof method === "string" && known.has(method)) {
+			kept.push(envelope)
+		} else {
+			dropped.push(envelope)
+		}
+	}
+	if (dropped.length === 0) return { payload, dropped }
+	return { payload: { ...record, replay: kept }, dropped }
+}
+
 function validatorForSchema(
 	method: string,
 	direction: ProtocolValidationDirection,

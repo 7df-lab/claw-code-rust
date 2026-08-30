@@ -19,7 +19,6 @@ use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
 use devo_protocol::ResponseContent;
 use devo_protocol::ResponseMetadata;
-use devo_protocol::SessionId;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
 use devo_protocol::TurnId;
@@ -32,6 +31,7 @@ use futures::Stream;
 use futures::stream;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 use tokio::time::timeout;
@@ -88,6 +88,47 @@ impl ModelProviderSDK for UnusedProvider {
     }
 }
 
+/// Turn (stream) requests are captured and complete immediately; title
+/// (complete) requests park on a gate the test controls, simulating a slow
+/// title model.
+struct GatedTitleRouter {
+    stream_calls: mpsc::UnboundedSender<ModelRequest>,
+    title_gate: Arc<Notify>,
+}
+
+#[async_trait]
+impl ProviderRouter for GatedTitleRouter {
+    async fn stream(
+        &self,
+        _route: ProviderRoute,
+        request: ModelRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>, ProviderError> {
+        let _ = self.stream_calls.send(request);
+        Ok(Box::pin(stream::iter(vec![
+            Ok(StreamEvent::TextDelta {
+                index: 0,
+                text: "answer".to_string(),
+            }),
+            Ok(StreamEvent::MessageDone {
+                response: model_response("answer"),
+            }),
+        ])))
+    }
+
+    async fn complete(
+        &self,
+        _route: ProviderRoute,
+        _request: ModelRequest,
+    ) -> Result<ModelResponse, ProviderError> {
+        self.title_gate.notified().await;
+        Ok(model_response("Gated generated title"))
+    }
+
+    fn name(&self) -> &str {
+        "gated-title-router"
+    }
+}
+
 #[tokio::test]
 async fn turn_start_append_failure_does_not_launch_model_turn_or_leave_session_active() -> Result<()>
 {
@@ -107,7 +148,7 @@ async fn turn_start_append_failure_does_not_launch_model_turn_or_leave_session_a
             serde_json::json!({
                 "id": 3,
                 "method": "turn/start",
-                "params": turn_start_params(session.session_id)
+                "params": turn_start_params(&session.id)
             }),
         )
         .await
@@ -136,14 +177,17 @@ async fn turn_start_append_failure_does_not_launch_model_turn_or_leave_session_a
             serde_json::json!({
                 "id": 4,
                 "method": "turn/start",
-                "params": turn_start_params(session.session_id)
+                "params": turn_start_params(&session.id)
             }),
         )
         .await
         .context("successful turn/start response")?;
-    let response: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let response: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(successful_start)?;
-    assert_eq!(response.result.status(), devo_protocol::TurnStatus::Running);
+    assert_eq!(
+        response.result.turn.status,
+        devo_protocol::native::turn::TurnStatus::InProgress
+    );
     stream_calls_rx
         .recv()
         .await
@@ -151,10 +195,68 @@ async fn turn_start_append_failure_does_not_launch_model_turn_or_leave_session_a
     interrupt_session(
         &runtime,
         connection_id,
-        session.session_id,
-        response.result.turn_id().expect("turn should have started"),
+        &session.id,
+        TurnId::try_from(response.result.turn.id.as_str())?,
     )
     .await?;
+
+    Ok(())
+}
+
+/// Regression: the turn/start response must not wait for the title model.
+/// A slow (gated) title LLM parks in the background; the turn answers first,
+/// and the final title lands only after the turn completes — otherwise
+/// clients time out waiting for the turn/start response.
+#[tokio::test]
+async fn turn_start_answers_before_slow_title_generation_completes() -> Result<()> {
+    let data_root = TempDir::new()?;
+    let (stream_calls_tx, mut stream_calls_rx) = mpsc::unbounded_channel();
+    let title_gate = Arc::new(Notify::new());
+    let runtime = build_runtime_with_router(
+        data_root.path(),
+        Arc::new(GatedTitleRouter {
+            stream_calls: stream_calls_tx,
+            title_gate: Arc::clone(&title_gate),
+        }),
+    )?;
+    let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
+    let session = start_session(&runtime, connection_id, data_root.path()).await?;
+
+    // The title model is still parked here: turn/start must return promptly
+    // instead of blocking on the gated title completion.
+    let turn_response = timeout(
+        Duration::from_secs(2),
+        runtime.handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 3,
+                "method": "turn/start",
+                "params": turn_start_params(&session.id)
+            }),
+        ),
+    )
+    .await
+    .context("turn/start stalled on gated title generation")?
+    .context("connection closed before turn/start response")?;
+    let response: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
+        serde_json::from_value(turn_response)?;
+    assert_eq!(
+        response.result.turn.status,
+        devo_protocol::native::turn::TurnStatus::InProgress
+    );
+
+    // The turn's model request runs while the title call is still parked.
+    timeout(Duration::from_secs(5), stream_calls_rx.recv())
+        .await
+        .context("turn stream call while title generation is gated")?
+        .context("stream call channel closed")?;
+
+    // The turn completes end-to-end with the title still ungenerated.
+    wait_for_notification(&mut notifications_rx, "turn/completed", 5).await?;
+
+    // Release the parked title model: the final title arrives only now.
+    title_gate.notify_one();
+    wait_for_title_update(&mut notifications_rx, "Gated generated title").await?;
 
     Ok(())
 }
@@ -173,13 +275,14 @@ async fn message_edit_previous_accepts_skip_restore_and_replaces_prompt_branch()
             serde_json::json!({
                 "id": 6,
                 "method": "turn/start",
-                "params": turn_start_params(session.session_id)
+                "params": turn_start_params(&session.id)
             }),
         )
         .await
         .context("original turn/start response")?;
-    let original_start: devo_server::SuccessResponse<devo_server::TurnStartResult> =
-        serde_json::from_value(original_start)?;
+    let original_start: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_turn::TurnStartResult,
+    > = serde_json::from_value(original_start)?;
     let original_request = stream_calls_rx
         .recv()
         .await
@@ -191,16 +294,13 @@ async fn message_edit_previous_accepts_skip_restore_and_replaces_prompt_branch()
     interrupt_session(
         &runtime,
         connection_id,
-        session.session_id,
-        original_start
-            .result
-            .turn_id()
-            .expect("original turn should have started"),
+        &session.id,
+        TurnId::try_from(original_start.result.turn.id.as_str())?,
     )
     .await?;
 
     let (item_id, expected_revision) =
-        previous_user_item(&runtime, connection_id, session.session_id).await?;
+        previous_user_item(&runtime, connection_id, &session.id).await?;
 
     let edit_response = runtime
         .handle_incoming(
@@ -209,7 +309,7 @@ async fn message_edit_previous_accepts_skip_restore_and_replaces_prompt_branch()
                 "id": 7,
                 "method": "session/message/edit",
                 "params": {
-                    "sessionId": session.session_id,
+                "sessionId": session.id,
                     "itemId": item_id,
                     "expectedRevision": expected_revision,
                     "content": [{ "type": "text", "text": "edited message" }],
@@ -250,7 +350,7 @@ async fn message_edit_previous_accepts_skip_restore_and_replaces_prompt_branch()
     interrupt_session(
         &runtime,
         connection_id,
-        session.session_id,
+        &session.id,
         TurnId::try_from(replacement_turn_id.as_str()).context("legacy replacement turn id")?,
     )
     .await?;
@@ -274,13 +374,14 @@ async fn message_edit_previous_default_safe_restore_records_and_broadcasts() -> 
             serde_json::json!({
                 "id": 6,
                 "method": "turn/start",
-                "params": turn_start_params(session.session_id)
+                "params": turn_start_params(&session.id)
             }),
         )
         .await
         .context("original turn/start response")?;
-    let original_start: devo_server::SuccessResponse<devo_server::TurnStartResult> =
-        serde_json::from_value(original_start)?;
+    let original_start: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_turn::TurnStartResult,
+    > = serde_json::from_value(original_start)?;
     stream_calls_rx
         .recv()
         .await
@@ -288,17 +389,14 @@ async fn message_edit_previous_default_safe_restore_records_and_broadcasts() -> 
     interrupt_session(
         &runtime,
         connection_id,
-        session.session_id,
-        original_start
-            .result
-            .turn_id()
-            .expect("original turn should have started"),
+        &session.id,
+        TurnId::try_from(original_start.result.turn.id.as_str())?,
     )
     .await?;
     drain_notifications(&mut notifications_rx).await;
 
     let (item_id, expected_revision) =
-        previous_user_item(&runtime, connection_id, session.session_id).await?;
+        previous_user_item(&runtime, connection_id, &session.id).await?;
 
     let edit_response = runtime
         .handle_incoming(
@@ -307,7 +405,7 @@ async fn message_edit_previous_default_safe_restore_records_and_broadcasts() -> 
                 "id": 7,
                 "method": "session/message/edit",
                 "params": {
-                    "sessionId": session.session_id,
+                "sessionId": session.id,
                     "itemId": item_id,
                     "expectedRevision": expected_revision,
                     "content": [{ "type": "text", "text": "edited message" }],
@@ -360,7 +458,7 @@ async fn message_edit_previous_default_safe_restore_records_and_broadcasts() -> 
     interrupt_session(
         &runtime,
         connection_id,
-        session.session_id,
+        &session.id,
         TurnId::try_from(replacement_turn_id.as_str()).context("legacy replacement turn id")?,
     )
     .await?;
@@ -371,7 +469,7 @@ async fn message_edit_previous_default_safe_restore_records_and_broadcasts() -> 
 async fn previous_user_item(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
-    session_id: SessionId,
+    session_id: &devo_protocol::native::ids::SessionId,
 ) -> Result<(String, u32)> {
     let response = runtime
         .handle_incoming(
@@ -404,6 +502,64 @@ async fn drain_notifications(notifications_rx: &mut mpsc::Receiver<serde_json::V
         .await
         .is_ok()
     {}
+}
+
+async fn wait_for_notification(
+    notifications_rx: &mut mpsc::Receiver<serde_json::Value>,
+    expected_method: &str,
+    timeout_secs: u64,
+) -> Result<()> {
+    timeout(Duration::from_secs(timeout_secs), async {
+        while let Some(value) = notifications_rx.recv().await {
+            let method = value
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    value
+                        .get("params")
+                        .and_then(|params| params.get("_meta"))
+                        .and_then(|meta| meta.get("devo/originalMethod"))
+                        .and_then(serde_json::Value::as_str)
+                });
+            if method == Some(expected_method) {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("notification channel closed before {expected_method}")
+    })
+    .await
+    .with_context(|| format!("timed out waiting for {expected_method} notification"))??;
+    Ok(())
+}
+
+async fn wait_for_title_update(
+    notifications_rx: &mut mpsc::Receiver<serde_json::Value>,
+    expected_title: &str,
+) -> Result<()> {
+    let mut seen = Vec::new();
+    timeout(Duration::from_secs(5), async {
+        while let Some(value) = notifications_rx.recv().await {
+            let method = value
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<none>");
+            seen.push(method.to_string());
+            // Native connections project the title event as a metadata
+            // update; legacy surfaces keep the dedicated title method.
+            let title_landed =
+                matches!(method, "session/title/updated" | "session/metadataUpdated")
+                    && value["params"]["session"]["title"] == serde_json::json!(expected_title);
+            if title_landed {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("notification channel closed before title update")
+    })
+    .await
+    .with_context(|| {
+        format!("timed out waiting for title update {expected_title}; seen: {seen:?}")
+    })??;
+    Ok(())
 }
 
 async fn collect_notification_methods(
@@ -441,8 +597,14 @@ fn build_runtime(
     data_root: &Path,
     stream_calls: mpsc::UnboundedSender<ModelRequest>,
 ) -> Result<Arc<ServerRuntime>> {
+    build_runtime_with_router(data_root, Arc::new(BlockingRouter { stream_calls }))
+}
+
+fn build_runtime_with_router(
+    data_root: &Path,
+    router: Arc<dyn ProviderRouter>,
+) -> Result<Arc<ServerRuntime>> {
     let provider: Arc<dyn ModelProviderSDK> = Arc::new(UnusedProvider);
-    let router: Arc<dyn ProviderRouter> = Arc::new(BlockingRouter { stream_calls });
     let db = Arc::new(devo_server::db::Database::open(
         data_root.join("turn_start_persistence.db"),
     )?);
@@ -517,33 +679,50 @@ async fn start_session(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
     cwd: &Path,
-) -> Result<devo_server::SessionMetadata> {
+) -> Result<devo_protocol::native::session::Session> {
     let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": null,
-                    "model": "test-model",
-                    "model_binding_id": null
+                    "idempotencyKey": "turn-start-persistence-session"
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let response: devo_server::SuccessResponse<devo_server::SessionStartResult> =
-        serde_json::from_value(response)?;
+        .context("session/new response")?;
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionNewResult,
+    > = serde_json::from_value(response)?;
+    let session_id = response.result.session.id.clone();
+    let metadata_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 3,
+                "method": "session/metadata/update",
+                "params": {
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "model": { "provider": "", "model": "test-model" }
+                }
+            }),
+        )
+        .await
+        .context("session/metadata/update response")?;
+    let _: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
+    > = serde_json::from_value(metadata_response)?;
     Ok(response.result.session)
 }
 
 async fn interrupt_session(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
-    session_id: SessionId,
+    session_id: &devo_protocol::native::ids::SessionId,
     _turn_id: TurnId,
 ) -> Result<()> {
     let response = runtime
@@ -569,22 +748,17 @@ async fn interrupt_session(
     Ok(())
 }
 
-fn turn_start_params(session_id: SessionId) -> serde_json::Value {
+fn turn_start_params(session_id: &devo_protocol::native::ids::SessionId) -> serde_json::Value {
     serde_json::json!({
-        "session_id": session_id,
+        "sessionId": session_id,
         "input": [{ "type": "text", "text": "hello" }],
-        "model": null,
-        "model_binding_id": null,
-        "thinking": null,
-        "sandbox": null,
-        "approval_policy": null,
-        "cwd": null
+        "idempotencyKey": format!("turn-start-persistence-{}", uuid::Uuid::new_v4())
     })
 }
 
 fn rollout_path_for_session(
     data_root: &Path,
-    session: &devo_server::SessionMetadata,
+    session: &devo_protocol::native::session::Session,
 ) -> std::path::PathBuf {
     let timestamp = session
         .created_at
@@ -595,5 +769,5 @@ fn rollout_path_for_session(
         .join(format!("{:04}", session.created_at.year()))
         .join(format!("{:02}", session.created_at.month()))
         .join(format!("{:02}", session.created_at.day()))
-        .join(format!("rollout-{timestamp}-{}.jsonl", session.session_id))
+        .join(format!("rollout-{timestamp}-{}.jsonl", session.id))
 }

@@ -64,18 +64,12 @@ impl ModelProviderSDK for SingleReplyProvider {
 }
 
 #[tokio::test]
-async fn session_fork_reports_and_replays_parent_session_id() -> Result<()> {
+async fn session_fork_reports_fork_from_id_and_replays_self_contained_history() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let source = start_session(&runtime, connection_id, data_root.path()).await?;
-    start_and_complete_turn(
-        &runtime,
-        connection_id,
-        &mut notifications_rx,
-        source.session_id,
-    )
-    .await?;
+    start_and_complete_turn(&runtime, connection_id, &mut notifications_rx, source).await?;
 
     let fork_response = runtime
         .handle_incoming(
@@ -84,23 +78,53 @@ async fn session_fork_reports_and_replays_parent_session_id() -> Result<()> {
                 "id": 4,
                 "method": "session/fork",
                 "params": {
-                    "session_id": source.session_id,
-                    "title": "Forked session",
-                    "cwd": null,
-                    "user_turn_index": 0
+                    "sessionId": source
                 }
             }),
         )
         .await
         .context("session/fork response")?;
     let fork = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionForkResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionForkResult>,
     >(fork_response)?
     .result;
+    let fork_title_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 6,
+                "method": "session/metadata/update",
+                "params": {
+                    "sessionId": fork.session.id,
+                    "expectedVersion": 0,
+                    "title": "Forked session"
+                }
+            }),
+        )
+        .await
+        .context("fork title update response")?;
+    let fork_session = serde_json::from_value::<
+        devo_server::SuccessResponse<
+            devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
+        >,
+    >(fork_title_response)?
+    .result
+    .session;
+    let fork_session_id = SessionId::try_from(fork_session.id.as_str())?;
 
-    assert_eq!(fork.forked_from_session_id, source.session_id);
-    assert_eq!(fork.session.parent_session_id, Some(source.session_id));
-    assert_eq!(fork.session.title.as_deref(), Some("Forked session"));
+    assert_eq!(fork_session.parent, None);
+    assert_eq!(
+        fork_session.fork_from_id.as_ref().map(ToString::to_string),
+        Some(source.to_string())
+    );
+    assert_eq!(fork_session.title.as_deref(), Some("Forked session"));
+
+    let source_items = list_session_items(&runtime, connection_id, source).await?;
+    let fork_items = list_session_items(&runtime, connection_id, fork_session_id).await?;
+    assert_eq!(
+        item_payloads_for_compare(&fork_items),
+        item_payloads_for_compare(&source_items)
+    );
 
     let rebuilt_runtime = build_runtime(data_root.path())?;
     rebuilt_runtime.load_persisted_sessions().await?;
@@ -109,15 +133,37 @@ async fn session_fork_reports_and_replays_parent_session_id() -> Result<()> {
     let sessions = list_sessions(&rebuilt_runtime, rebuilt_connection_id).await?;
     let replayed_fork = sessions
         .iter()
-        .find(|session| session.id.as_str() == fork.session.session_id.to_string())
+        .find(|session| session.id.as_str() == fork_session_id.to_string())
         .context("replayed fork session")?;
-    let parent_session_id = match &replayed_fork.parent {
-        Some(devo_protocol::native::session::SessionParent::Fork { session_id, .. }) => {
-            Some(session_id.to_string())
-        }
-        Some(devo_protocol::native::session::SessionParent::Agent { .. }) | None => None,
-    };
-    assert_eq!(parent_session_id, Some(source.session_id.to_string()));
+    assert_eq!(
+        replayed_fork.fork_from_id.as_ref().map(ToString::to_string),
+        Some(source.to_string())
+    );
+    assert!(replayed_fork.parent.is_none());
+
+    let resume_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 5,
+                "method": "session/resume",
+                "params": {
+                "sessionId": fork_session.id
+                }
+            }),
+        )
+        .await
+        .context("session/resume forked child")?;
+    assert!(
+        resume_response.get("result").is_some(),
+        "forked child must resume after restart: {resume_response}"
+    );
+    let resumed_items =
+        list_session_items(&rebuilt_runtime, rebuilt_connection_id, fork_session_id).await?;
+    assert_eq!(
+        item_payloads_for_compare(&resumed_items),
+        item_payloads_for_compare(&source_items)
+    );
 
     Ok(())
 }
@@ -128,13 +174,7 @@ async fn failed_session_fork_metadata_persistence_does_not_register_fork() -> Re
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let source = start_session(&runtime, connection_id, data_root.path()).await?;
-    start_and_complete_turn(
-        &runtime,
-        connection_id,
-        &mut notifications_rx,
-        source.session_id,
-    )
-    .await?;
+    start_and_complete_turn(&runtime, connection_id, &mut notifications_rx, source).await?;
     let sessions_before = list_sessions(&runtime, connection_id).await?;
     assert_eq!(sessions_before.len(), 1);
 
@@ -149,10 +189,7 @@ async fn failed_session_fork_metadata_persistence_does_not_register_fork() -> Re
                 "id": 4,
                 "method": "session/fork",
                 "params": {
-                    "session_id": source.session_id,
-                    "title": "Unpersistable fork",
-                    "cwd": null,
-                    "user_turn_index": 0
+                    "sessionId": source
                 }
             }),
         )
@@ -173,7 +210,7 @@ async fn failed_session_fork_metadata_persistence_does_not_register_fork() -> Re
     assert!(
         sessions_after
             .iter()
-            .all(|session| session.id.as_str() == source.session_id.to_string()),
+            .all(|session| session.id.as_str() == source.to_string()),
         "a failed fork must not register a new session"
     );
 
@@ -262,27 +299,25 @@ async fn start_session(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
     cwd: &Path,
-) -> Result<devo_server::SessionMetadata> {
+) -> Result<SessionId> {
     let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": "Source session",
-                    "model": "test-model",
-                    "model_binding_id": null
+                    "idempotencyKey": "session-fork-source"
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let response: devo_server::SuccessResponse<devo_server::SessionStartResult> =
-        serde_json::from_value(response)?;
-    Ok(response.result.session)
+        .context("session/new response")?;
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionNewResult,
+    > = serde_json::from_value(response)?;
+    Ok(SessionId::try_from(response.result.session.id.as_str())?)
 }
 
 async fn start_and_complete_turn(
@@ -298,20 +333,15 @@ async fn start_and_complete_turn(
                 "id": 3,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "seed fork history" }],
-                    "model": null,
-                    "model_binding_id": null,
-                    "thinking": null,
-                    "sandbox": null,
-                    "approval_policy": null,
-                    "cwd": null
+                    "idempotencyKey": "fork-seed-turn"
                 }
             }),
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(response)?;
     wait_for_turn_completed(notifications_rx).await
 }
@@ -358,4 +388,40 @@ async fn list_sessions(
         devo_protocol::native::rpc_session::SessionListResult,
     > = serde_json::from_value(response)?;
     Ok(response.result.data)
+}
+
+async fn list_session_items(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    session_id: SessionId,
+) -> Result<Vec<devo_protocol::native::item::ItemEnvelope>> {
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 50,
+                "method": "session/items/list",
+                "params": { "sessionId": session_id }
+            }),
+        )
+        .await
+        .context("session/items/list response")?;
+    let page: devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope> =
+        serde_json::from_value(response["result"].clone())?;
+    Ok(page.data)
+}
+
+fn item_payloads_for_compare(
+    items: &[devo_protocol::native::item::ItemEnvelope],
+) -> Vec<(String, String, serde_json::Value)> {
+    items
+        .iter()
+        .map(|item| {
+            (
+                item.turn_id.as_str().to_string(),
+                item.id.as_str().to_string(),
+                serde_json::to_value(&item.item).expect("serialize item payload"),
+            )
+        })
+        .collect()
 }

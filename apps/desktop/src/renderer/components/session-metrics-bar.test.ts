@@ -64,12 +64,17 @@ describe("SessionMetricsBar top timer wiring", () => {
 			opensPromptBreakdown: contextUsageSource.includes("Prompt breakdown"),
 			usesOccupancyCategories: contextUsageSource.includes("occupancyCategoryRows"),
 			doesNotReadBeforeResume: !contextUsageSource.includes("context.usage.read"),
+			usesDefaultColor: contextUsageSource.includes("text-muted-foreground"),
+			doesNotColorByUsage: !contextUsageSource.includes('percent >= 90 ? "text-red-400"') &&
+				!contextUsageSource.includes('percent >= 70 ? "text-yellow-400"'),
 		}).toEqual({
 			headerUsesContextUsageButton: true,
 			replacesOverviewButtonInHeader: true,
 			opensPromptBreakdown: true,
 			usesOccupancyCategories: true,
 			doesNotReadBeforeResume: true,
+			usesDefaultColor: true,
+			doesNotColorByUsage: true,
 		})
 	})
 

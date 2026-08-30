@@ -234,7 +234,7 @@ async fn session_bound_command_exec_resolves_session_cwd() -> Result<()> {
                 "id": 23,
                 "method": "command/exec",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "process_id": "session-bound-1",
                     "program": {
                         "type": "one_shot",
@@ -343,20 +343,19 @@ async fn start_session(
             connection_id,
             serde_json::json!({
                 "id": 22,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": null,
-                    "model": "test-model"
+                    "idempotencyKey": "command-exec-session"
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let response: devo_server::SuccessResponse<devo_server::SessionStartResult> =
-        serde_json::from_value(response)?;
-    Ok(response.result.session.session_id)
+        .context("session/new response")?;
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionNewResult,
+    > = serde_json::from_value(response)?;
+    Ok(SessionId::try_from(response.result.session.id.as_str())?)
 }
 
 #[cfg(unix)]

@@ -35,10 +35,19 @@ use tokio::time::timeout;
 static TEST_HOME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn legacy_process_test_guard() -> MutexGuard<'static, ()> {
-    LEGACY_PROCESS_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+fn legacy_process_test_guard() -> Option<MutexGuard<'static, ()>> {
+    if !crate::token::restricted_token_creation_available() {
+        eprintln!(
+            "skipping legacy Windows sandbox process test: CreateRestrictedToken is unavailable"
+        );
+        return None;
+    }
+
+    Some(
+        LEGACY_PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
 }
 
 fn current_thread_runtime() -> tokio::runtime::Runtime {
@@ -151,7 +160,9 @@ async fn collect_stdout_and_exit(
 
 #[test]
 fn legacy_non_tty_cmd_emits_output() {
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();
@@ -190,7 +201,9 @@ fn legacy_non_tty_cmd_emits_output() {
 
 #[test]
 fn legacy_non_tty_cmd_rejects_deny_read_overrides() {
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();
@@ -232,7 +245,9 @@ fn legacy_non_tty_powershell_emits_output() {
     let Some(pwsh) = pwsh_path() else {
         return;
     };
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();
@@ -420,7 +435,9 @@ fn legacy_capture_powershell_emits_output() {
     let Some(pwsh) = pwsh_path() else {
         return;
     };
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let cwd = sandbox_cwd();
     let devo_home = sandbox_home("legacy-capture-pwsh");
     println!("capture pwsh devo_home={}", devo_home.path().display());
@@ -457,7 +474,9 @@ fn legacy_capture_powershell_emits_output() {
 #[test]
 #[ignore = "legacy delete-ACL carveout is flaky in this environment; it poisons shared lock"]
 fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         // Keep writable roots out of USERPROFILE exclusions such as AppData.
@@ -567,7 +586,9 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
 
 #[test]
 fn legacy_capture_cancellation_is_not_reported_as_timeout() {
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let workspace = sandbox_home("legacy-capture-cancel-ws");
     let cwd = workspace.path().to_path_buf();
     let devo_home = sandbox_home("legacy-capture-cancel");
@@ -619,7 +640,9 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
     let Some(pwsh) = pwsh_path() else {
         return;
     };
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();

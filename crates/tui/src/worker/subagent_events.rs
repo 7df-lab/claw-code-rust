@@ -6,6 +6,7 @@
 
 use devo_protocol::AgentInfo;
 use devo_protocol::SessionMetadata;
+use devo_protocol::native::session::SessionParent;
 
 use crate::events::SubagentMonitorAgent;
 
@@ -79,13 +80,10 @@ pub(super) fn agent_from_session(session: &SessionMetadata) -> Option<SubagentMo
 pub(super) fn agent_from_native_session(
     session: &devo_protocol::native::session::Session,
 ) -> Option<SubagentMonitorAgent> {
-    let devo_protocol::native::session::SessionParent::Agent {
+    let SessionParent::Agent {
         session_id: parent_session_id,
         role,
-    } = session.parent.as_ref()?
-    else {
-        return None;
-    };
+    } = session.parent.as_ref()?;
     let session_id = devo_protocol::SessionId::try_from(session.id.as_str()).ok()?;
     Some(SubagentMonitorAgent {
         session_id,
@@ -115,83 +113,6 @@ pub(super) fn spawn_agent_result_from_raw_output(
     raw_output: Option<&serde_json::Value>,
 ) -> Option<devo_protocol::SpawnAgentResult> {
     serde_json::from_value(raw_output?.clone()).ok()
-}
-
-fn subagent_turn_finished_status(status: devo_protocol::TurnStatus) -> String {
-    match status {
-        devo_protocol::TurnStatus::Completed => "done".to_string(),
-        devo_protocol::TurnStatus::Interrupted => "interrupted".to_string(),
-        devo_protocol::TurnStatus::Failed => "failed".to_string(),
-        devo_protocol::TurnStatus::Running
-        | devo_protocol::TurnStatus::Pending
-        | devo_protocol::TurnStatus::WaitingApproval => "working".to_string(),
-    }
-}
-
-fn subagent_turn_failure_message(turn: &devo_protocol::TurnMetadata) -> String {
-    turn.failure_reason
-        .as_ref()
-        .map(|reason| format!("{reason:?}"))
-        .unwrap_or_else(|| "Turn failed".to_string())
-}
-
-fn subagent_monitor_events_from_server_event(
-    session_id: devo_protocol::SessionId,
-    method: &str,
-    event: devo_protocol::ServerEvent,
-) -> Vec<crate::events::WorkerEvent> {
-    use crate::events::{SubagentMonitorEvent, WorkerEvent};
-    match (method, event) {
-        ("turn/started", devo_protocol::ServerEvent::TurnStarted(payload)) => {
-            vec![WorkerEvent::SubagentMonitor {
-                event: SubagentMonitorEvent::TurnStarted {
-                    session_id,
-                    turn_id: payload.turn.turn_id,
-                },
-            }]
-        }
-        ("turn/completed", devo_protocol::ServerEvent::TurnCompleted(payload))
-        | ("turn/interrupted", devo_protocol::ServerEvent::TurnInterrupted(payload)) => {
-            vec![WorkerEvent::SubagentMonitor {
-                event: SubagentMonitorEvent::TurnFinished {
-                    session_id,
-                    status: subagent_turn_finished_status(payload.turn.status),
-                },
-            }]
-        }
-        ("turn/failed", devo_protocol::ServerEvent::TurnFailed(payload)) => {
-            vec![WorkerEvent::SubagentMonitor {
-                event: SubagentMonitorEvent::TurnFailed {
-                    session_id,
-                    message: payload
-                        .error
-                        .map(|error| error.message)
-                        .unwrap_or_else(|| subagent_turn_failure_message(&payload.turn)),
-                },
-            }]
-        }
-        ("session/status/changed", devo_protocol::ServerEvent::SessionStatusChanged(payload)) => {
-            vec![WorkerEvent::SubagentMonitor {
-                event: SubagentMonitorEvent::SessionStatusChanged {
-                    session_id,
-                    status: payload.status,
-                },
-            }]
-        }
-        _ => Vec::new(),
-    }
-}
-
-/// Routes unwrapped server notifications (as produced by the stdio client) to
-/// sub-agent monitor events for a known child session.
-pub(super) fn subagent_monitor_events_from_unwrapped_server_notification(
-    method: &str,
-    event: devo_protocol::ServerEvent,
-) -> Vec<crate::events::WorkerEvent> {
-    let Some(session_id) = event.session_id() else {
-        return Vec::new();
-    };
-    subagent_monitor_events_from_server_event(session_id, method, event)
 }
 
 /// Maps a typed (canonical) item event of a child session to sub-agent

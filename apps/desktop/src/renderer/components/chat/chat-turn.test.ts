@@ -21,6 +21,10 @@ const chatViewSource = readFileSync(
   new URL("./chat-view.tsx", import.meta.url),
   "utf8",
 );
+const chipSource = readFileSync(
+  new URL("./composer-mode-chip.tsx", import.meta.url),
+  "utf8",
+);
 const chatToolCallSource = readFileSync(
   new URL("./chat-tool-call.tsx", import.meta.url),
   "utf8",
@@ -412,7 +416,7 @@ describe("ChatTurnComponent transcript controls", () => {
       planBlock: planBlockSource.includes("Proposed Plan") && planBlockSource.includes("Implement Plan"),
       chatTurnUsesPlanBlock: source.includes("<PlanBlock") || source.includes("<AssistantTextBlock"),
       chatViewImplement: chatViewSource.includes('collaborationMode: "build"') && chatViewSource.includes("Implement Plan"),
-      modeToggle: chatViewSource.includes("Toggle plan mode"),
+      modeToggle: chipSource.includes("Shift + Tab to toggle"),
       skillsSlash: chatViewSource.includes('case "skills":'),
     }).toEqual({
       planBlock: true,
@@ -420,6 +424,37 @@ describe("ChatTurnComponent transcript controls", () => {
       chatViewImplement: true,
       modeToggle: true,
       skillsSlash: true,
+    });
+  });
+
+  test("copies user messages and edits the latest user message while working", () => {
+    const userMessageBlockSource = readFileSync(
+      new URL("./user-message-block.tsx", import.meta.url),
+      "utf8",
+    );
+    expect({
+      chatTurnUsesUserMessageBlock: source.includes("<UserMessageBlock"),
+      editOnLatestTurnNotGatedByIdle: source.includes(
+        "canEdit={!!onEditUserMessage}",
+      ),
+      chatViewPassesEditWhileWorking:
+        chatViewSource.includes("latestEditableUserTurnIndex") &&
+        chatViewSource.includes(
+          "onEditUserMessage(turn.userMessage.info.id, text)",
+        ) &&
+        !chatViewSource.includes(
+          "onEditUserMessage && !isWorking && index === latestEditableUserTurnIndex",
+        ),
+      copiesUserMessage: userMessageBlockSource.includes('tooltip={copied ? "Copied" : "Copy message"}'),
+      editsLatestUserMessage: userMessageBlockSource.includes('tooltip="Edit message"'),
+      resendsEditedMessage: userMessageBlockSource.includes("{saving ? \"Sending...\" : \"Send\"}"),
+    }).toEqual({
+      chatTurnUsesUserMessageBlock: true,
+      editOnLatestTurnNotGatedByIdle: true,
+      chatViewPassesEditWhileWorking: true,
+      copiesUserMessage: true,
+      editsLatestUserMessage: true,
+      resendsEditedMessage: true,
     });
   });
 });

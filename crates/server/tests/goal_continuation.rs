@@ -28,6 +28,7 @@ use support::pause_goal_and_interrupt_session;
 use support::read_goal;
 use support::request_contains_text;
 use support::request_last_message_contains_text;
+use support::set_session_mode;
 use support::start_session;
 use support::wait_for_captured_request_count;
 use support::wait_for_notification;
@@ -54,7 +55,6 @@ async fn goal_token_budget_reached_after_turn_enters_budget_limited() -> Result<
     let runtime = build_runtime(data_root.path(), provider.clone())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let session_id = start_session(&runtime, connection_id, data_root.path()).await?;
-
     create_goal(
         &runtime,
         connection_id,
@@ -195,6 +195,7 @@ async fn persisted_paused_goal_replays_without_continuation() -> Result<()> {
         "goal-persist-paused",
     )
     .await?;
+    wait_for_request_count(&provider.requests, /*expected*/ 1).await?;
     support::transition_goal(
         &runtime,
         connection_id,
@@ -203,7 +204,7 @@ async fn persisted_paused_goal_replays_without_continuation() -> Result<()> {
         &goal.id,
     )
     .await?;
-    assert_eq!(provider.requests.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
 
     let replay_provider = Arc::new(PendingProvider::default());
     let replayed_runtime = build_runtime(data_root.path(), replay_provider.clone())?;
@@ -230,6 +231,7 @@ async fn persisted_active_goal_pauses_on_restart_without_continuation() -> Resul
     let runtime = build_runtime(data_root.path(), provider.clone())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let session_id = start_session(&runtime, connection_id, data_root.path()).await?;
+    set_session_mode(&runtime, connection_id, session_id, "plan").await?;
 
     runtime
         .handle_incoming(
@@ -239,8 +241,9 @@ async fn persisted_active_goal_pauses_on_restart_without_continuation() -> Resul
                 "id": 13,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "plan before setting goal" }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -391,8 +394,9 @@ async fn goal_set_starts_hidden_continuation_turn() -> Result<()> {
                 "id": 19,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "previous visible prompt" }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -478,8 +482,9 @@ async fn goal_set_does_not_start_continuation_while_turn_is_active() -> Result<(
                 "id": 30,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "keep this turn active" }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -552,12 +557,10 @@ async fn goal_create_starts_hidden_continuation_turn() -> Result<()> {
         "goal-create",
     )
     .await?;
-    let turn_started = wait_for_notification(&mut notifications_rx, "turn/started").await?;
+    let _turn_started = wait_for_notification(&mut notifications_rx, "turn/started").await?;
     wait_for_request_count(&provider.requests, /*expected*/ 1).await?;
 
-    let turn_id: devo_protocol::TurnId =
-        serde_json::from_value(turn_started["params"]["turn"]["id"].clone())?;
-    pause_goal_and_interrupt_session(&runtime, connection_id, session_id, turn_id).await?;
+    pause_goal_and_interrupt_session(&runtime, connection_id, session_id).await?;
     Ok(())
 }
 
@@ -600,12 +603,10 @@ async fn goal_resume_starts_hidden_continuation_turn() -> Result<()> {
         &goal.id,
     )
     .await?;
-    let turn_started = wait_for_notification(&mut notifications_rx, "turn/started").await?;
+    let _turn_started = wait_for_notification(&mut notifications_rx, "turn/started").await?;
     wait_for_request_count(&provider.requests, /*expected*/ 2).await?;
 
-    let turn_id: devo_protocol::TurnId =
-        serde_json::from_value(turn_started["params"]["turn"]["id"].clone())?;
-    pause_goal_and_interrupt_session(&runtime, connection_id, session_id, turn_id).await?;
+    pause_goal_and_interrupt_session(&runtime, connection_id, session_id).await?;
     Ok(())
 }
 
@@ -629,8 +630,9 @@ async fn queued_user_turn_runs_before_goal_continuation() -> Result<()> {
                 "id": 40,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "hold the first turn" }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -640,12 +642,10 @@ async fn queued_user_turn_runs_before_goal_continuation() -> Result<()> {
         )
         .await
         .context("active turn/start response")?;
-    let active_result: devo_server::SuccessResponse<devo_server::TurnStartResult> =
-        serde_json::from_value(active_response)?;
-    let active_turn_id = active_result
-        .result
-        .turn_id()
-        .expect("active turn/start should start a turn");
+    let active_result: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_turn::TurnStartResult,
+    > = serde_json::from_value(active_response)?;
+    let active_turn_id = active_result.result.turn.id;
     wait_for_captured_request_count(&provider.requests, /*expected*/ 1).await?;
     wait_for_notification(&mut notifications_rx, "turn/started").await?;
 
@@ -655,10 +655,11 @@ async fn queued_user_turn_runs_before_goal_continuation() -> Result<()> {
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 41,
-                "method": "turn/start",
+                "method": "session/queue/push",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "queued user input wins" }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -668,20 +669,17 @@ async fn queued_user_turn_runs_before_goal_continuation() -> Result<()> {
         )
         .await
         .context("queued turn/start response")?;
-    let queued_result: devo_server::SuccessResponse<devo_server::TurnStartResult> =
-        serde_json::from_value(queued_response)?;
-    let devo_server::TurnStartResult::Queued {
-        active_turn_id: queued_active_turn_id,
-        queued_input_id,
-        status,
-        ..
-    } = queued_result.result
+    let queued_result: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_turn::SessionQueuePushResult,
+    > = serde_json::from_value(queued_response.clone())
+        .with_context(|| format!("session/queue/push response: {queued_response}"))?;
+    let devo_protocol::native::rpc_turn::SessionQueuePushResult::Queued { entry } =
+        queued_result.result
     else {
-        panic!("expected queued turn/start result");
+        panic!("expected queued session/queue/push result");
     };
-    assert_eq!(queued_active_turn_id, active_turn_id);
-    assert_ne!(queued_input_id.to_string(), active_turn_id.to_string());
-    assert_eq!(status, devo_core::TurnStatus::Pending);
+    assert_eq!(entry.position, 1);
+    assert_ne!(entry.queue_item_id.to_string(), active_turn_id.to_string());
 
     let goal = create_goal(
         &runtime,

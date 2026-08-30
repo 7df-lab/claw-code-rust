@@ -31,30 +31,8 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        // Dual-shape boundary (L2-DES-APP-008 DD-4): the canonical shape is
-        // detected by its required `idempotencyKey`.
-        if params.get("idempotencyKey").is_some() {
-            return self
-                .handle_native_turn_start(connection_id, request_id, params)
-                .await;
-        }
-        let params: TurnStartParams = match serde_json::from_value(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InvalidParams,
-                    format!("invalid turn/start params: {error}"),
-                );
-            }
-        };
-        self.handle_turn_start_with_queue_policy(
-            connection_id,
-            request_id,
-            params,
-            TurnStartQueuePolicy::Queue,
-        )
-        .await
+        self.handle_native_turn_start(connection_id, request_id, params)
+            .await
     }
 
     /// Native `turn/start` (L2-DES-APP-008 Phase B): lean params (input +
@@ -79,7 +57,7 @@ impl ServerRuntime {
                     );
                 }
             };
-        let Ok(legacy_session_id) = SessionId::try_from(params.session_id.as_str()) else {
+        let Ok(session_id) = SessionId::try_from(params.session_id.as_str()) else {
             return self.error_response(
                 request_id,
                 ProtocolErrorCode::SessionNotFound,
@@ -114,7 +92,7 @@ impl ServerRuntime {
             input.push(converted);
         }
         // Idempotent replay: return the originally started turn snapshot.
-        let idempotency_key = (legacy_session_id, params.idempotency_key.clone());
+        let idempotency_key = (session_id, params.idempotency_key.clone());
         if let Some(turn) = self
             .turn_start_idempotency
             .lock()
@@ -129,8 +107,12 @@ impl ServerRuntime {
             .expect("serialize canonical turn/start response");
         }
 
-        let legacy_params = TurnStartParams {
-            session_id: legacy_session_id,
+        let collaboration_mode = match self.session(session_id).await {
+            Some(handle) => handle.collaboration_mode().await.unwrap_or_default(),
+            None => Default::default(),
+        };
+        let turn_params = TurnStartParams {
+            session_id,
             input,
             model: None,
             model_binding_id: None,
@@ -138,14 +120,14 @@ impl ServerRuntime {
             sandbox: None,
             approval_policy: None,
             cwd: None,
-            collaboration_mode: Default::default(),
+            collaboration_mode,
             execution_mode: Default::default(),
         };
         let response = self
             .handle_turn_start_with_queue_policy(
                 connection_id,
                 request_id.clone(),
-                legacy_params,
+                turn_params,
                 TurnStartQueuePolicy::RejectActive,
             )
             .await;
@@ -167,7 +149,7 @@ impl ServerRuntime {
         // `spawn_active_turn_task` registers before the turn task checkouts.
         let Some(metadata) = self
             .active_turns
-            .active_turn_metadata(legacy_session_id)
+            .active_turn_metadata(session_id)
             .await
             .filter(|turn| turn.turn_id == turn_id)
         else {
@@ -507,8 +489,6 @@ impl ServerRuntime {
             )
             .await;
         }
-        self.maybe_start_title_generation_from_user_input(params.session_id, &display_input)
-            .await;
         if let Some(persistence) = session_handle.turn_persistence_snapshot().await
             && persistence.record.is_some()
             && let Err(error) = self
@@ -529,6 +509,14 @@ impl ServerRuntime {
             self.register_turn_spawn_snapshot(params.session_id, turn.turn_id, Arc::new(spawn))
                 .await;
         }
+
+        // First untitled session: record the first user input and mark the
+        // title Generating, but never call the title model inline — that LLM
+        // round-trip (plus retries) stalls the turn/start response past
+        // client request timeouts. spawn_post_turn_scheduling generates the
+        // final title once this turn merges.
+        self.prepare_title_from_user_input(params.session_id, &display_input)
+            .await;
 
         let runtime = Arc::clone(self);
         let turn_for_task = turn.clone();

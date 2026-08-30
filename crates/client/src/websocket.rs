@@ -105,13 +105,6 @@ impl WebSocketServerClient {
         self.core.initialize().await
     }
 
-    pub async fn session_start(
-        &mut self,
-        params: SessionStartParams,
-    ) -> Result<SessionStartResult> {
-        self.core.session_start(params).await
-    }
-
     /// Creates a session through the Native `session/new` application path.
     pub async fn session_new_native(
         &mut self,
@@ -121,26 +114,6 @@ impl WebSocketServerClient {
         self.core.session_new_native(cwd, idempotency_key).await
     }
 
-    pub async fn session_resume(
-        &mut self,
-        params: SessionResumeParams,
-    ) -> Result<SessionResumeResult> {
-        self.core.session_resume(params).await
-    }
-
-    pub async fn session_list(&mut self) -> Result<Vec<SessionMetadata>> {
-        self.core.session_list().await
-    }
-
-    pub async fn session_delete(
-        &mut self,
-        params: AcpDeleteSessionParams,
-    ) -> Result<AcpDeleteSessionResult> {
-        self.core
-            .request(devo_protocol::ACP_SESSION_DELETE_METHOD, params)
-            .await
-    }
-
     /// Native settings patch; see `client_core::session_settings_update`.
     pub async fn session_settings_update(
         &mut self,
@@ -148,10 +121,6 @@ impl WebSocketServerClient {
         patch: devo_protocol::native::rpc_session::SessionSettingsPatch,
     ) -> Result<devo_protocol::native::rpc_session::SessionMetadataUpdateResult> {
         self.core.session_settings_update(session_id, patch).await
-    }
-
-    pub async fn session_cancel(&mut self, params: AcpCancelParams) -> Result<()> {
-        self.core.session_cancel(params).await
     }
 
     pub async fn mcp_list(
@@ -197,10 +166,6 @@ impl WebSocketServerClient {
 
     pub async fn command_exec(&mut self, params: CommandExecParams) -> Result<CommandExecResult> {
         self.core.request("command/exec", params).await
-    }
-
-    pub async fn turn_start(&mut self, params: TurnStartParams) -> Result<TurnStartResult> {
-        self.core.turn_start(params).await
     }
 
     /// Starts a turn through the Native `turn/start` application path.
@@ -301,14 +266,6 @@ impl WebSocketServerClient {
 
     pub async fn recv_notification(&mut self) -> Option<ServerNotificationMessage> {
         self.core.recv_notification().await
-    }
-
-    pub async fn recv_client_event(&mut self) -> Result<Option<crate::ClientEvent>> {
-        self.core.recv_client_event().await
-    }
-
-    pub async fn recv_event(&mut self) -> Result<Option<(String, ServerEvent)>> {
-        self.core.recv_event().await
     }
 
     pub async fn shutdown(mut self) -> Result<()> {

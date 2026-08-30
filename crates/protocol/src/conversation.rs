@@ -105,10 +105,20 @@ define_id!(ItemId);
 define_id!(PendingInputId);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
 pub enum SessionTitleState {
+    #[serde(alias = "Unset")]
     Unset,
-    Provisional,
+    #[serde(alias = "Provisional", alias = "Generating")]
+    Generating,
+    #[serde(alias = "Final")]
     Final(SessionTitleFinalSource),
+}
+
+impl Default for SessionTitleState {
+    fn default() -> Self {
+        Self::Unset
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

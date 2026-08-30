@@ -268,7 +268,7 @@ async fn start_session(
             }),
         )
         .await
-        .context("session/start response")?;
+        .context("session/new response")?;
     let result: SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult> =
         serde_json::from_value(response.clone())
             .with_context(|| format!("session/new response: {response}"))?;
@@ -478,10 +478,11 @@ async fn start_auto_review_turn(
                 "id": 4,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [
                         { "type": "text", "text": "Use the mutating tool." }
                     ],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "thinking": null,
                     "sandbox": null,
@@ -492,10 +493,13 @@ async fn start_auto_review_turn(
         )
         .await
         .context("turn/start auto-review response")?;
-    let result: SuccessResponse<devo_server::TurnStartResult> =
+    let result: SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(response.clone())
             .with_context(|| format!("turn/start response: {response}"))?;
-    assert_eq!(result.result.status(), devo_core::TurnStatus::Running);
+    assert_eq!(
+        result.result.turn.status,
+        devo_protocol::native::turn::TurnStatus::InProgress
+    );
     Ok(())
 }
 
@@ -1009,11 +1013,12 @@ async fn turn_start_resolves_skill_content_into_model_request() -> Result<()> {
                 "id": 6,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [
                         { "type": "text", "text": "Follow this skill." },
-                        { "type": "skill", "id": "rust-docs" }
+                        { "type": "skill", "name": "rust-docs" }
                     ],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "thinking": null,
                     "sandbox": null,
@@ -1024,10 +1029,13 @@ async fn turn_start_resolves_skill_content_into_model_request() -> Result<()> {
         )
         .await
         .context("turn/start response")?;
-    let start_result: SuccessResponse<devo_server::TurnStartResult> =
+    let start_result: SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(response.clone())
             .with_context(|| format!("turn/start response: {response}"))?;
-    assert_eq!(start_result.result.status(), devo_core::TurnStatus::Running);
+    assert_eq!(
+        start_result.result.turn.status,
+        devo_protocol::native::turn::TurnStatus::InProgress
+    );
 
     wait_for_turn_completed(&mut notifications_rx).await?;
 
@@ -1069,10 +1077,11 @@ async fn turn_start_rejects_missing_skill_references() -> Result<()> {
                 "id": 7,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [
-                        { "type": "skill", "id": "missing-skill" }
+                        { "type": "skill", "name": "missing-skill" }
                     ],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "thinking": null,
                     "sandbox": null,
@@ -1385,10 +1394,11 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
                 "id": 8,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [
                         { "type": "text", "text": "Start with the tool." }
                     ],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "thinking": null,
                     "sandbox": null,
@@ -1399,13 +1409,10 @@ async fn turn_steer_injects_resolved_skill_into_next_model_request() -> Result<(
         )
         .await
         .context("turn/start response for steering test")?;
-    let start_result: SuccessResponse<devo_server::TurnStartResult> =
+    let start_result: SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(response.clone())
             .with_context(|| format!("turn/start response: {response}"))?;
-    let start_turn_id = start_result
-        .result
-        .turn_id()
-        .expect("turn/start should start steering test turn");
+    let start_turn_id = start_result.result.turn.id;
 
     timeout(Duration::from_secs(5), started.notified())
         .await

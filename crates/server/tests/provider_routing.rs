@@ -268,7 +268,7 @@ async fn explicit_binding_controls_route_request_model_and_catalog_profile() -> 
     )
     .await?
     .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(response)?;
 
     wait_for_notification_value(&mut notifications_rx, "turn/completed").await?;
@@ -298,96 +298,65 @@ async fn explicit_binding_controls_route_request_model_and_catalog_profile() -> 
 }
 
 #[tokio::test]
-async fn turn_start_rejects_invalid_explicit_bindings() -> Result<()> {
+async fn session_settings_survive_restart_without_resume() -> Result<()> {
     let data_root = TempDir::new()?;
-    write_glm_provider_config(data_root.path())?;
-    let router = Arc::new(RecordingRouter::default());
-    let runtime = build_runtime_with_models(
-        data_root.path(),
-        router,
-        "glm-5.2",
-        vec![Model {
-            slug: "glm-5.2".to_string(),
-            display_name: "GLM 5.2".to_string(),
-            ..Model::default()
-        }],
-    )?;
+    write_provider_config(data_root.path())?;
+    let runtime = build_runtime(data_root.path(), Arc::new(RecordingRouter::default()))?;
     let (connection_id, _notifications_rx) = initialize_connection(&runtime).await?;
-    let session_id = start_session_with_binding(
-        &runtime,
-        connection_id,
-        data_root.path(),
-        "glm-5.2",
-        Some("glm-zai"),
-    )
-    .await?;
+    let session_id = start_session(&runtime, connection_id, data_root.path()).await?;
 
-    let response = send_turn_start(
-        &runtime,
-        connection_id,
-        session_id,
-        4,
-        Some("glm-5.2"),
-        Some("missing-binding"),
-        /*reasoning_effort_selection*/ None,
-    )
-    .await?
-    .context("turn/start response")?;
-    let error: devo_server::ErrorResponse = serde_json::from_value(response)?;
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 4,
+                "method": "session/metadata/update",
+                "params": {
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "model": { "provider": "", "model": "alt-model" },
+                    "settings": {
+                        "reasoningEffort": "high",
+                        "mode": "plan"
+                    }
+                }
+            }),
+        )
+        .await
+        .context("session/metadata/update response")?;
+    let _: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
+    > = serde_json::from_value(response)?;
 
-    assert_eq!(
-        error.error,
-        devo_server::ProtocolError {
-            code: devo_server::ProtocolErrorCode::InvalidParams,
-            message: "model binding `missing-binding` does not exist".to_string(),
-            data: serde_json::json!({}),
-        }
-    );
+    drop(runtime);
 
-    let response = send_turn_start(
-        &runtime,
-        connection_id,
-        session_id,
-        5,
-        /*model*/ None,
-        Some("glm-disabled"),
-        /*reasoning_effort_selection*/ None,
-    )
-    .await?
-    .context("turn/start response")?;
-    let error: devo_server::ErrorResponse = serde_json::from_value(response)?;
-    assert_eq!(
-        error.error,
-        devo_server::ProtocolError {
-            code: devo_server::ProtocolErrorCode::InvalidParams,
-            message: "model binding `glm-disabled` is disabled".to_string(),
-            data: serde_json::json!({}),
-        }
-    );
+    let rebuilt = build_runtime(data_root.path(), Arc::new(RecordingRouter::default()))?;
+    rebuilt.load_persisted_sessions().await?;
+    let (rebuilt_connection_id, _notifications_rx) = initialize_connection(&rebuilt).await?;
+    let response = rebuilt
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 5,
+                "method": "session/list",
+                "params": {}
+            }),
+        )
+        .await
+        .context("session/list response")?;
+    let result: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionListResult,
+    > = serde_json::from_value(response)?;
+    let persisted = result
+        .result
+        .data
+        .into_iter()
+        .find(|session| session.id.as_str() == session_id.to_string())
+        .context("persisted session missing from Native session/list")?;
 
-    let response = send_turn_start(
-        &runtime,
-        connection_id,
-        session_id,
-        6,
-        /*model*/ None,
-        Some("glm-disabled-provider"),
-        /*reasoning_effort_selection*/ None,
-    )
-    .await?
-    .context("turn/start response")?;
-    let error: devo_server::ErrorResponse = serde_json::from_value(response)?;
-    assert_eq!(
-        error.error,
-        devo_server::ProtocolError {
-            code: devo_server::ProtocolErrorCode::InvalidParams,
-            message:
-                "model binding `glm-disabled-provider` references disabled provider `disabled-zai`"
-                    .to_string(),
-            data: serde_json::json!({}),
-        }
-    );
-
+    assert_eq!(persisted.model.model, "alt-model");
+    assert_eq!(persisted.settings.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(persisted.settings.mode.as_deref(), Some("plan"));
     Ok(())
 }
 
@@ -648,23 +617,43 @@ async fn start_session_with_binding(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": null,
-                    "model": model,
-                    "model_binding_id": model_binding_id
+                    "idempotencyKey": "provider-routing-session"
                 }
             }),
         )
         .await
-        .context("session/start response")?;
+        .context("session/new response")?;
     let response_value = response.clone();
-    let response: devo_server::SuccessResponse<devo_server::SessionStartResult> =
-        serde_json::from_value(response)
-            .with_context(|| format!("decode session/start response: {response_value}"))?;
-    Ok(response.result.session.session_id)
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionNewResult,
+    > = serde_json::from_value(response)
+        .with_context(|| format!("decode session/new response: {response_value}"))?;
+    let session_id = SessionId::try_from(response.result.session.id.as_str())?;
+    let metadata_response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 3,
+                "method": "session/metadata/update",
+                "params": {
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "model": { "provider": "", "model": model },
+                    "modelBindingId": model_binding_id
+                }
+            }),
+        )
+        .await
+        .context("session/metadata/update response")?;
+    let metadata_value = metadata_response.clone();
+    let _: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
+    > = serde_json::from_value(metadata_response)
+        .with_context(|| format!("decode session/metadata/update response: {metadata_value}"))?;
+    Ok(session_id)
 }
 
 async fn update_session_model(
@@ -713,7 +702,7 @@ async fn start_turn(
     .await?
     .context("turn/start response")?;
     let response_value = response.clone();
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(response)
             .with_context(|| format!("decode turn/start response: {response_value}"))?;
     Ok(())
@@ -728,25 +717,56 @@ async fn send_turn_start(
     model_binding_id: Option<&str>,
     reasoning_effort_selection: Option<&str>,
 ) -> Result<Option<serde_json::Value>> {
-    Ok(runtime
+    let mut metadata = serde_json::json!({
+        "sessionId": session_id,
+        "expectedVersion": 0
+    });
+    if model_binding_id.is_none()
+        && let Some(model) = model
+    {
+        metadata["model"] = serde_json::json!({ "provider": "", "model": model });
+    }
+    if let Some(model_binding_id) = model_binding_id {
+        metadata["modelBindingId"] = serde_json::json!(model_binding_id);
+    }
+    if let Some(reasoning_effort_selection) = reasoning_effort_selection {
+        metadata["settings"] = serde_json::json!({
+            "reasoningEffort": reasoning_effort_selection
+        });
+    }
+    if model.is_some() || model_binding_id.is_some() || reasoning_effort_selection.is_some() {
+        let Some(response) = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": id * 10,
+                    "method": "session/metadata/update",
+                    "params": metadata
+                }),
+            )
+            .await
+        else {
+            return Ok(None);
+        };
+        if response.get("error").is_some() {
+            return Ok(Some(response));
+        }
+    }
+    let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": id,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "use the selected provider" }],
-                    "model": model,
-                    "model_binding_id": model_binding_id,
-                    "reasoning_effort_selection": reasoning_effort_selection,
-                    "sandbox": null,
-                    "approval_policy": null,
-                    "cwd": null
+                    "idempotencyKey": format!("provider-routing-turn-{id}")
                 }
             }),
         )
-        .await)
+        .await;
+    Ok(response)
 }
 
 async fn wait_for_notification_value(
@@ -756,7 +776,7 @@ async fn wait_for_notification_value(
     let wanted = serde_json::json!(method);
     timeout(Duration::from_secs(5), async {
         while let Some(value) = notifications_rx.recv().await {
-            if value.get("method") == Some(&wanted) || has_original_method(&value, method) {
+            if value.get("method") == Some(&wanted) {
                 return Ok(value);
             }
         }
@@ -777,11 +797,6 @@ async fn wait_for_complete_request(router: &RecordingRouter) -> Result<()> {
     })
     .await
     .context("timed out waiting for title completion request")?
-}
-
-fn has_original_method(value: &serde_json::Value, method: &str) -> bool {
-    value.get("method") == Some(&serde_json::json!("session/update"))
-        && value["params"]["_meta"]["devo/originalMethod"].as_str() == Some(method)
 }
 
 fn model_response(text: &str) -> ModelResponse {

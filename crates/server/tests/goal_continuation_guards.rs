@@ -43,7 +43,9 @@ use support::collect_until_turn_completed;
 use support::create_goal;
 use support::initialize_connection;
 use support::pause_goal_and_interrupt_session;
+use support::set_session_mode;
 use support::start_session;
+use support::title_response;
 use support::wait_for_approval_request;
 use support::wait_for_notification;
 
@@ -55,6 +57,7 @@ async fn goal_set_does_not_start_continuation_in_plan_mode() -> Result<()> {
     let runtime = build_runtime(data_root.path(), provider.clone())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let session_id = start_session(&runtime, connection_id, data_root.path()).await?;
+    set_session_mode(&runtime, connection_id, session_id, "plan").await?;
 
     let _ = runtime
         .handle_incoming(
@@ -63,8 +66,9 @@ async fn goal_set_does_not_start_continuation_in_plan_mode() -> Result<()> {
                 "id": 40,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "plan first" }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -104,7 +108,7 @@ struct EscalatingTool;
 #[async_trait]
 impl ModelProviderSDK for ToolCallProvider {
     async fn completion(&self, _request: ModelRequest) -> Result<ModelResponse> {
-        anyhow::bail!("goal continuation test does not use non-streaming completion")
+        Ok(title_response())
     }
 
     async fn completion_stream(
@@ -213,7 +217,6 @@ async fn goal_set_does_not_start_continuation_while_approval_is_pending() -> Res
     let runtime = build_runtime_with_registry(data_root.path(), provider.clone(), registry)?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let session_id = start_session(&runtime, connection_id, data_root.path()).await?;
-
     let start_response = runtime
         .handle_incoming(
             connection_id,
@@ -221,8 +224,9 @@ async fn goal_set_does_not_start_continuation_while_approval_is_pending() -> Res
                 "id": 50,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "ask for approval" }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": "on-request",
@@ -232,8 +236,9 @@ async fn goal_set_does_not_start_continuation_while_approval_is_pending() -> Res
         )
         .await
         .context("approval turn/start response")?;
-    let start_result: devo_server::SuccessResponse<devo_server::TurnStartResult> =
-        serde_json::from_value(start_response)?;
+    let _start_result: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_turn::TurnStartResult,
+    > = serde_json::from_value(start_response)?;
     wait_for_approval_request(&mut notifications_rx).await?;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
 
@@ -250,16 +255,7 @@ async fn goal_set_does_not_start_continuation_while_approval_is_pending() -> Res
     tokio::time::sleep(Duration::from_millis(/*millis*/ 50)).await;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
 
-    pause_goal_and_interrupt_session(
-        &runtime,
-        connection_id,
-        session_id,
-        start_result
-            .result
-            .turn_id()
-            .expect("turn/start should start approval turn"),
-    )
-    .await?;
+    pause_goal_and_interrupt_session(&runtime, connection_id, session_id).await?;
     Ok(())
 }
 
@@ -280,6 +276,7 @@ async fn goal_set_does_not_start_continuation_while_user_input_is_pending() -> R
     )?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let session_id = start_session(&runtime, connection_id, data_root.path()).await?;
+    set_session_mode(&runtime, connection_id, session_id, "plan").await?;
 
     let start_response = runtime
         .handle_incoming(
@@ -288,8 +285,9 @@ async fn goal_set_does_not_start_continuation_while_user_input_is_pending() -> R
                 "id": 60,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "ask the user" }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -300,9 +298,10 @@ async fn goal_set_does_not_start_continuation_while_user_input_is_pending() -> R
         )
         .await
         .context("request_user_input turn/start response")?;
-    let start_result: devo_server::SuccessResponse<devo_server::TurnStartResult> =
-        serde_json::from_value(start_response)?;
-    wait_for_notification(&mut notifications_rx, "item/tool/requestUserInput").await?;
+    let _start_result: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_turn::TurnStartResult,
+    > = serde_json::from_value(start_response)?;
+    wait_for_notification(&mut notifications_rx, "userInput/request").await?;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
 
     create_goal(
@@ -318,15 +317,6 @@ async fn goal_set_does_not_start_continuation_while_user_input_is_pending() -> R
     tokio::time::sleep(Duration::from_millis(/*millis*/ 50)).await;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
 
-    pause_goal_and_interrupt_session(
-        &runtime,
-        connection_id,
-        session_id,
-        start_result
-            .result
-            .turn_id()
-            .expect("turn/start should start request-user-input turn"),
-    )
-    .await?;
+    pause_goal_and_interrupt_session(&runtime, connection_id, session_id).await?;
     Ok(())
 }

@@ -687,7 +687,7 @@ async fn invalid_agent_requests_return_invalid_params() -> Result<()> {
                 "id": 13,
                 "method": "agent/unsupported",
                 "params": {
-                    "session_id": parent_session_id,
+                    "sessionId": parent_session_id,
                     "target": "missing",
                     "message": "hello"
                 }
@@ -735,6 +735,12 @@ async fn ephemeral_deny_all_child_agent_has_no_tools_and_one_turn() -> Result<()
         .await?;
     wait_for_child_turn_started(&mut notifications_rx, child.child_session_id).await?;
     wait_for_stream_calls(&provider, 1).await?;
+    wait_for_session_notification(
+        &mut notifications_rx,
+        "turn/completed",
+        child.child_session_id,
+    )
+    .await?;
 
     let requests = provider.requests();
     assert_eq!(requests.len(), 1);

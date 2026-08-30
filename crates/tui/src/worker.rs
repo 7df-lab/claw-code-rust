@@ -11,9 +11,6 @@ use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use devo_client::{ClientEvent, client_event_from_notification};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
@@ -24,10 +21,7 @@ use devo_core::ProviderWireApi;
 use devo_core::ReasoningEffort;
 use devo_core::SessionId;
 use devo_core::TurnId;
-use devo_core::TurnStatus;
 use devo_protocol::AgentToolPolicy;
-use devo_protocol::CommandExecExitedPayload;
-use devo_protocol::CommandExecOutputDeltaPayload;
 use devo_protocol::CommandExecParams;
 use devo_protocol::CommandExecProgram;
 use devo_protocol::ProviderModelBinding;
@@ -38,21 +32,17 @@ use devo_protocol::SessionHistoryMetadata;
 use devo_protocol::SessionPlanStepStatus;
 use devo_protocol::SpawnAgentParams;
 use devo_protocol::ThreadGoalStatus;
-use devo_protocol::TurnFailedPayload;
 use devo_protocol::native::rpc_session::RollbackMode;
 use devo_server::ApprovalResponseParams;
 use devo_server::CollaborationMode;
 use devo_server::InputItem;
-use devo_server::ItemEnvelope;
+#[cfg(test)]
 use devo_server::ItemEventPayload;
-use devo_server::ItemKind;
-use devo_server::ServerEvent;
 use devo_server::SessionHistoryItem;
 use devo_server::SessionHistoryItemKind;
 use devo_server::SkillSource;
 use devo_server::StdioServerClient;
 use devo_server::StdioServerClientConfig;
-use devo_server::TurnEventPayload;
 
 use crate::app_command::GoalObjectiveMode;
 use crate::app_command::InputHistoryDirection;
@@ -88,13 +78,10 @@ mod typed_events;
 
 #[cfg(test)]
 pub(crate) use tool_summaries::exploration_actions_from_tool_input;
-pub(crate) use tool_summaries::parse_plan_step_status;
 
 use session_restore::native_session_id;
 use session_restore::restore_session_native;
 use session_restore::session_switched_event_from_restore;
-
-use subagent_events::subagent_monitor_events_from_unwrapped_server_notification;
 
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
 const WORKER_ABORT_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
@@ -361,7 +348,10 @@ enum OperationCommand {
         mode: RollbackMode,
     },
     /// Fork a new session at a selected user turn.
-    ForkAtUserTurn(u32),
+    ForkAtUserTurn {
+        user_turn_index: u32,
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
+    },
     /// Interrupt the active turn, task, or shell process currently owned by the TUI.
     InterruptActiveWork,
     /// Push input onto the canonical session queue (busy path).
@@ -822,9 +812,16 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    pub(crate) fn fork_at_user_turn(&self, user_turn_index: u32) -> Result<()> {
+    pub(crate) fn fork_at_user_turn(
+        &self,
+        user_turn_index: u32,
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
+    ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::ForkAtUserTurn(user_turn_index))
+            .send(OperationCommand::ForkAtUserTurn {
+                user_turn_index,
+                cut,
+            })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -1089,11 +1086,7 @@ async fn run_worker_inner(
                 model = restore.session.model.model.clone();
                 model_binding_id = (restore.session.model.provider != "unknown")
                     .then(|| restore.session.model.provider.clone());
-                reasoning_effort_selection = restore
-                    .session
-                    .settings
-                    .reasoning_effort
-                    .map(|effort| effort.to_string());
+                reasoning_effort_selection = restore.session.settings.reasoning_effort.clone();
                 session_permission_preset =
                     Some(match restore.session.settings.permission_profile {
                         devo_protocol::native::model::PermissionProfile::Default => {
@@ -2482,7 +2475,10 @@ async fn run_worker_inner(
                             }
                         }
                     }
-                    Some(OperationCommand::ForkAtUserTurn(user_turn_index)) => {
+                    Some(OperationCommand::ForkAtUserTurn {
+                        user_turn_index,
+                        cut,
+                    }) => {
                         let Some(active_session_id) = session_id else {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
@@ -2534,7 +2530,7 @@ async fn run_worker_inner(
                             }
                         };
                         match client
-                            .session_fork_native(active_session_id, fork_at)
+                            .session_fork_native_with_cut(active_session_id, fork_at, Some(cut))
                             .await
                         {
                             Ok(result) => {
@@ -3156,33 +3152,6 @@ async fn run_worker_inner(
                     Some(notification) => {
                         let method = notification.method;
                         let params = notification.params;
-                        let normalized_event = client_event_from_notification(
-                            &devo_client::ServerNotificationMessage {
-                                method: method.clone(),
-                                params: params.clone(),
-                            },
-                        )
-                        .ok()
-                        .flatten();
-                        if let Some(ClientEvent::TurnUsageUpdated(payload)) = normalized_event {
-                            saw_usage_update_for_turn = true;
-                            total_input_tokens = payload.total_input_tokens;
-                            total_output_tokens = payload.total_output_tokens;
-                            total_tokens = payload.total_tokens;
-                            total_cache_read_tokens = payload.total_cache_read_tokens;
-                            last_query_total_tokens = payload.usage.display_total_tokens();
-                            last_query_input_tokens = payload.last_query_input_tokens;
-                            has_authoritative_usage_totals = true;
-                            let _ = event_tx.send(WorkerEvent::UsageUpdated {
-                                total_input_tokens: payload.total_input_tokens,
-                                total_output_tokens: payload.total_output_tokens,
-                                total_tokens: payload.total_tokens,
-                                total_cache_read_tokens: payload.total_cache_read_tokens,
-                                last_query_total_tokens: payload.usage.display_total_tokens(),
-                                last_query_input_tokens: payload.last_query_input_tokens,
-                            });
-                            continue;
-                        }
                         if method == "queue/updated"
                             && let Ok(queue_event) =
                                 parse_native_queue_updated(&params)
@@ -3190,11 +3159,8 @@ async fn run_worker_inner(
                             let _ = event_tx.send(queue_event);
                             continue;
                         }
-                        // Native typed events (L2-DES-APP-009): no
-                        // legacy `kind` tag, canonical shapes. Handled
-                        // before the legacy decode; once the TUI opts
-                        // into typed items these become the primary
-                        // shapes and the legacy arms below retire.
+                        // Native typed events (L2-DES-APP-009): canonical
+                        // notification shapes used by the TUI wire client.
                         if params.get("kind").is_none() {
                             match method.as_str() {
                                 "turn/started" => {
@@ -3837,503 +3803,7 @@ async fn run_worker_inner(
                                 _ => {}
                             }
                         }
-                        let event: ServerEvent = serde_json::from_value(params)
-                            .with_context(|| format!("failed to decode server event for method {method}"))?;
-                        if handle_btw_agent_event(
-                            &method,
-                            &event,
-                            &mut client,
-                            event_tx,
-                            &mut btw_agent_sessions,
-                        )
-                        .await
-                        {
-                            continue;
-                        }
-                        // Subagent discovery on the devo envelope
-                        // (L2-DES-APP-009): SessionStarted carries the
-                        // same SessionMetadata the ACP session-info
-                        // path folded, including parentage.
-                        if let ServerEvent::SessionStarted(payload) = &event
-                            && payload.session.parent_session_id == session_id
-                            && let Some(agent) =
-                                subagent_events::agent_from_session(&payload.session)
-                            && child_agent_sessions.insert(agent.session_id)
-                        {
-                            let _ = event_tx.send(WorkerEvent::SubagentDiscovered { agent });
-                        }
-                        if let Some(event_session_id) = event.session_id()
-                            && Some(event_session_id) != session_id
-                        {
-                            if child_agent_sessions.contains(&event_session_id) {
-                                for subagent_event in
-                                    subagent_monitor_events_from_unwrapped_server_notification(
-                                        method.as_str(),
-                                        event.clone(),
-                                    )
-                                {
-                                    let _ = event_tx.send(subagent_event);
-                                }
-                            }
-                            continue;
-                        }
-                        match method.as_str() {
-                            "turn/started" => {
-                                if let ServerEvent::TurnStarted(payload) = event {
-                                    active_turn_id = Some(payload.turn.turn_id);
-                                    saw_usage_update_for_turn = false;
-                                    model = payload.turn.model.clone();
-                                    model_binding_id = payload.turn.model_binding_id.clone();
-                                    reasoning_effort_selection = payload.turn.reasoning_effort_selection.clone();
-                                    let _ = event_tx.send(WorkerEvent::TurnStarted {
-                                        model: payload.turn.model,
-                                        model_binding_id: payload.turn.model_binding_id,
-                                        reasoning_effort_selection: payload.turn.reasoning_effort_selection,
-                                        reasoning_effort: payload.turn.reasoning_effort,
-                                        turn_id: payload.turn.turn_id,
-                                    });
-                                }
-                                latest_completed_agent_message = None;
-                            }
-                            "item/agentMessage/delta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event {
-                                    if let Some(item_id) = payload.context.item_id {
-                                        if let Some(assistant_token_text) =
-                                            assistant_token_log_preview(&payload.delta)
-                                        {
-                                            tracing::debug!(
-                                                stream_elapsed_ms = stream_trace_elapsed_ms(),
-                                                item_id = %item_id,
-                                                event_seq = payload.context.seq,
-                                                delta_len = payload.delta.len(),
-                                                stream_index = ?payload.stream_index,
-                                                channel = ?payload.channel,
-                                                assistant_token_text = %assistant_token_text,
-                                                "server assistant delta"
-                                            );
-                                        } else {
-                                            tracing::debug!(
-                                                stream_elapsed_ms = stream_trace_elapsed_ms(),
-                                                item_id = %item_id,
-                                                event_seq = payload.context.seq,
-                                                delta_len = payload.delta.len(),
-                                                stream_index = ?payload.stream_index,
-                                                channel = ?payload.channel,
-                                                "server assistant delta"
-                                            );
-                                        }
-                                        let _ = event_tx.send(WorkerEvent::Transcript(
-                                            ItemLifecycleEvent::TextDelta {
-                                                item_id,
-                                                kind: TextItemKind::Assistant,
-                                                delta: payload.delta,
-                                            },
-                                        ));
-                                    } else {
-                                        let _ = event_tx.send(WorkerEvent::TextDelta(payload.delta));
-                                    }
-                                }
-                            }
-                            "item/commandExecution/outputDelta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event {
-                                    let delta_str = &payload.delta;
-                                    if let Ok(val) =
-                                        serde_json::from_str::<serde_json::Value>(delta_str)
-                                    {
-                                        let tool_use_id = val
-                                            .get("tool_use_id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
-                                        let text =
-                                            val.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                                        if !tool_use_id.is_empty() {
-                                            let _ = event_tx.send(WorkerEvent::Transcript(
-                                                tool_lifecycle::transcript_tool_output_chunk(
-                                                    tool_use_id.to_string(),
-                                                    text.to_string(),
-                                                ),
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                            "item/toolCall/inputDelta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event
-                                    && let Some(event) =
-                                        tool_lifecycle::transcript_tool_input_chunk_from_delta_payload(
-                                            &payload.delta,
-                                        )
-                                {
-                                    let _ = event_tx.send(WorkerEvent::Transcript(event));
-                                }
-                            }
-                            "command/exec/outputDelta" => {
-                                if let ServerEvent::CommandExecOutputDelta(payload) = event {
-                                    let CommandExecOutputDeltaPayload {
-                                        process_id,
-                                        delta_base64,
-                                        ..
-                                    } = payload;
-                                    match BASE64_STANDARD.decode(delta_base64) {
-                                        Ok(bytes) => {
-                                            let delta =
-                                                String::from_utf8_lossy(&bytes).to_string();
-                                            let _ = event_tx.send(WorkerEvent::Transcript(
-                                                tool_lifecycle::transcript_tool_output_chunk(
-                                                    process_id,
-                                                    delta,
-                                                ),
-                                            ));
-                                        }
-                                        Err(error) => {
-                                            tracing::warn!(
-                                                %error,
-                                                "failed to decode command/exec output delta"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            "command/exec/exited" => {
-                                if let ServerEvent::CommandExecExited(payload) = event {
-                                    let CommandExecExitedPayload {
-                                        process_id,
-                                        exit_code,
-                                        ..
-                                    } = payload;
-                                    if active_shell_process_ids.remove(&process_id) {
-                                        let _ = event_tx.send(WorkerEvent::Transcript(
-                                            tool_lifecycle::tool_closed_shell(
-                                                process_id,
-                                                String::new(),
-                                                Some(String::new()),
-                                                false,
-                                            ),
-                                        ));
-                                        let _ = event_tx.send(WorkerEvent::ShellCommandFinished {
-                                            exit_code,
-                                        });
-                                    }
-                                }
-                            }
-                            "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
-                                if let ServerEvent::ItemDelta { payload, .. } = event {
-                                    if let Some(item_id) = payload.context.item_id {
-                                        tracing::debug!(
-                                            item_id = %item_id,
-                                            delta_len = payload.delta.len(),
-                                            stream_index = ?payload.stream_index,
-                                            channel = ?payload.channel,
-                                            "server reasoning delta"
-                                        );
-                                        let _ = event_tx.send(WorkerEvent::Transcript(
-                                            ItemLifecycleEvent::TextDelta {
-                                                item_id,
-                                                kind: TextItemKind::Reasoning,
-                                                delta: payload.delta,
-                                            },
-                                        ));
-                                    } else {
-                                        let _ = event_tx.send(WorkerEvent::ReasoningDelta(payload.delta));
-                                    }
-                                }
-                            }
-                            "turn/completed" => {
-                                if let ServerEvent::TurnCompleted(payload) = event {
-                                    tracing::debug!(
-                                        turn_id = %payload.turn.turn_id,
-                                        status = ?payload.turn.status,
-                                        "server turn completed"
-                                    );
-                                    active_turn_id = None;
-                                    let completed = payload.turn.status == TurnStatus::Completed
-                                        || payload.turn.status == TurnStatus::Interrupted;
-                                    if completed {
-                                        turn_count += 1;
-                                        if let Some(usage) = &payload.turn.usage {
-                                            if !saw_usage_update_for_turn {
-                                                last_query_input_tokens = usage.input_tokens as usize;
-                                                last_query_total_tokens = usage.display_total_tokens();
-                                            }
-                                            if should_apply_terminal_turn_usage_fallback(
-                                                saw_usage_update_for_turn,
-                                                has_authoritative_usage_totals,
-                                            ) {
-                                                total_input_tokens += usage.input_tokens as usize;
-                                                total_output_tokens += usage.output_tokens as usize;
-                                                total_tokens += usage.display_total_tokens();
-                                                total_cache_read_tokens += usage
-                                                    .cache_read_input_tokens
-                                                    .unwrap_or(0) as usize;
-                                            }
-                                        }
-                                    }
-                                    let _ = event_tx.send(WorkerEvent::TurnFinished {
-                                        stop_reason: format!("{:?}", payload.turn.status),
-                                        turn_count,
-                                        total_input_tokens,
-                                        total_output_tokens,
-                                        total_tokens,
-                                        total_cache_read_tokens,
-                                        last_query_total_tokens,
-                                        last_query_input_tokens,
-                                        prompt_token_estimate: payload
-                                            .turn
-                                            .usage
-                                            .as_ref()
-                                            .map(|usage| usage.input_tokens as usize)
-                                            .unwrap_or(total_input_tokens),
-                                    });
-                                    latest_completed_agent_message = None;
-                                }
-                            }
-                            "turn/provider_retry_status" => {
-                                if let ServerEvent::TurnProviderRetryStatus(payload) = event {
-                                    let _ = event_tx.send(WorkerEvent::ProviderRetryStatus {
-                                        turn_id: payload.turn_id,
-                                        attempt: payload.attempt,
-                                        backoff_ms: payload.backoff_ms,
-                                        provider: payload.provider,
-                                        model: payload.model,
-                                        phase: payload.phase,
-                                        message: payload.message,
-                                    });
-                                }
-                            }
-                            "turn/usage/updated" => {
-                                if let ServerEvent::TurnUsageUpdated(payload) = event {
-                                    saw_usage_update_for_turn = true;
-                                    total_input_tokens = payload.total_input_tokens;
-                                    total_output_tokens = payload.total_output_tokens;
-                                    total_tokens = payload.total_tokens;
-                                    total_cache_read_tokens = payload.total_cache_read_tokens;
-                                    last_query_total_tokens = payload.usage.display_total_tokens();
-                                    last_query_input_tokens = payload.last_query_input_tokens;
-                                    has_authoritative_usage_totals = true;
-                                    let _ = event_tx.send(WorkerEvent::UsageUpdated {
-                                        total_input_tokens: payload.total_input_tokens,
-                                        total_output_tokens: payload.total_output_tokens,
-                                        total_tokens: payload.total_tokens,
-                                        total_cache_read_tokens: payload.total_cache_read_tokens,
-                                        last_query_total_tokens: payload.usage.display_total_tokens(),
-                                        last_query_input_tokens: payload.last_query_input_tokens,
-                                    });
-                                }
-                            }
-                            "context/usageUpdated" => {
-                                if let ServerEvent::ContextUsageUpdated(payload) = event
-                                    && session_id.is_some_and(|id| id == payload.session_id)
-                                {
-                                    last_query_total_tokens =
-                                        payload.occupancy.total_tokens as usize;
-                                    let _ = event_tx.send(WorkerEvent::ContextUsageUpdated {
-                                        occupancy: payload.occupancy,
-                                    });
-                                }
-                            }
-                            "turn/failed" => {
-                                if let ServerEvent::TurnFailed(TurnFailedPayload { turn, error, .. }) = event {
-                                    active_turn_id = None;
-                                    let (message, hint) = match error {
-                                        Some(error) => {
-                                            let hint = error.recovery_hint.or_else(|| {
-                                                devo_provider::recovery_hint_for_message(
-                                                    &error.message,
-                                                )
-                                            });
-                                            (error.message, hint)
-                                        }
-                                        None => {
-                                            let message = latest_completed_agent_message
-                                                .take()
-                                                .unwrap_or_else(|| {
-                                                    format!(
-                                                        "turn failed with status {:?}",
-                                                        turn.status
-                                                    )
-                                                });
-                                            let hint =
-                                                devo_provider::recovery_hint_for_message(&message);
-                                            (message, hint)
-                                        }
-                                    };
-                                    if let Some(usage) = &turn.usage {
-                                        if !saw_usage_update_for_turn {
-                                            last_query_input_tokens = usage.input_tokens as usize;
-                                            last_query_total_tokens = usage.display_total_tokens();
-                                        }
-                                        if should_apply_terminal_turn_usage_fallback(
-                                            saw_usage_update_for_turn,
-                                            has_authoritative_usage_totals,
-                                        ) {
-                                            total_input_tokens += usage.input_tokens as usize;
-                                            total_output_tokens += usage.output_tokens as usize;
-                                            total_tokens += usage.display_total_tokens();
-                                            total_cache_read_tokens += usage
-                                                .cache_read_input_tokens
-                                                .unwrap_or(0) as usize;
-                                        }
-                                    }
-                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
-                                        message,
-                                        hint,
-                                        turn_count,
-                                        total_input_tokens,
-                                        total_output_tokens,
-                                        total_tokens,
-                                        total_cache_read_tokens,
-                                        prompt_token_estimate: turn
-                                            .usage
-                                            .as_ref()
-                                            .map(|usage| usage.input_tokens as usize)
-                                            .unwrap_or(total_input_tokens),
-                                        last_query_input_tokens: turn
-                                            .usage
-                                            .as_ref()
-                                            .map(|usage| usage.input_tokens as usize)
-                                            .unwrap_or(last_query_input_tokens),
-                                    });
-                                }
-                            }
-                            "turn/plan/updated" => {
-                                if let ServerEvent::TurnPlanUpdated(payload) = event {
-                                    let steps = payload
-                                        .plan
-                                        .into_iter()
-                                        .filter_map(|step| {
-                                            Some(PlanStep {
-                                                text: step.step,
-                                                status: parse_plan_step_status(&step.status)?,
-                                            })
-                                        })
-                                        .collect::<Vec<_>>();
-                                    let _ = event_tx.send(WorkerEvent::PlanUpdated {
-                                        explanation: payload
-                                            .explanation
-                                            .filter(|text| !text.trim().is_empty()),
-                                        steps,
-                                    });
-                                }
-                            }
-                            "item/tool/requestUserInput" => {
-                                if let ServerEvent::RequestUserInput(payload) = event
-                                    && let Some(turn_id) = payload.request.turn_id
-                                {
-                                    let _ = event_tx.send(WorkerEvent::RequestUserInput {
-                                        session_id: payload.request.session_id,
-                                        turn_id,
-                                        request_id: payload.request.request_id.to_string(),
-                                        questions: payload.questions,
-                                    });
-                                }
-                            }
-                            "search/updated" => {
-                                if let ServerEvent::ReferenceSearchUpdated(snapshot) = event {
-                                    let _ =
-                                        event_tx.send(WorkerEvent::ReferenceSearchUpdated {
-                                            snapshot,
-                                        });
-                                }
-                            }
-                            "search/completed" => {
-                                if let ServerEvent::ReferenceSearchCompleted(snapshot) = event {
-                                    let _ =
-                                        event_tx.send(WorkerEvent::ReferenceSearchUpdated {
-                                            snapshot,
-                                        });
-                                }
-                            }
-                            "search/failed" => {
-                                if let ServerEvent::ReferenceSearchFailed(payload) = event {
-                                    tracing::warn!(
-                                        search_id = %payload.search_id,
-                                        query = %payload.query,
-                                        message = %payload.message,
-                                        "reference search failed"
-                                    );
-                                    // End the composer loading state instead of waiting forever
-                                    // for a completion notification that will never arrive.
-                                    let snapshot = ReferenceSearchSnapshot {
-                                        search_id: payload.search_id,
-                                        query: payload.query,
-                                        results: Vec::new(),
-                                        total_file_match_count: 0,
-                                        scanned_file_count: 0,
-                                        file_search_complete: true,
-                                    };
-                                    let _ = event_tx.send(WorkerEvent::ReferenceSearchUpdated {
-                                        snapshot,
-                                    });
-                                }
-                            }
-                            "session/title/updated" => {
-                                if let ServerEvent::SessionTitleUpdated(payload) = event
-                                    && let Some(title) = payload.session.title {
-                                        let _ = event_tx.send(WorkerEvent::SessionTitleUpdated {
-                                            session_id: payload.session.session_id.to_string(),
-                                            title,
-                                        });
-                                    }
-                            }
-                            "session/effective_context_window/updated" => {
-                                if let ServerEvent::SessionEffectiveContextWindowUpdated(
-                                    payload,
-                                ) = event
-                                    && session_id == Some(payload.session_id)
-                                {
-                                    let _ = event_tx.send(
-                                        WorkerEvent::EffectiveContextWindowUpdated {
-                                            effective_context_window: payload
-                                                .effective_context_window,
-                                        },
-                                    );
-                                }
-                            }
-                            "session/compaction/started" => {
-                                if let ServerEvent::SessionCompactionStarted(_) = event {
-                                    let _ = event_tx.send(WorkerEvent::SessionCompactionStarted);
-                                }
-                            }
-                            "session/compaction/completed" => {
-                                if let ServerEvent::SessionCompactionCompleted(payload) = event {
-                                    total_input_tokens = payload.session.total_input_tokens;
-                                    total_output_tokens = payload.session.total_output_tokens;
-                                    total_tokens = payload.session.total_tokens;
-                                    let (compacted_last_query_total, compacted_last_query_input) =
-                                        last_query_tokens_from_resume(&payload.session);
-                                    last_query_total_tokens = payload
-                                        .session
-                                        .last_context_occupancy
-                                        .as_ref()
-                                        .map(|occupancy| occupancy.total_tokens as usize)
-                                        .filter(|tokens| *tokens > 0)
-                                        .unwrap_or(compacted_last_query_total);
-                                    last_query_input_tokens = payload
-                                        .session
-                                        .last_context_occupancy
-                                        .as_ref()
-                                        .map(|occupancy| occupancy.total_tokens as usize)
-                                        .filter(|tokens| *tokens > 0)
-                                        .unwrap_or(compacted_last_query_input);
-                                    let _ = event_tx.send(WorkerEvent::SessionCompacted {
-                                        total_input_tokens,
-                                        total_output_tokens,
-                                        total_tokens,
-                                        last_query_total_tokens,
-                                        last_query_input_tokens,
-                                        prompt_token_estimate: payload.session.prompt_token_estimate,
-                                    });
-                                }
-                            }
-                            "session/compaction/failed" => {
-                                if let ServerEvent::SessionCompactionFailed(payload) = event {
-                                    let _ = event_tx.send(WorkerEvent::SessionCompactionFailed {
-                                        message: payload.message,
-                                    });
-                                }
-                            }
-                            _ => {}
-                        }
+                        tracing::debug!(method = %method, "ignoring unsupported non-Native notification");
                     }
                     None => break,
                 }
@@ -5193,22 +4663,6 @@ fn render_skill_source(source: &SkillSource) -> String {
     }
 }
 
-fn completed_agent_message_text(payload: &ItemEventPayload) -> Option<String> {
-    match &payload.item {
-        ItemEnvelope {
-            item_kind: ItemKind::AgentMessage,
-            payload,
-            ..
-        } => payload
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(ToOwned::to_owned),
-        _ => None,
-    }
-}
-
 fn btw_agent_prompt(question: &str) -> String {
     format!(
         "You are answering a /btw side question in a lightweight forked agent.\n\
@@ -5235,67 +4689,6 @@ fn btw_spawn_params(session_id: SessionId, question: &str) -> SpawnAgentParams {
         tool_policy: AgentToolPolicy::DenyAll,
         ephemeral: true,
     }
-}
-
-async fn handle_btw_agent_event(
-    method: &str,
-    event: &ServerEvent,
-    client: &mut StdioServerClient,
-    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
-    btw_agent_sessions: &mut HashMap<SessionId, BtwQuestionState>,
-) -> bool {
-    let Some(child_session_id) = event.session_id() else {
-        return false;
-    };
-    if !btw_agent_sessions.contains_key(&child_session_id) {
-        return false;
-    }
-
-    match method {
-        "item/completed" => {
-            if let ServerEvent::ItemCompleted(payload) = event
-                && let Some(text) = completed_agent_message_text(payload)
-                && let Some(state) = btw_agent_sessions.get_mut(&child_session_id)
-            {
-                state.latest_answer = Some(text);
-            }
-        }
-        "turn/completed" => {
-            let Some(state) = btw_agent_sessions.remove(&child_session_id) else {
-                return true;
-            };
-            let answer = state
-                .latest_answer
-                .unwrap_or_else(|| "Side question finished without an answer.".to_string());
-            let completed = matches!(
-                event,
-                ServerEvent::TurnCompleted(TurnEventPayload { turn, .. })
-                    if turn.status == TurnStatus::Completed
-            );
-            let _ = if completed {
-                event_tx.send(WorkerEvent::BtwCompleted {
-                    question: state.question,
-                    answer,
-                })
-            } else {
-                event_tx.send(WorkerEvent::BtwFailed { message: answer })
-            };
-            close_btw_agent(client, child_session_id).await;
-        }
-        "turn/failed" => {
-            let Some(state) = btw_agent_sessions.remove(&child_session_id) else {
-                return true;
-            };
-            let message = state
-                .latest_answer
-                .unwrap_or_else(|| "Side question failed.".to_string());
-            let _ = event_tx.send(WorkerEvent::BtwFailed { message });
-            close_btw_agent(client, child_session_id).await;
-        }
-        _ => {}
-    }
-
-    true
 }
 
 async fn close_btw_agent(client: &mut StdioServerClient, child_session_id: SessionId) {
@@ -6402,8 +5795,10 @@ mod tests {
             updated_at: Utc::now(),
             last_activity_at: Utc::now(),
             title: Some("Saved conversation".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: parent_session_id.map(|_| "root/reviewer".to_string()),
             agent_nickname: parent_session_id.map(|_| "reviewer".to_string()),
             agent_role: parent_session_id.map(|_| "default".to_string()),
@@ -6567,104 +5962,6 @@ mod tests {
     }
 
     #[test]
-    fn child_turn_completed_routes_to_subagent_monitor_turn_finished() {
-        use devo_protocol::ServerEvent;
-        use devo_protocol::TurnEventPayload;
-        use devo_protocol::TurnKind;
-        use devo_protocol::TurnMetadata;
-        use devo_protocol::TurnStatus;
-
-        let child = SessionId::new();
-        let turn = TurnMetadata {
-            turn_id: TurnId::new(),
-            session_id: child,
-            sequence: 1,
-            status: TurnStatus::Completed,
-            kind: TurnKind::Regular,
-            model: "test-model".to_string(),
-            model_binding_id: None,
-            reasoning_effort_selection: None,
-            reasoning_effort: None,
-            request_model: "test-model".to_string(),
-            request_thinking: None,
-            started_at: chrono::Utc::now(),
-            completed_at: Some(chrono::Utc::now()),
-            usage: None,
-            stop_reason: None,
-            failure_reason: None,
-        };
-        let event = ServerEvent::TurnCompleted(TurnEventPayload {
-            session_id: child,
-            turn: turn.clone(),
-        });
-
-        let events =
-            super::subagent_events::subagent_monitor_events_from_unwrapped_server_notification(
-                "turn/completed",
-                event,
-            );
-
-        assert_eq!(
-            events,
-            vec![WorkerEvent::SubagentMonitor {
-                event: SubagentMonitorEvent::TurnFinished {
-                    session_id: child,
-                    status: "done".to_string(),
-                },
-            }]
-        );
-    }
-
-    #[test]
-    fn child_unwrapped_turn_completed_routes_to_subagent_monitor_turn_finished() {
-        use devo_protocol::ServerEvent;
-        use devo_protocol::TurnEventPayload;
-        use devo_protocol::TurnKind;
-        use devo_protocol::TurnMetadata;
-        use devo_protocol::TurnStatus;
-
-        let child = SessionId::new();
-        let turn = TurnMetadata {
-            turn_id: TurnId::new(),
-            session_id: child,
-            sequence: 1,
-            status: TurnStatus::Completed,
-            kind: TurnKind::Regular,
-            model: "test-model".to_string(),
-            model_binding_id: None,
-            reasoning_effort_selection: None,
-            reasoning_effort: None,
-            request_model: "test-model".to_string(),
-            request_thinking: None,
-            started_at: chrono::Utc::now(),
-            completed_at: Some(chrono::Utc::now()),
-            usage: None,
-            stop_reason: None,
-            failure_reason: None,
-        };
-        let event = ServerEvent::TurnCompleted(TurnEventPayload {
-            session_id: child,
-            turn: turn.clone(),
-        });
-
-        let events =
-            super::subagent_events::subagent_monitor_events_from_unwrapped_server_notification(
-                "turn/completed",
-                event,
-            );
-
-        assert_eq!(
-            events,
-            vec![WorkerEvent::SubagentMonitor {
-                event: SubagentMonitorEvent::TurnFinished {
-                    session_id: child,
-                    status: "done".to_string(),
-                },
-            }]
-        );
-    }
-
-    #[test]
     fn child_typed_tool_result_updates_subagent_preview() {
         let child = SessionId::new();
         let item = devo_protocol::native::item::ItemEnvelope {
@@ -6764,8 +6061,10 @@ mod tests {
             updated_at: Utc::now(),
             last_activity_at: Utc::now(),
             title: Some("Saved conversation".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
@@ -6813,8 +6112,10 @@ mod tests {
             updated_at: Utc::now(),
             last_activity_at: Utc::now(),
             title: Some("Saved conversation".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,

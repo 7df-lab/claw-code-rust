@@ -40,6 +40,10 @@ This document does **not** cover:
 - `session/metadata/update` is the unified settings write. It persists first,
   notifies the actor best-effort, and returns without waiting for an active turn
   to finish.
+- The settings-only path resolves durable sessions from the rollout/index even
+  when no session actor has been resumed. Actor hydration is not a precondition
+  for persistence; an actor is required only for live notification or for
+  ephemeral sessions that have no durable record.
 - Persistence uses field-level `InternalRecordV2::SessionSettings` lines (plus
   legacy dual-write where still present); crash loss is bounded by the sync
   append, not the turn duration.
@@ -70,7 +74,7 @@ Promises of the call:
 
 ### DD-3: Persist-first write path
 
-**Decision**: the handler, holding the per-session `state_change_gate`, performs: (1) synchronous append of field-level settings lines to the rollout store; (2) best-effort mailbox notification to the actor (epoch-tagged) to refresh its cached copies, update summary/record, clear caches, and broadcast; (3) when a turn is active, delivery of the override to the turn control plane (DD-5). Success is returned after step (1).
+**Decision**: the handler holds a short per-session metadata-write gate and performs: (1) synchronous append of field-level settings lines to the rollout store; (2) best-effort mailbox notification to the actor (epoch-tagged) to refresh its cached copies, update summary/record, clear caches, and broadcast; (3) when a turn is active, delivery of the override to the turn control plane (DD-5). Success is returned after durable append, without hydrating or waiting for an actor. Session resume uses the same gate so hydration cannot race a field-line write.
 
 Why the mailbox notification can be best-effort: after L2-DES-SERVER-002 the actor mailbox stays short-command only, so `notify_*` is processed before the next turn's `CheckoutTurnWorkingSet` baseline snapshot; a crash is covered by the recovery path (DD-4). The actor never writes the live override channel; handlers do.
 
@@ -117,6 +121,8 @@ Structural session state (cwd, tool registry composition, hook configuration) is
 The protocol layer currently carries two divergent models for the same concept: the canonical `SessionSettings` struct with `expected_version` optimistic concurrency (`crates/protocol/src/native/session.rs:128`, `native/rpc_session.rs:169`), and the legacy flat per-concern params (`crates/protocol/src/session.rs:289`, `permissions.rs:62`, `sandbox.rs:9`). This duplication is the source of much of the settings code sprawl.
 
 **Decision**: per L2-DES-APP-008, canonical is the single retained protocol surface. The settings domain converges on the canonical `SessionSettings` model end-to-end: canonical `session/metadata/update` params → handler → settings log → core `TurnConfig`. The legacy flat params are kept only as deserialization aliases that translate into the canonical model at the handler boundary (L2-DES-APP-008 DD-4), then removed with the rest of the legacy surface. No new settings-specific types may be introduced outside the canonical model; where the canonical model lacks a concept needed here (e.g. `applied_to_active_turn` in the result), it is added to the canonical model rather than to a parallel one. The epoch from DD-4 is distinct from `expected_version`: the epoch orders settings writes and stamps traces; `expected_version` lets a client guard against overwriting a concurrent edit.
+
+Note (2026-08-31): `SessionSettings.reasoning_effort` on the snapshot is the **raw selection string** — the same contract as `SessionSettingsPatch.reasoning_effort`, including the toggle keywords `enabled`/`disabled` that toggle/variant-style models use and the typed `ReasoningEffort` enum cannot express. The enum remains only on `Session.model.reasoning_effort` (`ModelBinding`), where it carries the resolved request-parameter semantics. Snapshots that parsed the selection through the enum silently dropped the toggle keywords and every client restored them as unset.
 
 ## Settings Inventory (Current Implementation)
 

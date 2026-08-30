@@ -77,6 +77,8 @@ interface AgentDetailProps {
 	/** Structured chat turns (for Chat tab) */
 	chatTurns: ChatTurn[]
 	chatLoading?: boolean
+	/** True when the initial fetch is in flight and no cached turns exist yet. */
+	chatShowLoading?: boolean
 	/** Whether earlier messages are currently being loaded */
 	chatLoadingEarlier?: boolean
 	/** Whether there are earlier messages that can be loaded */
@@ -120,10 +122,10 @@ interface AgentDetailProps {
 	onRedo?: () => Promise<void>
 	/** Whether the session is in a reverted state */
 	isReverted?: boolean
-	/** Revert to a specific message (for per-turn undo) */
-	onRevertToMessage?: (messageId: string) => Promise<void>
-	/** Fork from a turn boundary (messageId of the next turn's user message, or undefined for full fork) */
-	onForkFromTurn?: (messageId?: string) => Promise<void>
+	/** Fork from a turn boundary (protocol turn id, or undefined for tip fork) */
+	onForkFromTurn?: (turnId?: string) => Promise<void>
+	/** Edit and resend the latest user message */
+	onEditUserMessage?: (messageId: string, text: string) => Promise<void>
 	/** Delete a specific part from a message (for error recovery) */
 	onDeletePart?: (sessionId: string, messageId: string, partId: string) => Promise<void>
 }
@@ -132,6 +134,7 @@ export function AgentDetail({
 	agent,
 	chatTurns,
 	chatLoading,
+	chatShowLoading,
 	onStop,
 	onApprove,
 	onDeny,
@@ -153,8 +156,8 @@ export function AgentDetail({
 	onUndo,
 	onRedo,
 	isReverted,
-	onRevertToMessage,
 	onForkFromTurn,
+	onEditUserMessage,
 	onDeletePart,
 }: AgentDetailProps) {
 	const navigate = useNavigate()
@@ -240,16 +243,15 @@ export function AgentDetail({
 				onToggleReviewPanel={() => setReviewPanelOpen((prev) => !prev)}
 			/>
 
-			{/* Sub-agent breadcrumb -- navigate back to parent */}
-			{agent.parentId && (
+			{/* Sub-agent breadcrumb — navigate back to parent (forks use the in-transcript marker) */}
+			{agent.parentId && !agent.forkFromId && (
 				<button
 					type="button"
 					onClick={() => {
-						const parentId = agent.parentId
-						if (!parentId) return
+						if (!agent.parentId) return
 						navigate({
 							to: "/project/$projectSlug/session/$sessionId",
-							params: { projectSlug: projectSlug ?? agent.projectSlug, sessionId: parentId },
+							params: { projectSlug: projectSlug ?? agent.projectSlug, sessionId: agent.parentId },
 						})
 					}}
 					className="flex items-center gap-1.5 border-b border-border bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
@@ -269,6 +271,7 @@ export function AgentDetail({
 				<ChatView
 					turns={chatTurns}
 					loading={chatLoading ?? false}
+					showLoading={chatShowLoading ?? false}
 					loadingEarlier={chatLoadingEarlier ?? false}
 					hasEarlierMessages={chatHasEarlier ?? false}
 					onLoadEarlier={onLoadEarlier}
@@ -289,9 +292,10 @@ export function AgentDetail({
 					onUndo={onUndo}
 					onRedo={onRedo}
 					isReverted={isReverted}
-					onRevertToMessage={onRevertToMessage}
 					onForkFromTurn={onForkFromTurn}
+					onEditUserMessage={onEditUserMessage}
 					onDeletePart={onDeletePart}
+					parentSessionName={parentSessionName}
 					reviewPanelOpen={reviewPanelOpen}
 				/>
 			</div>
@@ -321,7 +325,7 @@ export function AgentDetail({
 // Session panel header
 // ============================================================
 
-function SessionPanelHeader({
+export function SessionPanelHeader({
 	agent,
 	isEditingTitle,
 	titleValue,

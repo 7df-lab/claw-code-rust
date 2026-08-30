@@ -221,10 +221,10 @@ impl ServerRuntime {
                 SessionStartParams {
                     cwd: params.cwd,
                     additional_directories: params.additional_directories,
-                    ephemeral: false,
-                    title: None,
-                    model: None,
-                    model_binding_id: None,
+                    ephemeral: params.ephemeral,
+                    title: params.title,
+                    model: params.model,
+                    model_binding_id: params.model_binding_id,
                 },
                 tool_registry,
             )
@@ -466,16 +466,28 @@ impl ServerRuntime {
     }
 
     async fn collect_session_delete_tree(&self, root_session_id: SessionId) -> Vec<SessionId> {
+        // Cascade only sub-agent children (`parent_session_id` + agent markers).
+        // User forks use `fork_from_id` and must remain after the source is deleted.
         let session_ids_in_runtime: Vec<SessionId> = {
             let sessions = self.sessions.lock().await;
             sessions.keys().copied().collect()
         };
-        let mut parent_by_session = Vec::new();
+        let mut agent_children_by_parent = Vec::new();
         for session_id in session_ids_in_runtime {
-            let parent_id = self.session_parent_id_snapshot(session_id).await.flatten();
-            parent_by_session.push((session_id, parent_id));
+            let Some(handle) = self.session(session_id).await else {
+                continue;
+            };
+            let Some(summary) = handle.summary().await else {
+                continue;
+            };
+            let is_agent_child = summary.agent_path.is_some()
+                || summary.agent_role.is_some()
+                || summary.agent_nickname.is_some();
+            if is_agent_child && let Some(parent_id) = summary.parent_session_id {
+                agent_children_by_parent.push((session_id, parent_id));
+            }
         }
-        parent_by_session.sort_by_key(|(session_id, _parent_id)| session_id.to_string());
+        agent_children_by_parent.sort_by_key(|(session_id, _parent_id)| session_id.to_string());
 
         let mut seen = std::collections::HashSet::new();
         let mut session_ids = Vec::new();
@@ -484,8 +496,8 @@ impl ServerRuntime {
         let mut index = 0;
         while index < session_ids.len() {
             let parent_session_id = session_ids[index];
-            for (session_id, parent_id) in &parent_by_session {
-                if *parent_id == Some(parent_session_id) && seen.insert(*session_id) {
+            for (session_id, parent_id) in &agent_children_by_parent {
+                if *parent_id == parent_session_id && seen.insert(*session_id) {
                     session_ids.push(*session_id);
                 }
             }
@@ -494,7 +506,10 @@ impl ServerRuntime {
         session_ids
     }
 
-    async fn await_session_turn_interrupt_before_delete(self: &Arc<Self>, session_id: SessionId) {
+    pub(crate) async fn await_session_turn_interrupt_before_delete(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) {
         let Some(turn_id) = self.runtime_active_turn_id(session_id).await else {
             return;
         };

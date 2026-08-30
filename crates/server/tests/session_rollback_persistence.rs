@@ -19,7 +19,6 @@ use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
 use devo_protocol::ResponseContent;
 use devo_protocol::ResponseMetadata;
-use devo_protocol::SessionHistoryItemKind;
 use devo_protocol::SessionId;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
@@ -178,26 +177,42 @@ async fn session_rollback_persists_cut_and_keeps_future_turns_durable() -> Resul
                 "id": 6,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/resume response")?;
     let resumed = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
     .result;
-    let visible_bodies = resumed
-        .history_items
+    let items_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 7,
+                "method": "session/items/list",
+                "params": { "sessionId": session_id }
+            }),
+        )
+        .await
+        .context("session/items/list response")?;
+    let items: devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope> =
+        serde_json::from_value(items_response["result"].clone())?;
+    let visible_bodies = items
+        .data
         .iter()
-        .filter(|item| {
-            matches!(
-                item.kind,
-                SessionHistoryItemKind::User | SessionHistoryItemKind::Assistant
-            )
+        .filter_map(|item| {
+            let value = serde_json::to_value(&item.item).ok()?;
+            match value["type"].as_str() {
+                Some("userMessage") => value["content"][0]["text"]
+                    .as_str()
+                    .map(ToString::to_string),
+                Some("assistantMessage") => value["text"].as_str().map(ToString::to_string),
+                _ => None,
+            }
         })
-        .map(|item| item.body.as_str())
         .collect::<Vec<_>>();
 
     assert_eq!(
@@ -209,10 +224,7 @@ async fn session_rollback_persists_cut_and_keeps_future_turns_durable() -> Resul
             "third assistant"
         ]
     );
-    assert_eq!(
-        resumed.latest_turn.as_ref().map(|turn| turn.sequence),
-        Some(2)
-    );
+    assert_eq!(resumed.session.id.as_str(), session_id.to_string());
     Ok(())
 }
 
@@ -306,21 +318,19 @@ async fn start_session(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": false,
-                    "title": "Rollback source",
-                    "model": "test-model",
-                    "model_binding_id": null
+                    "idempotencyKey": "rollback-source-session"
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let response: devo_server::SuccessResponse<devo_server::SessionStartResult> =
-        serde_json::from_value(response)?;
-    Ok(response.result.session.session_id)
+        .context("session/new response")?;
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionNewResult,
+    > = serde_json::from_value(response)?;
+    Ok(SessionId::try_from(response.result.session.id.as_str())?)
 }
 
 async fn start_and_complete_turn(
@@ -337,20 +347,15 @@ async fn start_and_complete_turn(
                 "id": 3,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": text }],
-                    "model": null,
-                    "model_binding_id": null,
-                    "thinking": null,
-                    "sandbox": null,
-                    "approval_policy": null,
-                    "cwd": null
+                    "idempotencyKey": text
                 }
             }),
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(response)?;
     wait_for_turn_completed(notifications_rx).await
 }

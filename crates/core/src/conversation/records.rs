@@ -11,6 +11,56 @@ use crate::{
 };
 use devo_protocol::{CollaborationMode, PermissionPreset, StopReason, TurnFailureReason};
 
+/// Serde adapter for the frozen v1 rollout spelling of title states.
+///
+/// `SessionTitleState` is also part of the Native protocol, whose enum
+/// variants use camelCase. Legacy rollout lines predate that wire contract
+/// and must continue to use their original PascalCase variant names.
+mod legacy_title_state {
+    use devo_protocol::{SessionTitleFinalSource, SessionTitleState};
+    use serde::Deserialize;
+    use serde::de::Deserializer;
+    use serde::ser::Serializer;
+
+    #[derive(Deserialize)]
+    enum WireState {
+        #[serde(alias = "unset")]
+        Unset,
+        #[serde(alias = "generating", alias = "Provisional", alias = "provisional")]
+        Generating,
+        #[serde(alias = "final")]
+        Final(SessionTitleFinalSource),
+    }
+
+    pub fn serialize<S>(value: &SessionTitleState, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            SessionTitleState::Unset => {
+                serializer.serialize_unit_variant("SessionTitleState", 0, "Unset")
+            }
+            SessionTitleState::Generating => {
+                serializer.serialize_unit_variant("SessionTitleState", 1, "Generating")
+            }
+            SessionTitleState::Final(source) => {
+                serializer.serialize_newtype_variant("SessionTitleState", 2, "Final", source)
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SessionTitleState, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match WireState::deserialize(deserializer)? {
+            WireState::Unset => SessionTitleState::Unset,
+            WireState::Generating => SessionTitleState::Generating,
+            WireState::Final(source) => SessionTitleState::Final(source),
+        })
+    }
+}
+
 /// Stores persistent metadata for one session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -53,6 +103,7 @@ pub struct SessionRecord {
     /// The current best-known title for the session.
     pub title: Option<String>,
     /// The lifecycle state for the current session title.
+    #[serde(with = "legacy_title_state")]
     pub title_state: SessionTitleState,
     /// The active sandbox policy description for the session.
     pub sandbox_policy: String,
@@ -73,8 +124,14 @@ pub struct SessionRecord {
     pub git_branch: Option<String>,
     /// The git origin URL associated with the session workspace, if known.
     pub git_origin_url: Option<String>,
-    /// The parent session identifier when this session was created by forking.
+    /// Parent session for a spawned sub-agent (not a user fork).
     pub parent_session_id: Option<SessionId>,
+    /// Source session when this session was created by user `session/fork`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_from_id: Option<SessionId>,
+    /// Cut turn for a user fork; absent for tip forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_at_turn_id: Option<TurnId>,
     /// The latest locked session context known for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_context: Option<SessionContext>,
@@ -434,6 +491,7 @@ pub struct SessionTitleUpdatedLine {
     /// The new title value.
     pub title: String,
     /// The new title lifecycle state.
+    #[serde(with = "legacy_title_state")]
     pub title_state: SessionTitleState,
     /// The previous title value, when there was one.
     pub previous_title: Option<String>,
@@ -648,6 +706,8 @@ mod tests {
             git_branch: None,
             git_origin_url: None,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             session_context: None,
             latest_turn_context: None,
             collaboration_mode: None,
@@ -660,15 +720,19 @@ mod tests {
     }
 
     #[test]
-    fn session_record_with_fork_parent() {
+    fn session_record_with_fork_lineage() {
         let parent_id = SessionId::new();
+        let turn_id = TurnId::new();
         let session = SessionRecord {
-            parent_session_id: Some(parent_id),
+            fork_from_id: Some(parent_id),
+            fork_at_turn_id: Some(turn_id),
             ..make_test_session()
         };
         let json = serde_json::to_string(&session).expect("serialize");
         let restored: SessionRecord = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(restored.parent_session_id, Some(parent_id));
+        assert_eq!(restored.fork_from_id, Some(parent_id));
+        assert_eq!(restored.fork_at_turn_id, Some(turn_id));
+        assert_eq!(restored.parent_session_id, None);
     }
 
     #[test]
@@ -976,7 +1040,7 @@ mod tests {
                 timestamp: Utc::now(),
                 session_id: session.id,
                 title: "New Title".into(),
-                title_state: SessionTitleState::Provisional,
+                title_state: SessionTitleState::Generating,
                 previous_title: Some("Old Title".into()),
             }),
             RolloutLine::SessionContextUpdated(Box::new(SessionContextUpdatedLine {
@@ -1260,7 +1324,7 @@ mod tests {
             additional_directories: Vec::new(),
             cli_version: "0.1.0".into(),
             title: Some("Test Session".into()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
             effective_context_window: None,
@@ -1271,6 +1335,8 @@ mod tests {
             git_branch: None,
             git_origin_url: None,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             session_context: None,
             latest_turn_context: None,
             collaboration_mode: None,

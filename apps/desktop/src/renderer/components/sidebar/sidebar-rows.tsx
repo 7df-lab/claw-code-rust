@@ -32,6 +32,7 @@ import {
 	PencilIcon,
 	PenLineIcon,
 	PinIcon,
+	SplitIcon,
 	TrashIcon,
 } from "lucide-react"
 import {
@@ -117,15 +118,18 @@ const rowMenuIconClass = optionMenuIconClass
 const sidebarPrimaryIconClass = "size-[15px] stroke-[1.5]"
 const sessionTitleTextClass = "text-[13px] font-normal leading-tight tracking-normal"
 const sessionStatusHiddenClass =
-	"group-hover/sidebar-row:opacity-0 group-focus-within/sidebar-row:opacity-0 group-has-[[data-popup-open]]/sidebar-row:opacity-0"
+	"transition-opacity duration-150 group-hover/sidebar-row:opacity-0 group-focus-within/sidebar-row:opacity-0 group-has-[[data-popup-open]]/sidebar-row:opacity-0"
 const sessionActionsVisibleClass =
 	"group-hover/sidebar-row:opacity-100 group-focus-within/sidebar-row:opacity-100 group-has-[[data-popup-open]]/sidebar-row:opacity-100"
-const floatingRowActionButtonBaseClass =
-	"absolute right-2 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-lg bg-inherit text-muted-foreground opacity-0 transition-[background-color,color] hover:bg-black/[0.06] hover:text-sidebar-foreground focus-visible:bg-black/[0.06] focus-visible:text-sidebar-foreground focus-visible:opacity-100 focus-visible:outline-none data-popup-open:opacity-100 dark:hover:bg-white/[0.08] dark:focus-visible:bg-white/[0.08]"
-const floatingRowActionButtonClass = cn(
-	floatingRowActionButtonBaseClass,
+const rowActionButtonBaseClass =
+	"flex items-center justify-center rounded-lg bg-transparent text-muted-foreground opacity-0 transition-[color,opacity] hover:text-sidebar-foreground focus-visible:text-sidebar-foreground focus-visible:opacity-100 focus-visible:outline-none data-popup-open:opacity-100"
+const sessionRowActionButtonClass = cn(
+	"absolute inset-0 pointer-events-none group-hover/sidebar-row:pointer-events-auto group-focus-within/sidebar-row:pointer-events-auto group-has-[[data-popup-open]]/sidebar-row:pointer-events-auto focus-visible:pointer-events-auto",
+	rowActionButtonBaseClass,
 	sessionActionsVisibleClass,
 )
+const sessionStatusContainerClass =
+	"pointer-events-auto absolute right-2 top-1/2 flex min-h-7 min-w-7 -translate-y-1/2 items-center justify-center gap-1.5 rounded-lg px-1 text-[13px] tabular-nums text-muted-foreground"
 const inlineRowActionButtonClass =
 	"flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/[0.06] hover:text-sidebar-foreground focus-visible:bg-black/[0.06] focus-visible:text-sidebar-foreground focus-visible:outline-none dark:hover:bg-white/[0.08] dark:focus-visible:bg-white/[0.08]"
 const projectInlineRowActionButtonClass = cn(inlineRowActionButtonClass, "size-[22px] rounded-[6px]")
@@ -137,7 +141,7 @@ const projectInlineRowActionIconClass = "size-3.5 stroke-[1.5]"
 
 function sessionActionIcon(actionId: SessionRowActionId) {
 	if (actionId === "rename") return <PencilIcon className={rowMenuIconClass} />
-	if (actionId === "fork") return <GitForkIcon className={rowMenuIconClass} />
+	if (actionId === "fork") return <SplitIcon className={rowMenuIconClass} />
 	return <TrashIcon className={rowMenuIconClass} />
 }
 
@@ -186,7 +190,7 @@ function RowActionsDropdown<TId extends string>({
 	label,
 	iconForAction,
 	onAction,
-	triggerClassName = floatingRowActionButtonClass,
+	triggerClassName = sessionRowActionButtonClass,
 	triggerIconClassName = "size-4",
 	contentSide = "right",
 	contentAlign = "start",
@@ -457,6 +461,7 @@ export const SessionRow = memo(function SessionRow({
 		canFork: !!onFork,
 		canDelete: !!onDelete,
 	})
+	const hasSessionActions = sessionActions.length > 0
 	const handleSessionAction = useCallback(
 		(actionId: SessionRowActionId) => {
 			if (actionId === "rename") {
@@ -490,7 +495,7 @@ export const SessionRow = memo(function SessionRow({
 				projectUnavailable && "text-muted-foreground opacity-55",
 			)}
 		>
-			{!isEditing && agent.status === "running" && (
+			{!isEditing && (agent.status === "running" || agent.titleGenerating) && (
 				<span
 					className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2"
 					aria-hidden="true"
@@ -534,24 +539,28 @@ export const SessionRow = memo(function SessionRow({
 				)}
 			</button>
 			{!isEditing && (
-				<span
-					className={cn(
-						"pointer-events-none absolute right-2 top-1/2 flex h-7 -translate-y-1/2 items-center justify-center gap-1.5 rounded-lg px-1 text-[13px] tabular-nums text-muted-foreground",
-						sessionStatusHiddenClass,
-						hasWideStatusIndicator ? "min-w-[86px]" : "min-w-7",
-					)}
+				<div
+					className={cn(sessionStatusContainerClass, hasWideStatusIndicator && "min-w-[86px]")}
+					onClick={onSelect}
 				>
-					<SessionRowStatusIndicator agent={agent} lastActive={lastActive} isWorktree={isWorktree} />
-				</span>
-			)}
-			{!isEditing && (
-				<RowActionsDropdown
-					actions={sessionActions}
-					label={`Session actions for ${agent.name}`}
-					iconForAction={sessionActionIcon}
-					onAction={handleSessionAction}
-					contentClassName={sessionMenuContentClass}
-				/>
+					<span
+						className={cn(
+							"pointer-events-none flex h-7 items-center",
+							hasSessionActions && sessionStatusHiddenClass,
+						)}
+					>
+						<SessionRowStatusIndicator agent={agent} lastActive={lastActive} isWorktree={isWorktree} />
+					</span>
+					{hasSessionActions && (
+						<RowActionsDropdown
+							actions={sessionActions}
+							label={`Session actions for ${agent.name}`}
+							iconForAction={sessionActionIcon}
+							onAction={handleSessionAction}
+							contentClassName={sessionMenuContentClass}
+						/>
+					)}
+				</div>
 			)}
 		</div>
 	)

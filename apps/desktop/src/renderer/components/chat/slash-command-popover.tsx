@@ -3,16 +3,19 @@
  *
  * Desktop intentionally exposes only first-party composer commands here:
  * - /compact executes immediately
- * - /goal and /plan become footer trigger chips
+ * - /goal becomes a footer trigger chip
+ * - /plan switches to plan mode (footer badge only while plan mode is active)
  * - /research stays in the composer so the user can add a research question
  * - Keyboard navigation (Arrow keys, Enter/Tab, Escape)
  */
 
 import fuzzysort from "fuzzysort"
 import {
+	GitBranchIcon,
 	GoalIcon,
 	ListTodoIcon,
 	type LucideIcon,
+	MessageCircleQuestionIcon,
 	MicroscopeIcon,
 	SparklesIcon,
 } from "lucide-react"
@@ -73,6 +76,17 @@ const CLIENT_COMMANDS: SlashCommand[] = [
 		name: "compact",
 		description: "Summarize conversation to save context",
 		icon: SparklesIcon,
+	},
+	{
+		name: "fork",
+		description: "Fork this session into a new branch",
+		icon: GitBranchIcon,
+	},
+	{
+		name: "side",
+		description: "Ask a one-turn side question (btw)",
+		icon: MessageCircleQuestionIcon,
+		insertText: "/side ",
 	},
 	{
 		name: "goal",

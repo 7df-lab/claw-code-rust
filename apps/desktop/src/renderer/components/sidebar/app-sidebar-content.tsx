@@ -6,10 +6,10 @@ import {
 	Clock3Icon,
 	FolderPlusIcon,
 	Loader2Icon,
-	PenLineIcon,
+	MousePointer2Icon,
 	SearchIcon,
 	SettingsIcon,
-	SlidersHorizontalIcon,
+	BlocksIcon,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { activeServerConfigAtom } from "../../atoms/connection"
@@ -363,7 +363,7 @@ export function AppSidebarContent({
 			<SidebarContent className="gap-0 bg-transparent px-0 pb-3">
 				<div className="flex shrink-0 flex-col gap-1 px-3 pb-7">
 					<TopActionRow
-						icon={<PenLineIcon className={sidebarPrimaryIconClass} />}
+						icon={<MousePointer2Icon className={sidebarPrimaryIconClass} />}
 						onClick={handleNewChat}
 					>
 						New chat
@@ -387,7 +387,7 @@ export function AppSidebarContent({
 						</TopActionRow>
 					)}
 					<TopActionRow
-						icon={<SlidersHorizontalIcon className={sidebarPrimaryIconClass} />}
+						icon={<BlocksIcon className={sidebarPrimaryIconClass} />}
 						onClick={() => setCustomizeOpen(true)}
 						isActive={customizeOpen}
 					>

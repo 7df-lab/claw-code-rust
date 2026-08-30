@@ -39,6 +39,34 @@ export function composerFromPersistedModel(
 	}
 }
 
+export interface SessionModelSeed {
+	provider?: string
+	model?: string
+	reasoningEffort?: string
+}
+
+/**
+ * Builds composer state from the persisted wire-session model settings.
+ * `resolveModel` maps the seed to a full ModelRef — preferring the wire
+ * provider id (`session/resume` carries a real one) and falling back to a
+ * reverse slug lookup across providers (cold `session/list` snapshots may
+ * only know `"unknown"`).
+ */
+export function composerFromSessionModel(
+	seed: SessionModelSeed | null | undefined,
+	resolveModel: (seed: SessionModelSeed) => ModelRef | null,
+): SessionComposerState | null {
+	if (!seed?.model) return null
+	const model = resolveModel(seed)
+	if (!model) return null
+	return {
+		model,
+		variant: seed.reasoningEffort,
+		agent: null,
+		hasUserOverride: false,
+	}
+}
+
 export function composerFromMessages(messages: Message[]): SessionComposerState | null {
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index]
@@ -73,8 +101,14 @@ export function hydrateSessionComposerState(
 	current: SessionComposerState,
 	messages: Message[],
 	projectDefault: PersistedModelRef | undefined,
+	/** Persisted per-session turn settings from the wire session (server restores them). */
+	sessionSeed?: SessionComposerState | null,
 ): SessionComposerState {
 	if (current.hasUserOverride) return current
+	// The session snapshot is the current "next turn" configuration. It is
+	// newer and authoritative over model metadata from an older history item;
+	// history remains the fallback for legacy sessions without a snapshot seed.
+	if (sessionSeed) return sessionSeed
 	const fromMessages = composerFromMessages(messages)
 	if (fromMessages) return fromMessages
 	if (messages.length > 0) return current

@@ -191,6 +191,34 @@ pub unsafe fn get_current_token_for_restriction() -> Result<HANDLE> {
     Ok(h)
 }
 
+#[cfg(test)]
+pub(crate) fn restricted_token_creation_available() -> bool {
+    unsafe {
+        let Ok(base_token) = get_current_token_for_restriction() else {
+            return false;
+        };
+
+        let mut restricted_token: HANDLE = 0;
+        let ok = CreateRestrictedToken(
+            base_token,
+            DISABLE_MAX_PRIVILEGE,
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            &mut restricted_token,
+        );
+        let available = ok != 0;
+        if available && restricted_token != 0 {
+            CloseHandle(restricted_token);
+        }
+        CloseHandle(base_token);
+        available
+    }
+}
+
 pub unsafe fn get_logon_sid_bytes(h_token: HANDLE) -> Result<Vec<u8>> {
     unsafe fn scan_token_groups_for_logon(h: HANDLE) -> Option<Vec<u8>> {
         let mut needed: u32 = 0;

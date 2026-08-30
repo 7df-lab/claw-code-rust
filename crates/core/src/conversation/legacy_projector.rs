@@ -434,7 +434,11 @@ impl LegacyProjector {
             },
             settings: SessionSettings {
                 permission_profile,
-                reasoning_effort: None,
+                // Raw selection literal (toggle keywords included) so the
+                // canonical snapshot round-trips what the user chose; the
+                // parse into `ModelBinding.reasoning_effort` above only
+                // projects the request-parameter subset.
+                reasoning_effort: record.reasoning_effort_selection.clone(),
                 mode: None,
                 sandbox_profile: (!record.sandbox_policy.is_empty())
                     .then(|| record.sandbox_policy.clone()),

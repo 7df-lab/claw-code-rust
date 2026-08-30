@@ -171,7 +171,7 @@ impl ServerRuntime {
         .await;
     }
 
-    const MAX_TITLE_RETRIES: usize = 8;
+    const MAX_TITLE_RETRIES: usize = 5;
     const TITLE_RETRY_BASE_DELAY_SECS: u64 = 1;
 
     fn title_retry_backoff_secs(attempt: usize) -> u64 {

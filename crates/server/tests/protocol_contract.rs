@@ -243,12 +243,12 @@ fn event_enum_carries_delta_kind() {
 fn request_envelope_keeps_method_and_id() {
     let request = ClientRequest {
         id: serde_json::json!(1),
-        method: "session/start".into(),
+        method: "session/new".into(),
         params: serde_json::json!({"cwd":"C:/repo"}),
     };
 
     let json = serde_json::to_string(&request).expect("serialize");
-    assert!(json.contains("\"method\":\"session/start\""));
+    assert!(json.contains("\"method\":\"session/new\""));
     assert!(json.contains("\"id\":1"));
 }
 

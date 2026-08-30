@@ -14,7 +14,7 @@ function menuShape(items: MenuItemConstructorOptions[]): unknown[] {
 }
 
 describe("buildDevoTrayMenuTemplate", () => {
-	test("builds a Devo tray menu with running, recent, usage, and actions", () => {
+	test("builds a Devo tray menu with running, recent, and actions", () => {
 		const liveSessions = new Map([
 			[
 				"s1",
@@ -141,25 +141,6 @@ describe("buildDevoTrayMenuTemplate", () => {
 				],
 			},
 			{ label: undefined, sublabel: undefined, enabled: undefined, type: "separator", click: false, submenu: undefined },
-			{ label: "Usage", sublabel: undefined, enabled: false, type: undefined, click: false, submenu: undefined },
-			{ label: "Tokens 37.8k", sublabel: undefined, enabled: false, type: undefined, click: false, submenu: undefined },
-			{
-				label: "Input 28k · Output 9.8k",
-				sublabel: undefined,
-				enabled: false,
-				type: undefined,
-				click: false,
-				submenu: undefined,
-			},
-			{
-				label: "Cache read 1.2k",
-				sublabel: undefined,
-				enabled: false,
-				type: undefined,
-				click: false,
-				submenu: undefined,
-			},
-			{ label: undefined, sublabel: undefined, enabled: undefined, type: "separator", click: false, submenu: undefined },
 			{ label: "New Chat", sublabel: undefined, enabled: undefined, type: undefined, click: true, submenu: undefined },
 			{ label: undefined, sublabel: undefined, enabled: undefined, type: "separator", click: false, submenu: undefined },
 			{ label: "Open Devo", sublabel: undefined, enabled: undefined, type: undefined, click: true, submenu: undefined },
@@ -247,25 +228,6 @@ describe("buildDevoTrayMenuTemplate", () => {
 				enabled: undefined,
 				type: undefined,
 				click: true,
-				submenu: undefined,
-			},
-			{ label: undefined, sublabel: undefined, enabled: undefined, type: "separator", click: false, submenu: undefined },
-			{ label: "Usage", sublabel: undefined, enabled: false, type: undefined, click: false, submenu: undefined },
-			{ label: "Tokens 0", sublabel: undefined, enabled: false, type: undefined, click: false, submenu: undefined },
-			{
-				label: "Input 0 · Output 0",
-				sublabel: undefined,
-				enabled: false,
-				type: undefined,
-				click: false,
-				submenu: undefined,
-			},
-			{
-				label: "Cache read 0",
-				sublabel: undefined,
-				enabled: false,
-				type: undefined,
-				click: false,
 				submenu: undefined,
 			},
 			{ label: undefined, sublabel: undefined, enabled: undefined, type: "separator", click: false, submenu: undefined },

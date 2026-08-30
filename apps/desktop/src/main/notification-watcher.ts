@@ -1,4 +1,5 @@
 import { createDevoClient, type DevoNativeTransport } from "@devo-ai/sdk/v2/client"
+import { ProtocolValidationError } from "@devo-ai/sdk/v2/protocol-validation"
 import { createLogger } from "./logger"
 import {
 	applyWatcherEvent,
@@ -6,6 +7,7 @@ import {
 	type SessionState as WatcherSessionState,
 } from "./notification-policy"
 import { setPermissionResponder, showNotification, updateBadgeCount } from "./notifications"
+import { recycleServerForProtocolMismatch } from "./devo-manager"
 
 const log = createLogger("notification-watcher")
 
@@ -130,6 +132,19 @@ async function connectWithRetry(client: ReturnType<typeof createDevoClient>, sig
 			}
 		} catch (err) {
 			if (signal.aborted) break
+			if (isProtocolValidationError(err)) {
+				// Our stdio child may be proxying to a stale singleton server
+				// whose wire shape predates this build's schema. Recycling shuts
+				// the singleton down and restarts our own server; restartServer()
+				// stops this watcher and starts a fresh one, so exit the loop.
+				log.error(
+					"Native protocol validation failed",
+					{ reason: describeProtocolMismatch(err) },
+					describeOffendingPayloadEntry(err),
+				)
+				const recycled = await recycleServerForProtocolMismatch(describeProtocolMismatch(err))
+				if (recycled) return
+			}
 			log.error("Native event stream error, reconnecting", { retryDelay }, err)
 		}
 
@@ -138,6 +153,39 @@ async function connectWithRetry(client: ReturnType<typeof createDevoClient>, sig
 		// Exponential backoff: 1s -> 2s -> 4s -> ... -> 30s max
 		await sleep(retryDelay, signal)
 		retryDelay = Math.min(retryDelay * 2, 30_000)
+	}
+}
+
+function isProtocolValidationError(error: unknown): error is ProtocolValidationError {
+	if (error instanceof ProtocolValidationError) return true
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		(error as { name?: unknown }).name === "ProtocolValidationError"
+	)
+}
+
+function describeProtocolMismatch(error: ProtocolValidationError): string {
+	return `${error.method} (${error.schemaName ?? error.direction})`
+}
+
+/**
+ * Extracts the replay entry an ajv failure pointed at (instancePath like
+ * `/replay/5/notification/method`) so the next occurrence is diagnosable from
+ * the log alone — the Electron log formatter renders nested objects as
+ * `[Object]`, hiding the offending method otherwise.
+ */
+function describeOffendingPayloadEntry(error: ProtocolValidationError): string {
+	const match = error.errors
+		.map((ajvError) => /^\/replay\/(\d+)\//.exec(ajvError.instancePath ?? ""))
+		.find(Boolean)
+	if (!match) return ""
+	const entry = (error.payload as { replay?: unknown[] } | null)?.replay?.[Number(match[1])]
+	if (entry === undefined) return ""
+	try {
+		return JSON.stringify(entry).slice(0, 800)
+	} catch {
+		return String(entry).slice(0, 800)
 	}
 }
 

@@ -125,23 +125,23 @@ async fn start_session(
     runtime: &Arc<ServerRuntime>,
     connection_id: u64,
     cwd: &Path,
-) -> Result<devo_server::SessionStartResult> {
+    idempotency_key: &str,
+) -> Result<devo_protocol::native::rpc_session::SessionNewResult> {
     let response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
                 "id": 2,
-                "method": "session/start",
+                "method": "session/new",
                 "params": {
                     "cwd": cwd,
-                    "ephemeral": true,
-                    "title": null
+                    "idempotencyKey": idempotency_key
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let response: SuccessResponse<devo_server::SessionStartResult> =
+        .context("session/new response")?;
+    let response: SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult> =
         serde_json::from_value(response)?;
     Ok(response.result)
 }
@@ -179,17 +179,24 @@ async fn compaction_update_writes_global_config_and_applies_to_session() -> Resu
     std::fs::create_dir_all(&cwd)?;
     let runtime = build_runtime(data_root.path())?;
     let connection_id = initialize_connection(&runtime).await?;
-    let started = start_session(&runtime, connection_id, &cwd).await?;
+    let started = start_session(
+        &runtime,
+        connection_id,
+        &cwd,
+        "compaction-threshold-session-1",
+    )
+    .await?;
+    let started_id = SessionId::try_from(started.session.id.as_str())?;
     assert!(
-        started.session.effective_context_window.is_some(),
+        started.session.settings.effective_context_window.is_some(),
         "new session should expose an applied effective window"
     );
-    let model_default = started.session.effective_context_window;
+    let model_default = started.session.settings.effective_context_window;
 
     let updated = compaction_update(
         &runtime,
         connection_id,
-        started.session.session_id,
+        started_id,
         /*effective_context_window*/ 250_000,
     )
     .await?;
@@ -205,13 +212,22 @@ async fn compaction_update_writes_global_config_and_applies_to_session() -> Resu
         Some(250_000)
     );
 
-    let second = start_session(&runtime, connection_id, &cwd).await?;
+    let second = start_session(
+        &runtime,
+        connection_id,
+        &cwd,
+        "compaction-threshold-session-2",
+    )
+    .await?;
     assert_eq!(
-        second.session.effective_context_window,
+        second.session.settings.effective_context_window,
         Some(250_000),
         "new sessions inherit the global compaction preference"
     );
-    assert_ne!(second.session.effective_context_window, model_default);
+    assert_ne!(
+        second.session.settings.effective_context_window,
+        model_default
+    );
     Ok(())
 }
 
@@ -227,7 +243,16 @@ async fn new_session_reads_existing_global_compaction_limit() -> Result<()> {
 
     let runtime = build_runtime(data_root.path())?;
     let connection_id = initialize_connection(&runtime).await?;
-    let started = start_session(&runtime, connection_id, &cwd).await?;
-    assert_eq!(started.session.effective_context_window, Some(100_000));
+    let started = start_session(
+        &runtime,
+        connection_id,
+        &cwd,
+        "compaction-threshold-session-existing",
+    )
+    .await?;
+    assert_eq!(
+        started.session.settings.effective_context_window,
+        Some(100_000)
+    );
     Ok(())
 }

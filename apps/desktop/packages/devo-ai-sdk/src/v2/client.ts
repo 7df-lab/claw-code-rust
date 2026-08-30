@@ -10,10 +10,8 @@ import {
 	partTime,
 	providerDataFromConfigOptions,
 	questionInfoFromNative,
-	requestUserInputFromOriginalEvent,
 	sessionErrorEvent,
 	stableId,
-	statusFromDevo,
 	textFromUpdate,
 	toolCallIdFromUpdate,
 	toolPartFromUpdate,
@@ -40,6 +38,7 @@ import type {
 import {
 	ProtocolValidationError,
 	assertValidProtocolPayload,
+	dropUnknownReplayEnvelopes,
 } from "./protocol-validation"
 import {
 	ReferenceSearchSession,
@@ -52,19 +51,6 @@ export type {
 } from "./reference-search-session"
 
 export type JsonRpcId = number | string
-
-type LegacySessionInfo = {
-	sessionId: string
-	cwd: string
-	title?: string
-	updatedAt?: string
-	_meta?: Record<string, unknown>
-}
-type LegacySessionNotification = {
-	sessionId: string
-	update: Record<string, unknown>
-	_meta?: Record<string, unknown>
-}
 
 export interface DevoNativeTransportEvent {
 	type: "notification" | "request" | "closed"
@@ -258,6 +244,10 @@ function renderedNativeItemKey(sessionId: string, itemId: string): string {
 
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined
 }
 
 /** Maps a Native FileChangeKind entry into flat tool-input fields the UI can render. */
@@ -481,61 +471,6 @@ function unwrapToolOutputValue(output: unknown): unknown {
 	return output
 }
 
-function sessionMeta(value: unknown): Record<string, unknown> | undefined {
-	const meta = objectRecord(value)
-	return objectRecord(meta?.["devo/session"])
-}
-
-function providerRetryStatusFromOriginalEvent(
-	original: Record<string, unknown>,
-	originalMethod?: string,
-): Record<string, unknown> | null {
-	if (originalMethod !== "turn/provider_retry_status" && !("TurnProviderRetryStatus" in original) && original.kind !== "turn_provider_retry_status") {
-		return null
-	}
-	const payload = objectRecord(original.TurnProviderRetryStatus) ?? original
-	const sessionID = String(payload.session_id ?? payload.sessionId ?? "")
-	const turnID = String(payload.turn_id ?? payload.turnId ?? "")
-	if (!sessionID || !turnID) return null
-	return {
-		sessionID,
-		turnID,
-		attempt: numberFromProtocol(payload.attempt),
-		backoffMs: numberFromProtocol(payload.backoff_ms ?? payload.backoffMs),
-		provider: String(payload.provider ?? ""),
-		model: String(payload.model ?? ""),
-		phase: String(payload.phase ?? ""),
-		message: String(payload.message ?? ""),
-	}
-}
-
-function turnFailureFromOriginalEvent(
-	original: Record<string, unknown>,
-	originalMethod?: string,
-): { sessionID: string; code: string; message: string } | null {
-	if (originalMethod !== "turn/failed" && !("TurnFailed" in original) && original.kind !== "turn_failed") {
-		return null
-	}
-	const payload = objectRecord(original.TurnFailed) ?? original
-	const sessionID = String(payload.session_id ?? payload.sessionId ?? "")
-	if (!sessionID) return null
-	const error = objectRecord(payload.error)
-	if (!error || typeof error.message !== "string" || !error.message.trim()) return null
-	return {
-		sessionID,
-		code: String(error.code ?? "TURN_FAILED"),
-		message: error.message,
-	}
-}
-
-function sessionStatusFromMetadata(value: unknown): string | undefined {
-	const meta = objectRecord(value)
-	const nestedStatus = objectRecord(meta?.["devo/session"])?.status
-	if (typeof nestedStatus === "string") return nestedStatus
-	const directStatus = meta?.["devo/session.status"]
-	return typeof directStatus === "string" ? directStatus : undefined
-}
-
 function numberFromProtocol(value: unknown): number {
 	if (typeof value === "number" && Number.isFinite(value)) return value
 	if (typeof value === "bigint") return Number(value)
@@ -582,32 +517,6 @@ function workspaceChangeStats(value: unknown): WorkspaceChangeStats {
 		files_changed: numberFromProtocol(stats?.files_changed ?? stats?.filesChanged),
 		additions: numberFromProtocol(stats?.additions),
 		deletions: numberFromProtocol(stats?.deletions),
-	}
-}
-
-function workspaceChangesUpdatedFromOriginalEvent(
-	original: unknown,
-): WorkspaceChangesUpdatedPayload | null {
-	const event = objectRecord(original)
-	if (!event) return null
-	const payload =
-		event.kind === "workspace_changes_updated"
-			? event
-			: objectRecord(event.WorkspaceChangesUpdated) ??
-				objectRecord(event.workspace_changes_updated)
-	if (!payload) return null
-	return {
-		session_id: String(payload.session_id ?? payload.sessionId ?? ""),
-		turn_id: String(payload.turn_id ?? payload.turnId ?? ""),
-		scope: String(payload.scope ?? "turn") as WorkspaceChangeScope,
-		status: String(payload.status ?? "ready") as WorkspaceChangeViewStatus,
-		coverage: String(payload.coverage ?? "none") as WorkspaceChangeCoverage,
-		change_set_status: String(
-			payload.change_set_status ?? payload.changeSetStatus ?? "finalized",
-		) as WorkspaceChangeSetStatus,
-		stats: workspaceChangeStats(payload.stats),
-		version: numberFromProtocol(payload.version),
-		generated_at: String(payload.generated_at ?? payload.generatedAt ?? ""),
 	}
 }
 
@@ -767,138 +676,6 @@ function legacyWorkspaceChangeBaseFromCanonical(
 	} as WorkspaceChangeBase
 }
 
-function deletedSessionIdsFromOriginalEvent(original: unknown): string[] {
-	const event = objectRecord(original)
-	if (!event) return []
-	const payload =
-		event.kind === "session_deleted"
-			? event
-			: objectRecord(event.SessionDeleted) ?? objectRecord(event.session_deleted)
-	if (!payload) return []
-	const rawIds = payload.deleted_session_ids ?? payload.deletedSessionIds
-	if (Array.isArray(rawIds)) return rawIds.map(String).filter(Boolean)
-	const sessionId = payload.session_id ?? payload.sessionId
-	return sessionId ? [String(sessionId)] : []
-}
-
-function sessionStatusChangedFromOriginalEvent(
-	original: unknown,
-	originalMethod?: string,
-): { sessionId: string; status: string } | null {
-	const event = objectRecord(original)
-	if (!event) return null
-	const payload =
-		originalMethod === "session/status/changed"
-			? objectRecord(event.SessionStatusChanged) ?? event
-			: event.kind === "session_status_changed" || event.kind === "session/status/changed"
-				? event
-				: objectRecord(event.SessionStatusChanged) ??
-					objectRecord(event.session_status_changed) ??
-					objectRecord(event.sessionStatusChanged)
-	if (!payload) return null
-	const sessionId = payload.session_id ?? payload.sessionId
-	const status = payload.status
-	return typeof sessionId === "string" && typeof status === "string" ? { sessionId, status } : null
-}
-
-function sessionIdFromCompactionPayload(payload: Record<string, unknown>): string | null {
-	const direct = payload.session_id ?? payload.sessionId
-	if (typeof direct === "string" && direct) return direct
-	const context = objectRecord(payload.context)
-	const contextual = context?.session_id ?? context?.sessionId
-	if (typeof contextual === "string" && contextual) return contextual
-	const session = objectRecord(payload.session)
-	const nested = session?.session_id ?? session?.sessionId
-	return typeof nested === "string" && nested ? nested : null
-}
-
-function sessionCompactionFromOriginalEvent(
-	original: unknown,
-	originalMethod?: string,
-): {
-	sessionId: string
-	status: "started" | "completed" | "failed"
-	message?: string
-	itemId?: string
-	turnId?: string
-} | null {
-	const event = objectRecord(original)
-	if (!event) return null
-
-	let status: "started" | "completed" | "failed" | null = null
-	let payload: Record<string, unknown> | undefined
-	let itemId: string | undefined
-	let turnId: string | undefined
-	if (originalMethod === "item/started" || originalMethod === "item/completed") {
-		const item = objectRecord(event.item)
-		if (item?.item_kind !== "context_compaction" && item?.itemKind !== "context_compaction") {
-			return null
-		}
-		const context = objectRecord(event.context)
-		const itemPayload = objectRecord(item.payload)
-		status = originalMethod === "item/started"
-			? "started"
-			: itemPayload?.status === "failed"
-				? "failed"
-				: "completed"
-		payload = event
-		const rawItemId = item.item_id ?? item.itemId
-		const rawTurnId = context?.turn_id ?? context?.turnId
-		itemId = typeof rawItemId === "string" && rawItemId ? rawItemId : undefined
-		turnId = typeof rawTurnId === "string" && rawTurnId ? rawTurnId : undefined
-	} else if (originalMethod === "session/compaction/started") {
-		status = "started"
-		payload = objectRecord(event.SessionCompactionStarted) ?? event
-	} else if (originalMethod === "session/compaction/completed") {
-		status = "completed"
-		payload = objectRecord(event.SessionCompactionCompleted) ?? event
-	} else if (originalMethod === "session/compaction/failed") {
-		status = "failed"
-		payload = objectRecord(event.SessionCompactionFailed) ?? event
-	} else {
-		const candidates: Array<
-			["started" | "completed" | "failed", Record<string, unknown> | undefined]
-		> = [
-			["started", objectRecord(event.SessionCompactionStarted)],
-			["started", objectRecord(event.session_compaction_started)],
-			["started", objectRecord(event.sessionCompactionStarted)],
-			["completed", objectRecord(event.SessionCompactionCompleted)],
-			["completed", objectRecord(event.session_compaction_completed)],
-			["completed", objectRecord(event.sessionCompactionCompleted)],
-			["failed", objectRecord(event.SessionCompactionFailed)],
-			["failed", objectRecord(event.session_compaction_failed)],
-			["failed", objectRecord(event.sessionCompactionFailed)],
-		]
-		const found = candidates.find(([, value]) => value)
-		if (found) {
-			status = found[0]
-			payload = found[1]
-		} else if (event.kind === "session_compaction_started") {
-			status = "started"
-			payload = event
-		} else if (event.kind === "session_compaction_completed") {
-			status = "completed"
-			payload = event
-		} else if (event.kind === "session_compaction_failed") {
-			status = "failed"
-			payload = event
-		}
-	}
-
-	if (!status || !payload) return null
-	const sessionId = sessionIdFromCompactionPayload(payload)
-	if (!sessionId) return null
-	const itemPayload = objectRecord(objectRecord(payload.item)?.payload)
-	const message = payload.message ?? itemPayload?.message
-	return {
-		sessionId,
-		status,
-		...(typeof message === "string" && message ? { message } : {}),
-		...(itemId ? { itemId } : {}),
-		...(turnId ? { turnId } : {}),
-	}
-}
-
 function workspaceChangesUpdatedEventProperties(
 	payload: WorkspaceChangesUpdatedPayload,
 ): WorkspaceChangesUpdatedEventProperties {
@@ -962,12 +739,29 @@ function updateEventTimeMs(update: Record<string, unknown>, fallback: number): n
 }
 
 type LoadedSessionLimit = number | null
+type SessionSettingsPatch = {
+	modelID?: string
+	reasoningEffort?: string
+	mode?: string
+}
+
+type SessionSettingsWaiter = {
+	resolve: (session: Session | undefined) => void
+	reject: (error: unknown) => void
+}
+
+type SessionSettingsQueue = {
+	pending: SessionSettingsPatch | null
+	waiters: SessionSettingsWaiter[]
+	running: Promise<void> | null
+	paused: boolean
+}
+
+const SESSION_SETTINGS_RETRY_DELAYS_MS = [250, 1_000, 2_000] as const
 const HISTORY_MESSAGE_ID_RE = /^(?:tool-)?history-(\d+)$/
 const DEVO_TURN_ID_META = "devo/turnId"
-const DEVO_ACTIVITY_AT_META = "devo/activityAt"
 const DEVO_HISTORY_INDEX_META = "devo/historyIndex"
 const DEVO_PARENT_MESSAGE_ID_META = "devo/parentMessageId"
-const DEVO_TURN_DURATION_MS_META = "devo/turnDurationMs"
 const DEVO_ITEM_KIND_META = "devo/itemKind"
 const DEVO_RESEARCH_ARTIFACT_TYPE_META = "devo/researchArtifactType"
 const DEVO_RESEARCH_ARTIFACT_TITLE_META = "devo/researchArtifactTitle"
@@ -1033,6 +827,58 @@ function loadedLimitCovers(loaded: LoadedSessionLimit | undefined, requested: nu
 	if (loaded === undefined) return false
 	if (loaded === null) return true
 	return requested !== undefined && loaded >= requested
+}
+
+function mergeSessionSettingsPatch(
+	base: SessionSettingsPatch | null,
+	patch: SessionSettingsPatch,
+): SessionSettingsPatch {
+	return { ...(base ?? {}), ...patch }
+}
+
+function errorRecord(error: unknown): Record<string, unknown> | undefined {
+	if (error && typeof error === "object") return error as Record<string, unknown>
+	if (typeof error !== "string") return undefined
+	try {
+		return objectRecord(JSON.parse(error))
+	} catch {
+		return undefined
+	}
+}
+
+function settingsErrorCode(error: unknown): string | undefined {
+	const record = errorRecord(error)
+	if (typeof record?.code === "string") return record.code
+	if (error instanceof Error) {
+		try {
+			const messageRecord = objectRecord(JSON.parse(error.message))
+			return typeof messageRecord?.code === "string" ? messageRecord.code : undefined
+		} catch {
+			return undefined
+		}
+	}
+	return undefined
+}
+
+function isTransientSessionSettingsError(error: unknown): boolean {
+	const record = errorRecord(error)
+	const code = settingsErrorCode(error)
+	const normalizedCode = code?.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()
+	if (
+		normalizedCode === "service_unavailable" ||
+		normalizedCode === "temporary_unavailable" ||
+		normalizedCode === "timeout"
+	) {
+		return true
+	}
+	const status = record?.status ?? record?.statusCode
+	if (typeof status === "number" && status >= 500 && status <= 599) return true
+	const message = error instanceof Error ? error.message : String(error)
+	return /(?:^|\D)5\d{2}(?:\D|$)|timeout|timed out|network|fetch failed|connection|temporar(?:y|ily)|unavailable/i.test(message)
+}
+
+function waitForSessionSettingsRetry(delayMs: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
 function historyMessageCreatedAt(messageId: string): number | undefined {
@@ -1163,6 +1009,8 @@ class NativeClient {
 	private turnSessions = new Map<string, string>()
 	private nativeItemCallIds = new Map<string, string>()
 	private sessionDiscovery = new Map<string, Promise<Session | undefined>>()
+	private sessionLoads = new Map<string, Promise<void>>()
+	private sessionSettingsQueues = new Map<string, SessionSettingsQueue>()
 	private lastEventTime = 0
 	private referenceSearchSession: ReferenceSearchSession | null = null
 
@@ -1253,6 +1101,17 @@ class NativeClient {
 			}
 			await this.request("session/interrupt", interruptParams)
 		},
+		/**
+		 * Persists composer selections through one per-session queue. Durable
+		 * metadata updates do not require a prior resume, so this path is safe
+		 * while history is still loading and returns only after the server ACKs.
+		 */
+		updateSettings: async (params: SessionSettingsPatch & { sessionID: string }) => {
+			return { data: await this.enqueueSessionSettings(params.sessionID, params) }
+		},
+		retrySettings: async (params: { sessionID: string }) => {
+			return { data: await this.retrySessionSettings(params.sessionID) }
+		},
 		update: async (params: { sessionID: string; title: string }) => {
 			// Canonical session/metadata/update (L2-DES-APP-008): the title
 			// patch on the persist-first path; result is the canonical Session.
@@ -1278,6 +1137,9 @@ class NativeClient {
 			const { directory } = this.forgetSession(params.sessionID)
 			this.emitSessionDeleted(params.sessionID, directory)
 		},
+		// `session.get` is a durable snapshot read. It intentionally does not
+		// resume the server actor; callers that need history use `messages`,
+		// while metadata updates can write the snapshot directly.
 		get: async (params: { sessionID: string }) => ({
 			data: await this.getSessionById(params.sessionID),
 		}),
@@ -1352,10 +1214,19 @@ class NativeClient {
 			cwd?: string | null
 			collaborationMode?: string
 		}) => {
-			const model = params.model as { modelID?: string } | undefined
-			if (model?.modelID) await this.setSessionConfigOption(params.sessionID, "model", model.modelID)
-			if (params.variant) await this.setSessionConfigOption(params.sessionID, "thought_level", params.variant)
-			if (params.collaborationMode) await this.setSessionConfigOption(params.sessionID, "mode", params.collaborationMode)
+			// Model/variant selections are persisted by the composer's
+			// persist-on-selection path (session.updateSettings) and must NOT
+			// be re-derived here: callers used to pass fallback-resolved
+			// models (request slugs, defaults) which then overwrote the
+			// user's persisted choices on every send. Only the collaboration
+			// mode rides along — canonical turn/start carries no mode, and
+			// toggling mode without sending must still apply to the next turn.
+			if (params.collaborationMode) {
+				const settingsPatch: SessionSettingsPatch = {
+					mode: params.collaborationMode,
+				}
+				await this.enqueueSessionSettings(params.sessionID, settingsPatch)
+			}
 			await this.ensureSessionSubscription(params.sessionID)
 			const result = (await this.requestCanonical("turn/start", {
 				sessionId: params.sessionID,
@@ -1757,9 +1628,21 @@ class NativeClient {
 			parts: this.parts.get(partCacheKey(sessionId, info.id)) ?? [],
 		}))
 	}
-		private async loadSession(sessionId: string, limit?: number): Promise<void> {
+	private async loadSession(sessionId: string, limit?: number): Promise<void> {
 		const loadedLimit = this.loadedSessionLimits.get(sessionId)
 		if (loadedLimitCovers(loadedLimit, limit)) return
+		const pending = this.sessionLoads.get(sessionId)
+		if (pending) return pending
+		const load = this.loadSessionOnce(sessionId, limit)
+		this.sessionLoads.set(sessionId, load)
+		try {
+			await load
+		} finally {
+			if (this.sessionLoads.get(sessionId) === load) this.sessionLoads.delete(sessionId)
+		}
+	}
+
+	private async loadSessionOnce(sessionId: string, limit?: number): Promise<void> {
 		await this.ensureInitialized()
 		const session = await this.getSessionById(sessionId)
 		const cwd = session?.directory ?? this.sessionDirectories.get(sessionId)
@@ -1767,7 +1650,16 @@ class NativeClient {
 		const resumed = (await this.requestCanonical("session/resume", {
 			sessionId,
 		})) as { session: Record<string, unknown>; lastContextOccupancy?: unknown; last_context_occupancy?: unknown }
-		this.rememberNativeSession(resumed.session)
+		const enriched = this.rememberNativeSession(resumed.session)
+		// The resume response carries the authoritative persisted model /
+		// settings for the session; cold `session/list` snapshots may lack
+		// them. Surface the enrichment so renderer session stores re-seed the
+		// composer — without this, the enriched snapshot stays buried in this
+		// client's internal cache and restored sessions fall back to defaults.
+		this.emit(enriched.directory ?? cwd, {
+			type: "session.updated",
+			properties: { info: enriched, session: enriched },
+		})
 		this.emitContextUsage(
 			sessionId,
 			resumed.lastContextOccupancy ?? resumed.last_context_occupancy,
@@ -1804,44 +1696,6 @@ class NativeClient {
 		return discovery
 	}
 
-	private rememberSession(info: LegacySessionInfo): Session {
-		const existing = this.sessions.get(info.sessionId)
-		const meta = sessionMeta(info._meta)
-		const metadataStatus = sessionStatusFromMetadata(info._meta)
-		const parsedCreated = parseTimestampMs(meta?.created_at ?? info.updatedAt)
-		const created = parsedCreated ?? existing?.time.created ?? Date.now()
-		const parsedUpdated = parseTimestampMs(meta?.updated_at ?? info.updatedAt)
-		const updated = parsedUpdated ?? existing?.time.updated ?? created
-		const parsedLastActivity = parseTimestampMs(
-			meta?.last_activity_at ?? (meta ? undefined : info.updatedAt),
-		)
-		const lastActivity = parsedLastActivity ?? existing?.time.lastActivity ?? created
-		const session: Session = {
-			id: info.sessionId,
-			title: info.title ?? existing?.title,
-			parentID: meta?.parent_session_id ?? existing?.parentID ?? undefined,
-			time: { created, updated, lastActivity },
-			directory: info.cwd,
-			totalInputTokens: meta?.total_input_tokens ?? existing?.totalInputTokens ?? 0,
-			totalOutputTokens: meta?.total_output_tokens ?? existing?.totalOutputTokens ?? 0,
-			totalTokens: meta?.total_tokens ?? existing?.totalTokens ?? 0,
-			totalCacheCreationTokens:
-				meta?.total_cache_creation_tokens ?? existing?.totalCacheCreationTokens ?? 0,
-			totalCacheReadTokens: meta?.total_cache_read_tokens ?? existing?.totalCacheReadTokens ?? 0,
-			promptTokenEstimate: meta?.prompt_token_estimate ?? existing?.promptTokenEstimate ?? 0,
-			lastQueryTotalTokens: meta?.last_query_total_tokens ?? existing?.lastQueryTotalTokens ?? 0,
-		}
-		this.sessions.set(session.id, session)
-		this.sessionDirectories.set(session.id, info.cwd)
-		this.sessionStatuses.set(
-			session.id,
-			metadataStatus === undefined
-				? this.sessionStatuses.get(session.id) ?? statusFromDevo()
-				: statusFromDevo(metadataStatus),
-		)
-		return session
-	}
-
 	private rememberNativeSession(info: Record<string, unknown>): Session {
 		const id = String(info.id ?? "")
 		if (!id) throw new Error("Native session is missing id")
@@ -1864,6 +1718,38 @@ class NativeClient {
 					? info.fork_at_turn_id
 					: existing?.atTurnId
 		const titleState = parseTitleState(info.titleState ?? info.title_state)
+		// Persisted per-session turn settings (model / reasoning effort / mode).
+		// The server restores these on resume; without them the Desktop composer
+		// cannot re-seed per-session selections after a restart and every
+		// session falls back to the project default.
+		const wireModel = objectRecord(info.model)
+		const wireSettings = objectRecord(info.settings)
+		const sessionModel = wireModel
+			? {
+					provider:
+						typeof wireModel.provider === "string"
+							? wireModel.provider
+							: existing?.model?.provider,
+					model:
+						typeof wireModel.model === "string"
+							? wireModel.model
+							: existing?.model?.model,
+					reasoningEffort:
+						stringOrUndefined(wireModel.reasoningEffort ?? wireModel.reasoning_effort) ??
+						existing?.model?.reasoningEffort,
+			  }
+			: existing?.model
+		const sessionSettings = wireSettings
+			? {
+					mode: stringOrUndefined(wireSettings.mode) ?? existing?.settings?.mode,
+					reasoningEffort:
+						stringOrUndefined(wireSettings.reasoningEffort ?? wireSettings.reasoning_effort) ??
+						existing?.settings?.reasoningEffort,
+					permissionProfile:
+						stringOrUndefined(wireSettings.permissionProfile ?? wireSettings.permission_profile) ??
+						existing?.settings?.permissionProfile,
+			  }
+			: existing?.settings
 		const session: Session = {
 			id,
 			title: typeof info.title === "string" ? info.title : existing?.title,
@@ -1873,6 +1759,8 @@ class NativeClient {
 			atTurnId,
 			time: { created, updated, lastActivity: updated },
 			directory: String(info.cwd ?? existing?.directory ?? this.options.directory ?? defaultCwd()),
+			model: sessionModel,
+			settings: sessionSettings,
 			totalInputTokens: Number(total?.inputTokens ?? existing?.totalInputTokens ?? 0),
 			totalOutputTokens: Number(total?.outputTokens ?? existing?.totalOutputTokens ?? 0),
 			totalTokens: Number(total?.totalTokens ?? existing?.totalTokens ?? 0),
@@ -1957,10 +1845,31 @@ class NativeClient {
 			payload: params,
 		})
 		const result = await this.transport.request(method, validParams, this.options.directory)
+		if (method === "subscription/create" || method === "subscription/update") {
+			return this.validateSubscriptionResult(method, result)
+		}
 		return assertValidProtocolPayload({
 			method,
 			direction: "incomingResult",
 			payload: result,
+		})
+	}
+
+	/**
+	 * Subscription results carry persisted event replay. A server build whose
+	 * event generation differs from this client's schema can include a
+	 * notification method this bundle does not recognize; replay processing
+	 * ignores unknown methods anyway, so drop those envelopes instead of
+	 * failing the whole event stream. Dropped envelopes are logged
+	 * (rate-limited) so the generation skew stays observable.
+	 */
+	private validateSubscriptionResult(method: string, result: unknown): unknown {
+		const { payload, dropped } = dropUnknownReplayEnvelopes(result)
+		if (dropped.length > 0) reportDroppedReplayEnvelopes(method, dropped)
+		return assertValidProtocolPayload({
+			method,
+			direction: "incomingResult",
+			payload,
 		})
 	}
 
@@ -2660,245 +2569,6 @@ class NativeClient {
 		})
 	}
 
-	private handleSessionUpdate(notification: LegacySessionNotification): void {
-		const sessionId = notification.sessionId
-		const deletedSessionIds = deletedSessionIdsFromOriginalEvent(
-			notification._meta?.["devo/originalEvent"],
-		)
-		if (deletedSessionIds.length > 0) {
-			this.handleDeletedSessionIds(
-				deletedSessionIds,
-				this.sessionDirectories.get(sessionId) ??
-					this.sessions.get(sessionId)?.directory ??
-					this.options.directory ??
-					defaultCwd(),
-			)
-			return
-		}
-		const update = notification.update as Record<string, unknown>
-		const kind = typeof update.sessionUpdate === "string" ? update.sessionUpdate : undefined
-		let session = this.sessions.get(sessionId)
-		let directory = this.sessionDirectories.get(sessionId) ?? session?.directory
-		if (!session || !directory) {
-			const canApplyWithoutDiscoveredSession =
-				kind === "user_message_chunk" ||
-				kind === "userMessageChunk" ||
-				kind === "agent_message_chunk" ||
-				kind === "agentMessageChunk" ||
-				kind === "agent_thought_chunk" ||
-				kind === "agentThoughtChunk" ||
-				kind === "tool_call" ||
-				kind === "tool_call_update" ||
-				kind === "toolCall" ||
-				kind === "toolCallUpdate" ||
-				kind?.includes("tool") ||
-				Boolean(update.toolCallId)
-			void this.discoverSession(sessionId)
-				.then((discovered) => {
-					if (discovered) {
-						this.handleSessionUpdate(notification)
-						return
-					}
-					if (!canApplyWithoutDiscoveredSession) return
-					const fallbackDirectory = this.options.directory ?? defaultCwd()
-					this.rememberSession({ sessionId, cwd: fallbackDirectory })
-					this.handleSessionUpdate(notification)
-				})
-				.catch((error) => {
-					if (canApplyWithoutDiscoveredSession) {
-						const fallbackDirectory = this.options.directory ?? defaultCwd()
-						this.rememberSession({ sessionId, cwd: fallbackDirectory })
-						this.handleSessionUpdate(notification)
-					} else {
-						this.emit(this.options.directory ?? defaultCwd(), sessionErrorEvent(sessionId, error))
-					}
-				})
-			return
-		}
-		if (kind === "session_info_update" || kind === "sessionInfoUpdate") {
-			if (typeof update.title === "string") session.title = update.title
-			const meta = sessionMeta(update._meta)
-			const metadataUpdated = parseTimestampMs(meta?.updated_at ?? update.updatedAt)
-			if (metadataUpdated !== undefined) session.time.updated = metadataUpdated
-
-			const activity = parseTimestampMs(meta?.last_activity_at)
-			if (activity !== undefined) session.time.lastActivity = activity
-
-			const metadataStatus = sessionStatusFromMetadata(update._meta)
-			if (metadataStatus !== undefined) {
-				this.rememberSessionStatus(sessionId, directory, metadataStatus)
-			}
-		}
-		const activityAt = parseTimestampMs(updateMeta(update)?.[DEVO_ACTIVITY_AT_META])
-		if (activityAt !== undefined) session.time.lastActivity = activityAt
-		this.emit(directory, { type: "session.updated", properties: { info: session, session } })
-		this.handleOriginalEvent(sessionId, directory, notification)
-
-		switch (kind) {
-			case "user_message_chunk":
-			case "userMessageChunk":
-				this.appendText(sessionId, directory, "user", "text", update)
-				break
-			case "agent_message_chunk":
-			case "agentMessageChunk":
-				this.appendText(sessionId, directory, "assistant", "text", update)
-				break
-			case "agent_thought_chunk":
-			case "agentThoughtChunk":
-				this.applyHistoryTurnDuration(sessionId, directory, update)
-				this.appendText(sessionId, directory, "assistant", "reasoning", update)
-				break
-			case "plan":
-				this.emitPlan(sessionId, directory, update)
-				break
-			case "config_option_update":
-			case "configOptionUpdate":
-				if (Array.isArray(update.configOptions) && update.configOptions.length > 0) {
-					this.rememberConfigOptions(sessionId, directory, update.configOptions as SessionConfigOption[])
-				}
-				this.emit(directory, {
-					type: "session.config.updated",
-					properties: { sessionID: sessionId, configOptions: update.configOptions ?? [] },
-				})
-				break
-			case "available_commands_update":
-			case "availableCommandsUpdate":
-				this.emit(directory, {
-					type: "session.commands.updated",
-					properties: { sessionID: sessionId, commands: update.availableCommands ?? [] },
-				})
-				break
-			case "current_mode_update":
-			case "currentModeUpdate":
-				this.emit(directory, {
-					type: "session.mode.updated",
-					properties: { sessionID: sessionId, modeID: update.currentModeId },
-				})
-				break
-			case "usage_update":
-			case "usageUpdate":
-				this.emit(directory, {
-					type: "session.usage.updated",
-					properties: {
-						sessionID: sessionId,
-						used: update.used,
-						size: update.size,
-						cost: update.cost,
-					},
-				})
-				break
-			case "tool_call":
-			case "tool_call_update":
-			case "toolCall":
-			case "toolCallUpdate":
-				this.appendTool(sessionId, directory, update)
-				break
-			default:
-				if (kind?.includes("tool") || update.toolCallId) {
-					this.appendTool(sessionId, directory, update)
-				}
-		}
-	}
-
-	private handleOriginalEvent(
-		sessionId: string,
-		directory: string,
-		notification: LegacySessionNotification,
-	): void {
-		const original = notification._meta?.["devo/originalEvent"]
-		if (!original || typeof original !== "object") return
-		const originalMethod =
-			typeof notification._meta?.["devo/originalMethod"] === "string"
-				? notification._meta["devo/originalMethod"]
-				: undefined
-		const deletedSessionIds = deletedSessionIdsFromOriginalEvent(original)
-		if (deletedSessionIds.length > 0) {
-			this.handleDeletedSessionIds(deletedSessionIds, directory)
-			return
-		}
-		const retryStatus = providerRetryStatusFromOriginalEvent(original as Record<string, unknown>, originalMethod)
-		if (retryStatus) {
-			this.emit(directory, {
-				type: "turn.provider_retry_status",
-				properties: retryStatus,
-			})
-			return
-		}
-		const turnFailure = turnFailureFromOriginalEvent(original as Record<string, unknown>, originalMethod)
-		if (turnFailure) {
-			this.emit(directory, {
-				type: "session.error",
-				properties: {
-					sessionID: turnFailure.sessionID,
-					error: {
-						name: turnFailure.code,
-						data: { message: turnFailure.message },
-					},
-				},
-			})
-			return
-		}
-		const changedStatus = sessionStatusChangedFromOriginalEvent(original, originalMethod)
-		if (changedStatus) {
-			this.rememberSessionStatus(changedStatus.sessionId, directory, changedStatus.status)
-			return
-		}
-		const compaction = sessionCompactionFromOriginalEvent(original, originalMethod)
-		if (compaction) {
-			this.emit(directory, {
-				type: `session.compaction.${compaction.status}`,
-				properties: {
-					sessionID: compaction.sessionId,
-					...(compaction.message ? { message: compaction.message } : {}),
-				},
-			})
-			if (compaction.itemId && compaction.status !== "failed") {
-				this.upsertCompaction(sessionId, directory, {
-					itemId: compaction.itemId,
-					status: compaction.status,
-					turnId: compaction.turnId,
-				})
-			}
-			return
-		}
-		const payload = requestUserInputFromOriginalEvent(original)
-		if (payload) {
-			this.handleRequestUserInput(sessionId, directory, payload)
-		}
-		const workspaceChanges = workspaceChangesUpdatedFromOriginalEvent(original)
-		if (workspaceChanges) {
-			this.handleWorkspaceChangesUpdated(workspaceChanges, directory)
-		}
-		if ("ServerRequestResolved" in original) {
-			const payload = (original as { ServerRequestResolved: Record<string, unknown> })
-				.ServerRequestResolved
-			const requestId = String(payload.request_id ?? payload.requestId ?? "")
-			const pending = this.pendingQuestions.get(requestId)
-			if (!pending) return
-			this.pendingQuestions.delete(requestId)
-			this.emit(directory, {
-				type: "question.replied",
-				properties: { sessionID: pending.sessionId, requestID: requestId },
-			})
-		}
-	}
-
-	private rememberSessionStatus(sessionId: string, directory: string, protocolStatus: string): void {
-		const status = statusFromDevo(protocolStatus)
-		this.sessionStatuses.set(sessionId, status)
-		this.emit(directory, {
-			type: "session.status",
-			properties: { sessionID: sessionId, status },
-		})
-	}
-
-	private handleDeletedSessionIds(sessionIds: string[], fallbackDirectory: string): void {
-		for (const sessionId of sessionIds) {
-			const { directory, known } = this.forgetSession(sessionId, fallbackDirectory)
-			if (known) this.emitSessionDeleted(sessionId, directory)
-		}
-	}
-
 	private forgetSession(
 		sessionId: string,
 		fallbackDirectory = this.options.directory ?? defaultCwd(),
@@ -3093,41 +2763,6 @@ class NativeClient {
 			const updated = { ...message, parentID: userMessageId } as Message
 			messages[index] = updated
 			this.emit(directory, { type: "message.updated", properties: { info: updated, message: updated } })
-		}
-	}
-
-	private applyHistoryTurnDuration(
-		sessionId: string,
-		directory: string,
-		update: Record<string, unknown>,
-	): void {
-		const durationMs = Math.floor(
-			numberFromProtocol(updateMeta(update)?.[DEVO_TURN_DURATION_MS_META]),
-		)
-		if (durationMs <= 0) return
-		const parentID =
-			updateMetaString(update, DEVO_PARENT_MESSAGE_ID_META) ??
-			this.lastUserMessageBySession.get(sessionId)
-		if (!parentID) return
-		const messages = this.messages.get(sessionId)
-		if (!messages) return
-		const userMessage = messages.find(
-			(message) => message.id === parentID && message.role === "user",
-		)
-		const userCreated = userMessage?.time?.created
-		if (typeof userCreated !== "number" || !Number.isFinite(userCreated)) return
-
-		for (let index = messages.length - 1; index >= 0; index--) {
-			const message = messages[index]
-			if (message.role !== "assistant" || message.parentID !== parentID) continue
-			if (typeof message.time?.completed === "number") return
-			const updated = {
-				...message,
-				time: { ...(message.time ?? {}), completed: userCreated + durationMs },
-			} as Message
-			messages[index] = updated
-			this.emit(directory, { type: "message.updated", properties: { info: updated, message: updated } })
-			return
 		}
 	}
 
@@ -3336,21 +2971,6 @@ class NativeClient {
 		this.emit(directory, { type: "message.part.updated", properties: { part } })
 	}
 
-	private emitPlan(sessionId: string, directory: string, update: Record<string, unknown>): void {
-		const entries = Array.isArray(update.entries) ? update.entries : []
-		const todos = entries.map((entry) => {
-			const value = entry as Record<string, unknown>
-			return {
-				content: String(value.content ?? value.title ?? ""),
-				status: String(value.status ?? "pending"),
-			}
-		})
-		this.emit(directory, {
-			type: "todo.updated",
-			properties: { sessionID: sessionId, todos },
-		})
-	}
-
 	private appendTool(sessionId: string, directory: string, update: Record<string, unknown>): void {
 		const now = this.nextEventTime()
 		const toolCallId = toolCallIdFromUpdate(update, now)
@@ -3494,25 +3114,118 @@ class NativeClient {
 		this.configOptionsByDirectory.set(directory, configOptions)
 	}
 
-	private async setSessionConfigOption(
+	private async enqueueSessionSettings(
 		sessionId: string,
-		configId: string,
-		value: string,
+		patch: SessionSettingsPatch,
+	): Promise<Session | undefined> {
+		const normalizedPatch: SessionSettingsPatch = {}
+		if (typeof patch.modelID === "string" && patch.modelID.length > 0) {
+			normalizedPatch.modelID = patch.modelID
+		}
+		if (typeof patch.reasoningEffort === "string" && patch.reasoningEffort.length > 0) {
+			normalizedPatch.reasoningEffort = patch.reasoningEffort
+		}
+		if (typeof patch.mode === "string" && patch.mode.length > 0) {
+			normalizedPatch.mode = patch.mode
+		}
+		if (Object.keys(normalizedPatch).length === 0) return this.sessions.get(sessionId)
+
+		let queue = this.sessionSettingsQueues.get(sessionId)
+		if (!queue) {
+			queue = { pending: null, waiters: [], running: null, paused: false }
+			this.sessionSettingsQueues.set(sessionId, queue)
+		}
+		queue.pending = mergeSessionSettingsPatch(queue.pending, normalizedPatch)
+		queue.paused = false
+		const result = new Promise<Session | undefined>((resolve, reject) => {
+			queue.waiters.push({ resolve, reject })
+		})
+		this.startSessionSettingsDrain(sessionId, queue)
+		return result
+	}
+
+	private startSessionSettingsDrain(sessionId: string, queue: SessionSettingsQueue): void {
+		if (queue.running || queue.paused || !queue.pending) return
+		const running = this.drainSessionSettings(sessionId, queue)
+		queue.running = running
+	}
+
+	private async drainSessionSettings(
+		sessionId: string,
+		queue: SessionSettingsQueue,
 	): Promise<void> {
-		const update: Record<string, unknown> = {
-			sessionId,
-			expectedVersion: 0,
+		try {
+			while (!queue.paused && queue.pending) {
+				const patch = queue.pending
+				const waiters = queue.waiters
+				queue.pending = null
+				queue.waiters = []
+				try {
+					const session = await this.persistSessionSettingsWithRetry(sessionId, patch)
+					if (!queue.pending) {
+						const directory =
+							session?.directory ??
+							this.sessionDirectories.get(sessionId) ??
+							this.options.directory ??
+							defaultCwd()
+						this.emit(directory, {
+							type: "session.updated",
+							properties: { info: session, session },
+						})
+					}
+					for (const waiter of waiters) waiter.resolve(session)
+				} catch (error) {
+					// Keep the failed patch, merged ahead of any newer selection, so
+					// a manual retry or the next selection cannot lose a field.
+					queue.pending = mergeSessionSettingsPatch(patch, queue.pending ?? {})
+					for (const waiter of waiters) waiter.reject(error)
+					queue.paused = true
+				}
+			}
+		} finally {
+			queue.running = null
+			if (!queue.paused && queue.pending) this.startSessionSettingsDrain(sessionId, queue)
 		}
-		if (configId === "model") {
-			update.model = { provider: "", model: value }
-		} else if (configId === "thought_level") {
-			update.settings = { reasoningEffort: value }
-		} else if (configId === "mode") {
-			update.settings = { mode: value }
-		} else {
-			throw new Error(`unknown session config option '${configId}'`)
+	}
+
+	private async retrySessionSettings(sessionId: string): Promise<Session | undefined> {
+		const queue = this.sessionSettingsQueues.get(sessionId)
+		if (!queue?.pending) return this.sessions.get(sessionId)
+		queue.paused = false
+		const result = new Promise<Session | undefined>((resolve, reject) => {
+			queue.waiters.push({ resolve, reject })
+		})
+		this.startSessionSettingsDrain(sessionId, queue)
+		return result
+	}
+
+	private async persistSessionSettingsWithRetry(
+		sessionId: string,
+		patch: SessionSettingsPatch,
+	): Promise<Session> {
+		for (let retry = 0; ; retry += 1) {
+			try {
+				const update: Record<string, unknown> = {
+					sessionId,
+					expectedVersion: 0,
+				}
+				if (patch.modelID) update.model = { provider: "", model: patch.modelID }
+				const settings: Record<string, string> = {}
+				if (patch.reasoningEffort) settings.reasoningEffort = patch.reasoningEffort
+				if (patch.mode) settings.mode = patch.mode
+				if (Object.keys(settings).length > 0) update.settings = settings
+
+				const result = (await this.requestCanonical("session/metadata/update", update)) as {
+					session?: Record<string, unknown>
+				}
+				if (!result.session) throw new Error("session/metadata/update returned no session")
+				return this.rememberNativeSession(result.session)
+			} catch (error) {
+				const delay = SESSION_SETTINGS_RETRY_DELAYS_MS[retry]
+				if (delay === undefined || !isTransientSessionSettingsError(error)) throw error
+				await waitForSessionSettingsRetry(delay)
+			}
 		}
-		await this.requestCanonical("session/metadata/update", update)
 	}
 
 	private async setDefaultConfigOption(
@@ -3604,6 +3317,36 @@ export type DevoClient = any
 
 export function createDevoClient(options: CreateDevoClientOptions = {}): DevoClient {
 	return new NativeClient(options)
+}
+
+const DROPPED_REPLAY_LOG_INTERVAL_MS = 60_000
+let lastDroppedReplayLogAt = 0
+
+/**
+ * Root-cause capture for forward-compatible replay handling: one line per
+ * minute max, carrying the offending envelope itself (Electron's log
+ * formatter renders nested objects as `[Object]`, so it must be stringified
+ * here). An empty method string means the envelope had no parseable method.
+ */
+function reportDroppedReplayEnvelopes(method: string, dropped: Array<unknown>): void {
+	const now = Date.now()
+	if (now - lastDroppedReplayLogAt < DROPPED_REPLAY_LOG_INTERVAL_MS) return
+	lastDroppedReplayLogAt = now
+	const details = dropped
+		.slice(0, 3)
+		.map((envelope) => {
+			let text: string
+			try {
+				text = JSON.stringify(envelope) ?? String(envelope)
+			} catch {
+				text = String(envelope)
+			}
+			return text.slice(0, 800)
+		})
+		.join(" | ")
+	console.warn(
+		`[devo-sdk] dropped ${dropped.length} replay envelope(s) with unknown notification method from ${method}: ${details}`,
+	)
 }
 
 function sessionIdFromPayload(payload: unknown): string | null {

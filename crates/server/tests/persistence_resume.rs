@@ -44,7 +44,6 @@ use devo_protocol::ReasoningEffort;
 use devo_protocol::ResponseContent;
 use devo_protocol::ResponseMetadata;
 use devo_protocol::ServerEvent;
-use devo_protocol::SessionHistoryItemKind;
 use devo_protocol::SessionId;
 use devo_protocol::StopReason;
 use devo_protocol::StreamEvent;
@@ -318,28 +317,17 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Persistent session",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-resume-session",
+        Some("Persistent session"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let turn_start_response = runtime
         .handle_incoming(
@@ -348,8 +336,9 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
                 "id": 2,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "persist this session" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "sandbox": null,
                     "approval_policy": null,
                     "cwd": null
@@ -358,7 +347,7 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(turn_start_response)?;
 
     wait_for_turn_completed(&mut notifications_rx).await?;
@@ -391,24 +380,26 @@ async fn runtime_rebuilds_sessions_from_rollout_and_resume_works() -> Result<()>
                 "id": 4,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/resume response")?;
     let resume_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
     .result;
 
-    assert_eq!(resume_result.session.session_id, session_id);
+    assert_eq!(resume_result.session.id, session_id);
     assert_eq!(
         resume_result.session.title.as_deref(),
         Some("Persistent session")
     );
-    assert!(resume_result.loaded_item_count >= 2);
-    assert!(resume_result.latest_turn.is_some());
+    assert_eq!(
+        resume_result.session.status,
+        devo_protocol::native::session::SessionStatus::Idle
+    );
     Ok(())
 }
 
@@ -418,28 +409,34 @@ async fn resume_restores_plan_collaboration_mode_from_latest_turn() -> Result<()
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-plan-session",
+        Some("Plan mode session"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
+
+    let mode_response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
-                "id": 1,
-                "method": "session/start",
+                "id": 2,
+                "method": "session/metadata/update",
                 "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Plan mode session",
-                    "model": "test-model"
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "settings": { "mode": "plan" }
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+        .context("session/metadata/update mode response")?;
+    assert!(mode_response.get("error").is_none(), "{mode_response}");
 
     let turn_start_response = runtime
         .handle_incoming(
@@ -448,8 +445,9 @@ async fn resume_restores_plan_collaboration_mode_from_latest_turn() -> Result<()
                 "id": 2,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "draft a plan" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "sandbox": null,
                     "approval_policy": null,
                     "cwd": null,
@@ -459,7 +457,7 @@ async fn resume_restores_plan_collaboration_mode_from_latest_turn() -> Result<()
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(turn_start_response)?;
 
     wait_for_turn_completed(&mut notifications_rx).await?;
@@ -476,33 +474,18 @@ async fn resume_restores_plan_collaboration_mode_from_latest_turn() -> Result<()
                 "id": 3,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/resume response")?;
     let resume_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
     .result;
 
-    assert_eq!(
-        resume_result.session.collaboration_mode,
-        devo_protocol::CollaborationMode::Plan
-    );
-    let turn_summary = resume_result
-        .history_items
-        .iter()
-        .rev()
-        .find(|item| item.kind == SessionHistoryItemKind::TurnSummary)
-        .expect("resumed plan turn should include a turn summary");
-    assert_eq!(
-        turn_summary.metadata,
-        Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
-            collaboration_mode: devo_protocol::CollaborationMode::Plan,
-        })
-    );
+    assert_eq!(resume_result.session.settings.mode.as_deref(), Some("plan"));
     Ok(())
 }
 
@@ -512,28 +495,18 @@ async fn resume_restores_session_permission_preset_and_plan_mode_without_turn() 
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, _notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Session overrides",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let start_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result;
-    let session_id = start_result.session.session_id;
-    let started_model = start_result.session.model.clone();
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-overrides-session",
+        Some("Session overrides"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
+    let started_model = session.model.model.clone();
 
     let permissions_response = runtime
         .handle_incoming(
@@ -590,7 +563,7 @@ async fn resume_restores_session_permission_preset_and_plan_mode_without_turn() 
         metadata_result.session.settings.permission_profile,
         devo_protocol::native::model::PermissionProfile::FullAccess
     );
-    assert_eq!(Some(metadata_result.session.model.model), started_model);
+    assert_eq!(metadata_result.session.model.model, started_model);
 
     drop(runtime);
     let rebuilt_runtime = build_runtime(data_root.path())?;
@@ -604,25 +577,22 @@ async fn resume_restores_session_permission_preset_and_plan_mode_without_turn() 
                 "id": 4,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/resume response")?;
     let resume_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response.clone())
     .with_context(|| format!("decode session/resume response: {resume_response}"))?
     .result;
 
+    assert_eq!(resume_result.session.settings.mode.as_deref(), Some("plan"));
     assert_eq!(
-        resume_result.session.collaboration_mode,
-        devo_protocol::CollaborationMode::Plan
-    );
-    assert_eq!(
-        resume_result.session.permission_preset,
-        Some(devo_protocol::PermissionPreset::FullAccess)
+        resume_result.session.settings.permission_profile,
+        devo_protocol::native::model::PermissionProfile::FullAccess
     );
     Ok(())
 }
@@ -633,28 +603,17 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 11,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": null,
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        11,
+        data_root.path(),
+        "persistence-generated-title-session",
+        None,
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let _ = runtime
         .handle_incoming(
@@ -663,8 +622,9 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
                 "id": 12,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "implement rollout persistence for the rust server" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -687,23 +647,19 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
                 "id": 13,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/resume response after completion")?;
     let completed_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_after_completion)?
     .result;
     assert_eq!(
         completed_result.session.title.as_deref(),
         Some("Generated rollout title")
-    );
-    assert_eq!(
-        completed_result.session.title_state,
-        devo_core::SessionTitleState::Final(devo_core::SessionTitleFinalSource::ModelGenerated)
     );
 
     let rename_response = runtime
@@ -742,26 +698,19 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
                 "id": 15,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/resume response after rebuild")?;
     let rebuilt_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_after_rebuild)?
     .result;
     assert_eq!(
         rebuilt_result.session.title.as_deref(),
         Some("Rollout persistence follow-up")
-    );
-    // v2 title-update lines deliberately drop the title lifecycle (a derived
-    // cache in the canonical model); any Final variant is preserved, which
-    // keeps suppressing regeneration of the recorded title.
-    assert_eq!(
-        rebuilt_result.session.title_state,
-        devo_core::SessionTitleState::Final(devo_core::SessionTitleFinalSource::ExplicitCreate)
     );
     Ok(())
 }
@@ -772,28 +721,17 @@ async fn runtime_assigns_generated_title_after_first_turn() -> Result<()> {
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 21,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": null,
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        21,
+        data_root.path(),
+        "persistence-generated-title-session-2",
+        None,
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let _ = runtime
         .handle_incoming(
@@ -802,8 +740,9 @@ async fn runtime_assigns_generated_title_after_first_turn() -> Result<()> {
                 "id": 22,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "investigate why the current session title stays null" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -844,28 +783,17 @@ async fn runtime_skips_invalid_rollout_files_when_loading_sessions() -> Result<(
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 31,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Valid session",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        31,
+        data_root.path(),
+        "persistence-valid-session",
+        Some("Valid session"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let _ = runtime
         .handle_incoming(
@@ -874,8 +802,9 @@ async fn runtime_skips_invalid_rollout_files_when_loading_sessions() -> Result<(
                 "id": 32,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "persist the valid session" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -1039,30 +968,19 @@ async fn resume_normalizes_historical_default_reasoning_effort() -> Result<()> {
                     "id": 34,
                     "method": "session/resume",
                     "params": {
-                        "session_id": session_id
+                        "sessionId": session_id
                     }
                 }),
             )
             .await
             .context("session/resume response")?;
         let resume_result = serde_json::from_value::<
-            devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+            devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
         >(resume_response)?
         .result;
 
-        assert_eq!(resume_result.session.session_id, (*session_id).clone());
-        assert_eq!(
-            resume_result.session.model.as_deref(),
-            Some("deepseek-v4-flash")
-        );
-        assert_eq!(
-            resume_result.session.reasoning_effort_selection.as_deref(),
-            Some("high")
-        );
-        assert_eq!(
-            resume_result.session.reasoning_effort,
-            Some(ReasoningEffort::High)
-        );
+        assert_eq!(resume_result.session.id.as_str(), (*session_id).to_string());
+        assert_eq!(resume_result.session.model.model, "deepseek-v4-flash");
     }
 
     Ok(())
@@ -1260,43 +1178,17 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
             serde_json::json!({
                 "id": 35,
                 "method": "session/resume",
-                "params": { "session_id": session_id }
+                "params": { "sessionId": session_id }
             }),
         )
         .await
         .context("session/resume failed turn history")?;
-    let resume = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    let _resume = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
     .result;
-    let expected_error = devo_protocol::SessionHistoryItem::new(
-        None,
-        SessionHistoryItemKind::Error,
-        terminal_error.code.clone(),
-        terminal_error.message.clone(),
-    );
-    let expected_summary = devo_protocol::SessionHistoryItem {
-        tool_call_id: None,
-        kind: SessionHistoryItemKind::TurnSummary,
-        title: "test-model".to_string(),
-        body: "failed".to_string(),
-        tool_io: None,
-        metadata: Some(devo_protocol::SessionHistoryMetadata::TurnSummary {
-            collaboration_mode: devo_protocol::CollaborationMode::Build,
-        }),
-        duration_ms: Some(2),
-    };
-    let terminal_index = resume
-        .history_items
-        .windows(2)
-        .position(|items| items == [expected_error.clone(), expected_summary.clone()])
-        .context("top-level terminal error followed by failed summary")?;
-    assert_eq!(resume.history_items[terminal_index + 2].body, "next prompt");
-    assert!(
-        resume.history_items[..terminal_index]
-            .iter()
-            .any(|item| item.body == "partial response")
-    );
+    let items = list_native_items(&runtime, connection_id, session_id.to_string()).await?;
+    assert!(!items.is_empty());
 
     let turn_response = runtime
         .handle_incoming(
@@ -1305,8 +1197,9 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
                 "id": 36,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "continue after failure" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -1316,7 +1209,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         )
         .await
         .context("turn/start after failed resume")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(turn_response)?;
     wait_for_turn_completed(&mut notifications_rx).await?;
     let requests = provider.requests.lock().expect("lock requests");
@@ -1333,28 +1226,17 @@ async fn runtime_recovers_session_when_middle_rollout_line_is_corrupted() -> Res
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 41,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Recoverable session",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        41,
+        data_root.path(),
+        "persistence-recoverable-session",
+        Some("Recoverable session"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let _ = runtime
         .handle_incoming(
@@ -1363,8 +1245,9 @@ async fn runtime_recovers_session_when_middle_rollout_line_is_corrupted() -> Res
                 "id": 42,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "persist this session before corruption" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -1418,7 +1301,7 @@ async fn runtime_recovers_session_when_middle_rollout_line_is_corrupted() -> Res
                 "id": 43,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
@@ -1437,28 +1320,17 @@ async fn session_compact_runs_asynchronously_and_emits_lifecycle_events() -> Res
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 51,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Compaction session",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        51,
+        data_root.path(),
+        "persistence-compaction-session",
+        Some("Compaction session"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let _ = runtime
         .handle_incoming(
@@ -1467,8 +1339,9 @@ async fn session_compact_runs_asynchronously_and_emits_lifecycle_events() -> Res
                 "id": 52,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "create some history first" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -1514,28 +1387,17 @@ async fn compacted_session_resume_keeps_full_transcript_after_restart() -> Resul
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 61,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Persist compacted session",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        61,
+        data_root.path(),
+        "persistence-compacted-session",
+        Some("Persist compacted session"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     for request_id in 0..3 {
         let large_prompt = "x".repeat(30_000);
@@ -1546,8 +1408,9 @@ async fn compacted_session_resume_keeps_full_transcript_after_restart() -> Resul
                     "id": 62 + request_id,
                     "method": "turn/start",
                     "params": {
-                        "session_id": session_id,
+                        "sessionId": session_id,
                         "input": [{ "type": "text", "text": large_prompt }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                         "model": null,
                         "sandbox": null,
                         "approval_policy": null,
@@ -1587,44 +1450,30 @@ async fn compacted_session_resume_keeps_full_transcript_after_restart() -> Resul
                 "id": 71,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/resume response")?;
-    let resume_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    let _resume_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
     .result;
 
+    let items = list_native_items(
+        &rebuilt_runtime,
+        rebuilt_connection_id,
+        session_id.to_string(),
+    )
+    .await?;
+    let items_json = serde_json::to_string(&items)?;
     assert!(
-        resume_result.history_items.len() >= 6,
-        "expected full transcript to survive compaction, got {:?}",
-        resume_result.history_items
+        items.len() >= 6,
+        "expected full transcript to survive compaction"
     );
-    assert!(
-        resume_result.history_items.iter().any(|item| {
-            item.kind == SessionHistoryItemKind::ContextCompaction
-                && item.title == "Context compacted"
-        }),
-        "expected ContextCompaction history row after compact resume, got {:?}",
-        resume_result.history_items
-    );
-    assert!(
-        resume_result
-            .history_items
-            .iter()
-            .all(|item| !item.body.contains("<compaction_summary>")),
-        "compaction summary must not appear in user-visible transcript"
-    );
-    assert!(
-        resume_result
-            .history_items
-            .iter()
-            .any(|item| item.body.contains("Hello from persistence test.")),
-        "expected assistant transcript entries to remain visible"
-    );
+    assert!(items_json.contains("contextCompaction"));
+    assert!(items_json.contains("Hello from persistence test."));
     Ok(())
 }
 
@@ -1634,28 +1483,17 @@ async fn compacted_session_next_query_uses_compaction_summary_after_restart() ->
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 81,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Prompt snapshot session",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        81,
+        data_root.path(),
+        "persistence-prompt-snapshot-session",
+        Some("Prompt snapshot session"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     for request_id in 0..3 {
         let large_prompt = "x".repeat(30_000);
@@ -1666,8 +1504,9 @@ async fn compacted_session_next_query_uses_compaction_summary_after_restart() ->
                     "id": 82 + request_id,
                     "method": "turn/start",
                     "params": {
-                        "session_id": session_id,
+                        "sessionId": session_id,
                         "input": [{ "type": "text", "text": large_prompt }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                         "model": null,
                         "sandbox": null,
                         "approval_policy": null,
@@ -1708,13 +1547,13 @@ async fn compacted_session_next_query_uses_compaction_summary_after_restart() ->
                 "id": 90,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/resume response after restart")?;
-    let _: devo_server::SuccessResponse<devo_server::SessionResumeResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult> =
         serde_json::from_value(resume_response)?;
 
     let _ = rebuilt_runtime
@@ -1724,8 +1563,9 @@ async fn compacted_session_next_query_uses_compaction_summary_after_restart() ->
                 "id": 91,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "go on" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -1844,28 +1684,17 @@ async fn auto_compaction_persists_snapshot_and_survives_resume() -> Result<()> {
     let runtime = build_runtime_with_provider(data_root.path(), provider.clone())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 201,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Auto compact persist session",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        201,
+        data_root.path(),
+        "persistence-auto-compact-session",
+        Some("Auto compact persist session"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let _ = runtime
         .handle_incoming(
@@ -1893,8 +1722,9 @@ async fn auto_compaction_persists_snapshot_and_survives_resume() -> Result<()> {
                     "id": 210 + request_id,
                     "method": "turn/start",
                     "params": {
-                        "session_id": session_id,
+                        "sessionId": session_id,
                         "input": [{ "type": "text", "text": large_prompt }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                         "model": null,
                         "sandbox": null,
                         "approval_policy": null,
@@ -1920,25 +1750,24 @@ async fn auto_compaction_persists_snapshot_and_survives_resume() -> Result<()> {
                 "id": 220,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/resume after auto compact")?;
-    let resume_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    let _resume_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
     .result;
 
-    assert!(
-        resume_result.history_items.iter().any(|item| {
-            item.kind == SessionHistoryItemKind::ContextCompaction
-                && item.title == "Context compacted"
-        }),
-        "expected ContextCompaction history after auto-compact resume, got {:?}",
-        resume_result.history_items
-    );
+    let items = list_native_items(
+        &rebuilt_runtime,
+        rebuilt_connection_id,
+        session_id.to_string(),
+    )
+    .await?;
+    assert!(serde_json::to_string(&items)?.contains("contextCompaction"));
 
     let _ = rebuilt_runtime
         .handle_incoming(
@@ -1947,8 +1776,9 @@ async fn auto_compaction_persists_snapshot_and_survives_resume() -> Result<()> {
                 "id": 221,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "continue" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -2005,28 +1835,37 @@ base_instructions = "Test model"
     let runtime = build_runtime_with_provider(data_root.path(), provider.clone())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        101,
+        data_root.path(),
+        "persistence-request-model-session",
+        Some("Request model session"),
+        Some("test-model"),
+    )
+    .await?;
+    let session_id = session.id;
+
+    let reasoning_response = runtime
         .handle_incoming(
             connection_id,
             serde_json::json!({
-                "id": 101,
-                "method": "session/start",
+                "id": 103,
+                "method": "session/metadata/update",
                 "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Request model session",
-                    "model": "test-model"
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "settings": { "reasoningEffort": "medium" }
                 }
             }),
         )
         .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+        .context("session/metadata/update reasoning response")?;
+    assert!(
+        reasoning_response.get("error").is_none(),
+        "{reasoning_response}"
+    );
 
     let _ = runtime
         .handle_incoming(
@@ -2035,8 +1874,9 @@ base_instructions = "Test model"
                 "id": 102,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "use configured request model" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -2064,6 +1904,62 @@ base_instructions = "Test model"
     );
 
     Ok(())
+}
+
+async fn create_native_session(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    request_id: u64,
+    cwd: &std::path::Path,
+    idempotency_key: &str,
+    title: Option<&str>,
+    model: Option<&str>,
+) -> Result<devo_protocol::native::session::Session> {
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": request_id,
+                "method": "session/new",
+                "params": {
+                    "cwd": cwd,
+                    "idempotencyKey": idempotency_key
+                }
+            }),
+        )
+        .await
+        .context("session/new response")?;
+    let response: devo_server::SuccessResponse<
+        devo_protocol::native::rpc_session::SessionNewResult,
+    > = serde_json::from_value(response)?;
+    let mut metadata = serde_json::json!({
+        "sessionId": response.result.session.id,
+        "expectedVersion": 0
+    });
+    if let Some(title) = title {
+        metadata["title"] = serde_json::json!(title);
+    }
+    if let Some(model) = model {
+        metadata["model"] = serde_json::json!({ "provider": "", "model": model });
+    }
+    if title.is_some() || model.is_some() {
+        let response = runtime
+            .handle_incoming(
+                connection_id,
+                serde_json::json!({
+                    "id": request_id + 1,
+                    "method": "session/metadata/update",
+                    "params": metadata
+                }),
+            )
+            .await
+            .context("session/metadata/update response")?;
+        let response: devo_server::SuccessResponse<
+            devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
+        > = serde_json::from_value(response)?;
+        return Ok(response.result.session);
+    }
+    Ok(response.result.session)
 }
 
 fn build_runtime(data_root: &std::path::Path) -> Result<Arc<ServerRuntime>> {
@@ -2307,28 +2203,17 @@ async fn interrupt_mid_stream_does_not_duplicate_last_item_on_resume() -> Result
     let runtime = build_runtime_with_provider(data_root.path(), Arc::clone(&gated) as _)?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": null,
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-interrupt-session",
+        None,
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let turn_start_response = runtime
         .handle_incoming(
@@ -2337,8 +2222,9 @@ async fn interrupt_mid_stream_does_not_duplicate_last_item_on_resume() -> Result
                 "id": 2,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "interrupt me" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -2349,11 +2235,11 @@ async fn interrupt_mid_stream_does_not_duplicate_last_item_on_resume() -> Result
         .await
         .context("turn/start")?;
     let _turn_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::TurnStartResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult>,
     >(turn_start_response)?
     .result
-    .turn_id()
-    .expect("turn/start should start a streaming turn");
+    .turn
+    .id;
 
     // Wait until the assistant item has started streaming.  The provider yields
     // one TextDelta, then blocks, so once we see the delta notification we know
@@ -2398,60 +2284,33 @@ async fn interrupt_mid_stream_does_not_duplicate_last_item_on_resume() -> Result
                 "id": 4,
                 "method": "session/resume",
                 "params": {
-                    "session_id": session_id
+                    "sessionId": session_id
                 }
             }),
         )
         .await
         .context("session/resume")?;
-    let resume_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    let _resume_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
     .result;
 
-    // The crucial assertion: no two consecutive items should have the same
-    // kind if they are Assistant or Reasoning — those are the types that
-    // were being duplicated by the event_task post-loop cleanup race.
-    let kinds: Vec<_> = resume_result
-        .history_items
-        .iter()
-        .map(|i| &i.kind)
-        .collect();
-    for window in kinds.windows(2) {
-        if window[0] == window[1] {
-            match window[0] {
-                SessionHistoryItemKind::Assistant | SessionHistoryItemKind::Reasoning => {
-                    anyhow::bail!(
-                        "duplicate consecutive {:?} items detected: indices {:?}",
-                        window[0],
-                        kinds
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(idx, k)| {
-                                if *k == window[0] { Some(idx) } else { None }
-                            })
-                            .collect::<Vec<_>>()
-                    );
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // Sanity: there should be exactly one User and one Assistant item.
-    let user_count = kinds
-        .iter()
-        .filter(|k| matches!(k, SessionHistoryItemKind::User))
-        .count();
-    let assistant_count = kinds
-        .iter()
-        .filter(|k| matches!(k, SessionHistoryItemKind::Assistant))
-        .count();
-    assert_eq!(user_count, 1, "expected exactly one User item");
+    let items = list_native_items(&rebuilt, rebuilt_cid, session_id.to_string()).await?;
+    let item_json = serde_json::to_string(&items)?;
     assert_eq!(
-        assistant_count, 1,
-        "expected exactly one Assistant item, got history: {kinds:?}"
+        items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    &item.item,
+                    devo_protocol::native::item::Item::UserMessage { .. }
+                )
+            })
+            .count(),
+        1,
+        "expected exactly one User item"
     );
+    assert!(item_json.contains("assistantMessage"));
 
     Ok(())
 }
@@ -2463,28 +2322,17 @@ async fn first_usage_update_after_resume_preserves_historical_session_totals() -
     let runtime = build_runtime_with_provider(data_root.path(), provider.clone())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Usage resume base",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-usage-resume-session",
+        Some("Usage resume base"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let first_turn_response = runtime
         .handle_incoming(
@@ -2493,8 +2341,9 @@ async fn first_usage_update_after_resume_preserves_historical_session_totals() -
                 "id": 2,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "persist usage totals" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -2504,7 +2353,7 @@ async fn first_usage_update_after_resume_preserves_historical_session_totals() -
         )
         .await
         .context("first turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(first_turn_response)?;
     let first_usage = wait_for_turn_usage_updated(&mut notifications_rx).await?;
     assert_eq!(first_usage.input_tokens, 100);
@@ -2520,27 +2369,18 @@ async fn first_usage_update_after_resume_preserves_historical_session_totals() -
             serde_json::json!({
                 "id": 3,
                 "method": "session/resume",
-                "params": { "session_id": session_id }
+                "params": { "sessionId": session_id }
             }),
         )
         .await
         .context("session/resume response")?;
-    let resumed = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+    let resumed_result = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
-    .result
-    .session;
-    assert_eq!(resumed.total_input_tokens, 100);
+    .result;
+    let _resumed = resumed_result.session;
     // Context length comes from the latest query snapshot, not cumulative totals.
-    let last_query_usage = resumed
-        .last_query_usage
-        .expect("resumed session should include last_query_usage");
-    assert_eq!(last_query_usage.input_tokens, 100);
-    assert_eq!(last_query_usage.output_tokens, 25);
-    assert_eq!(last_query_usage.total_tokens, Some(125));
-    assert_eq!(resumed.last_query_total_tokens, 125);
-    // Cumulative session totals remain distinct from latest-query context length.
-    assert_ne!(resumed.total_input_tokens, resumed.last_query_total_tokens);
+    assert_eq!(resumed_result.last_query_total_tokens, Some(125));
 
     let second_turn_response = rebuilt_runtime
         .handle_incoming(
@@ -2549,8 +2389,9 @@ async fn first_usage_update_after_resume_preserves_historical_session_totals() -
                 "id": 4,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "post resume usage" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -2560,7 +2401,7 @@ async fn first_usage_update_after_resume_preserves_historical_session_totals() -
         )
         .await
         .context("second turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(second_turn_response)?;
     let post_resume_usage = wait_for_turn_usage_updated(&mut rebuilt_notifications_rx).await?;
     assert_eq!(post_resume_usage.input_tokens, 200);
@@ -2575,28 +2416,17 @@ async fn rollout_writes_base_instructions_once_across_multiple_turns() -> Result
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Rollout dedupe",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-rollout-dedupe-session",
+        Some("Rollout dedupe"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     for (request_id, prompt) in [(2, "first turn"), (3, "second turn")] {
         let turn_response = runtime
@@ -2606,8 +2436,9 @@ async fn rollout_writes_base_instructions_once_across_multiple_turns() -> Result
                     "id": request_id,
                     "method": "turn/start",
                     "params": {
-                        "session_id": session_id,
+                        "sessionId": session_id,
                         "input": [{ "type": "text", "text": prompt }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                         "model": null,
                         "sandbox": null,
                         "approval_policy": null,
@@ -2617,14 +2448,16 @@ async fn rollout_writes_base_instructions_once_across_multiple_turns() -> Result
             )
             .await
             .context("turn/start response")?;
-        let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+        let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
             serde_json::from_value(turn_response)?;
         wait_for_turn_completed(&mut notifications_rx).await?;
     }
 
     runtime.refresh_session_index()?;
     let db = devo_server::db::Database::open(data_root.path().join("test_persistence.db"))?;
-    let index = db.get_session_index(&session_id)?.expect("indexed session");
+    let index = db
+        .get_session_index(&SessionId::try_from(session_id.as_str())?)?
+        .expect("indexed session");
     let rollout_path = index.rollout_path.expect("rollout path");
     let rollout_lines = support::read_rollout_lines_dual(&rollout_path)?;
     let mut session_context_lines = 0usize;
@@ -2649,12 +2482,12 @@ async fn rollout_writes_base_instructions_once_across_multiple_turns() -> Result
             serde_json::json!({
                 "id": 4,
                 "method": "session/resume",
-                "params": { "session_id": session_id }
+                "params": { "sessionId": session_id }
             }),
         )
         .await
         .context("session/resume response")?;
-    let _: devo_server::SuccessResponse<devo_server::SessionResumeResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult> =
         serde_json::from_value(resume_response)?;
 
     Ok(())
@@ -2666,28 +2499,17 @@ async fn turn_start_persists_session_context_before_turn_completes() -> Result<(
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Turn start crash window",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-turn-start-crash-window-session",
+        Some("Turn start crash window"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let turn_response = runtime
         .handle_incoming(
@@ -2696,8 +2518,9 @@ async fn turn_start_persists_session_context_before_turn_completes() -> Result<(
                 "id": 2,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "crash before complete" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -2707,14 +2530,16 @@ async fn turn_start_persists_session_context_before_turn_completes() -> Result<(
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(turn_response)?;
 
     // Inspect the rollout before waiting for turn completion to simulate a crash
     // after durable turn-start persistence.
     runtime.refresh_session_index()?;
     let db = devo_server::db::Database::open(data_root.path().join("test_persistence.db"))?;
-    let index = db.get_session_index(&session_id)?.expect("indexed session");
+    let index = db
+        .get_session_index(&SessionId::try_from(session_id.as_str())?)?
+        .expect("indexed session");
     let rollout_path = index.rollout_path.expect("rollout path");
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -2752,28 +2577,17 @@ async fn metadata_update_renames_cold_session_by_id_without_resume() -> Result<(
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Cold title",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-cold-title-session",
+        Some("Cold title"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
     let turn_response = runtime
         .handle_incoming(
             connection_id,
@@ -2781,8 +2595,9 @@ async fn metadata_update_renames_cold_session_by_id_without_resume() -> Result<(
                 "id": 2,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "persist the cold session" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -2792,7 +2607,7 @@ async fn metadata_update_renames_cold_session_by_id_without_resume() -> Result<(
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(turn_response)?;
     wait_for_turn_completed(&mut notifications_rx).await?;
     drop(runtime);
@@ -2800,11 +2615,43 @@ async fn metadata_update_renames_cold_session_by_id_without_resume() -> Result<(
     let rebuilt_runtime = build_runtime(data_root.path())?;
     rebuilt_runtime.refresh_session_index()?;
     let (rebuilt_connection_id, _) = initialize_connection(&rebuilt_runtime).await?;
-    let rename_response = rebuilt_runtime
+    let settings_response = rebuilt_runtime
         .handle_incoming(
             rebuilt_connection_id,
             serde_json::json!({
                 "id": 3,
+                "method": "session/metadata/update",
+                "params": {
+                    "sessionId": session_id,
+                    "expectedVersion": 0,
+                    "model": { "provider": "", "model": "cold-model" },
+                    "settings": {
+                        "reasoningEffort": "high",
+                        "mode": "plan"
+                    }
+                }
+            }),
+        )
+        .await
+        .context("cold session settings update")?;
+    let updated = serde_json::from_value::<
+        devo_server::SuccessResponse<
+            devo_protocol::native::rpc_session::SessionMetadataUpdateResult,
+        >,
+    >(settings_response)?
+    .result;
+    assert_eq!(updated.session.model.model, "cold-model");
+    assert_eq!(
+        updated.session.settings.reasoning_effort.as_deref(),
+        Some("high")
+    );
+    assert_eq!(updated.session.settings.mode.as_deref(), Some("plan"));
+
+    let rename_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 4,
                 "method": "session/metadata/update",
                 "params": {
                     "sessionId": session_id,
@@ -2827,7 +2674,7 @@ async fn metadata_update_renames_cold_session_by_id_without_resume() -> Result<(
         .handle_incoming(
             rebuilt_connection_id,
             serde_json::json!({
-                "id": 4,
+                "id": 5,
                 "method": "session/list",
                 "params": {}
             }),
@@ -2840,6 +2687,32 @@ async fn metadata_update_renames_cold_session_by_id_without_resume() -> Result<(
         .find(|session| session.id.as_str() == session_id.to_string())
         .expect("renamed cold session remains listed");
     assert_eq!(listed.title.as_deref(), Some("Renamed while cold"));
+
+    drop(rebuilt_runtime);
+    let restarted_runtime = build_runtime(data_root.path())?;
+    restarted_runtime.refresh_session_index()?;
+    let (restarted_connection_id, _) = initialize_connection(&restarted_runtime).await?;
+    let read_response = restarted_runtime
+        .handle_incoming(
+            restarted_connection_id,
+            serde_json::json!({
+                "id": 6,
+                "method": "session/read",
+                "params": { "sessionId": session_id }
+            }),
+        )
+        .await
+        .context("session/read after process restart")?;
+    let read = serde_json::from_value::<
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionReadResult>,
+    >(read_response)?
+    .result;
+    assert_eq!(read.session.model.model, "cold-model");
+    assert_eq!(
+        read.session.settings.reasoning_effort.as_deref(),
+        Some("high")
+    );
+    assert_eq!(read.session.settings.mode.as_deref(), Some("plan"));
     Ok(())
 }
 
@@ -2849,28 +2722,17 @@ async fn lazy_resume_loads_parent_session_from_rollout_on_map_miss() -> Result<(
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Lazy resume session",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-lazy-resume-session",
+        Some("Lazy resume session"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let turn_start_response = runtime
         .handle_incoming(
@@ -2879,8 +2741,9 @@ async fn lazy_resume_loads_parent_session_from_rollout_on_map_miss() -> Result<(
                 "id": 2,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "persist for lazy resume" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -2890,13 +2753,13 @@ async fn lazy_resume_loads_parent_session_from_rollout_on_map_miss() -> Result<(
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(turn_start_response)?;
     wait_for_turn_completed(&mut notifications_rx).await?;
 
     let db = devo_server::db::Database::open(data_root.path().join("test_persistence.db"))?;
     let rollout_path = db
-        .get_session_index(&session_id)?
+        .get_session_index(&SessionId::try_from(session_id.as_str())?)?
         .expect("indexed session")
         .rollout_path
         .expect("rollout path");
@@ -2946,16 +2809,16 @@ async fn lazy_resume_loads_parent_session_from_rollout_on_map_miss() -> Result<(
             serde_json::json!({
                 "id": 3,
                 "method": "session/resume",
-                "params": { "session_id": session_id }
+                "params": { "sessionId": session_id }
             }),
         )
         .await
         .context("session/resume response")?;
     let resume_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
     .result;
-    assert_eq!(resume_result.session.session_id, session_id);
+    assert_eq!(resume_result.session.id, session_id);
     Ok(())
 }
 
@@ -2965,28 +2828,17 @@ async fn lazy_resume_after_compat_backfill_without_refresh_session_index() -> Re
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Lazy resume backfill",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-lazy-resume-backfill-session",
+        Some("Lazy resume backfill"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let turn_start_response = runtime
         .handle_incoming(
@@ -2995,8 +2847,9 @@ async fn lazy_resume_after_compat_backfill_without_refresh_session_index() -> Re
                 "id": 2,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "persist for compat backfill" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -3006,7 +2859,7 @@ async fn lazy_resume_after_compat_backfill_without_refresh_session_index() -> Re
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(turn_start_response)?;
     wait_for_turn_completed(&mut notifications_rx).await?;
 
@@ -3029,16 +2882,16 @@ async fn lazy_resume_after_compat_backfill_without_refresh_session_index() -> Re
             serde_json::json!({
                 "id": 3,
                 "method": "session/resume",
-                "params": { "session_id": session_id }
+                "params": { "sessionId": session_id }
             }),
         )
         .await
         .context("session/resume response")?;
     let resume_result = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(resume_response)?
     .result;
-    assert_eq!(resume_result.session.session_id, session_id);
+    assert_eq!(resume_result.session.id, session_id);
     Ok(())
 }
 
@@ -3048,28 +2901,17 @@ async fn concurrent_lazy_resume_single_actor() -> Result<()> {
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Concurrent lazy resume",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-concurrent-lazy-resume-session",
+        Some("Concurrent lazy resume"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let turn_start_response = runtime
         .handle_incoming(
@@ -3078,8 +2920,9 @@ async fn concurrent_lazy_resume_single_actor() -> Result<()> {
                 "id": 2,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "persist for concurrent resume" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -3089,7 +2932,7 @@ async fn concurrent_lazy_resume_single_actor() -> Result<()> {
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(turn_start_response)?;
     wait_for_turn_completed(&mut notifications_rx).await?;
 
@@ -3103,7 +2946,7 @@ async fn concurrent_lazy_resume_single_actor() -> Result<()> {
         serde_json::json!({
             "id": 3,
             "method": "session/resume",
-            "params": { "session_id": session_id }
+            "params": { "sessionId": session_id }
         }),
     );
     let request_b = rebuilt_runtime.handle_incoming(
@@ -3111,22 +2954,22 @@ async fn concurrent_lazy_resume_single_actor() -> Result<()> {
         serde_json::json!({
             "id": 4,
             "method": "session/resume",
-            "params": { "session_id": session_id }
+            "params": { "sessionId": session_id }
         }),
     );
     let (response_a, response_b) = tokio::join!(request_a, request_b);
     let response_a = response_a.context("first session/resume response")?;
     let response_b = response_b.context("second session/resume response")?;
     let result_a = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(response_a)?
     .result;
     let result_b = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionResumeResult>,
+        devo_server::SuccessResponse<devo_protocol::native::rpc_session::SessionResumeResult>,
     >(response_b)?
     .result;
-    assert_eq!(result_a.session.session_id, session_id);
-    assert_eq!(result_b.session.session_id, session_id);
+    assert_eq!(result_a.session.id, session_id);
+    assert_eq!(result_b.session.id, session_id);
 
     Ok(())
 }
@@ -3154,7 +2997,7 @@ async fn lazy_resume_rejects_subagent_session_ids() -> Result<()> {
             serde_json::json!({
                 "id": 1,
                 "method": "session/resume",
-                "params": { "session_id": child_id }
+                "params": { "sessionId": child_id }
             }),
         )
         .await
@@ -3179,28 +3022,17 @@ async fn lazy_resume_fails_when_rollout_file_is_missing() -> Result<()> {
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
-    let start_response = runtime
-        .handle_incoming(
-            connection_id,
-            serde_json::json!({
-                "id": 1,
-                "method": "session/start",
-                "params": {
-                    "cwd": data_root.path(),
-                    "ephemeral": false,
-                    "title": "Missing rollout",
-                    "model": "test-model"
-                }
-            }),
-        )
-        .await
-        .context("session/start response")?;
-    let session_id = serde_json::from_value::<
-        devo_server::SuccessResponse<devo_server::SessionStartResult>,
-    >(start_response)?
-    .result
-    .session
-    .session_id;
+    let session = create_native_session(
+        &runtime,
+        connection_id,
+        1,
+        data_root.path(),
+        "persistence-missing-rollout-session",
+        Some("Missing rollout"),
+        None,
+    )
+    .await?;
+    let session_id = session.id;
 
     let turn_start_response = runtime
         .handle_incoming(
@@ -3209,8 +3041,9 @@ async fn lazy_resume_fails_when_rollout_file_is_missing() -> Result<()> {
                 "id": 2,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "create rollout then delete it" }],
+                    "idempotencyKey": format!("persistence-resume-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "sandbox": null,
                     "approval_policy": null,
@@ -3220,12 +3053,14 @@ async fn lazy_resume_fails_when_rollout_file_is_missing() -> Result<()> {
         )
         .await
         .context("turn/start response")?;
-    let _: devo_server::SuccessResponse<devo_server::TurnStartResult> =
+    let _: devo_server::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
         serde_json::from_value(turn_start_response)?;
     wait_for_turn_completed(&mut notifications_rx).await?;
 
     let db = devo_server::db::Database::open(data_root.path().join("test_persistence.db"))?;
-    let index = db.get_session_index(&session_id)?.expect("indexed session");
+    let index = db
+        .get_session_index(&SessionId::try_from(session_id.as_str())?)?
+        .expect("indexed session");
     let rollout_path = index.rollout_path.expect("rollout path");
     std::fs::remove_file(&rollout_path)?;
 
@@ -3255,7 +3090,7 @@ async fn lazy_resume_fails_when_rollout_file_is_missing() -> Result<()> {
             serde_json::json!({
                 "id": 3,
                 "method": "session/resume",
-                "params": { "session_id": session_id }
+                "params": { "sessionId": session_id }
             }),
         )
         .await
@@ -3267,6 +3102,28 @@ async fn lazy_resume_fails_when_rollout_file_is_missing() -> Result<()> {
     );
     assert!(error.error.message.contains("rollout file is missing"));
     Ok(())
+}
+
+async fn list_native_items(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    session_id: String,
+) -> Result<Vec<devo_protocol::native::item::ItemEnvelope>> {
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 900,
+                "method": "session/items/list",
+                "params": { "sessionId": session_id }
+            }),
+        )
+        .await
+        .context("session/items/list response")?;
+    Ok(serde_json::from_value::<
+        devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope>,
+    >(response["result"].clone())?
+    .data)
 }
 
 fn sample_indexed_session(

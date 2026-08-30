@@ -155,6 +155,17 @@ impl FromStr for ReasoningEffort {
     }
 }
 
+/// Normalizes a persisted reasoning-effort selection literal for storage and
+/// comparison: trimmed and ASCII-lowercased. Unlike
+/// [`Model::normalize_reasoning_effort_selection`](crate::Model::normalize_reasoning_effort_selection)
+/// this is model-agnostic — it keeps toggle keywords (`enabled`/`disabled`) and
+/// the `"default"` marker untouched, and never falls back to a model default.
+/// Read and write paths share it so a stored selection compares equal to the
+/// same selection arriving in a patch.
+pub fn normalize_reasoning_effort_literal(raw: &str) -> String {
+    raw.trim().to_ascii_lowercase()
+}
+
 impl ReasoningEffort {
     pub fn label(self) -> &'static str {
         match self {

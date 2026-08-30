@@ -41,11 +41,12 @@ import {
 	useRef,
 	useState,
 } from "react"
-import { collaborationModeFamily } from "../../atoms/collaboration-mode"
+import { collaborationModeFamily, type CollaborationMode } from "../../atoms/collaboration-mode"
 import { compactionStatusFamily } from "../../atoms/compaction"
 import { messagesFamily } from "../../atoms/messages"
 import { projectModelsAtom, setProjectModelAtom } from "../../atoms/preferences"
 import {
+	composerFromSessionModel,
 	hydrateSessionComposerState,
 	sessionComposerFamily,
 	setSessionComposerAtom,
@@ -69,7 +70,6 @@ import {
 	trackSettingsOverlayOpen,
 } from "../../lib/settings-scroll-freeze"
 import {
-	applySessionScrollRestoreWithRetry,
 	isRestoringSessionScroll,
 	planSessionScrollRestore,
 	restoreSessionScrollWhenReady,
@@ -85,6 +85,7 @@ import type {
 import {
 	getModelInputCapabilities,
 	getModelVariants,
+	modelRefFromSlug,
 	resolveEffectiveModel,
 	useModelState,
 } from "../../hooks/use-devo-data"
@@ -92,9 +93,15 @@ import type { ChatTurn } from "../../hooks/use-session-chat"
 import { createLogger } from "../../lib/logger"
 import { computeTurnWorkTimeSplit, formatWorkDuration } from "../../lib/session-metrics"
 import type { Agent, FileAttachment, PermissionResponse, QuestionAnswer } from "../../lib/types"
-import { getProjectClient } from "../../services/connection-manager"
+import { getBaseClient, getProjectClient } from "../../services/connection-manager"
 
 const log = createLogger("chat-view")
+
+/** Session ids whose collaboration mode was already seeded from persisted settings this run. */
+const seededCollaborationModes = new Set<string>()
+
+/** Debounce for persist-on-selection: coalesces rapid model/effort/mode changes. */
+const SELECTION_PERSIST_DEBOUNCE_MS = 500
 
 const VIRTUALIZE_TURN_THRESHOLD = 30
 const VIRTUAL_TURN_GAP = 40
@@ -724,6 +731,12 @@ type SideCard = {
 	status: "running" | "done" | "failed"
 }
 
+type SelectionPersistPatch = {
+	modelID?: string
+	reasoningEffort?: string
+	mode?: string
+}
+
 /**
  * Main chat view component.
  * Renders the full conversation as turns with auto-scroll,
@@ -1328,7 +1341,7 @@ export function ChatInputSection({
 	const [activeGoal, setActiveGoal] = useState<ComposerGoal | null>(null)
 	const [goalAction, setGoalAction] = useState<ComposerGoalAction | null>(null)
 	const [skillPickerOpen, setSkillPickerOpen] = useState(false)
-	const [collaborationMode, setCollaborationMode] = useAtom(
+	const [collaborationMode, setCollaborationModeAtom] = useAtom(
 		collaborationModeFamily(agent.sessionId),
 	)
 
@@ -1471,13 +1484,70 @@ export function ChatInputSection({
 	const composerState = useAtomValue(sessionComposerFamily(agent.sessionId))
 	const setComposerState = useSetAtom(setSessionComposerAtom)
 	const hydratedForMessagesRef = useRef<string | null>(null)
+	const sessionEntry = useAtomValue(sessionFamily(agent.sessionId))
 
 	useEffect(() => {
-		const messageKey = `${agent.sessionId}:${sessionMessages.length}`
+		const wireSession = sessionEntry?.session as {
+			model?: {
+				provider?: string
+				model?: string
+				reasoningEffort?: string
+				reasoning_effort?: string
+			}
+			settings?: {
+				mode?: string
+				reasoningEffort?: string
+				reasoning_effort?: string
+			}
+		} | null | undefined
+		const persistedReasoningEffort =
+			wireSession?.model?.reasoningEffort ??
+			wireSession?.model?.reasoning_effort ??
+			wireSession?.settings?.reasoningEffort ??
+			wireSession?.settings?.reasoning_effort
+		// Include the wire seed fingerprint so enrichment (session/resume
+		// replaces the cold list snapshot with full model/settings) re-runs
+		// the hydration even when the message count has not changed.
+		const messageKey = `${agent.sessionId}:${sessionMessages.length}:${
+			wireSession?.model?.provider ??
+			""
+		}|${wireSession?.model?.model ?? ""}|${persistedReasoningEffort ?? ""}|${
+			wireSession?.settings?.mode ?? ""
+		}`
 		if (hydratedForMessagesRef.current === messageKey) return
-		hydratedForMessagesRef.current = messageKey
 		const projectDefault = agent.directory ? projectModels[agent.directory] : undefined
-		const next = hydrateSessionComposerState(composerState, sessionMessages, projectDefault)
+		// Persisted per-session turn settings survive restarts (the server
+		// restores them on resume); history messages do not carry model
+		// metadata, so without this seed every restored session would show
+		// the project-default model / reasoning effort.
+		const wireModel = wireSession?.model
+		const wireModelSeed = wireModel
+			? {
+					provider: wireModel.provider,
+					model: wireModel.model,
+					reasoningEffort: persistedReasoningEffort,
+			  }
+			: undefined
+		const sessionSeed = composerFromSessionModel(wireModelSeed, (seed) => {
+			const providerList = providers?.providers ?? []
+			// Prefer the wire provider id when it names a provider that actually
+			// serves the model (session/resume carries a real binding); cold
+			// list snapshots may only carry "unknown", so fall back to a
+			// reverse lookup by model slug.
+			if (seed.provider && seed.provider !== "unknown") {
+				const provider = providerList.find((p) => p.id === seed.provider)
+				if (provider?.models?.[seed.model ?? ""]) {
+					return { providerID: seed.provider, modelID: seed.model ?? "" }
+				}
+			}
+			return seed.model ? modelRefFromSlug(seed.model, providerList) : null
+		})
+		const next = hydrateSessionComposerState(
+			composerState,
+			sessionMessages,
+			projectDefault,
+			sessionSeed,
+		)
 		if (
 			next.model?.providerID !== composerState.model?.providerID ||
 			next.model?.modelID !== composerState.model?.modelID ||
@@ -1486,11 +1556,32 @@ export function ChatInputSection({
 		) {
 			setComposerState({ sessionId: agent.sessionId, patch: next })
 		}
+		// Record the guard key only once hydration is conclusive. A wire seed
+		// that exists but could not be resolved yet (provider list still
+		// loading, slug unmatched against current providers) must retry on the
+		// next dep change — recording the key now would lock the composer into
+		// the default model/effort forever. Writing the ref does not render,
+		// so retries are driven purely by dep changes and cannot loop.
+		if (next.model || !wireSession?.model?.model || composerState.hasUserOverride) {
+			hydratedForMessagesRef.current = messageKey
+		}
+		// Seed the collaboration mode (build/plan) once per session per run so
+		// restarts restore it without fighting in-run user toggles.
+		const wireMode = wireSession?.settings?.mode
+		if (
+			(wireMode === "plan" || wireMode === "build") &&
+			!seededCollaborationModes.has(agent.sessionId)
+		) {
+			seededCollaborationModes.add(agent.sessionId)
+			appStore.set(collaborationModeFamily(agent.sessionId), wireMode)
+		}
 	}, [
 		agent.directory,
 		agent.sessionId,
 		composerState,
 		projectModels,
+		providers,
+		sessionEntry,
 		sessionMessages,
 		setComposerState,
 	])
@@ -1568,20 +1659,101 @@ export function ChatInputSection({
 		[effectiveModel, providers],
 	)
 
+	// ── Persist-on-selection ─────────────────────────────────────────────
+	// Composer selections (model / reasoning effort / mode) are persisted to
+	// the session record the moment they change, debounced and coalesced into
+	// one session/metadata/update per burst, so they survive a restart even
+	// if no message is ever sent. The send path still passes them per turn
+	// (and re-persists), acting as a backstop.
+	const pendingSelectionPersistRef = useRef<SelectionPersistPatch | null>(null)
+	const selectionPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+	const flushSelectionPersist = useCallback((): Promise<void> => {
+		if (selectionPersistTimerRef.current !== null) {
+			clearTimeout(selectionPersistTimerRef.current)
+			selectionPersistTimerRef.current = null
+		}
+		const pending = pendingSelectionPersistRef.current
+		pendingSelectionPersistRef.current = null
+		if (!pending || !agent.sessionId) return Promise.resolve()
+		try {
+			const client =
+				(agent.directory ? getProjectClient(agent.directory) : null) ?? getBaseClient()
+			if (!client) {
+				log.warn("session settings persist skipped: not connected", {
+					sessionId: agent.sessionId,
+				})
+				return Promise.resolve()
+			}
+			const updateSettings = client.session?.updateSettings
+			if (typeof updateSettings !== "function") {
+				log.warn("session settings persist skipped: client API unavailable", {
+					sessionId: agent.sessionId,
+				})
+				return Promise.resolve()
+			}
+			// Resolved (not rejected) when the write lands or has failed and
+			// been logged — callers await this to order the flush ahead of a
+			// turn without taking on error handling.
+			return Promise.resolve()
+				.then(() => updateSettings.call(client.session, { sessionID: agent.sessionId, ...pending }))
+				.catch((error: unknown) => {
+					log.warn("session settings persist failed", { sessionId: agent.sessionId }, error)
+				})
+		} catch (error) {
+			log.warn("session settings persist failed", { sessionId: agent.sessionId }, error)
+			return Promise.resolve()
+		}
+	}, [agent.directory, agent.sessionId])
+
+	const scheduleSelectionPersist = useCallback(
+		(patch: SelectionPersistPatch) => {
+			pendingSelectionPersistRef.current = { ...pendingSelectionPersistRef.current, ...patch }
+			if (selectionPersistTimerRef.current !== null) {
+				clearTimeout(selectionPersistTimerRef.current)
+			}
+			selectionPersistTimerRef.current = setTimeout(
+				() => flushSelectionPersist(),
+				SELECTION_PERSIST_DEBOUNCE_MS,
+			)
+		},
+		[flushSelectionPersist],
+	)
+
+	// Unmount / session switch flushes whatever is still pending.
+	useEffect(() => {
+		return () => {
+			flushSelectionPersist()
+		}
+	}, [flushSelectionPersist])
+
 	const handleModelSelect = useCallback(
 		(model: ModelRef | null) => {
 			setSelectedModel(model)
 			if (!model) return
 			addRecentModel(model)
+			scheduleSelectionPersist({ modelID: model.modelID })
 		},
-		[addRecentModel, setSelectedModel],
+		[addRecentModel, scheduleSelectionPersist, setSelectedModel],
 	)
 
 	const handleVariantSelect = useCallback(
 		(variant: string | undefined) => {
 			setSelectedVariant(variant)
+			if (typeof variant === "string" && variant.length > 0) {
+				scheduleSelectionPersist({ reasoningEffort: variant })
+			}
 		},
-		[setSelectedVariant],
+		[scheduleSelectionPersist, setSelectedVariant],
+	)
+
+	/** Mode toggle that also persists the choice to the session record. */
+	const changeCollaborationMode = useCallback(
+		(next: CollaborationMode) => {
+			setCollaborationModeAtom(next)
+			scheduleSelectionPersist({ mode: next })
+		},
+		[scheduleSelectionPersist, setCollaborationModeAtom],
 	)
 
 	const slashCommandRef = useRef<{
@@ -1699,7 +1871,7 @@ export function ChatInputSection({
 					setActiveTrigger("goal")
 					return true
 				case "plan":
-					setCollaborationMode("plan")
+					changeCollaborationMode("plan")
 					return true
 				case "skills":
 					setSkillPickerOpen(true)
@@ -1713,10 +1885,10 @@ export function ChatInputSection({
 		[
 			agent.directory,
 			agent.sessionId,
+			changeCollaborationMode,
 			effectiveModel,
 			onForkFromTurn,
 			onStartSideQuestion,
-			setCollaborationMode,
 		],
 	)
 
@@ -1741,17 +1913,29 @@ export function ChatInputSection({
 					url: file.url,
 				})
 			}
+			// Flush any still-debounced composer selection so the turn starts
+			// from exactly what the UI shows, then send only the explicit
+			// selection — never a fallback-resolved model, which would
+			// overwrite the persisted per-session choice.
+			await flushSelectionPersist()
 			await client.session.promptAsync({
 				sessionID: agent.sessionId,
 				parts,
-				model: effectiveModel
-					? { providerID: effectiveModel.providerID, modelID: effectiveModel.modelID }
+				model: selectedModel
+					? { providerID: selectedModel.providerID, modelID: selectedModel.modelID }
 					: undefined,
 				agent: selectedAgent || undefined,
 				variant: selectedVariant,
 			})
 		},
-		[agent.directory, agent.sessionId, effectiveModel, selectedAgent, selectedVariant],
+		[
+			agent.directory,
+			agent.sessionId,
+			flushSelectionPersist,
+			selectedModel,
+			selectedAgent,
+			selectedVariant,
+		],
 	)
 
 	const handleSend = useCallback(
@@ -1783,11 +1967,15 @@ export function ChatInputSection({
 
 			setSending(true)
 			try {
-				if (effectiveModel && agent.directory) {
+				// Only an explicit composer selection may become the project's
+				// default model — a fallback-resolved model would poison the
+				// preference (and then every future fallback) with request
+				// slugs or defaults the user never chose.
+				if (selectedModel && agent.directory) {
 					appStore.set(setProjectModelAtom, {
 						directory: agent.directory,
 						model: {
-							...effectiveModel,
+							...selectedModel,
 							variant: selectedVariant,
 							agent: selectedAgent || undefined,
 						},
@@ -1819,8 +2007,12 @@ export function ChatInputSection({
 						setTimeout(() => void refreshGoalStatus(), 1_200)
 					}
 				} else {
+					// Land any still-debounced selection before the turn, and
+					// send only the explicit selection — the server keeps the
+					// session's persisted model otherwise.
+					await flushSelectionPersist()
 					await onSendMessage?.(agent, finalText, {
-						model: effectiveModel ?? undefined,
+						model: selectedModel ?? undefined,
 						agentName: selectedAgent || undefined,
 						variant: selectedVariant,
 						files,
@@ -1848,7 +2040,8 @@ export function ChatInputSection({
 			onSendMessage,
 			sending,
 			agent,
-			effectiveModel,
+			selectedModel,
+			flushSelectionPersist,
 			selectedAgent,
 			selectedVariant,
 			clearDraft,
@@ -1999,7 +2192,7 @@ export function ChatInputSection({
 				e.preventDefault()
 				handleSlashClose()
 				handleMentionClose()
-				setCollaborationMode((current) => (current === "plan" ? "build" : "plan"))
+				changeCollaborationMode(collaborationMode === "plan" ? "build" : "plan")
 				return
 			}
 
@@ -2014,7 +2207,7 @@ export function ChatInputSection({
 				handleEscapeAbort()
 			}
 		},
-		[handleEscapeAbort, handleSlashClose, handleMentionClose, setCollaborationMode],
+		[handleEscapeAbort, handleSlashClose, handleMentionClose, changeCollaborationMode, collaborationMode],
 	)
 
 	// Width constraint class: remove max-w when review panel is open
@@ -2170,7 +2363,7 @@ export function ChatInputSection({
 												<ComposerModeChip
 													variant="plan"
 													disabled={!isConnected}
-													onRemove={() => setCollaborationMode("build")}
+													onRemove={() => changeCollaborationMode("build")}
 												/>
 											)}
 											{activeTrigger === "goal" && (

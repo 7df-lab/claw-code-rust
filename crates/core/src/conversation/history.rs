@@ -202,10 +202,15 @@ fn apply_settings_to_canonical_session(
             }
         }
         SessionSettingsField::ReasoningEffortSelection => {
-            if let Ok(Some(raw)) = serde_json::from_value::<Option<String>>(value)
-                && let Ok(effort) = raw.parse::<devo_protocol::ReasoningEffort>()
-            {
-                session.settings.reasoning_effort = Some(effort);
+            // The stored value is the user's selection literal, including the
+            // toggle keywords (`enabled`/`disabled`) the `ReasoningEffort`
+            // enum cannot express — keep it as-is (normalized) instead of
+            // parsing, which silently dropped those and broke restore.
+            if let Ok(Some(raw)) = serde_json::from_value::<Option<String>>(value) {
+                let normalized = devo_protocol::normalize_reasoning_effort_literal(&raw);
+                if !normalized.is_empty() {
+                    session.settings.reasoning_effort = Some(normalized);
+                }
             }
         }
         SessionSettingsField::CollaborationMode => {
@@ -432,12 +437,82 @@ mod tests {
             devo_protocol::native::model::PermissionProfile::FullAccess
         );
         assert_eq!(session.settings.sandbox_profile.as_deref(), Some("strict"));
-        assert_eq!(
-            session.settings.reasoning_effort,
-            Some(devo_protocol::ReasoningEffort::High)
-        );
+        assert_eq!(session.settings.reasoning_effort.as_deref(), Some("high"));
         // Three settings epochs (1, 2, 3) raise the SessionMeta version (1)
         // to 4.
         assert_eq!(session.version, 4);
+    }
+
+    /// Toggle keywords and level labels both survive the fold, and the raw
+    /// literal is normalized on the way in so a stored selection compares
+    /// equal to the same selection arriving in a patch.
+    #[test]
+    fn settings_fold_keeps_toggle_keywords_and_normalizes() {
+        let fold_one = |raw: &str| -> Option<String> {
+            let dir = tempfile::TempDir::new().expect("temp dir");
+            let session_id = SessionId::new();
+            let now = Utc.with_ymd_and_hms(2026, 8, 2, 12, 0, 0).unwrap();
+            let record = crate::conversation::SessionRecord {
+                id: session_id,
+                rollout_path: dir.path().join("rollout.jsonl"),
+                created_at: now,
+                updated_at: now,
+                last_activity_at: Some(now),
+                source: "cli".into(),
+                agent_nickname: None,
+                agent_role: None,
+                agent_path: None,
+                model_provider: "test".into(),
+                model: Some("test-model".into()),
+                model_binding_id: None,
+                reasoning_effort_selection: None,
+                cwd: dir.path().to_path_buf(),
+                additional_directories: Vec::new(),
+                cli_version: "test".into(),
+                title: None,
+                title_state: crate::conversation::SessionTitleState::Unset,
+                sandbox_policy: "workspace-write".into(),
+                approval_mode: "on-request".into(),
+                effective_context_window: None,
+                tokens_used: 0,
+                first_user_message: None,
+                archived_at: None,
+                git_sha: None,
+                git_branch: None,
+                git_origin_url: None,
+                parent_session_id: None,
+                fork_from_id: None,
+                fork_at_turn_id: None,
+                session_context: None,
+                latest_turn_context: None,
+                collaboration_mode: None,
+                permission_preset: None,
+                schema_version: 2,
+            };
+            write_lines(
+                &dir.path().join("rollout.jsonl"),
+                &[
+                    RolloutLine::SessionMeta(Box::new(crate::conversation::SessionMetaLine {
+                        timestamp: now,
+                        session: record,
+                    })),
+                    RolloutLine::SessionSettings(crate::conversation::SessionSettingsLine {
+                        timestamp: now,
+                        session_id,
+                        field: crate::conversation::SessionSettingsField::ReasoningEffortSelection,
+                        value: serde_json::to_value(Some(raw.to_string()))
+                            .expect("serialize effort"),
+                        epoch: 0,
+                    }),
+                ],
+            );
+            let history =
+                read_canonical_history(&dir.path().join("rollout.jsonl")).expect("read history");
+            history.session.expect("session").settings.reasoning_effort
+        };
+
+        assert_eq!(fold_one("enabled").as_deref(), Some("enabled"));
+        assert_eq!(fold_one("disabled").as_deref(), Some("disabled"));
+        assert_eq!(fold_one(" High ").as_deref(), Some("high"));
     }
 }

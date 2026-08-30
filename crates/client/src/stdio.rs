@@ -135,31 +135,6 @@ impl StdioServerClient {
         Ok(result)
     }
 
-    pub async fn session_start(
-        &mut self,
-        params: SessionStartParams,
-    ) -> Result<SessionStartResult> {
-        self.core.session_start(params).await
-    }
-
-    pub async fn session_resume(
-        &mut self,
-        params: SessionResumeParams,
-    ) -> Result<SessionResumeResult> {
-        self.core.session_resume(params).await
-    }
-
-    pub async fn session_list(&mut self) -> Result<Vec<SessionMetadata>> {
-        self.core.session_list().await
-    }
-
-    pub async fn session_delete(
-        &mut self,
-        params: AcpDeleteSessionParams,
-    ) -> Result<AcpDeleteSessionResult> {
-        self.core.session_delete(params).await
-    }
-
     /// Native settings patch; see `client_core::session_settings_update`.
     pub async fn session_settings_update(
         &mut self,
@@ -187,10 +162,6 @@ impl StdioServerClient {
                 collaboration_mode,
             )
             .await
-    }
-
-    pub async fn session_cancel(&mut self, params: AcpCancelParams) -> Result<()> {
-        self.core.session_cancel(params).await
     }
 
     pub async fn mcp_list(
@@ -236,10 +207,6 @@ impl StdioServerClient {
 
     pub async fn command_exec(&mut self, params: CommandExecParams) -> Result<CommandExecResult> {
         self.core.command_exec(params).await
-    }
-
-    pub async fn turn_start(&mut self, params: TurnStartParams) -> Result<TurnStartResult> {
-        self.core.turn_start(params).await
     }
 
     /// Native `turn/start`; see `client_core::turn_start_native`.
@@ -625,14 +592,6 @@ impl StdioServerClient {
         self.core.recv_notification().await
     }
 
-    pub async fn recv_client_event(&mut self) -> Result<Option<crate::ClientEvent>> {
-        self.core.recv_client_event().await
-    }
-
-    pub async fn recv_event(&mut self) -> Result<Option<(String, ServerEvent)>> {
-        self.core.recv_event().await
-    }
-
     pub async fn shutdown(mut self) -> Result<()> {
         tracing::info!("stdio server client shutdown requested");
         self.core.shutdown().await;
@@ -733,7 +692,6 @@ mod tests {
     use crate::client_core::ClientWriter;
     use crate::client_core::PendingResponses;
     use crate::client_core::ServerClientCore;
-    use chrono::Utc;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use tokio::io::AsyncBufRead;
@@ -753,16 +711,6 @@ mod tests {
             terminal: false,
             session: None,
             meta: None,
-        }
-    }
-
-    fn test_agent_capabilities_with_session_list() -> AcpAgentCapabilities {
-        AcpAgentCapabilities {
-            session_capabilities: devo_protocol::AcpSessionCapabilities {
-                list: Some(devo_protocol::AcpSessionListCapabilities::default()),
-                ..Default::default()
-            },
-            ..Default::default()
         }
     }
 
@@ -846,379 +794,6 @@ mod tests {
 
         let (result, mut client) = initialize.await.expect("initialize task joins");
         result.expect("initialize response is accepted");
-        let _ = client.child.start_kill();
-        let _ = client.child.wait().await;
-    }
-
-    #[tokio::test]
-    async fn session_start_accepts_standard_acp_response_without_devo_metadata() {
-        let (child, stdin, stdout) = request_capture_child_for_turn_start_test().await;
-        let (mut client, pending) =
-            spawn_test_stdio_client(child, stdin, default_test_client_capabilities()).await;
-        let cwd = std::env::current_dir().expect("current dir");
-        let additional_directory = cwd.join("shared");
-        let session_id = devo_protocol::SessionId::new();
-        let params = SessionStartParams {
-            cwd: cwd.clone(),
-            additional_directories: vec![additional_directory.clone()],
-            ephemeral: true,
-            title: Some("ACP session".to_string()),
-            model: Some("test-model".to_string()),
-            model_binding_id: Some("binding".to_string()),
-        };
-        let mut stdout_lines = BufReader::new(stdout).lines();
-
-        let session_start = tokio::spawn(async move {
-            let result = client.session_start(params).await;
-            (result, client)
-        });
-
-        let request = read_request_line(&mut stdout_lines).await;
-        assert_eq!(request["method"], ACP_SESSION_NEW_METHOD);
-        pending
-            .lock()
-            .await
-            .remove(&1)
-            .expect("session/new has pending response")
-            .send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "sessionId": session_id
-                }
-            }))
-            .expect("send session/new response");
-
-        let (result, mut client) = session_start.await.expect("session_start task joins");
-        let session = result
-            .expect("standard ACP session/new response is accepted")
-            .session;
-        let expected = SessionMetadata {
-            session_id,
-            cwd,
-            additional_directories: vec![additional_directory],
-            created_at: session.created_at,
-            updated_at: session.updated_at,
-            last_activity_at: session.updated_at,
-            title: Some("ACP session".to_string()),
-            title_state: SessionTitleState::Generating,
-            parent_session_id: None,
-            fork_from_id: None,
-            fork_at_turn_id: None,
-            agent_path: None,
-            agent_nickname: None,
-            agent_role: None,
-            ephemeral: true,
-            model: Some("test-model".to_string()),
-            model_binding_id: Some("binding".to_string()),
-            reasoning_effort_selection: None,
-            reasoning_effort: None,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            total_tokens: 0,
-            total_cache_creation_tokens: 0,
-            total_cache_read_tokens: 0,
-            prompt_token_estimate: 0,
-            last_query_usage: None,
-            last_query_total_tokens: 0,
-            last_context_occupancy: None,
-            status: SessionRuntimeStatus::Idle,
-            collaboration_mode: Default::default(),
-            effective_context_window: None,
-            permission_preset: None,
-        };
-        assert_eq!(session, expected);
-
-        let _ = client.child.start_kill();
-        let _ = client.child.wait().await;
-    }
-
-    #[tokio::test]
-    async fn session_list_accepts_standard_acp_sessions_without_devo_metadata() {
-        let (child, stdin, stdout) = request_capture_child_for_turn_start_test().await;
-        let (mut client, pending) =
-            spawn_test_stdio_client(child, stdin, default_test_client_capabilities()).await;
-        client
-            .core
-            .set_agent_capabilities_for_test(test_agent_capabilities_with_session_list());
-        let cwd = std::env::current_dir().expect("current dir");
-        let additional_directory = cwd.join("shared");
-        let session_id = devo_protocol::SessionId::new();
-        let updated_at = "2026-06-20T00:00:00Z";
-        let expected_timestamp = chrono::DateTime::parse_from_rfc3339(updated_at)
-            .expect("parse updatedAt")
-            .with_timezone(&Utc);
-        let mut stdout_lines = BufReader::new(stdout).lines();
-
-        let session_list = tokio::spawn(async move {
-            let result = client.session_list().await;
-            (result, client)
-        });
-
-        let request = read_request_line(&mut stdout_lines).await;
-        assert_eq!(
-            request,
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "session/list",
-                "params": {}
-            })
-        );
-        pending
-            .lock()
-            .await
-            .remove(&1)
-            .expect("session/list has pending response")
-            .send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "sessions": [
-                        {
-                            "sessionId": session_id,
-                            "cwd": cwd,
-                            "title": "External ACP",
-                            "updatedAt": updated_at,
-                            "additionalDirectories": [additional_directory]
-                        }
-                    ]
-                }
-            }))
-            .expect("send session/list response");
-
-        let (result, mut client) = session_list.await.expect("session_list task joins");
-        assert_eq!(
-            result.expect("standard ACP session/list response is accepted"),
-            vec![SessionMetadata {
-                session_id,
-                cwd,
-                additional_directories: vec![additional_directory],
-                created_at: expected_timestamp,
-                updated_at: expected_timestamp,
-                last_activity_at: expected_timestamp,
-                title: Some("External ACP".to_string()),
-                title_state: SessionTitleState::Generating,
-                parent_session_id: None,
-                fork_from_id: None,
-                fork_at_turn_id: None,
-                agent_path: None,
-                agent_nickname: None,
-                agent_role: None,
-                ephemeral: false,
-                model: None,
-                model_binding_id: None,
-                reasoning_effort_selection: None,
-                reasoning_effort: None,
-                total_input_tokens: 0,
-                total_output_tokens: 0,
-                total_tokens: 0,
-                total_cache_creation_tokens: 0,
-                total_cache_read_tokens: 0,
-                prompt_token_estimate: 0,
-                last_query_usage: None,
-                last_query_total_tokens: 0,
-                last_context_occupancy: None,
-                status: SessionRuntimeStatus::Idle,
-                collaboration_mode: Default::default(),
-                effective_context_window: None,
-                permission_preset: None,
-            }]
-        );
-
-        let _ = client.child.start_kill();
-        let _ = client.child.wait().await;
-    }
-
-    #[tokio::test]
-    async fn session_resume_accepts_standard_acp_response_without_devo_metadata() {
-        let (child, stdin, stdout) = request_capture_child_for_turn_start_test().await;
-        let (mut client, pending) =
-            spawn_test_stdio_client(child, stdin, default_test_client_capabilities()).await;
-        client
-            .core
-            .set_agent_capabilities_for_test(test_agent_capabilities_with_session_list());
-        let cwd = std::env::current_dir().expect("current dir");
-        let additional_directory = cwd.join("shared");
-        let session_id = devo_protocol::SessionId::new();
-        let updated_at = "2026-06-20T00:00:00Z";
-        let expected_timestamp = chrono::DateTime::parse_from_rfc3339(updated_at)
-            .expect("parse updatedAt")
-            .with_timezone(&Utc);
-        let expected_session = SessionMetadata {
-            session_id,
-            cwd: cwd.clone(),
-            additional_directories: vec![additional_directory.clone()],
-            created_at: expected_timestamp,
-            updated_at: expected_timestamp,
-            last_activity_at: expected_timestamp,
-            title: Some("External ACP".to_string()),
-            title_state: SessionTitleState::Generating,
-            parent_session_id: None,
-            fork_from_id: None,
-            fork_at_turn_id: None,
-            agent_path: None,
-            agent_nickname: None,
-            agent_role: None,
-            ephemeral: false,
-            model: None,
-            model_binding_id: None,
-            reasoning_effort_selection: None,
-            reasoning_effort: None,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            total_tokens: 0,
-            total_cache_creation_tokens: 0,
-            total_cache_read_tokens: 0,
-            prompt_token_estimate: 0,
-            last_query_usage: None,
-            last_query_total_tokens: 0,
-            last_context_occupancy: None,
-            status: SessionRuntimeStatus::Idle,
-            collaboration_mode: Default::default(),
-            effective_context_window: None,
-            permission_preset: None,
-        };
-        let mut stdout_lines = BufReader::new(stdout).lines();
-
-        let session_resume = tokio::spawn(async move {
-            let result = client
-                .session_resume(SessionResumeParams { session_id })
-                .await;
-            (result, client)
-        });
-
-        let list_request = read_request_line(&mut stdout_lines).await;
-        assert_eq!(list_request["method"], ACP_SESSION_LIST_METHOD);
-        pending
-            .lock()
-            .await
-            .remove(&1)
-            .expect("session/list has pending response")
-            .send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "sessions": [
-                        {
-                            "sessionId": session_id,
-                            "cwd": cwd,
-                            "title": "External ACP",
-                            "updatedAt": updated_at,
-                            "additionalDirectories": [additional_directory]
-                        }
-                    ]
-                }
-            }))
-            .expect("send session/list response");
-
-        let resume_request = read_request_line(&mut stdout_lines).await;
-        assert_eq!(
-            resume_request,
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "session/resume",
-                "params": {
-                    "sessionId": session_id,
-                    "cwd": cwd,
-                    "additionalDirectories": [additional_directory],
-                    "mcpServers": []
-                }
-            })
-        );
-        pending
-            .lock()
-            .await
-            .remove(&2)
-            .expect("session/resume has pending response")
-            .send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "result": {}
-            }))
-            .expect("send session/resume response");
-
-        let (result, mut client) = session_resume.await.expect("session_resume task joins");
-        assert_eq!(
-            result.expect("standard ACP session/resume response is accepted"),
-            SessionResumeResult {
-                session: expected_session,
-                latest_turn: None,
-                loaded_item_count: 0,
-                history_items: Vec::new(),
-                pending_texts: Vec::new(),
-            }
-        );
-
-        let _ = client.child.start_kill();
-        let _ = client.child.wait().await;
-    }
-
-    #[tokio::test]
-    async fn turn_start_sends_native_method_with_full_params() {
-        let (child, stdin, stdout) = request_capture_child_for_turn_start_test().await;
-        let (mut client, pending) =
-            spawn_test_stdio_client(child, stdin, default_test_client_capabilities()).await;
-        let params = TurnStartParams {
-            session_id: devo_protocol::SessionId::new(),
-            input: vec![devo_protocol::InputItem::Text {
-                text: "research this".to_string(),
-            }],
-            model: Some("test-model".to_string()),
-            model_binding_id: Some("test-binding".to_string()),
-            reasoning_effort_selection: Some("high".to_string()),
-            sandbox: Some("workspace-write".to_string()),
-            approval_policy: Some("on-request".to_string()),
-            cwd: Some(PathBuf::from("workspace")),
-            collaboration_mode: devo_protocol::CollaborationMode::Plan,
-            execution_mode: devo_protocol::TurnExecutionMode::Regular,
-        };
-        let expected_params = serde_json::to_value(&params).expect("serialize turn params");
-        let mut stdout_lines = BufReader::new(stdout).lines();
-
-        let turn_start = tokio::spawn(async move {
-            let result = client.turn_start(params).await;
-            (result, client)
-        });
-        let request_line = timeout(Duration::from_secs(5), stdout_lines.next_line())
-            .await
-            .expect("read request line before timeout")
-            .expect("read request line")
-            .expect("request line is present");
-        let request =
-            serde_json::from_str::<serde_json::Value>(&request_line).expect("request line is JSON");
-
-        assert_eq!(
-            request,
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "turn/start",
-                "params": expected_params,
-            })
-        );
-
-        let response_tx = pending
-            .lock()
-            .await
-            .remove(&1)
-            .expect("turn_start has pending response");
-        response_tx
-            .send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "disposition": "started",
-                    "turn_id": devo_protocol::TurnId::new(),
-                    "status": "Running",
-                    "accepted_at": "2026-06-20T00:00:00Z"
-                }
-            }))
-            .expect("send turn_start response");
-        let (result, mut client) = turn_start.await.expect("turn_start task joins");
-        result.expect("turn_start response is accepted");
-
         let _ = client.child.start_kill();
         let _ = client.child.wait().await;
     }

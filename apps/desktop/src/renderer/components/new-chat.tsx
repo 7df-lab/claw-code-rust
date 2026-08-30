@@ -484,16 +484,19 @@ export function NewChat() {
 
 	/** Persist the model + variant + agent for this project so new sessions remember it. */
 	const persistProjectModel = useCallback(() => {
-		if (!effectiveModel || !selectedDirectory) return
+		// Only an explicit selection (or the project preference it was seeded
+		// from) may persist — a fallback-resolved model would poison the
+		// preference with slugs/defaults the user never chose.
+		if (!selectedModel || !selectedDirectory) return
 		appStore.set(setProjectModelAtom, {
 			directory: selectedDirectory,
 			model: {
-				...effectiveModel,
+				...selectedModel,
 				variant: selectedVariant,
 				agent: selectedAgent ?? undefined,
 			},
 		})
-	}, [effectiveModel, selectedDirectory, selectedVariant, selectedAgent])
+	}, [selectedModel, selectedDirectory, selectedVariant, selectedAgent])
 
 	/** Navigate to the chat view for a given session. */
 	const navigateToSession = useCallback(
@@ -525,7 +528,7 @@ export function NewChat() {
 			navigateToSession(session.id)
 
 			await sendPrompt(selectedDirectory, session.id, promptText, {
-				model: effectiveModel ?? undefined,
+				model: selectedModel ?? undefined,
 				agent: selectedAgent ?? undefined,
 				variant: selectedVariant,
 				files,
@@ -536,7 +539,7 @@ export function NewChat() {
 			selectedDirectory,
 			createSession,
 			sendPrompt,
-			effectiveModel,
+			selectedModel,
 			selectedAgent,
 			selectedVariant,
 			clearDraft,
@@ -622,7 +625,7 @@ export function NewChat() {
 
 					// Phase 3: Send the prompt
 					await sendPrompt(sdkDirectory, session.id, promptText, {
-						model: effectiveModel ?? undefined,
+						model: selectedModel ?? undefined,
 						agent: selectedAgent ?? undefined,
 						variant: selectedVariant,
 						files,
@@ -642,7 +645,7 @@ export function NewChat() {
 			selectedDirectory,
 			createSession,
 			sendPrompt,
-			effectiveModel,
+			selectedModel,
 			selectedAgent,
 			selectedVariant,
 			clearDraft,

@@ -61,17 +61,21 @@ describe("SessionRow", () => {
 			hasSelectedBackground: markup.includes("bg-black/[0.07]"),
 			hasLightHoverBackground: markup.includes("hover:bg-black/[0.04]"),
 			hasDarkHoverBackground: markup.includes("dark:hover:bg-white/[0.06]"),
-			hidesStatusOnHover: markup.includes("group-hover/sidebar-row:opacity-0"),
-			hidesStatusWhenMenuOpen: markup.includes("group-has-[[data-popup-open]]/sidebar-row:opacity-0"),
-			showsActionsOnHover: markup.includes("group-hover/sidebar-row:opacity-100"),
-			showsActionsWhenMenuOpen: markup.includes("group-has-[[data-popup-open]]/sidebar-row:opacity-100"),
+			hidesStatusOnRowHover: markup.includes("group-hover/sidebar-row:opacity-0"),
+			hidesStatusWhenMenuOpen: markup.includes(
+				"group-has-[[data-popup-open]]/sidebar-row:opacity-0",
+			),
+			showsActionsOnRowHover: markup.includes("group-hover/sidebar-row:opacity-100"),
+			showsActionsWhenMenuOpen: markup.includes(
+				"group-has-[[data-popup-open]]/sidebar-row:opacity-100",
+			),
 		}).toEqual({
 			hasSelectedBackground: true,
 			hasLightHoverBackground: false,
 			hasDarkHoverBackground: false,
-			hidesStatusOnHover: true,
+			hidesStatusOnRowHover: true,
 			hidesStatusWhenMenuOpen: true,
-			showsActionsOnHover: true,
+			showsActionsOnRowHover: true,
 			showsActionsWhenMenuOpen: true,
 		})
 	})
@@ -90,17 +94,23 @@ describe("SessionRow", () => {
 		expect({
 			hasLightHoverBackground: markup.includes("hover:bg-black/[0.04]"),
 			hasDarkHoverBackground: markup.includes("dark:hover:bg-white/[0.06]"),
-			hidesStatusOnHover: markup.includes("group-hover/sidebar-row:opacity-0"),
-			hidesStatusWhenMenuOpen: markup.includes("group-has-[[data-popup-open]]/sidebar-row:opacity-0"),
-			showsActionsOnHover: markup.includes("group-hover/sidebar-row:opacity-100"),
-			fadesStatusAndMenu: markup.includes("transition-[background-color,color,opacity] duration-150"),
+			hidesStatusOnRowHover: markup.includes("group-hover/sidebar-row:opacity-0"),
+			hidesStatusWhenMenuOpen: markup.includes(
+				"group-has-[[data-popup-open]]/sidebar-row:opacity-0",
+			),
+			showsActionsOnRowHover: markup.includes("group-hover/sidebar-row:opacity-100"),
+			hasActionTransition: markup.includes("transition-[color,opacity]"),
+			hasIndependentActionHoverBackground: markup.includes("hover:bg-black/[0.06]"),
+			hasIndependentDarkActionHoverBackground: markup.includes("dark:hover:bg-white/[0.08]"),
 		}).toEqual({
 			hasLightHoverBackground: true,
 			hasDarkHoverBackground: true,
-			hidesStatusOnHover: true,
+			hidesStatusOnRowHover: true,
 			hidesStatusWhenMenuOpen: true,
-			showsActionsOnHover: true,
-			fadesStatusAndMenu: false,
+			showsActionsOnRowHover: true,
+			hasActionTransition: true,
+			hasIndependentActionHoverBackground: false,
+			hasIndependentDarkActionHoverBackground: false,
 		})
 	})
 

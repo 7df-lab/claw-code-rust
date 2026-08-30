@@ -11,6 +11,56 @@ use crate::{
 };
 use devo_protocol::{CollaborationMode, PermissionPreset, StopReason, TurnFailureReason};
 
+/// Serde adapter for the frozen v1 rollout spelling of title states.
+///
+/// `SessionTitleState` is also part of the Native protocol, whose enum
+/// variants use camelCase. Legacy rollout lines predate that wire contract
+/// and must continue to use their original PascalCase variant names.
+mod legacy_title_state {
+    use devo_protocol::{SessionTitleFinalSource, SessionTitleState};
+    use serde::Deserialize;
+    use serde::de::Deserializer;
+    use serde::ser::Serializer;
+
+    #[derive(Deserialize)]
+    enum WireState {
+        #[serde(alias = "unset")]
+        Unset,
+        #[serde(alias = "generating", alias = "Provisional", alias = "provisional")]
+        Generating,
+        #[serde(alias = "final")]
+        Final(SessionTitleFinalSource),
+    }
+
+    pub fn serialize<S>(value: &SessionTitleState, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            SessionTitleState::Unset => {
+                serializer.serialize_unit_variant("SessionTitleState", 0, "Unset")
+            }
+            SessionTitleState::Generating => {
+                serializer.serialize_unit_variant("SessionTitleState", 1, "Generating")
+            }
+            SessionTitleState::Final(source) => {
+                serializer.serialize_newtype_variant("SessionTitleState", 2, "Final", source)
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SessionTitleState, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match WireState::deserialize(deserializer)? {
+            WireState::Unset => SessionTitleState::Unset,
+            WireState::Generating => SessionTitleState::Generating,
+            WireState::Final(source) => SessionTitleState::Final(source),
+        })
+    }
+}
+
 /// Stores persistent metadata for one session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -53,6 +103,7 @@ pub struct SessionRecord {
     /// The current best-known title for the session.
     pub title: Option<String>,
     /// The lifecycle state for the current session title.
+    #[serde(with = "legacy_title_state")]
     pub title_state: SessionTitleState,
     /// The active sandbox policy description for the session.
     pub sandbox_policy: String,
@@ -440,6 +491,7 @@ pub struct SessionTitleUpdatedLine {
     /// The new title value.
     pub title: String,
     /// The new title lifecycle state.
+    #[serde(with = "legacy_title_state")]
     pub title_state: SessionTitleState,
     /// The previous title value, when there was one.
     pub previous_title: Option<String>,

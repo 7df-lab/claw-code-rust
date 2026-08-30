@@ -260,10 +260,15 @@ impl V2InverseProjector {
             model: (!session.model.model.is_empty()).then(|| session.model.model.clone()),
             // Not modeled canonically; only the provider string survives.
             model_binding_id: None,
-            reasoning_effort_selection: session
-                .model
-                .reasoning_effort
-                .map(|effort| effort.to_string()),
+            // The settings snapshot carries the raw selection literal
+            // (toggle keywords included); the `ModelBinding` enum only holds
+            // the request-parameter subset, so prefer settings when present.
+            reasoning_effort_selection: session.settings.reasoning_effort.clone().or_else(|| {
+                session
+                    .model
+                    .reasoning_effort
+                    .map(|effort| effort.to_string())
+            }),
             cwd: session.cwd.clone(),
             additional_directories: session.additional_directories.clone(),
             cli_version: extras

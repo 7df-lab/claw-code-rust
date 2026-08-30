@@ -385,8 +385,9 @@ async fn queued_input_drains_into_followup_turn_and_broadcasts_empty_queue() -> 
                 "id": 4,
                 "method": "turn/start",
                 "params": {
-                    "session_id": session_id,
+                    "sessionId": session_id,
                     "input": [{ "type": "text", "text": "Start with the tool." }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "model": null,
                     "thinking": null,
                     "sandbox": null,
@@ -415,6 +416,7 @@ async fn queued_input_drains_into_followup_turn_and_broadcasts_empty_queue() -> 
                 "params": {
                     "sessionId": session_id,
                     "input": [{ "type": "text", "text": QUEUED_TEXT }],
+                    "idempotencyKey": format!("native-test-turn-{}", uuid::Uuid::new_v4()),
                     "idempotencyKey": "queue-drain-audit"
                 }
             }),

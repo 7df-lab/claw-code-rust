@@ -36,6 +36,7 @@ When a user changes a session setting, the program must acknowledge the change o
 - A user sees the current model struggling and switches the model mid-turn; the next model call within the same turn uses the new model.
 - A user changes a setting, quits the program before the active turn finishes, relaunches, and finds the new setting restored.
 - A user changes a setting twice in quick succession; the final state reflects the last change, both in the running process and after a restart.
+- A user opens a session whose history is still loading (or failed to load) and changes a setting; the durable session snapshot is updated without requiring a prior `session/resume`.
 
 ## Functional Requirements
 
@@ -51,6 +52,7 @@ When a user changes a session setting, the program must acknowledge the change o
 
 - Every authorization-relevant decision made under live settings must be attributable after the fact: decision traces and turn records carry the settings epoch in effect.
 - The settings write path must not perform unbounded waits on the session actor or on disk; failures surface as request errors.
+- A durable session settings update must resolve the session from its persisted record; a live session actor is optional and is used only for best-effort runtime notification.
 - The behavior of each setting under mid-turn change must be documented as a contract, not inferred from implementation.
 
 ## Acceptance Criteria

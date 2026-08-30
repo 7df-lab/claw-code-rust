@@ -142,11 +142,10 @@ pub(crate) fn session_switched_event_from_restore(
         model: Some(session.model.model.clone()),
         model_binding_id: (session.model.provider != "unknown")
             .then(|| session.model.provider.clone()),
-        reasoning_effort_selection: session
-            .settings
-            .reasoning_effort
-            .map(|effort| effort.to_string()),
-        reasoning_effort: session.settings.reasoning_effort,
+        reasoning_effort_selection: session.settings.reasoning_effort.clone(),
+        // Effective request-parameter effort (typed enum), not the raw
+        // selection literal that lives in `settings`.
+        reasoning_effort: session.model.reasoning_effort,
         active_agent_label,
         total_input_tokens: total_usage.input_tokens as usize,
         total_output_tokens: total_usage.output_tokens as usize,

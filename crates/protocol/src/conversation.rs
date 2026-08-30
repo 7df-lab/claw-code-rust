@@ -107,9 +107,11 @@ define_id!(PendingInputId);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionTitleState {
+    #[serde(alias = "Unset")]
     Unset,
-    #[serde(alias = "Provisional")]
+    #[serde(alias = "Provisional", alias = "Generating")]
     Generating,
+    #[serde(alias = "Final")]
     Final(SessionTitleFinalSource),
 }
 

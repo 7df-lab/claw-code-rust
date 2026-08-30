@@ -14,6 +14,7 @@ class FakeNativeTransport implements DevoNativeTransport {
 	pendingControlRequests: unknown[] = []
 	subscriptionCursors: Array<{ streamId: string; seq: number }> = []
 	sessionItems: unknown[] = []
+	resumeSession?: unknown
 
 	async request(method: string, params?: unknown, directory?: string): Promise<unknown> {
 		this.requests.push({ method, params, directory })
@@ -51,7 +52,7 @@ class FakeNativeTransport implements DevoNativeTransport {
 				return editedMessageResult
 			case "session/resume":
 				return {
-					session: nativeSession,
+					session: this.resumeSession ?? nativeSession,
 					lastContextOccupancy: nativeOccupancy,
 				}
 			case "session/items/list":
@@ -1218,6 +1219,27 @@ describe("Native desktop SDK interactions", () => {
 		const after = (await client.session.get({ sessionID: nativeSession.id })).data
 		expect(after?.time.lastActivity).toBe(Date.parse("2026-08-24T00:00:08Z"))
 		expect(after?.time.updated).toBe(Date.parse("2026-08-24T00:00:08Z"))
+	})
+
+	test("loading session history emits the resume-enriched snapshot as session.updated", async () => {
+		const transport = new FakeNativeTransport()
+		transport.resumeSession = {
+			...nativeSession,
+			model: { provider: "test", model: "alt-model" },
+			settings: { ...nativeSession.settings, reasoningEffort: "enabled", mode: "plan" },
+		}
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+		await client.session.messages({ sessionID: nativeSession.id })
+
+		// The cold session/list snapshot carries the base model; resume is
+		// authoritative for persisted per-session selections, so its enriched
+		// snapshot must reach renderer session stores (they re-seed the
+		// composer from session.updated) instead of staying client-internal.
+		const update = await nextPayloadOfType(stream, "session.updated")
+		expect(update.properties.session.model?.model).toBe("alt-model")
+		expect(update.properties.session.settings?.reasoningEffort).toBe("enabled")
+		expect(update.properties.session.settings?.mode).toBe("plan")
 	})
 
 	test("session/message/edit sends canonical params", async () => {

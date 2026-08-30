@@ -261,33 +261,6 @@ impl ServerRuntime {
         }
 
         let response = match method.as_str() {
-            "session/start" => {
-                let request_id = id?;
-                let params: SessionStartParams = match serde_json::from_value(params) {
-                    Ok(params) => params,
-                    Err(error) => {
-                        return Some(IncomingResponse::new(self.error_response(
-                            request_id,
-                            ProtocolErrorCode::InvalidParams,
-                            format!("invalid session/start params: {error}"),
-                        )));
-                    }
-                };
-                let response = self
-                    .start_session_with_registry(connection_id, request_id, params, None)
-                    .await;
-                if let Ok(success) =
-                    serde_json::from_value::<SuccessResponse<SessionStartResult>>(response.clone())
-                {
-                    self.subscribe_connection_to_session(
-                        connection_id,
-                        success.result.session.session_id,
-                        None,
-                    )
-                    .await;
-                }
-                Some(response)
-            }
             // Update session metadata, including the current model and reasoning effort.
             "session/metadata/update" => Some(
                 self.handle_native_session_metadata_update(id?, params)
@@ -3797,23 +3770,22 @@ mod tests {
                 connection_id,
                 serde_json::json!({
                     "id": 100,
-                    "method": "session/start",
+                    "method": "session/new",
                     "params": {
                         "cwd": data_root,
-                        "ephemeral": false,
-                        "title": "queue session",
-                        "model": "test-model"
+                        "idempotencyKey": format!("test-session-{}", Uuid::new_v4())
                     }
                 }),
             )
             .await
-            .expect("session/start response");
-        Ok(
-            serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(response)?
-                .result
-                .session
-                .session_id,
-        )
+            .expect("session/new response");
+        let native_session = serde_json::from_value::<
+            crate::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
+        >(response.clone())
+        .map_err(|error| anyhow::anyhow!("session/new response {response}: {error}"))?
+        .result
+        .session;
+        Ok(SessionId::try_from(native_session.id.as_str())?)
     }
 
     async fn start_turn(
@@ -3829,20 +3801,18 @@ mod tests {
                     "id": 101,
                     "method": "turn/start",
                     "params": {
-                        "session_id": session_id,
+                        "sessionId": session_id,
                         "input": [{ "type": "text", "text": text }],
-                        "model": null,
-                        "sandbox": null,
-                        "approval_policy": null,
-                        "cwd": null
+                        "idempotencyKey": format!("test-turn-{}", Uuid::new_v4())
                     }
                 }),
             )
             .await
             .expect("turn/start response");
-        let result: crate::SuccessResponse<crate::TurnStartResult> =
-            serde_json::from_value(response)?;
-        Ok(result.result.turn_id().expect("turn started"))
+        let result: crate::SuccessResponse<devo_protocol::native::rpc_turn::TurnStartResult> =
+            serde_json::from_value(response.clone())
+                .map_err(|error| anyhow::anyhow!("turn/start response {response}: {error}"))?;
+        Ok(TurnId::try_from(result.result.turn.id.as_str())?)
     }
 
     #[tokio::test]
@@ -4089,12 +4059,9 @@ mod tests {
                         "id": 300,
                         "method": "turn/start",
                         "params": {
-                            "session_id": session_id,
+                            "sessionId": session_id,
                             "input": [{ "type": "text", "text": "wait" }],
-                            "model": null,
-                            "sandbox": null,
-                            "approval_policy": null,
-                            "cwd": null
+                            "idempotencyKey": "turn-start-state-change-gate"
                         }
                     }),
                 )
@@ -4528,21 +4495,22 @@ mod tests {
                 connection_id,
                 serde_json::json!({
                     "id": 100,
-                    "method": "session/start",
+                    "method": "session/new",
                     "params": {
                         "cwd": data_root.path(),
-                        "ephemeral": false,
-                        "model": "test-model"
+                        "idempotencyKey": "queue-push-session"
                     }
                 }),
             )
             .await
-            .expect("session/start response");
-        let session_id =
-            serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(response)?
-                .result
-                .session
-                .session_id;
+            .expect("session/new response");
+        let native_session = serde_json::from_value::<
+            crate::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
+        >(response)?
+        .result
+        .session
+        .id;
+        let session_id = SessionId::try_from(native_session.as_str())?;
         start_turn(&runtime, connection_id, session_id, "first prompt").await?;
 
         // Wait until the turn is executing inside the actor.
@@ -4619,21 +4587,22 @@ mod tests {
                 connection_id,
                 serde_json::json!({
                     "id": 100,
-                    "method": "session/start",
+                    "method": "session/new",
                     "params": {
                         "cwd": data_root.path(),
-                        "ephemeral": false,
-                        "model": "test-model"
+                        "idempotencyKey": "busy-turn-session"
                     }
                 }),
             )
             .await
-            .expect("session/start response");
-        let session_id =
-            serde_json::from_value::<crate::SuccessResponse<crate::SessionStartResult>>(response)?
-                .result
-                .session
-                .session_id;
+            .expect("session/new response");
+        let native_session = serde_json::from_value::<
+            crate::SuccessResponse<devo_protocol::native::rpc_session::SessionNewResult>,
+        >(response)?
+        .result
+        .session
+        .id;
+        let session_id = SessionId::try_from(native_session.as_str())?;
         start_turn(&runtime, connection_id, session_id, "first prompt").await?;
 
         for _ in 0..500 {
@@ -4704,11 +4673,10 @@ mod tests {
         Ok(())
     }
 
-    /// Same gate holder, same fix: a manual compaction task takes
-    /// `state_change_gate` across the `compact_history` provider call
-    /// (runtime/handlers/compaction.rs), but the compaction turn is the
-    /// active turn, so a `session/queue/push` takes the gate-free busy
-    /// path and responds immediately.
+    /// A manual compaction task releases `state_change_gate` before the
+    /// `compact_history` provider call (runtime/handlers/compaction.rs), so
+    /// admission and queue operations remain responsive while the compaction
+    /// turn is active.
     #[tokio::test]
     async fn queue_push_responds_immediately_during_manual_compaction() -> Result<()> {
         let data_root = TempDir::new()?;
@@ -4755,37 +4723,20 @@ mod tests {
             Some(compaction_turn_id)
         );
 
-        // Wait until the compaction task actually holds `state_change_gate`
-        // inside `compact_history` (a push that slips in beforehand queues
-        // fine — the stall only applies while the summarizer is in flight).
+        // Compaction snapshots state under the gate, then releases it before
+        // entering the provider call. Verify the long-running summarizer does
+        // not retain the admission gate.
         let session_handle = runtime.session(session_id).await.expect("session");
-        let mut gate_held = false;
-        for _ in 0..50 {
-            match tokio::time::timeout(
-                Duration::from_millis(100),
-                session_handle.lock_state_change(),
-            )
-            .await
-            {
-                Ok(guard) => {
-                    drop(guard);
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(_) => {
-                    gate_held = true;
-                    break;
-                }
-            }
-        }
-        assert!(
-            gate_held,
-            "compaction should be holding state_change_gate across compact_history"
-        );
+        let gate = tokio::time::timeout(
+            Duration::from_millis(100),
+            session_handle.lock_state_change(),
+        )
+        .await
+        .expect("compaction model call must not hold state_change_gate");
+        drop(gate);
 
-        // Fixed behavior: the compaction turn is the active turn, so the
-        // push takes the gate-free busy path and answers `Queued`
-        // immediately even while compaction holds `state_change_gate`
-        // across `compact_history`.
+        // The compaction turn is active, so the push takes the busy path and
+        // answers `Queued` immediately while compaction is in flight.
         let push_runtime = Arc::clone(&runtime);
         let push = tokio::spawn(async move {
             push_runtime
@@ -6542,9 +6493,15 @@ mod tests {
         let result: devo_protocol::native::rpc_session::SessionForkResult =
             serde_json::from_value(forked["result"].clone()).expect("native fork result");
         assert_ne!(result.session.id.as_str(), session_id.to_string());
+        let source_session_id = session_id.to_string();
         assert!(
-            result.session.parent.is_some(),
-            "fork must record parentage"
+            result.session.parent.is_none(),
+            "user fork must not use subagent parentage"
+        );
+        assert_eq!(
+            result.session.fork_from_id.as_ref().map(|id| id.as_str()),
+            Some(source_session_id.as_str()),
+            "user fork must record forkFromId"
         );
 
         let missing = history_request(

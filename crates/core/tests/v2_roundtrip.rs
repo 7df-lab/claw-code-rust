@@ -632,3 +632,35 @@ fn inverse_rejects_turn_scoped_internal_line_without_turn_id() {
     let error = inverse.project_line(&line).expect_err("missing turn id");
     assert_eq!(error, V2InverseError::MissingTurnId);
 }
+
+/// A toggle-keyword effort selection ("enabled") must survive the v1→v2→v1
+/// round trip: the forward projection carries the raw selection into the
+/// canonical settings snapshot, and the inverse prefers that snapshot over
+/// the enum-typed `ModelBinding` slot, which cannot represent the keyword.
+/// Both directions used to parse through the `ReasoningEffort` enum and
+/// silently dropped it.
+#[test]
+fn toggle_effort_selection_round_trips_through_v2() {
+    let with_toggle: Vec<RolloutLine> = live_write_lines()
+        .into_iter()
+        .map(|line| match line {
+            RolloutLine::SessionMeta(mut meta) => {
+                meta.session.reasoning_effort_selection = Some("enabled".into());
+                RolloutLine::SessionMeta(meta)
+            }
+            other => other,
+        })
+        .collect();
+    let expected = Normalizer::new().normalize(&with_toggle);
+    assert_lines_equivalent(&round_trip(&with_toggle), &expected);
+
+    for line in round_trip(&with_toggle) {
+        if let RolloutLine::SessionMeta(meta) = line {
+            assert_eq!(
+                meta.session.reasoning_effort_selection.as_deref(),
+                Some("enabled"),
+                "session selection survives the round trip"
+            );
+        }
+    }
+}

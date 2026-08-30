@@ -27,18 +27,7 @@ interface TraySession {
 	title: string
 	directory: string
 	updatedAt: number
-	totalInputTokens: number
-	totalOutputTokens: number
-	totalTokens: number
-	totalCacheReadTokens: number
 	parentId?: string
-}
-
-interface UsageSummary {
-	inputTokens: number
-	outputTokens: number
-	totalTokens: number
-	cacheReadTokens: number
 }
 
 export function buildDevoTrayMenuTemplate(
@@ -77,8 +66,6 @@ export function buildDevoTrayMenuTemplate(
 		template.push(separator())
 	}
 
-	template.push(...buildUsageSection(discoverySessions))
-	template.push(separator())
 	template.push({
 		label: "New Chat",
 		click: options.onNewChat,
@@ -112,10 +99,6 @@ function buildRunningSection(
 				title: titleForSession(state.title || discovered?.title),
 				directory: state.directory || discovered?.directory || "",
 				updatedAt: discovered?.updatedAt ?? 0,
-				totalInputTokens: discovered?.totalInputTokens ?? 0,
-				totalOutputTokens: discovered?.totalOutputTokens ?? 0,
-				totalTokens: discovered?.totalTokens ?? 0,
-				totalCacheReadTokens: discovered?.totalCacheReadTokens ?? 0,
 			}
 		})
 		.sort((left, right) => right.updatedAt - left.updatedAt)
@@ -190,64 +173,16 @@ function sessionMenuItem(
 	}
 }
 
-function buildUsageSection(sessions: TraySession[]): MenuItemConstructorOptions[] {
-	const usage = summarizeUsage(sessions)
-	return [
-		{ label: "Usage", enabled: false },
-		{ label: `Tokens ${formatTokenCount(usage.totalTokens)}`, enabled: false },
-		{
-			label: `Input ${formatTokenCount(usage.inputTokens)} · Output ${formatTokenCount(
-				usage.outputTokens,
-			)}`,
-			enabled: false,
-		},
-		{ label: `Cache read ${formatTokenCount(usage.cacheReadTokens)}`, enabled: false },
-	]
-}
-
-function summarizeUsage(sessions: TraySession[]): UsageSummary {
-	return sessions.reduce(
-		(summary, session) => ({
-			inputTokens: summary.inputTokens + session.totalInputTokens,
-			outputTokens: summary.outputTokens + session.totalOutputTokens,
-			totalTokens: summary.totalTokens + session.totalTokens,
-			cacheReadTokens: summary.cacheReadTokens + session.totalCacheReadTokens,
-		}),
-		{
-			inputTokens: 0,
-			outputTokens: 0,
-			totalTokens: 0,
-			cacheReadTokens: 0,
-		},
-	)
-}
-
 function normalizeDiscoverySessions(discovery: DiscoveryCache | null): TraySession[] {
 	if (!discovery) return []
 
-	return discovery.sessions.map((session) => {
-		const totalInputTokens = numericSessionField(session, "totalInputTokens")
-		const totalOutputTokens = numericSessionField(session, "totalOutputTokens")
-		const totalTokens =
-			numericSessionField(session, "totalTokens") || totalInputTokens + totalOutputTokens
-
-		return {
-			id: String(session.id),
-			title: titleForSession(session.title),
-			directory: String(session.directory ?? ""),
-			updatedAt: Number(session.time?.updated ?? session.time?.created ?? 0),
-			parentId: session.parentID ? String(session.parentID) : undefined,
-			totalInputTokens,
-			totalOutputTokens,
-			totalTokens,
-			totalCacheReadTokens: numericSessionField(session, "totalCacheReadTokens"),
-		}
-	})
-}
-
-function numericSessionField(session: Session, field: string): number {
-	const value = session[field]
-	return typeof value === "number" && Number.isFinite(value) ? value : 0
+	return discovery.sessions.map((session) => ({
+		id: String(session.id),
+		title: titleForSession(session.title),
+		directory: String(session.directory ?? ""),
+		updatedAt: Number(session.time?.updated ?? session.time?.created ?? 0),
+		parentId: session.parentID ? String(session.parentID) : undefined,
+	}))
 }
 
 function titleForSession(title: unknown): string {
@@ -262,16 +197,6 @@ function truncateTitle(title: string): string {
 function projectNameFromDir(directory: string): string {
 	const parts = directory.split(/[\\/]/).filter(Boolean)
 	return parts.at(-1) ?? "/"
-}
-
-function formatTokenCount(tokens: number): string {
-	if (tokens >= 1_000_000) return `${formatOneDecimal(tokens / 1_000_000)}m`
-	if (tokens >= 1_000) return `${formatOneDecimal(tokens / 1_000)}k`
-	return String(tokens)
-}
-
-function formatOneDecimal(value: number): string {
-	return value.toFixed(1).replace(/\.0$/, "")
 }
 
 function separator(): MenuItemConstructorOptions {

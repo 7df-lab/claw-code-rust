@@ -18,7 +18,6 @@ use super::ids::TurnId;
 use super::model::ModelBinding;
 use super::model::PermissionProfile;
 use super::usage::SessionUsage;
-use crate::ReasoningEffort;
 use crate::SessionTitleState;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
@@ -139,8 +138,13 @@ pub enum SessionParent {
 #[serde(rename_all = "camelCase")]
 pub struct SessionSettings {
     pub permission_profile: PermissionProfile,
+    /// User's reasoning-effort selection as persisted, including the toggle
+    /// keywords `enabled`/`disabled` used by toggle/variant-style models —
+    /// the typed `ReasoningEffort` enum cannot express those, so the snapshot
+    /// carries the raw selection string (same contract as
+    /// `SessionSettingsPatch.reasoning_effort`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<ReasoningEffort>,
+    pub reasoning_effort: Option<String>,
     /// ACP-style session mode id, if one is active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
@@ -171,4 +175,33 @@ pub struct GitInfo {
     /// the dirty flag); fresh snapshots always compute it.
     pub dirty: Option<bool>,
     pub observed_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The settings snapshot carries the raw selection literal — including
+    /// the toggle keywords the `ReasoningEffort` enum cannot express — so a
+    /// "wide write" (patch) always reads back equal from the "snapshot" side.
+    #[test]
+    fn session_settings_reasoning_effort_round_trips_raw_selection() {
+        for literal in ["enabled", "disabled", "high", "xhigh"] {
+            let settings = SessionSettings {
+                permission_profile: PermissionProfile::Default,
+                reasoning_effort: Some(literal.to_string()),
+                mode: None,
+                sandbox_profile: None,
+                effective_context_window: None,
+            };
+            let json = serde_json::to_value(&settings).expect("serialize settings");
+            assert_eq!(
+                json["reasoningEffort"].as_str(),
+                Some(literal),
+                "wire name is reasoningEffort and the literal is preserved"
+            );
+            let back: SessionSettings = serde_json::from_value(json).expect("deserialize settings");
+            assert_eq!(back.reasoning_effort.as_deref(), Some(literal));
+        }
+    }
 }

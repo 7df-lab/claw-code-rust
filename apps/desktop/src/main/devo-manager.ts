@@ -1,5 +1,7 @@
 import { DESKTOP_INITIALIZE_PARAMS } from "@devo-ai/sdk/v2/client"
 import type { JsonRpcId, NativeTransport, NativeTransportEvent, NativeTransportListener } from "./native-stdio-client"
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
 import { app } from "electron"
 import {
 	DEVO_HOME_ENV,
@@ -17,6 +19,8 @@ import { getSettings } from "./settings-store"
 import { waitForEnv } from "./shell-env"
 
 const log = createLogger("devo-manager")
+
+const execFileAsync = promisify(execFile)
 
 const STDIO_URL = "stdio://local"
 const nativeTrafficLogStartupEnv = {
@@ -78,6 +82,58 @@ export function stopServer(): boolean {
 export async function restartServer(): Promise<DevoServer> {
 	stopServer()
 	return ensureServer()
+}
+
+/**
+ * Minimum spacing between protocol-mismatch recycles so a genuine schema bug
+ * in the current build cannot restart-loop the app.
+ */
+const PROTOCOL_RECYCLE_COOLDOWN_MS = 5 * 60_000
+let lastProtocolRecycleAt = 0
+
+/**
+ * Recovers from a stale singleton server.
+ *
+ * At most one real devo-server runs per DEVO_HOME (`~/.devo/server.lock`); a
+ * spawned stdio child that loses the lock silently proxies to the holder
+ * (server `singleton.rs`). When the holder is an older build, this build's
+ * protocol schema rejects its traffic (ProtocolValidationError on e.g.
+ * subscription/create replay). Ask the singleton to shut down, then restart
+ * our own child, which becomes the real server.
+ *
+ * Returns false when the cooldown suppressed the recycle.
+ */
+export async function recycleServerForProtocolMismatch(reason: string): Promise<boolean> {
+	const now = Date.now()
+	if (now - lastProtocolRecycleAt < PROTOCOL_RECYCLE_COOLDOWN_MS) {
+		log.warn(
+			"Skipping Devo server recycle (cooldown); if the error persists, restart the app or run 'devo server --shutdown'",
+			{ reason },
+		)
+		return false
+	}
+	lastProtocolRecycleAt = now
+	log.warn("Recycling Devo server after protocol mismatch", { reason })
+
+	const program = resolveDevoProgram({
+		appPath: app.getAppPath(),
+		env: process.env,
+		isPackaged: app.isPackaged,
+		resourcesPath: process.resourcesPath,
+	})
+	try {
+		await execFileAsync(program, ["server", "--shutdown"], {
+			timeout: 15_000,
+			windowsHide: true,
+		})
+	} catch (error) {
+		// No singleton is running (or it died mid-handshake): the restart below
+		// still brings up a fresh real server of this build.
+		log.debug("Singleton shutdown call did not succeed", { error: String(error) })
+	}
+
+	await restartServer()
+	return true
 }
 
 export async function requestNative(

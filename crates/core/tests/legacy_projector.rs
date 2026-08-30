@@ -89,6 +89,8 @@ fn session_record(n: u128) -> SessionRecord {
         git_branch: Some("main".into()),
         git_origin_url: Some("git@github.com:example/repo.git".into()),
         parent_session_id: None,
+        fork_from_id: None,
+        fork_at_turn_id: None,
         session_context: None,
         latest_turn_context: None,
         collaboration_mode: None,

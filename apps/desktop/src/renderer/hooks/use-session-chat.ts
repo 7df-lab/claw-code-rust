@@ -1,5 +1,5 @@
 import { useAtomValue } from "jotai"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
 	type ChatMessageEntry,
 	type ChatTurn,
@@ -49,7 +49,7 @@ const PAGE_SIZE = PAGE_TURN_COUNT * MESSAGES_PER_TURN_ESTIMATE
 export function useSessionChat(
 	directory: string | null,
 	sessionId: string | null,
-	_isActive = false,
+	isActive = true,
 ) {
 	const isMockMode = useAtomValue(isMockModeAtom)
 	const [loading, setLoading] = useState(false)
@@ -134,7 +134,7 @@ export function useSessionChat(
 
 	// Load the next page of older messages when the user scrolls toward the top.
 	const loadEarlier = useCallback(async () => {
-		if (!sessionId || !directory || loadingEarlier || !hasEarlierMessages) return
+		if (!isActive || !sessionId || !directory || loadingEarlier || !hasEarlierMessages) return
 		const client = getProjectClient(directory)
 		if (!client) return
 
@@ -164,16 +164,16 @@ export function useSessionChat(
 		} finally {
 			setLoadingEarlier(false)
 		}
-	}, [sessionId, directory, loadingEarlier, hasEarlierMessages])
+	}, [isActive, sessionId, directory, loadingEarlier, hasEarlierMessages])
 
 	// Trigger initial fetch when session changes (skip in mock mode -- data is pre-hydrated)
 	useEffect(() => {
-		if (isMockMode) return
+		if (!isActive || isMockMode) return
 		if (!sessionId) return
 		if (syncedRef.current === sessionId) return
 		syncedRef.current = sessionId
 		fetchAndHydrate(sessionId)
-	}, [sessionId, fetchAndHydrate, isMockMode])
+	}, [isActive, sessionId, fetchAndHydrate, isMockMode])
 
 	// Reset per-session refs whenever the active session changes.
 	//
@@ -183,23 +183,28 @@ export function useSessionChat(
 	//   MUST be cleared so the load-earlier affordance from a previous session
 	//   doesn't appear on a freshly-switched session whose atom is still empty.
 	// - loading: if the new session has no cached data yet, pre-set the loading
-	//   flag so the UI shows a spinner instead of "No messages yet" during the
-	//   one render that happens before the fetch effect fires.
-	useEffect(() => {
+	//   flag so the UI shows a skeleton instead of "No messages yet" during the
+	//   first paint before the fetch effect fires.
+	useLayoutEffect(() => {
 		turnsRef.current = []
 		setHasEarlierMessages(false)
 		if (!isMockMode && sessionId) {
 			const hasCachedData = (appStore.get(messagesFamily(sessionId)) ?? []).length > 0
 			if (!hasCachedData) {
 				setLoading(true)
+			} else {
+				setLoading(false)
 			}
 		}
 	}, [sessionId, isMockMode])
+
+	const showLoading = loading && turns.length === 0
 
 	return {
 		turns,
 		rawMessages: entries,
 		loading,
+		showLoading,
 		loadingEarlier,
 		error,
 		hasEarlierMessages,

@@ -353,6 +353,14 @@ pub struct AcpNewSessionParams {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_directories: Vec<PathBuf>,
     pub mcp_servers: Vec<AcpMcpServer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_binding_id: Option<String>,
+    #[serde(default)]
+    pub ephemeral: bool,
     #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<AcpMeta>,
 }

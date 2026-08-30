@@ -261,6 +261,10 @@ mod tests {
                     env: Vec::new(),
                     meta: None,
                 })],
+                title: None,
+                model: None,
+                model_binding_id: None,
+                ephemeral: false,
                 meta: None,
             }
         );

@@ -441,6 +441,8 @@ impl SessionProjector for DefaultProjection {
             title: session.title.clone(),
             title_state: session.title_state.clone(),
             parent_session_id: session.parent_session_id,
+            fork_from_id: session.fork_from_id,
+            fork_at_turn_id: session.fork_at_turn_id,
             agent_path: session.agent_path.clone(),
             agent_nickname: session.agent_nickname.clone(),
             agent_role: session.agent_role.clone(),

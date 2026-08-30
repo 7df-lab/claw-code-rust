@@ -199,5 +199,20 @@ function notifyServerReady(): void {
 }
 
 async function initialize(client: StdioNativeClient): Promise<void> {
-	await client.request("initialize", DESKTOP_INITIALIZE_PARAMS)
+	try {
+		await client.request("initialize", DESKTOP_INITIALIZE_PARAMS)
+	} catch (error) {
+		// A timed-out initialize can still leave a warming stdio child alive; retry once
+		// before surfacing the error to the renderer (common when opening a session cold).
+		if (client.connected() && isInitializeTimeoutError(error)) {
+			log.warn("initialize timed out during cold start; retrying once")
+			await client.request("initialize", DESKTOP_INITIALIZE_PARAMS)
+			return
+		}
+		throw error
+	}
+}
+
+function isInitializeTimeoutError(error: unknown): boolean {
+	return error instanceof Error && error.message.startsWith("initialize request ")
 }

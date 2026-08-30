@@ -143,6 +143,7 @@ mod reference_search;
 mod session_actor;
 mod session_cache;
 mod session_interactive;
+mod session_title;
 mod skills;
 mod subagent_usage;
 mod turn_exec;

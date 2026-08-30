@@ -11,6 +11,7 @@ use ts_rs::TS;
 use crate::ReasoningEffort;
 use crate::SessionId;
 use crate::SessionTitleState;
+use crate::TurnId;
 use crate::TurnUsage;
 use crate::parse_command::ParsedCommand;
 use crate::permissions::PermissionPreset;
@@ -41,6 +42,12 @@ pub struct SessionMetadata {
     pub title_state: SessionTitleState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<SessionId>,
+    /// Source session for a user fork; independent of sub-agent parentage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_from_id: Option<SessionId>,
+    /// Cut turn for a user fork; absent for tip forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_at_turn_id: Option<TurnId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -328,6 +335,8 @@ mod tests {
             title: Some("Test".to_string()),
             title_state: SessionTitleState::Unset,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,

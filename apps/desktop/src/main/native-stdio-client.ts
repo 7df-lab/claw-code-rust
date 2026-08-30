@@ -33,10 +33,15 @@ type PendingRequest = {
 }
 
 const REQUEST_TIMEOUT_MS = 10_000
+/** Cold-starting the managed `devo server` process can exceed the default RPC budget. */
+export const INITIALIZE_REQUEST_TIMEOUT_MS = 60_000
 /** MCP admin RPCs may start a lazy server before listing tools. */
 export const MCP_ADMIN_REQUEST_TIMEOUT_MS = 60_000
 
 export function requestTimeoutMsForMethod(method: string, fallbackMs: number): number | undefined {
+	if (method === "initialize") {
+		return Math.max(fallbackMs, INITIALIZE_REQUEST_TIMEOUT_MS)
+	}
 	if (method === "provider/validate") {
 		return undefined
 	}

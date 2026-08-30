@@ -47,6 +47,8 @@ class FakeNativeTransport implements DevoNativeTransport {
 				return { views: [nativeWorkspaceView] }
 			case "turn/start":
 				return { turn: nativeTurnInProgress }
+			case "session/message/edit":
+				return editedMessageResult
 			case "session/resume":
 				return {
 					session: nativeSession,
@@ -153,6 +155,26 @@ const nativeTurnCompleted = {
 	...nativeTurnInProgress,
 	status: "completed",
 	completedAt: "2026-08-24T00:00:08Z",
+}
+
+const editedMessageResult = {
+	editState: "accepted",
+	replacementTurnId: "turn-2",
+	item: {
+		id: "item-user-edited",
+		sessionId: nativeSession.id,
+		turnId: "turn-2",
+		revision: 2,
+		seq: 1,
+		state: "completed",
+		createdAt: "2026-08-24T00:00:10.000Z",
+		updatedAt: "2026-08-24T00:00:10.000Z",
+		item: {
+			type: "userMessage",
+			content: [{ type: "text", text: "edited" }],
+			entry: "turnStart",
+		},
+	},
 }
 
 const nativeOccupancy = {
@@ -1196,5 +1218,102 @@ describe("Native desktop SDK interactions", () => {
 		const after = (await client.session.get({ sessionID: nativeSession.id })).data
 		expect(after?.time.lastActivity).toBe(Date.parse("2026-08-24T00:00:08Z"))
 		expect(after?.time.updated).toBe(Date.parse("2026-08-24T00:00:08Z"))
+	})
+
+	test("session/message/edit sends canonical params", async () => {
+		const transport = new FakeNativeTransport()
+		const client = createDevoClient({ directory: "/repo", transport })
+		await client.session.create()
+		await client.session.editMessage({
+			sessionID: nativeSession.id,
+			itemID: "item-user-1",
+			text: "edited",
+		})
+		const request = transport.requests.find((entry) => entry.method === "session/message/edit")
+		const params = (request?.params ?? {}) as {
+			sessionId?: string
+			itemId?: string
+			expectedRevision?: number
+			content?: unknown
+			idempotencyKey?: string
+		}
+		expect({
+			method: request?.method,
+			sessionId: params.sessionId,
+			itemId: params.itemId,
+			expectedRevision: params.expectedRevision,
+			content: params.content,
+			hasIdempotencyKey: typeof params.idempotencyKey === "string" && params.idempotencyKey.length > 0,
+		}).toEqual({
+			method: "session/message/edit",
+			sessionId: nativeSession.id,
+			itemId: "item-user-1",
+			expectedRevision: 0,
+			content: [{ type: "text", text: "edited" }],
+			hasIdempotencyKey: true,
+		})
+	})
+
+	test("turn/superseded removes messages from the replaced turn", async () => {
+		const transport = new FakeNativeTransport()
+		transport.sessionItems = [
+			{
+				id: "item-user-1",
+				sessionId: nativeSession.id,
+				turnId: "turn-1",
+				seq: 1,
+				revision: 1,
+				createdAt: "2026-08-24T00:00:00.000Z",
+				updatedAt: "2026-08-24T00:00:00.000Z",
+				state: "completed",
+				item: {
+					type: "userMessage",
+					content: [{ type: "text", text: "hello" }],
+					entry: "turnStart",
+				},
+			},
+			{
+				id: "item-assistant-1",
+				sessionId: nativeSession.id,
+				turnId: "turn-1",
+				seq: 2,
+				revision: 1,
+				createdAt: "2026-08-24T00:00:02.000Z",
+				updatedAt: "2026-08-24T00:00:14.000Z",
+				state: "completed",
+				item: {
+					type: "assistantMessage",
+					text: "world",
+				},
+			},
+		]
+		const client = createDevoClient({ directory: "/repo", transport })
+		const loaded = await client.session.messages({ sessionID: nativeSession.id })
+		expect(loaded.data.map((entry) => entry.info.id).sort()).toEqual([
+			"item-assistant-1",
+			"item-user-1",
+		])
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+		transport.emit({
+			type: "notification",
+			method: "turn/superseded",
+			params: {
+				sessionId: nativeSession.id,
+				supersededTurnId: "turn-1",
+				replacementTurnId: "turn-2",
+				editId: "edit-1",
+				reason: "message_edit_previous",
+			},
+		})
+		expect(await nextPayloadOfType(stream, "message.removed")).toEqual({
+			type: "message.removed",
+			properties: { sessionID: nativeSession.id, messageID: "item-user-1" },
+		})
+		expect(await nextPayloadOfType(stream, "message.removed")).toEqual({
+			type: "message.removed",
+			properties: { sessionID: nativeSession.id, messageID: "item-assistant-1" },
+		})
+		const remaining = await client.session.messages({ sessionID: nativeSession.id })
+		expect(remaining.data).toEqual([])
 	})
 })

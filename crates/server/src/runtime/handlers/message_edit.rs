@@ -29,8 +29,13 @@ impl ServerRuntime {
     /// runs the shared edit machinery and projects the superseding
     /// `UserMessage` revision. `expectedRevision` is enforced
     /// against the rollout-backed canonical history (`0` skips).
+    ///
+    /// If a turn is active for the target message, the server interrupts
+    /// that turn first (without holding `state_change_gate`), then applies
+    /// the same completed/interrupted-turn edit path.
     pub(crate) async fn handle_native_session_message_edit(
         self: &Arc<Self>,
+        connection_id: u64,
         request_id: serde_json::Value,
         params: serde_json::Value,
     ) -> serde_json::Value {
@@ -109,7 +114,7 @@ impl ServerRuntime {
             workspace_restore_policy: Some(params.workspace_restore),
         };
         let response = self
-            .handle_message_edit(request_id.clone(), edit_params)
+            .handle_message_edit(connection_id, request_id.clone(), edit_params)
             .await;
         let Ok(success) =
             serde_json::from_value::<SuccessResponse<MessageEditResult>>(response.clone())
@@ -191,8 +196,84 @@ impl ServerRuntime {
             .map(|item| item.revision)
     }
 
+    /// Interrupts the session's active turn before message edit takes the
+    /// state-change gate. Validates the edit target against durable
+    /// canonical history first — active-turn user messages live in the turn
+    /// working set until MergeTurn, so `export_runtime_session` is not
+    /// authoritative mid-turn.
+    async fn interrupt_active_turn_before_message_edit(
+        self: &Arc<Self>,
+        connection_id: u64,
+        request_id: serde_json::Value,
+        _session_handle: &SessionHandle,
+        params: &MessageEditRequest,
+    ) -> Result<(), serde_json::Value> {
+        let Some(active_turn_id) = self.runtime_active_turn_id(params.session_id).await else {
+            return Ok(());
+        };
+        let expected_target_message_id = params
+            .expected_target_message_id
+            .or(params.target_message_id);
+        let Some(expected) = expected_target_message_id else {
+            return Err(self.error_response(
+                request_id,
+                ProtocolErrorCode::InvalidContentParts,
+                "session/message/edit requires a target item id",
+            ));
+        };
+        let native_session_id =
+            devo_protocol::native::ids::SessionId::from_string(params.session_id.to_string());
+        let history = match self
+            .load_canonical_history(&request_id, native_session_id)
+            .await
+        {
+            Ok(history) => history,
+            Err(response) => return Err(response),
+        };
+        let Some(latest_user) = history.items.iter().rev().find(|item| {
+            matches!(
+                &item.item,
+                devo_protocol::native::item::Item::UserMessage { .. }
+            )
+        }) else {
+            return Err(self.error_response(
+                request_id,
+                ProtocolErrorCode::OlderMessageRequiresFork,
+                "no immediately previous user message is available to edit",
+            ));
+        };
+        if latest_user.id.as_str() != expected.to_string() {
+            return Err(self.error_response(
+                request_id,
+                ProtocolErrorCode::ExpectedTargetMessageMismatch,
+                "expected target message does not match the current editable message",
+            ));
+        }
+
+        let interrupt_response = self
+            .interrupt_turn(
+                request_id.clone(),
+                serde_json::to_value(TurnInterruptParams {
+                    session_id: params.session_id,
+                    turn_id: active_turn_id,
+                    reason: Some("interrupted by session/message/edit".to_string()),
+                })
+                .expect("serialize internal turn interruption"),
+            )
+            .await;
+        if interrupt_response.get("error").is_some() {
+            return Err(interrupt_response);
+        }
+        let _ = self
+            .command_exec_manager
+            .terminate_session(connection_id, params.session_id)
+            .await;
+        Ok(())
+    }
+
     async fn handle_message_edit(
         self: &Arc<Self>,
+        connection_id: u64,
         request_id: serde_json::Value,
         params: MessageEditRequest,
     ) -> serde_json::Value {
@@ -227,17 +308,21 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
-        if self
-            .runtime_active_turn_id(params.session_id)
+
+        // Interrupt any active turn before taking `state_change_gate` so the
+        // mailbox stays short while we wait for terminalization (up to 5s).
+        if let Err(response) = self
+            .interrupt_active_turn_before_message_edit(
+                connection_id,
+                request_id.clone(),
+                &session_handle,
+                &params,
+            )
             .await
-            .is_some()
         {
-            return self.error_response(
-                request_id,
-                ProtocolErrorCode::ActiveTurnEditRejected,
-                "cannot edit the previous message while a turn is active",
-            );
+            return response;
         }
+
         let _state_change_guard = session_handle.lock_state_change().await;
         if self
             .runtime_active_turn_id(params.session_id)

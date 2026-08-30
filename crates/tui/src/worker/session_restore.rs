@@ -124,7 +124,6 @@ pub(crate) fn session_switched_event_from_restore(
     let session = &restore.session;
     let active_agent_label = session.parent.as_ref().map(|parent| {
         let label = match parent {
-            devo_protocol::native::session::SessionParent::Fork { .. } => "Fork".to_string(),
             devo_protocol::native::session::SessionParent::Agent { role, .. } => {
                 role.clone().unwrap_or_else(|| "subagent".to_string())
             }

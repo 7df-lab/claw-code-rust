@@ -32,6 +32,7 @@ import {
 	PencilIcon,
 	PenLineIcon,
 	PinIcon,
+	SplitIcon,
 	TrashIcon,
 } from "lucide-react"
 import {
@@ -137,7 +138,7 @@ const projectInlineRowActionIconClass = "size-3.5 stroke-[1.5]"
 
 function sessionActionIcon(actionId: SessionRowActionId) {
 	if (actionId === "rename") return <PencilIcon className={rowMenuIconClass} />
-	if (actionId === "fork") return <GitForkIcon className={rowMenuIconClass} />
+	if (actionId === "fork") return <SplitIcon className={rowMenuIconClass} />
 	return <TrashIcon className={rowMenuIconClass} />
 }
 
@@ -490,7 +491,7 @@ export const SessionRow = memo(function SessionRow({
 				projectUnavailable && "text-muted-foreground opacity-55",
 			)}
 		>
-			{!isEditing && agent.status === "running" && (
+			{!isEditing && (agent.status === "running" || agent.titleGenerating) && (
 				<span
 					className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2"
 					aria-hidden="true"

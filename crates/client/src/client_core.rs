@@ -259,6 +259,10 @@ impl ServerClientCore {
                     cwd: params.cwd.clone(),
                     additional_directories: params.additional_directories.clone(),
                     mcp_servers: Vec::new(),
+                    title: params.title.clone(),
+                    model: params.model.clone(),
+                    model_binding_id: params.model_binding_id.clone(),
+                    ephemeral: params.ephemeral,
                     meta: None,
                 },
             )
@@ -641,6 +645,17 @@ impl ServerClientCore {
         session_id: SessionId,
         at_turn_id: Option<TurnId>,
     ) -> Result<devo_protocol::native::rpc_session::SessionForkResult> {
+        self.session_fork_native_with_cut(session_id, at_turn_id, None)
+            .await
+    }
+
+    /// Native `session/fork` with an explicit cut mode.
+    pub(crate) async fn session_fork_native_with_cut(
+        &mut self,
+        session_id: SessionId,
+        at_turn_id: Option<TurnId>,
+        cut: Option<devo_protocol::native::rpc_session::SessionForkCut>,
+    ) -> Result<devo_protocol::native::rpc_session::SessionForkResult> {
         self.request(
             "session/fork",
             devo_protocol::native::rpc_session::SessionForkParams {
@@ -650,6 +665,7 @@ impl ServerClientCore {
                 at_turn_id: at_turn_id.map(|turn_id| {
                     devo_protocol::native::ids::TurnId::from_string(turn_id.to_string())
                 }),
+                cut,
             },
         )
         .await
@@ -1453,6 +1469,8 @@ fn acp_session_metadata_from_start_params(
         title: params.title.clone(),
         title_state: acp_title_state(&params.title),
         parent_session_id: None,
+        fork_from_id: None,
+        fork_at_turn_id: None,
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
@@ -1494,6 +1512,8 @@ fn acp_session_metadata_from_session_info(session_info: &AcpSessionInfo) -> Sess
         title: session_info.title.clone(),
         title_state: acp_title_state(&session_info.title),
         parent_session_id: None,
+        fork_from_id: None,
+        fork_at_turn_id: None,
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
@@ -1520,7 +1540,7 @@ fn acp_session_metadata_from_session_info(session_info: &AcpSessionInfo) -> Sess
 
 fn acp_title_state(title: &Option<String>) -> SessionTitleState {
     if title.is_some() {
-        SessionTitleState::Provisional
+        SessionTitleState::Final(SessionTitleFinalSource::ExplicitCreate)
     } else {
         SessionTitleState::Unset
     }

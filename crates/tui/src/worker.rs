@@ -361,7 +361,10 @@ enum OperationCommand {
         mode: RollbackMode,
     },
     /// Fork a new session at a selected user turn.
-    ForkAtUserTurn(u32),
+    ForkAtUserTurn {
+        user_turn_index: u32,
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
+    },
     /// Interrupt the active turn, task, or shell process currently owned by the TUI.
     InterruptActiveWork,
     /// Push input onto the canonical session queue (busy path).
@@ -822,9 +825,16 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    pub(crate) fn fork_at_user_turn(&self, user_turn_index: u32) -> Result<()> {
+    pub(crate) fn fork_at_user_turn(
+        &self,
+        user_turn_index: u32,
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
+    ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::ForkAtUserTurn(user_turn_index))
+            .send(OperationCommand::ForkAtUserTurn {
+                user_turn_index,
+                cut,
+            })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -2482,7 +2492,10 @@ async fn run_worker_inner(
                             }
                         }
                     }
-                    Some(OperationCommand::ForkAtUserTurn(user_turn_index)) => {
+                    Some(OperationCommand::ForkAtUserTurn {
+                        user_turn_index,
+                        cut,
+                    }) => {
                         let Some(active_session_id) = session_id else {
                             let _ = event_tx.send(WorkerEvent::TurnFailed {
                                 message: "no active session exists yet; send a prompt or switch to a saved session first".to_string(),
@@ -2534,7 +2547,7 @@ async fn run_worker_inner(
                             }
                         };
                         match client
-                            .session_fork_native(active_session_id, fork_at)
+                            .session_fork_native_with_cut(active_session_id, fork_at, Some(cut))
                             .await
                         {
                             Ok(result) => {
@@ -6402,8 +6415,10 @@ mod tests {
             updated_at: Utc::now(),
             last_activity_at: Utc::now(),
             title: Some("Saved conversation".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: parent_session_id.map(|_| "root/reviewer".to_string()),
             agent_nickname: parent_session_id.map(|_| "reviewer".to_string()),
             agent_role: parent_session_id.map(|_| "default".to_string()),
@@ -6764,8 +6779,10 @@ mod tests {
             updated_at: Utc::now(),
             last_activity_at: Utc::now(),
             title: Some("Saved conversation".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
@@ -6813,8 +6830,10 @@ mod tests {
             updated_at: Utc::now(),
             last_activity_at: Utc::now(),
             title: Some("Saved conversation".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,

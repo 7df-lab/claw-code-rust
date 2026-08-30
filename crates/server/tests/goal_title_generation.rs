@@ -64,7 +64,17 @@ impl ModelProviderSDK for GoalTitleProvider {
         _request: ModelRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         self.stream_requests.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::pin(stream::pending()))
+        Ok(Box::pin(stream::iter(vec![Ok(StreamEvent::MessageDone {
+            response: ModelResponse {
+                id: "goal-turn".to_string(),
+                content: vec![ResponseContent::Text(
+                    "Goal continuation complete.".to_string(),
+                )],
+                stop_reason: Some(StopReason::EndTurn),
+                usage: Usage::default(),
+                metadata: ResponseMetadata::default(),
+            },
+        })])))
     }
 
     fn name(&self) -> &str {
@@ -123,6 +133,7 @@ async fn goal_set_objective_generates_session_title_for_new_session() -> Result<
         !title_request_contains(&title_requests[0], "/goal"),
         "title request should not include the slash-command wrapper"
     );
+    // goal/set awaits title before continuation; title is Final by RPC return.
     Ok(())
 }
 

@@ -144,14 +144,28 @@ pub struct SessionResumeResult {
 
 // ── session/fork ──
 
-/// Forks at a turn boundary into parallel history; the goal is copied by
-/// value.
+/// Whether the selected user turn is kept in the forked history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionForkCut {
+    /// Keep the selected user turn (Codex `lastTurnId` inclusive). Default.
+    #[default]
+    Through,
+    /// Drop the selected user turn and everything after it (edit-earlier).
+    Before,
+}
+
+/// Forks at a turn boundary into parallel history with a self-contained
+/// child rollout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionForkParams {
     pub session_id: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at_turn_id: Option<TurnId>,
+    /// Defaults to [`SessionForkCut::Through`] when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut: Option<SessionForkCut>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]

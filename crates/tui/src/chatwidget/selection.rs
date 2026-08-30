@@ -187,12 +187,36 @@ impl ChatWidget {
             actions: vec![Box::new(move |tx: &AppEventSender| {
                 tx.send(AppEvent::Command(AppCommand::fork_at_user_turn(
                     fork_turn_index,
+                    devo_protocol::native::rpc_session::SessionForkCut::Through,
                 )));
             })],
             dismiss_on_select: true,
             search_value: None,
             disabled_reason: is_latest_user_turn
                 .then_some("Latest user turn cannot be forked".to_string()),
+            ..SelectionItem::default()
+        });
+
+        let edit_turn_index = selected_turn_index;
+        items.push(SelectionItem {
+            name: "Edit".to_string(),
+            description: Some(
+                "Fork before this turn and keep the text in the composer".to_string(),
+            ),
+            selected_description: None,
+            is_current: false,
+            is_default: false,
+            is_disabled: is_latest_user_turn,
+            actions: vec![Box::new(move |tx: &AppEventSender| {
+                tx.send(AppEvent::Command(AppCommand::fork_at_user_turn(
+                    edit_turn_index,
+                    devo_protocol::native::rpc_session::SessionForkCut::Before,
+                )));
+            })],
+            dismiss_on_select: true,
+            search_value: None,
+            disabled_reason: is_latest_user_turn
+                .then_some("Edit the latest user turn from the composer instead".to_string()),
             ..SelectionItem::default()
         });
 

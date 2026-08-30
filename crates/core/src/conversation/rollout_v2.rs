@@ -391,7 +391,7 @@ mod tests {
             timestamp: fixed_ts(),
             session_id: crate::conversation::SessionId::new(),
             title: "New Title".into(),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             previous_title: Some("Old Title".into()),
         });
         let line = serde_json::to_string(&legacy).expect("serialize");

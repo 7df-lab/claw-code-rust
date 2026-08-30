@@ -252,6 +252,10 @@ function partCacheKey(sessionId: string, messageId: string): string {
 	return `${sessionId}\u001f${messageId}`
 }
 
+function renderedNativeItemKey(sessionId: string, itemId: string): string {
+	return partCacheKey(sessionId, itemId)
+}
+
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
 }
@@ -924,6 +928,15 @@ function parseTimestampMs(value: unknown): number | undefined {
 	return Number.isFinite(parsed) ? parsed : undefined
 }
 
+function parseTitleState(value: unknown): string | undefined {
+	if (typeof value === "string") return value
+	if (value && typeof value === "object") {
+		const keys = Object.keys(value as Record<string, unknown>)
+		if (keys.length === 1) return keys[0]
+	}
+	return undefined
+}
+
 /** Wire timestamps from a native ItemEnvelope into appendText/appendTool updates. */
 function nativeItemTimingFields(
 	envelope: Record<string, unknown>,
@@ -1207,6 +1220,33 @@ class NativeClient {
 				})
 			}
 		},
+		editMessage: async (params: { sessionID: string; itemID: string; text: string }) => {
+			const directory = this.sessionDirectories.get(params.sessionID) ?? this.options.directory ?? defaultCwd()
+			const promptStartedAt = Math.max(Date.now(), this.lastEventTime + 1)
+			this.promptStartedAtBySession.set(params.sessionID, promptStartedAt)
+			this.touchNativeSessionActivity(params.sessionID, promptStartedAt)
+			try {
+				const result = await this.requestCanonical("session/message/edit", {
+					sessionId: params.sessionID,
+					itemId: params.itemID,
+					expectedRevision: 0,
+					content: [{ type: "text", text: params.text }],
+					idempotencyKey: crypto.randomUUID(),
+				})
+				if (this.sessionStatuses.get(params.sessionID)?.type !== "busy") {
+					const busyStatus = { type: "busy" }
+					this.sessionStatuses.set(params.sessionID, busyStatus)
+					this.emit(directory, {
+						type: "session.status",
+						properties: { sessionID: params.sessionID, status: busyStatus },
+					})
+				}
+				return { data: result }
+			} catch (error) {
+				this.promptStartedAtBySession.delete(params.sessionID)
+				throw error
+			}
+		},
 		abort: async (params: { sessionID: string }) => {
 			const interruptParams: SessionInterruptParams = {
 				scope: { scope: "session", sessionId: params.sessionID },
@@ -1277,9 +1317,30 @@ class NativeClient {
 		messages: async (params: { sessionID: string; limit?: number }) => ({
 			data: await this.sessionMessages(params.sessionID, normalizedHistoryLimit(params.limit)),
 		}),
-		fork: async (params: { sessionID: string }) => ({
-			data: this.sessions.get(params.sessionID),
-		}),
+		fork: async (params: {
+			sessionID: string
+			atTurnId?: string
+			cut?: "through" | "before"
+		}) => {
+			await this.ensureInitialized()
+			const result = (await this.requestCanonical("session/fork", {
+				sessionId: params.sessionID,
+				...(params.atTurnId ? { atTurnId: params.atTurnId } : {}),
+				...(params.cut ? { cut: params.cut } : {}),
+			})) as { session?: Record<string, unknown> }
+			const sessionValue = result.session
+			if (!sessionValue) {
+				throw new Error("session/fork returned no session")
+			}
+			const session = this.rememberNativeSession(sessionValue)
+			await this.ensureSessionSubscription(session.id)
+			await this.loadSession(session.id)
+			this.emit(session.directory ?? this.options.directory ?? defaultCwd(), {
+				type: "session.created",
+				properties: { info: session, session },
+			})
+			return { data: session }
+		},
 	}
 
 	turn = {
@@ -1302,6 +1363,34 @@ class NativeClient {
 				idempotencyKey: crypto.randomUUID(),
 			})) as { turn: unknown }
 			return { data: result }
+		},
+	}
+
+	task = {
+		startAgent: async (params: {
+			sessionID: string
+			prompt: string
+			forkTurns?: string
+			maxTurns?: number
+			toolPolicy?: "inherit" | "deny_all"
+			ephemeral?: boolean
+		}) => {
+			await this.ensureInitialized()
+			const result = (await this.requestCanonical("task/start", {
+				kind: "agent",
+				sessionId: params.sessionID,
+				input: [{ type: "text", text: params.prompt }],
+				...(params.forkTurns ? { forkTurns: params.forkTurns } : {}),
+				...(params.maxTurns !== undefined ? { maxTurns: params.maxTurns } : {}),
+				...(params.toolPolicy ? { toolPolicy: params.toolPolicy } : {}),
+				ephemeral: params.ephemeral ?? false,
+				idempotencyKey: crypto.randomUUID(),
+			})) as { itemId?: string; item_id?: string }
+			return {
+				data: {
+					itemId: String(result.itemId ?? result.item_id ?? ""),
+				},
+			}
 		},
 	}
 
@@ -1729,7 +1818,7 @@ class NativeClient {
 		const lastActivity = parsedLastActivity ?? existing?.time.lastActivity ?? created
 		const session: Session = {
 			id: info.sessionId,
-			title: info.title ?? existing?.title ?? "New session",
+			title: info.title ?? existing?.title,
 			parentID: meta?.parent_session_id ?? existing?.parentID ?? undefined,
 			time: { created, updated, lastActivity },
 			directory: info.cwd,
@@ -1762,10 +1851,26 @@ class NativeClient {
 		const created = parseTimestampMs(info.createdAt) ?? existing?.time.created ?? Date.now()
 		const updated = parseTimestampMs(info.lastActivityAt) ?? existing?.time.updated ?? created
 		const parent = objectRecord(info.parent)
+		const forkFromId =
+			typeof info.forkFromId === "string"
+				? info.forkFromId
+				: typeof info.fork_from_id === "string"
+					? info.fork_from_id
+					: existing?.forkFromId
+		const atTurnId =
+			typeof info.atTurnId === "string"
+				? info.atTurnId
+				: typeof info.fork_at_turn_id === "string"
+					? info.fork_at_turn_id
+					: existing?.atTurnId
+		const titleState = parseTitleState(info.titleState ?? info.title_state)
 		const session: Session = {
 			id,
-			title: typeof info.title === "string" ? info.title : existing?.title ?? "New session",
+			title: typeof info.title === "string" ? info.title : existing?.title,
+			titleState: titleState ?? existing?.titleState ?? "Unset",
 			parentID: typeof parent?.sessionId === "string" ? parent.sessionId : existing?.parentID,
+			forkFromId,
+			atTurnId,
 			time: { created, updated, lastActivity: updated },
 			directory: String(info.cwd ?? existing?.directory ?? this.options.directory ?? defaultCwd()),
 			totalInputTokens: Number(total?.inputTokens ?? existing?.totalInputTokens ?? 0),
@@ -2181,6 +2286,12 @@ class NativeClient {
 			this.handleWorkspaceChangesUpdated(payload as WorkspaceChangesUpdatedPayload)
 			return true
 		}
+		if (method === "turn/superseded") {
+			const sessionId = String(value.sessionId ?? "")
+			const supersededTurnId = String(value.supersededTurnId ?? "")
+			if (sessionId && supersededTurnId) this.removeMessagesForTurn(sessionId, supersededTurnId)
+			return true
+		}
 		return false
 	}
 
@@ -2209,15 +2320,16 @@ class NativeClient {
 				status,
 				turnId: String(envelope.turnId ?? ""),
 			})
-			if (completed) this.renderedNativeItems.add(id)
+			if (completed) this.renderedNativeItems.add(renderedNativeItemKey(sessionId, id))
 			return
 		}
 		if (itemType === "plan") {
 			this.upsertPlan(sessionId, directory, id, item, String(envelope.turnId ?? ""))
-			if (completed) this.renderedNativeItems.add(id)
+			if (completed) this.renderedNativeItems.add(renderedNativeItemKey(sessionId, id))
 			return
 		}
-		if (completed && this.renderedNativeItems.has(id)) {
+		const renderedKey = renderedNativeItemKey(sessionId, id)
+		if (completed && this.renderedNativeItems.has(renderedKey)) {
 			// History dual-writes ToolResult then FileChange under the same item id.
 			// Allow a richer FileChange (or file-shaped ToolResult) to upgrade the
 			// nameless generic tool that won the first pass.
@@ -2353,7 +2465,7 @@ class NativeClient {
 				...nativeItemTimingFields(envelope, { includeCompletedAt: completed }),
 			})
 		}
-		if (completed) this.renderedNativeItems.add(id)
+		if (completed) this.renderedNativeItems.add(renderedNativeItemKey(sessionId, id))
 	}
 
 	private finalizeNativeAssistantItem(
@@ -2811,6 +2923,33 @@ class NativeClient {
 			}
 		}
 		return { directory, known }
+	}
+
+	private removeMessagesForTurn(sessionId: string, turnId: string): void {
+		const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
+		const messages = this.messages.get(sessionId)
+		if (!messages) return
+		const remaining: Message[] = []
+		for (const message of messages) {
+			const key = partCacheKey(sessionId, message.id)
+			const messageTurnId = this.messageTurnIds.get(key) ?? message.turnID
+			if (messageTurnId !== turnId) {
+				remaining.push(message)
+				continue
+			}
+			this.parts.delete(key)
+			this.messageTurnIds.delete(key)
+			this.renderedNativeItems.delete(renderedNativeItemKey(sessionId, message.id))
+			if (this.lastUserMessageBySession.get(sessionId) === message.id) {
+				this.lastUserMessageBySession.delete(sessionId)
+			}
+			this.emit(directory, {
+				type: "message.removed",
+				properties: { sessionID: sessionId, messageID: message.id },
+			})
+		}
+		this.messages.set(sessionId, remaining)
+		this.userMessageByTurn.delete(this.turnKey(sessionId, turnId))
 	}
 
 	private emitSessionDeleted(sessionId: string, directory: string): void {

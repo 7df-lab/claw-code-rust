@@ -36,7 +36,7 @@ pub(crate) fn spawn_post_turn_scheduling(
 ) {
     tokio::spawn(async move {
         runtime
-            .maybe_schedule_final_title_generation(session_id, None)
+            .schedule_final_title_generation(session_id, None)
             .await;
         if runtime.chain_queued_followup_turn(session_id).await {
             return;

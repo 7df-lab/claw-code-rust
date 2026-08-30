@@ -12,6 +12,7 @@ pub(super) mod rollback;
 pub(super) mod rollback_plan;
 mod rollback_workspace;
 mod session;
+mod session_fork;
 mod session_interrupt;
 pub(crate) mod subscription;
 mod turn;

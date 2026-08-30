@@ -73,8 +73,14 @@ pub struct SessionRecord {
     pub git_branch: Option<String>,
     /// The git origin URL associated with the session workspace, if known.
     pub git_origin_url: Option<String>,
-    /// The parent session identifier when this session was created by forking.
+    /// Parent session for a spawned sub-agent (not a user fork).
     pub parent_session_id: Option<SessionId>,
+    /// Source session when this session was created by user `session/fork`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_from_id: Option<SessionId>,
+    /// Cut turn for a user fork; absent for tip forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_at_turn_id: Option<TurnId>,
     /// The latest locked session context known for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_context: Option<SessionContext>,
@@ -648,6 +654,8 @@ mod tests {
             git_branch: None,
             git_origin_url: None,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             session_context: None,
             latest_turn_context: None,
             collaboration_mode: None,
@@ -660,15 +668,19 @@ mod tests {
     }
 
     #[test]
-    fn session_record_with_fork_parent() {
+    fn session_record_with_fork_lineage() {
         let parent_id = SessionId::new();
+        let turn_id = TurnId::new();
         let session = SessionRecord {
-            parent_session_id: Some(parent_id),
+            fork_from_id: Some(parent_id),
+            fork_at_turn_id: Some(turn_id),
             ..make_test_session()
         };
         let json = serde_json::to_string(&session).expect("serialize");
         let restored: SessionRecord = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(restored.parent_session_id, Some(parent_id));
+        assert_eq!(restored.fork_from_id, Some(parent_id));
+        assert_eq!(restored.fork_at_turn_id, Some(turn_id));
+        assert_eq!(restored.parent_session_id, None);
     }
 
     #[test]
@@ -976,7 +988,7 @@ mod tests {
                 timestamp: Utc::now(),
                 session_id: session.id,
                 title: "New Title".into(),
-                title_state: SessionTitleState::Provisional,
+                title_state: SessionTitleState::Generating,
                 previous_title: Some("Old Title".into()),
             }),
             RolloutLine::SessionContextUpdated(Box::new(SessionContextUpdatedLine {
@@ -1260,7 +1272,7 @@ mod tests {
             additional_directories: Vec::new(),
             cli_version: "0.1.0".into(),
             title: Some("Test Session".into()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             sandbox_policy: "workspace-write".into(),
             approval_mode: "on-request".into(),
             effective_context_window: None,
@@ -1271,6 +1283,8 @@ mod tests {
             git_branch: None,
             git_origin_url: None,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             session_context: None,
             latest_turn_context: None,
             collaboration_mode: None,

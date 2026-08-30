@@ -158,6 +158,10 @@ export interface Agent {
 	questions: SdkQuestionRequest[]
 	/** If set, this is a sub-agent spawned by the parent session */
 	parentId?: string
+	/** Source session when this session was created by a user fork */
+	forkFromId?: string
+	/** Turn boundary preserved when this session was forked (absent for tip forks) */
+	atTurnId?: string
 	/** If set, the session runs in a git worktree at this root path */
 	worktreePath?: string
 	/** The branch name auto-created for the worktree (e.g. "devo/fix-auth-bug") */
@@ -168,4 +172,6 @@ export interface Agent {
 	lastActiveAt: number
 	/** Renderer-local marker for a completed background turn waiting to be read. */
 	hasUnreadCompletion?: boolean
+	/** True while the server is generating a title and no display title exists yet. */
+	titleGenerating?: boolean
 }

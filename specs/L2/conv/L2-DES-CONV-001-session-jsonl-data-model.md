@@ -383,7 +383,7 @@ For a completed, failed, or interrupted latest turn, replay should produce:
 
 For a queued message that has not started, replay should fold the accepted edit into that queue item's effective content while retaining prior queue-message revisions for audit.
 
-For an active running turn, replay must not reinterpret already-started model or tool execution as though the edited message had been used. The edit is accepted only if the runtime explicitly interrupts or otherwise records a safe transition.
+For an active running turn, replay must not reinterpret already-started model or tool execution as though the edited message had been used. `session/message/edit` must interrupt the active turn and record that transition before accepting the edit; after the turn is terminal, replay follows the completed/failed/interrupted latest-turn path above.
 
 Client projections may show the edited message as the current branch content and collapse the superseded turn by default, but audit projections must be able to recover the original message and original turn.
 

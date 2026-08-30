@@ -64,7 +64,7 @@ impl ModelProviderSDK for SingleReplyProvider {
 }
 
 #[tokio::test]
-async fn session_fork_reports_and_replays_parent_session_id() -> Result<()> {
+async fn session_fork_reports_fork_from_id_and_replays_self_contained_history() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
@@ -99,8 +99,16 @@ async fn session_fork_reports_and_replays_parent_session_id() -> Result<()> {
     .result;
 
     assert_eq!(fork.forked_from_session_id, source.session_id);
-    assert_eq!(fork.session.parent_session_id, Some(source.session_id));
+    assert_eq!(fork.session.parent_session_id, None);
+    assert_eq!(fork.session.fork_from_id, Some(source.session_id));
     assert_eq!(fork.session.title.as_deref(), Some("Forked session"));
+
+    let source_items = list_session_items(&runtime, connection_id, source.session_id).await?;
+    let fork_items = list_session_items(&runtime, connection_id, fork.session.session_id).await?;
+    assert_eq!(
+        item_payloads_for_compare(&fork_items),
+        item_payloads_for_compare(&source_items)
+    );
 
     let rebuilt_runtime = build_runtime(data_root.path())?;
     rebuilt_runtime.load_persisted_sessions().await?;
@@ -111,13 +119,39 @@ async fn session_fork_reports_and_replays_parent_session_id() -> Result<()> {
         .iter()
         .find(|session| session.id.as_str() == fork.session.session_id.to_string())
         .context("replayed fork session")?;
-    let parent_session_id = match &replayed_fork.parent {
-        Some(devo_protocol::native::session::SessionParent::Fork { session_id, .. }) => {
-            Some(session_id.to_string())
-        }
-        Some(devo_protocol::native::session::SessionParent::Agent { .. }) | None => None,
-    };
-    assert_eq!(parent_session_id, Some(source.session_id.to_string()));
+    assert_eq!(
+        replayed_fork.fork_from_id.as_ref().map(ToString::to_string),
+        Some(source.session_id.to_string())
+    );
+    assert!(replayed_fork.parent.is_none());
+
+    let resume_response = rebuilt_runtime
+        .handle_incoming(
+            rebuilt_connection_id,
+            serde_json::json!({
+                "id": 5,
+                "method": "session/resume",
+                "params": {
+                    "sessionId": fork.session.session_id
+                }
+            }),
+        )
+        .await
+        .context("session/resume forked child")?;
+    assert!(
+        resume_response.get("result").is_some(),
+        "forked child must resume after restart: {resume_response}"
+    );
+    let resumed_items = list_session_items(
+        &rebuilt_runtime,
+        rebuilt_connection_id,
+        fork.session.session_id,
+    )
+    .await?;
+    assert_eq!(
+        item_payloads_for_compare(&resumed_items),
+        item_payloads_for_compare(&source_items)
+    );
 
     Ok(())
 }
@@ -358,4 +392,40 @@ async fn list_sessions(
         devo_protocol::native::rpc_session::SessionListResult,
     > = serde_json::from_value(response)?;
     Ok(response.result.data)
+}
+
+async fn list_session_items(
+    runtime: &Arc<ServerRuntime>,
+    connection_id: u64,
+    session_id: SessionId,
+) -> Result<Vec<devo_protocol::native::item::ItemEnvelope>> {
+    let response = runtime
+        .handle_incoming(
+            connection_id,
+            serde_json::json!({
+                "id": 50,
+                "method": "session/items/list",
+                "params": { "sessionId": session_id }
+            }),
+        )
+        .await
+        .context("session/items/list response")?;
+    let page: devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope> =
+        serde_json::from_value(response["result"].clone())?;
+    Ok(page.data)
+}
+
+fn item_payloads_for_compare(
+    items: &[devo_protocol::native::item::ItemEnvelope],
+) -> Vec<(String, String, serde_json::Value)> {
+    items
+        .iter()
+        .map(|item| {
+            (
+                item.turn_id.as_str().to_string(),
+                item.id.as_str().to_string(),
+                serde_json::to_value(&item.item).expect("serialize item payload"),
+            )
+        })
+        .collect()
 }

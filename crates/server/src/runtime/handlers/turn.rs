@@ -507,8 +507,6 @@ impl ServerRuntime {
             )
             .await;
         }
-        self.maybe_start_title_generation_from_user_input(params.session_id, &display_input)
-            .await;
         if let Some(persistence) = session_handle.turn_persistence_snapshot().await
             && persistence.record.is_some()
             && let Err(error) = self
@@ -529,6 +527,14 @@ impl ServerRuntime {
             self.register_turn_spawn_snapshot(params.session_id, turn.turn_id, Arc::new(spawn))
                 .await;
         }
+
+        // First untitled session: record the first user input and mark the
+        // title Generating, but never call the title model inline — that LLM
+        // round-trip (plus retries) stalls the turn/start response past
+        // client request timeouts. spawn_post_turn_scheduling generates the
+        // final title once this turn merges.
+        self.prepare_title_from_user_input(params.session_id, &display_input)
+            .await;
 
         let runtime = Arc::clone(self);
         let turn_for_task = turn.clone();

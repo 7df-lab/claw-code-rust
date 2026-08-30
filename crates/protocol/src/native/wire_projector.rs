@@ -448,27 +448,46 @@ fn native_session_value(metadata: &crate::SessionMetadata) -> serde_json::Value 
         Some(crate::PermissionPreset::FullAccess) => "fullAccess",
         Some(crate::PermissionPreset::Default) | None => "default",
     };
-    let parent = metadata.parent_session_id.map(|session_id| {
-        let session_id = SessionId::from_legacy_uuid(Uuid::from(session_id));
-        if metadata.agent_path.is_some() {
-            serde_json::json!({
-                "kind": "agent",
-                "sessionId": session_id,
-                "role": metadata.agent_role,
-            })
-        } else {
-            serde_json::json!({
-                "kind": "fork",
-                "sessionId": session_id,
-            })
+    let parent = metadata.parent_session_id.and_then(|session_id| {
+        if metadata.agent_path.is_none()
+            && metadata.agent_role.is_none()
+            && metadata.agent_nickname.is_none()
+        {
+            // Legacy user forks stored lineage in parent_session_id; prefer
+            // forkFromId below instead of emitting parent.kind = "fork".
+            return None;
         }
+        let session_id = SessionId::from_legacy_uuid(Uuid::from(session_id));
+        Some(serde_json::json!({
+            "kind": "agent",
+            "sessionId": session_id,
+            "role": metadata.agent_role,
+        }))
     });
+    let fork_from_id = metadata
+        .fork_from_id
+        .or_else(|| {
+            if metadata.agent_path.is_none()
+                && metadata.agent_role.is_none()
+                && metadata.agent_nickname.is_none()
+            {
+                metadata.parent_session_id
+            } else {
+                None
+            }
+        })
+        .map(|session_id| SessionId::from_legacy_uuid(Uuid::from(session_id)));
+    let at_turn_id = metadata
+        .fork_at_turn_id
+        .map(|turn_id| TurnId::from_legacy_uuid(Uuid::from(turn_id)));
     serde_json::json!({
         "id": SessionId::from_legacy_uuid(Uuid::from(metadata.session_id)),
         "version": 1,
         "cwd": metadata.cwd,
         "additionalDirectories": metadata.additional_directories,
         "parent": parent,
+        "forkFromId": fork_from_id,
+        "atTurnId": at_turn_id,
         "ephemeral": metadata.ephemeral,
         "createdAt": metadata.created_at,
         "status": status,
@@ -476,6 +495,7 @@ fn native_session_value(metadata: &crate::SessionMetadata) -> serde_json::Value 
         "archived": matches!(metadata.status, crate::SessionRuntimeStatus::Archived),
         "queuedCount": 0,
         "title": metadata.title,
+        "titleState": serde_json::to_value(&metadata.title_state).unwrap_or_else(|_| serde_json::json!("Unset")),
         "model": {
             "provider": metadata.model_binding_id.as_deref().unwrap_or("unknown"),
             "model": metadata.model.as_deref().unwrap_or_default(),

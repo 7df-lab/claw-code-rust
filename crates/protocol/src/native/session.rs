@@ -19,6 +19,7 @@ use super::model::ModelBinding;
 use super::model::PermissionProfile;
 use super::usage::SessionUsage;
 use crate::ReasoningEffort;
+use crate::SessionTitleState;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -36,8 +37,15 @@ pub struct Session {
     /// Additional absolute workspace roots associated with the session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_directories: Vec<PathBuf>,
+    /// Sub-agent parent only. User forks use `fork_from_id` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SessionParent>,
+    /// Source session when this session was created by user `session/fork`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_from_id: Option<SessionId>,
+    /// Cut turn for a user fork (`through` that turn); absent for tip forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_turn_id: Option<TurnId>,
     pub ephemeral: bool,
     pub created_at: DateTime<Utc>,
 
@@ -59,6 +67,8 @@ pub struct Session {
     // ── Mutable configuration (current values) ──
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(default)]
+    pub title_state: SessionTitleState,
     /// Current binding: what the next turn will use.
     pub model: ModelBinding,
     pub settings: SessionSettings,
@@ -106,9 +116,9 @@ pub enum SessionFlag {
     UpdatingGoal,
 }
 
-/// The two kinds of lineage must stay separate: a fork is parallel history, a
-/// subagent is a spawned executor; permissions, visibility and presentation
-/// all differ.
+/// Sub-agent parentage only. User forks use `Session.fork_from_id` /
+/// `Session.at_turn_id` so list/delete/resume treat them as independent
+/// parallel history rather than child executors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(
     tag = "kind",
@@ -116,15 +126,6 @@ pub enum SessionFlag {
     rename_all_fields = "camelCase"
 )]
 pub enum SessionParent {
-    Fork {
-        #[schemars(rename = "sessionId")]
-        #[ts(rename = "sessionId")]
-        session_id: SessionId,
-        #[schemars(rename = "atTurnId")]
-        #[ts(rename = "atTurnId")]
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        at_turn_id: Option<TurnId>,
-    },
     Agent {
         #[schemars(rename = "sessionId")]
         #[ts(rename = "sessionId")]

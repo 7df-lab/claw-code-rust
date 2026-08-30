@@ -53,7 +53,7 @@ The program must support editing the immediately preceding eligible user-authore
 - If a file has been manually changed after the superseded turn or cannot be restored safely, the program must skip restoration for that file, preserve the current file state, and record that the file was not restored.
 - The program may use a git-based turn checkpoint or hidden ghost commit as one possible restoration mechanism, but it must keep that mechanism separate from user-visible commits and branch history unless the user explicitly asks otherwise.
 - If the target message is a queued message that has not started, the edit may update the queued message's effective content while preserving the original queued revision for audit.
-- If the target message belongs to an active running turn, the program must not silently mutate the already-started model or tool execution. It must either require interruption, convert the change to `steer`, or reject the edit with a clear explanation.
+- If the target message belongs to an active running turn, the program must not silently mutate the already-started model or tool execution. It must interrupt that turn first, wait until the turn reaches a terminal state, then accept the edit under the same rules as editing a completed, failed, or interrupted latest turn (workspace restoration where safe, supersede the interrupted turn, and start a replacement continuation from the edited message). If interruption fails, the edit must fail with a clear explanation rather than mutating in-flight work.
 - Older historical messages must not be edited in place. The program should direct the user to fork from the relevant turn when they need to revise older history.
 - All connected clients subscribed to the session must observe accepted edits and resulting turn state changes.
 
@@ -75,7 +75,7 @@ The program must support editing the immediately preceding eligible user-authore
 - Given restoration is partially skipped, when the replacement continuation starts, then the transcript or client state records which files were restored and which current file states were kept.
 - Given the edited message replaces a previous completed turn, when the transcript is reviewed, then the original turn remains recoverable or visibly superseded rather than silently deleted.
 - Given a queued message has not started, when the user edits it, then the queued message's effective content changes while the original revision remains auditable.
-- Given the immediately previous message is part of an active running turn, when the user requests an edit, then the program explains whether interruption, `steer`, or rejection applies.
+- Given the immediately previous message is part of an active running turn, when the user requests an edit, then the program interrupts that turn, accepts the edit after the turn is terminal, and starts a replacement continuation from the edited message.
 - Given the user attempts to edit an older historical message, when the edit is requested, then the program rejects direct editing and offers or indicates session forking as the appropriate path.
 - Given one client edits the immediately previous message, when other clients are subscribed to the session, then they receive the edit and resulting turn updates in order.
 

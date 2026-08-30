@@ -251,7 +251,7 @@ function numericSessionField(session: Session, field: string): number {
 }
 
 function titleForSession(title: unknown): string {
-	return typeof title === "string" && title.trim() ? title : "New chat"
+	return typeof title === "string" && title.trim() ? title : "New Chat"
 }
 
 function truncateTitle(title: string): string {

@@ -809,6 +809,40 @@
     background-color: var(--ring);
   }
 
+  /* Chat transcript — hover-only scrollbar with stable gutter */
+  .scrollbar-chat {
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+    transition: scrollbar-color var(--duration-fast, 0.15s);
+  }
+  .scrollbar-chat:hover {
+    scrollbar-color: var(--border) transparent;
+  }
+  .scrollbar-chat:active {
+    scrollbar-color: var(--ring) transparent;
+  }
+  .scrollbar-chat::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-chat::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-chat::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+    transition: background-color var(--duration-fast, 0.15s);
+  }
+  .scrollbar-chat:hover::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+  }
+  .scrollbar-chat:hover::-webkit-scrollbar-thumb:hover {
+    background-color: var(--ring);
+  }
+
   /* Comfort scrollbar — larger hit target for primary navigation panes */
   .scrollbar-comfort {
     scrollbar-width: auto;

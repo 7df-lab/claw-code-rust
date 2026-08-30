@@ -384,6 +384,8 @@ mod tests {
             git_branch: None,
             git_origin_url: None,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             session_context: None,
             latest_turn_context: None,
             collaboration_mode: None,

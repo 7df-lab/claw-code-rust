@@ -105,7 +105,7 @@ impl ServerRuntime {
     /// Resolves the session's rollout path and reads its canonical history.
     /// The error variant is a ready-made JSON-RPC error response (session
     /// not found, or a damaged/unreadable file).
-    async fn load_canonical_history(
+    pub(crate) async fn load_canonical_history(
         &self,
         request_id: &serde_json::Value,
         session_id: devo_protocol::native::ids::SessionId,

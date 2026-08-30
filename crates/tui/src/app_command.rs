@@ -155,6 +155,8 @@ pub(crate) enum AppCommand {
     },
     ForkAtUserTurn {
         user_turn_index: u32,
+        /// `Through` continues from the selected turn; `Before` drops it (edit-earlier).
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
     },
     /// Request MCP server runtime statuses (`mcp/list`).
     ListMcpServers,
@@ -270,6 +272,7 @@ pub(crate) enum AppCommandView<'a> {
     },
     ForkAtUserTurn {
         user_turn_index: u32,
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
     },
 }
 
@@ -459,8 +462,14 @@ impl AppCommand {
         Self::RollbackToUserTurn { user_turn_index }
     }
 
-    pub(crate) fn fork_at_user_turn(user_turn_index: u32) -> Self {
-        Self::ForkAtUserTurn { user_turn_index }
+    pub(crate) fn fork_at_user_turn(
+        user_turn_index: u32,
+        cut: devo_protocol::native::rpc_session::SessionForkCut,
+    ) -> Self {
+        Self::ForkAtUserTurn {
+            user_turn_index,
+            cut,
+        }
     }
 
     #[allow(dead_code)]
@@ -609,7 +618,9 @@ impl AppCommand {
             Self::RollbackToUserTurn { user_turn_index } => AppCommandView::ThreadRollback {
                 num_turns: *user_turn_index,
             },
-            Self::ForkAtUserTurn { user_turn_index } => AppCommandView::ThreadRollback {
+            Self::ForkAtUserTurn {
+                user_turn_index, ..
+            } => AppCommandView::ThreadRollback {
                 num_turns: *user_turn_index,
             },
             Self::ListMcpServers

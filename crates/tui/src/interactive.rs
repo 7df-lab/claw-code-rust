@@ -1317,10 +1317,13 @@ fn handle_app_command(
             tui.replace_inline_session_ui()?;
             worker.rollback_to_user_turn(*user_turn_index)?;
         }
-        AppCommand::ForkAtUserTurn { user_turn_index } => {
+        AppCommand::ForkAtUserTurn {
+            user_turn_index,
+            cut,
+        } => {
             loop_state.session_switch_pending = true;
             tui.replace_inline_session_ui()?;
-            worker.fork_at_user_turn(*user_turn_index)?;
+            worker.fork_at_user_turn(*user_turn_index, *cut)?;
         }
         AppCommand::ListMcpServers => {
             worker.list_mcp_servers()?;

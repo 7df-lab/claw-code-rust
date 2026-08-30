@@ -31,8 +31,56 @@ export const settingsOverlayOpenAtom = atom(false)
 /** Whether Customize is showing in the main content pane (does not change the route). */
 export const customizeOpenAtom = atom(false)
 
-/** Last known scrollTop for a session's chat view (used when returning from Settings). */
-export const sessionScrollTopFamily = atomFamily((_sessionId: string) => atom<number | null>(null))
+export interface SessionScrollSnapshot {
+	scrollTop: number
+	atBottom: boolean
+	/** Distinguishes an unvisited session from a deliberate scrollTop of 0. */
+	hasSnapshot: boolean
+}
+
+const EMPTY_SCROLL_SNAPSHOT: SessionScrollSnapshot = {
+	scrollTop: 0,
+	atBottom: true,
+	hasSnapshot: false,
+}
+
+/** Last known scroll snapshot for a session's chat view. */
+export const sessionScrollSnapshotFamily = atomFamily((_sessionId: string) =>
+	atom<SessionScrollSnapshot>(EMPTY_SCROLL_SNAPSHOT),
+)
+
+/** @deprecated Use sessionScrollSnapshotFamily */
+export const sessionScrollTopFamily = atomFamily((sessionId: string) =>
+	atom(
+		(get) => {
+			const snapshot = get(sessionScrollSnapshotFamily(sessionId))
+			return snapshot.hasSnapshot ? snapshot.scrollTop : null
+		},
+		(get, set, scrollTop: number | null) => {
+			if (scrollTop == null) {
+				set(sessionScrollSnapshotFamily(sessionId), EMPTY_SCROLL_SNAPSHOT)
+				return
+			}
+			const current = get(sessionScrollSnapshotFamily(sessionId))
+			set(sessionScrollSnapshotFamily(sessionId), {
+				...current,
+				scrollTop,
+				hasSnapshot: true,
+			})
+		},
+	),
+)
+
+/** @deprecated Use sessionScrollSnapshotFamily */
+export const sessionAtBottomFamily = atomFamily((sessionId: string) =>
+	atom(
+		(get) => get(sessionScrollSnapshotFamily(sessionId)).atBottom,
+		(get, set, atBottom: boolean) => {
+			const current = get(sessionScrollSnapshotFamily(sessionId))
+			set(sessionScrollSnapshotFamily(sessionId), { ...current, atBottom })
+		},
+	),
+)
 
 // ============================================================
 // Review Panel State

@@ -208,15 +208,22 @@ impl V2InverseProjector {
     ) -> Result<Vec<RolloutLine>, V2InverseError> {
         let id = legacy_session_id(&session.id)?;
 
-        let (parent_session_id, agent_role) = match &session.parent {
-            Some(SessionParent::Fork { session_id, .. }) => {
-                (Some(legacy_session_id(session_id)?), None)
-            }
-            Some(SessionParent::Agent { session_id, role }) => {
-                (Some(legacy_session_id(session_id)?), role.clone())
-            }
-            None => (None, None),
-        };
+        let (parent_session_id, agent_role, fork_from_id, fork_at_turn_id) =
+            match (&session.parent, &session.fork_from_id, &session.at_turn_id) {
+                (Some(SessionParent::Agent { session_id, role }), _, _) => (
+                    Some(legacy_session_id(session_id)?),
+                    role.clone(),
+                    None,
+                    None,
+                ),
+                (None, Some(fork_from), at_turn) => (
+                    None,
+                    None,
+                    Some(legacy_session_id(fork_from)?),
+                    at_turn.as_ref().map(legacy_turn_id).transpose()?,
+                ),
+                (None, None, _) => (None, None, None, None),
+            };
 
         // Lossy: the legacy approval mode was a free-form string
         // ("on-request", "untrusted", "never", ...); only the mapped profile
@@ -286,6 +293,8 @@ impl V2InverseProjector {
             git_branch,
             git_origin_url,
             parent_session_id,
+            fork_from_id,
+            fork_at_turn_id,
             session_context: extras.and_then(|extras| extras.session_context.clone()),
             // Internal prefix-cache cache, not carried even in the extras.
             latest_turn_context: None,

@@ -6,6 +6,7 @@
 
 use devo_protocol::AgentInfo;
 use devo_protocol::SessionMetadata;
+use devo_protocol::native::session::SessionParent;
 
 use crate::events::SubagentMonitorAgent;
 
@@ -79,13 +80,10 @@ pub(super) fn agent_from_session(session: &SessionMetadata) -> Option<SubagentMo
 pub(super) fn agent_from_native_session(
     session: &devo_protocol::native::session::Session,
 ) -> Option<SubagentMonitorAgent> {
-    let devo_protocol::native::session::SessionParent::Agent {
+    let SessionParent::Agent {
         session_id: parent_session_id,
         role,
-    } = session.parent.as_ref()?
-    else {
-        return None;
-    };
+    } = session.parent.as_ref()?;
     let session_id = devo_protocol::SessionId::try_from(session.id.as_str()).ok()?;
     Some(SubagentMonitorAgent {
         session_id,

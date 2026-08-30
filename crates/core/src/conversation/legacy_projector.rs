@@ -345,21 +345,28 @@ impl LegacyProjector {
         let record = &line.session;
         self.session_cwd = Some(record.cwd.clone());
 
-        let parent = match record.parent_session_id {
-            Some(parent_id)
-                if record.agent_role.is_some()
-                    || record.agent_nickname.is_some()
-                    || record.agent_path.is_some() =>
-            {
-                Some(SessionParent::Agent {
-                    session_id: SessionId::from_legacy_uuid(legacy_uuid(parent_id)?),
-                    role: record.agent_role.clone(),
-                })
-            }
-            Some(parent_id) => Some(SessionParent::Fork {
+        let parent_id = record.parent_session_id;
+        let is_agent = record.agent_role.is_some()
+            || record.agent_nickname.is_some()
+            || record.agent_path.is_some();
+        let parent = match (parent_id, is_agent) {
+            (Some(parent_id), true) => Some(SessionParent::Agent {
                 session_id: SessionId::from_legacy_uuid(legacy_uuid(parent_id)?),
-                at_turn_id: None,
+                role: record.agent_role.clone(),
             }),
+            _ => None,
+        };
+        // Prefer explicit fork lineage; fall back to legacy rows that stored
+        // user forks in parent_session_id without agent markers.
+        let fork_from_id = match record.fork_from_id {
+            Some(id) => Some(SessionId::from_legacy_uuid(legacy_uuid(id)?)),
+            None if parent_id.is_some() && !is_agent => Some(SessionId::from_legacy_uuid(
+                legacy_uuid(parent_id.expect("checked"))?,
+            )),
+            None => None,
+        };
+        let at_turn_id = match record.fork_at_turn_id {
+            Some(id) => Some(TurnId::from_legacy_uuid(legacy_uuid(id)?)),
             None => None,
         };
 
@@ -404,6 +411,8 @@ impl LegacyProjector {
             cwd: record.cwd.clone(),
             additional_directories: record.additional_directories.clone(),
             parent,
+            fork_from_id,
+            at_turn_id,
             ephemeral: false,
             created_at: record.created_at,
             status: SessionStatus::Idle,
@@ -412,6 +421,7 @@ impl LegacyProjector {
             active_turn_id: None,
             queued_count: 0,
             title: record.title.clone(),
+            title_state: record.title_state.clone(),
             model: ModelBinding {
                 provider: record.model_provider.clone(),
                 // Sessions that never recorded a resolved model keep an

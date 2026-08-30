@@ -75,7 +75,6 @@ export interface UseSessionRevertResult {
 	canRedo: boolean
 	undo: () => Promise<string | undefined>
 	redo: () => Promise<void>
-	revertToMessage: (messageId: string) => Promise<void>
 }
 
 export function useSessionRevert(
@@ -128,23 +127,7 @@ export function useSessionRevert(
 		}
 	}, [directory, sessionId, revertInfo])
 
-	const revertToMessage = useCallback(
-		async (messageId: string) => {
-			if (!directory || !sessionId) return
-			const client = getProjectClient(directory)
-			if (!client) return
-
-			const sessionEntry = appStore.get(sessionFamily(sessionId))
-			if (sessionEntry?.status?.type === "busy") {
-				await client.session.abort({ sessionID: sessionId })
-			}
-
-			await client.session.revert({ sessionID: sessionId, messageID: messageId })
-		},
-		[directory, sessionId],
-	)
-
-	return { isReverted, revertInfo, canUndo, canRedo, undo, redo, revertToMessage }
+	return { isReverted, revertInfo, canUndo, canRedo, undo, redo }
 }
 
 // ============================================================

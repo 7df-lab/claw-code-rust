@@ -34,6 +34,16 @@ pub(crate) struct RuntimeSessionTurnCutOptions {
     pub(crate) created_at: chrono::DateTime<Utc>,
 }
 
+/// Internal params shared by legacy and native `session/fork` entry points.
+struct TranslatedForkParams {
+    session_id: SessionId,
+    title: Option<String>,
+    cwd: Option<PathBuf>,
+    user_turn_index: Option<u32>,
+    fork_at_turn_id: Option<TurnId>,
+    cut: devo_protocol::native::rpc_session::SessionForkCut,
+}
+
 /// Resolve occupancy and latest-query usage for a history cut.
 ///
 /// Prefers a compaction snapshot that still applies to the kept turns; otherwise
@@ -132,6 +142,8 @@ impl ServerRuntime {
                 .map(|_| SessionTitleState::Final(SessionTitleFinalSource::ExplicitCreate))
                 .unwrap_or(SessionTitleState::Unset),
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
@@ -394,6 +406,7 @@ impl ServerRuntime {
                     }
                 };
                 {
+                    self.cancel_auto_title_generation(legacy_session_id).await;
                     let _state_change_guard = session_handle.lock_state_change().await;
                     let previous_title = session_handle
                         .summary()
@@ -1031,14 +1044,36 @@ impl ServerRuntime {
             version: 1,
             cwd: metadata.cwd.clone(),
             additional_directories: metadata.additional_directories.clone(),
-            parent: metadata.parent_session_id.map(|parent| {
-                devo_protocol::native::session::SessionParent::Fork {
+            parent: metadata.parent_session_id.and_then(|parent| {
+                if metadata.agent_path.is_none()
+                    && metadata.agent_role.is_none()
+                    && metadata.agent_nickname.is_none()
+                {
+                    return None;
+                }
+                Some(devo_protocol::native::session::SessionParent::Agent {
                     session_id: devo_protocol::native::ids::SessionId::from_string(
                         parent.to_string(),
                     ),
-                    at_turn_id: None,
-                }
+                    role: metadata.agent_role.clone(),
+                })
             }),
+            fork_from_id: metadata
+                .fork_from_id
+                .or_else(|| {
+                    if metadata.agent_path.is_none()
+                        && metadata.agent_role.is_none()
+                        && metadata.agent_nickname.is_none()
+                    {
+                        metadata.parent_session_id
+                    } else {
+                        None
+                    }
+                })
+                .map(|id| devo_protocol::native::ids::SessionId::from_string(id.to_string())),
+            at_turn_id: metadata
+                .fork_at_turn_id
+                .map(|id| devo_protocol::native::ids::TurnId::from_string(id.to_string())),
             ephemeral: metadata.ephemeral,
             created_at: metadata.created_at,
             status: devo_protocol::native::session::SessionStatus::Idle,
@@ -1047,6 +1082,7 @@ impl ServerRuntime {
             active_turn_id: None,
             queued_count: 0,
             title: metadata.title.clone(),
+            title_state: metadata.title_state.clone(),
             model: devo_protocol::native::model::ModelBinding {
                 provider: metadata
                     .model_binding_id
@@ -1669,7 +1705,7 @@ impl ServerRuntime {
     }
 
     pub(crate) async fn handle_session_fork(
-        &self,
+        self: &Arc<Self>,
         connection_id: u64,
         request_id: serde_json::Value,
         params: serde_json::Value,
@@ -1691,8 +1727,19 @@ impl ServerRuntime {
                 );
             }
         };
-        self.handle_session_fork_translated(connection_id, request_id, params)
-            .await
+        self.handle_session_fork_translated(
+            connection_id,
+            request_id,
+            TranslatedForkParams {
+                session_id: params.session_id,
+                title: params.title,
+                cwd: params.cwd,
+                user_turn_index: params.user_turn_index,
+                fork_at_turn_id: None,
+                cut: devo_protocol::native::rpc_session::SessionForkCut::Through,
+            },
+        )
+        .await
     }
 
     /// Native `session/fork` (L2-DES-APP-008 Phase B): forks at
@@ -1700,7 +1747,7 @@ impl ServerRuntime {
     /// the legacy user-turn index with the same rule the fork machinery
     /// uses (turns containing a `UserMessage` item, in order).
     async fn handle_native_session_fork(
-        &self,
+        self: &Arc<Self>,
         connection_id: u64,
         request_id: serde_json::Value,
         params: serde_json::Value,
@@ -1723,30 +1770,63 @@ impl ServerRuntime {
                 "session id is not addressable by this server",
             );
         };
-        let user_turn_index = match &params.at_turn_id {
+        let cut = params
+            .cut
+            .unwrap_or(devo_protocol::native::rpc_session::SessionForkCut::Through);
+        let fork_at_turn_id = match &params.at_turn_id {
             None => None,
-            Some(at_turn_id) => {
-                let Ok(legacy_turn_id) = TurnId::try_from(at_turn_id.as_str()) else {
+            Some(at_turn_id) => match TurnId::try_from(at_turn_id.as_str()) {
+                Ok(turn_id) => Some(turn_id),
+                Err(_) => {
                     return self.error_response(
                         request_id,
                         ProtocolErrorCode::ForkTurnNotFound,
                         "turn id is not addressable by this server",
                     );
-                };
-                let Some(source_handle) = self.session(legacy_session_id).await else {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::SessionNotFound,
-                        "session does not exist",
-                    );
-                };
-                let Some(source) = source_handle.export_runtime_session().await else {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::SessionNotFound,
-                        "session does not exist",
-                    );
-                };
+                }
+            },
+        };
+
+        // Tip fork while a turn is running: interrupt first so we copy only
+        // completed history (Codex tip-fork semantics).
+        if fork_at_turn_id.is_none()
+            && self
+                .runtime_active_turn_id(legacy_session_id)
+                .await
+                .is_some()
+        {
+            self.await_session_turn_interrupt_before_delete(legacy_session_id)
+                .await;
+        }
+
+        let Some(source_handle) = self.session(legacy_session_id).await else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session does not exist",
+            );
+        };
+        let Some(source) = source_handle.export_runtime_session().await else {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::SessionNotFound,
+                "session does not exist",
+            );
+        };
+
+        if let Some(legacy_turn_id) = fork_at_turn_id {
+            if self.runtime_active_turn_id(legacy_session_id).await == Some(legacy_turn_id) {
+                return self.error_response(
+                    request_id,
+                    ProtocolErrorCode::ForkTurnNotStable,
+                    "atTurnId names an in-progress turn",
+                );
+            }
+        }
+
+        let user_turn_index = match fork_at_turn_id {
+            None => None,
+            Some(legacy_turn_id) => {
                 let mut user_turn_ids: Vec<TurnId> = Vec::new();
                 for item in &source.persisted_turn_items {
                     if matches!(item.turn_item, devo_core::TurnItem::UserMessage(_))
@@ -1768,15 +1848,18 @@ impl ServerRuntime {
                 Some(u32::try_from(index).unwrap_or(u32::MAX))
             }
         };
+
         let response = self
             .handle_session_fork_translated(
                 connection_id,
                 request_id.clone(),
-                SessionForkParams {
+                TranslatedForkParams {
                     session_id: legacy_session_id,
                     title: None,
                     cwd: None,
                     user_turn_index,
+                    fork_at_turn_id,
+                    cut,
                 },
             )
             .await;
@@ -1791,10 +1874,10 @@ impl ServerRuntime {
     }
 
     async fn handle_session_fork_translated(
-        &self,
+        self: &Arc<Self>,
         connection_id: u64,
         request_id: serde_json::Value,
-        params: SessionForkParams,
+        params: TranslatedForkParams,
     ) -> serde_json::Value {
         let Some(source_handle) = self.session(params.session_id).await else {
             return self.error_response(
@@ -1810,51 +1893,31 @@ impl ServerRuntime {
                 "session does not exist",
             );
         };
-        let source = &source;
-        let now = Utc::now();
-        let forked_id = SessionId::new();
-        let mut forked_runtime = match self
-            .build_runtime_session_from_user_turn_cut(
-                source,
-                RuntimeSessionTurnCutOptions {
-                    session_id: forked_id,
+        let forked_runtime = match self
+            .create_durable_user_fork(
+                &source,
+                super::session_fork::DurableForkOptions {
+                    source_session_id: params.session_id,
+                    fork_at_turn_id: params.fork_at_turn_id,
                     user_turn_index: params.user_turn_index,
-                    rollback_mode: RollbackMode::ThroughUserTurn,
-                    cwd_override: params.cwd.clone(),
+                    cut: params.cut,
                     title_override: params.title.clone(),
-                    created_at: now,
+                    cwd_override: params.cwd.clone(),
                 },
             )
             .await
         {
             Ok(runtime) => runtime,
             Err(message) => {
-                return self.error_response(request_id, ProtocolErrorCode::InvalidParams, message);
+                let code = if message.contains("selected turn") {
+                    ProtocolErrorCode::InvalidParams
+                } else {
+                    ProtocolErrorCode::InternalError
+                };
+                return self.error_response(request_id, code, message);
             }
         };
-        forked_runtime.summary.parent_session_id = Some(params.session_id);
-        if !forked_runtime.summary.ephemeral {
-            let record = self.rollout_store.create_session_record(
-                forked_id,
-                now,
-                forked_runtime.summary.cwd.clone(),
-                forked_runtime.summary.additional_directories.clone(),
-                forked_runtime.summary.title.clone(),
-                forked_runtime.summary.model.clone(),
-                forked_runtime.summary.model_binding_id.clone(),
-                forked_runtime.summary.reasoning_effort_selection.clone(),
-                forked_runtime.runtime_context.provider.name().to_string(),
-                Some(params.session_id),
-            );
-            if let Err(error) = self.rollout_store.append_session_meta(&record) {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::InternalError,
-                    format!("failed to persist forked session metadata: {error}"),
-                );
-            }
-            forked_runtime.record = Some(record);
-        }
+        let forked_id = forked_runtime.summary.session_id;
         let summary = forked_runtime.summary.clone();
         let rollout_path_for_db = forked_runtime
             .record
@@ -2076,6 +2139,8 @@ impl ServerRuntime {
             title: title_override.or_else(|| source.summary.title.clone()),
             title_state: source.summary.title_state.clone(),
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,

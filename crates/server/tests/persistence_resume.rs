@@ -675,11 +675,10 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
         .await
         .context("turn/start response")?;
 
-    // Title generation starts at turn start, so the final title may arrive
-    // before turn/completed. Wait for the title first so the notification is
-    // not drained by wait_for_turn_completed.
-    wait_for_title_update(&mut notifications_rx, "Generated rollout title").await?;
+    // The turn answers first; the final title is generated once the turn
+    // merges, so wait for turn/completed before the title update.
     wait_for_turn_completed(&mut notifications_rx).await?;
+    wait_for_title_update(&mut notifications_rx, "Generated rollout title").await?;
 
     let resume_after_completion = runtime
         .handle_incoming(
@@ -768,7 +767,7 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
 }
 
 #[tokio::test]
-async fn runtime_assigns_provisional_title_after_first_prompt() -> Result<()> {
+async fn runtime_assigns_generated_title_after_first_turn() -> Result<()> {
     let data_root = TempDir::new()?;
     let runtime = build_runtime(data_root.path())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
@@ -815,14 +814,10 @@ async fn runtime_assigns_provisional_title_after_first_prompt() -> Result<()> {
         .await
         .context("turn/start response")?;
 
-    // Title work starts at turn start: provisional is assigned first, then the
-    // final model title may overwrite it immediately on a fast mock provider.
-    let first_title = wait_for_any_title_update(&mut notifications_rx).await?;
-    assert!(
-        first_title == "Investigate why the current session title stays null"
-            || first_title == "Generated rollout title",
-        "unexpected first title update: {first_title}"
-    );
+    // The turn answers first; the final title lands only after the turn
+    // merges (post-turn title generation).
+    wait_for_turn_completed(&mut notifications_rx).await?;
+    wait_for_title_update(&mut notifications_rx, "Generated rollout title").await?;
 
     let list_response = runtime
         .handle_incoming(
@@ -836,7 +831,10 @@ async fn runtime_assigns_provisional_title_after_first_prompt() -> Result<()> {
         .await
         .context("session/list response")?;
     let sessions = decode_native_session_list_response(list_response)?;
-    assert!(sessions[0].title.is_some());
+    assert_eq!(
+        sessions[0].title.as_deref(),
+        Some("Generated rollout title")
+    );
     Ok(())
 }
 
@@ -966,6 +964,8 @@ async fn resume_normalizes_historical_default_reasoning_effort() -> Result<()> {
             git_branch: None,
             git_origin_url: None,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             session_context: None,
             latest_turn_context: None,
             collaboration_mode: None,
@@ -1114,6 +1114,8 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
         git_branch: None,
         git_origin_url: None,
         parent_session_id: None,
+        fork_from_id: None,
+        fork_at_turn_id: None,
         session_context: None,
         latest_turn_context: None,
         collaboration_mode: None,
@@ -2269,21 +2271,6 @@ async fn wait_for_title_update(
     Ok(())
 }
 
-async fn wait_for_any_title_update(
-    notifications_rx: &mut mpsc::Receiver<serde_json::Value>,
-) -> Result<String> {
-    timeout(Duration::from_secs(5), async {
-        while let Some(value) = notifications_rx.recv().await {
-            if let Some(title) = title_from_notification(&value) {
-                return Ok(title.to_string());
-            }
-        }
-        anyhow::bail!("notification channel closed before any title update")
-    })
-    .await
-    .context("timed out waiting for title update")?
-}
-
 async fn wait_for_notification_method(
     notifications_rx: &mut mpsc::Receiver<serde_json::Value>,
     method: &str,
@@ -3298,6 +3285,8 @@ fn sample_indexed_session(
         title: None,
         title_state: devo_core::SessionTitleState::Unset,
         parent_session_id,
+        fork_from_id: None,
+        fork_at_turn_id: None,
         agent_path: None,
         agent_nickname: None,
         agent_role: None,

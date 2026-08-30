@@ -504,6 +504,19 @@ impl StdioServerClient {
         self.core.session_fork_native(session_id, at_turn_id).await
     }
 
+    /// Native `session/fork` with cut mode; see
+    /// `client_core::session_fork_native_with_cut`.
+    pub async fn session_fork_native_with_cut(
+        &mut self,
+        session_id: SessionId,
+        at_turn_id: Option<TurnId>,
+        cut: Option<devo_protocol::native::rpc_session::SessionForkCut>,
+    ) -> Result<devo_protocol::native::rpc_session::SessionForkResult> {
+        self.core
+            .session_fork_native_with_cut(session_id, at_turn_id, cut)
+            .await
+    }
+
     /// Native session title rename; see
     /// `client_core::session_title_update_native`.
     pub async fn session_title_update_native(
@@ -888,8 +901,10 @@ mod tests {
             updated_at: session.updated_at,
             last_activity_at: session.updated_at,
             title: Some("ACP session".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
@@ -983,8 +998,10 @@ mod tests {
                 updated_at: expected_timestamp,
                 last_activity_at: expected_timestamp,
                 title: Some("External ACP".to_string()),
-                title_state: SessionTitleState::Provisional,
+                title_state: SessionTitleState::Generating,
                 parent_session_id: None,
+                fork_from_id: None,
+                fork_at_turn_id: None,
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
@@ -1036,8 +1053,10 @@ mod tests {
             updated_at: expected_timestamp,
             last_activity_at: expected_timestamp,
             title: Some("External ACP".to_string()),
-            title_state: SessionTitleState::Provisional,
+            title_state: SessionTitleState::Generating,
             parent_session_id: None,
+            fork_from_id: None,
+            fork_at_turn_id: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,

@@ -48,3 +48,7 @@ The server runtime uses **one session actor per session**. Durable session state
 - **`session/list`** returns durable user-visible sessions only (non-ephemeral, no `agent_path`; includes forks with `parent_session_id`); subagent rows are indexed but hidden from list.
 - **`session/resume`** loads parent sessions lazily from rollout files. Subagent session ids cannot be resumed directly; missing rollout files fail with an explicit restore error.
 - **Startup** runs `index_rollout_metadata` in the background instead of replaying every rollout into memory.
+
+### Session title generation
+
+See [`specs/L2/server/L2-DES-SERVER-title-generation.md`](../../../specs/L2/server/L2-DES-SERVER-title-generation.md). Title orchestration lives in `runtime/session_title.rs` (`await_title_before_first_turn`, `prepare_title_from_user_input`, `schedule_final_title_generation`, `cancel_auto_title_generation`). First untitled turn awaits the title LLM before `execute_turn`. Do not derive display titles locally on the server or client.

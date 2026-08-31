@@ -22,6 +22,8 @@ use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
 use crate::exec_cell::new_active_exec_command;
 use crate::history_cell;
+use crate::transcript::lifecycle::TurnToolOutcome;
+use crate::transcript::model::ToolPhase;
 
 use super::ActiveToolCall;
 use super::ChatWidget;
@@ -127,7 +129,9 @@ impl ChatWidget {
                     output: String::new(),
                     parsed_commands: parsed.clone(),
                     exec_like: true,
+                    owned_by_active_cell: true,
                     start_time: None,
+                    phase: ToolPhase::Running,
                 },
             );
             self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
@@ -157,7 +161,9 @@ impl ChatWidget {
                 output: String::new(),
                 parsed_commands,
                 exec_like: true,
+                owned_by_active_cell: true,
                 start_time: None,
+                phase: ToolPhase::Running,
             },
         );
         self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
@@ -220,13 +226,16 @@ impl ChatWidget {
             self.frame_requester.schedule_frame();
             return true;
         }
-        self.history.iter_mut().rev().any(|cell| {
-            cell.as_any_mut()
-                .downcast_mut::<ExecCell>()
-                .is_some_and(|cell| {
-                    cell.update_call(tool_use_id, command_parts.clone(), parsed.clone())
-                })
-        })
+        self.history[self.next_history_flush_index..]
+            .iter_mut()
+            .rev()
+            .any(|cell| {
+                cell.as_any_mut()
+                    .downcast_mut::<ExecCell>()
+                    .is_some_and(|cell| {
+                        cell.update_call(tool_use_id, command_parts.clone(), parsed.clone())
+                    })
+            })
     }
 
     pub(super) fn complete_exec_tool_from_committed(
@@ -277,15 +286,8 @@ impl ChatWidget {
             .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
             && cell.complete_call(tool_use_id, command_output.clone(), duration)
         {
-            if cell.is_exploring_cell() {
-                self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-                self.frame_requester.schedule_frame();
-            } else if cell.should_flush() {
-                self.flush_active_cell();
-            } else {
-                self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-                self.frame_requester.schedule_frame();
-            }
+            self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
+            self.frame_requester.schedule_frame();
             self.set_status_message(if tool.is_error {
                 "Tool returned an error"
             } else {
@@ -297,6 +299,7 @@ impl ChatWidget {
         for cell in self
             .history
             .iter_mut()
+            .skip(self.next_history_flush_index)
             .rev()
             .filter_map(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
         {
@@ -315,7 +318,10 @@ impl ChatWidget {
         let exec_tools: Vec<_> = self
             .transcript_projector
             .live_tools()
-            .filter(|tool| tool.exec_like)
+            .filter(|tool| {
+                crate::chatwidget::history_commit::tool_uses_exec_cell(tool)
+                    && !self.detached_exec_tool_ids.contains(&tool.tool_use_id)
+            })
             .cloned()
             .collect();
         for tool in exec_tools {
@@ -369,6 +375,9 @@ impl ChatWidget {
                     self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
                 }
             }
+            if tool.phase.is_terminal() {
+                let _ = self.complete_exec_tool_from_committed(&tool);
+            }
         }
     }
 
@@ -401,6 +410,7 @@ impl ChatWidget {
                 self.refresh_header_box();
                 self.busy = true;
                 self.active_text_items.clear();
+                self.detached_exec_tool_ids.clear();
                 self.active_proposed_plan = None;
                 self.bottom_pane.set_task_running(true);
             }
@@ -482,6 +492,17 @@ impl ChatWidget {
             WorkerEvent::ShellCommandFinished { exit_code } => {
                 let standalone_shell = self.active_turn_id.is_none();
                 let interrupted = exit_code.is_none();
+                if standalone_shell {
+                    // A standalone shell command runs outside any agent turn,
+                    // so this event is its commit boundary: flush the live
+                    // exec cell into scrollback before the summary row lands.
+                    let outcome = if interrupted {
+                        TurnToolOutcome::Interrupted
+                    } else {
+                        TurnToolOutcome::Completed
+                    };
+                    self.clear_turn_live_projection(outcome);
+                }
                 let accent_color = self.active_accent_color();
                 let cell = if interrupted {
                     history_cell::TurnSummaryCell::new_interrupted(
@@ -694,7 +715,14 @@ impl ChatWidget {
                     self.commit_active_streams(stream_status);
                 }
                 if !failed_turn_was_finalized {
-                    self.clear_turn_live_projection();
+                    let tool_outcome = if was_failed {
+                        TurnToolOutcome::Failed
+                    } else if was_interrupted {
+                        TurnToolOutcome::Interrupted
+                    } else {
+                        TurnToolOutcome::Completed
+                    };
+                    self.clear_turn_live_projection(tool_outcome);
                 }
                 if !failed_turn_was_finalized
                     && (was_interrupted || was_failed)
@@ -803,7 +831,7 @@ impl ChatWidget {
                 let failed_turn_was_finalized = self.failed_turn_visually_finalized;
                 if !failed_turn_was_finalized {
                     self.commit_active_streams(DotStatus::Failed);
-                    self.clear_turn_live_projection();
+                    self.clear_turn_live_projection(TurnToolOutcome::Failed);
                     if let Some(cell) = self
                         .active_cell
                         .as_mut()

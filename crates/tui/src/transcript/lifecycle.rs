@@ -13,6 +13,14 @@ use devo_protocol::protocol::FileChange;
 use crate::events::PlanStep;
 use crate::events::TextItemKind;
 
+/// Authoritative outcome used when committing the current turn's live tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnToolOutcome {
+    Completed,
+    Failed,
+    Interrupted,
+}
+
 /// One transcript-affecting lifecycle transition.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ItemLifecycleEvent {
@@ -60,7 +68,7 @@ pub(crate) enum ItemLifecycleEvent {
         tool_use_id: String,
         chunk: String,
     },
-    /// A tool row finished and should commit to history.
+    /// A tool row finished. It remains live until the turn commit boundary.
     ToolClosed {
         tool_use_id: String,
         tool_name: String,
@@ -75,6 +83,8 @@ pub(crate) enum ItemLifecycleEvent {
         explanation: Option<String>,
         steps: Vec<PlanStep>,
     },
-    /// Clears live tool rows when a turn ends without individual completions.
-    TurnLiveToolsCleared,
+    /// Commits every tool owned by the current turn in sequence order.
+    TurnLiveToolsCleared {
+        outcome: TurnToolOutcome,
+    },
 }

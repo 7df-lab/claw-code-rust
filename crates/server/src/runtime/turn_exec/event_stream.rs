@@ -525,9 +525,43 @@ async fn handle_tool_use_start(
     event_tool_registry: &Arc<devo_core::tools::ToolRegistry>,
 ) {
     tool_names_by_id.insert(id.clone(), name.clone());
-    if let Some(pending) = pending_tool_calls.get_mut(&id) {
+    if let Some(mut pending) = pending_tool_calls.remove(&id) {
+        let input_is_empty = |value: &serde_json::Value| {
+            value.is_null() || matches!(value, serde_json::Value::Object(map) if map.is_empty())
+        };
+        let previously_empty_input = input_is_empty(&pending.input);
         pending.input = input.clone();
         pending.command = command_display_from_input(&name, &input);
+        // The first `item/started` for a streamed tool call carries empty
+        // parameters (the provider streams arguments afterwards). When the
+        // assembled turn delivers the complete input, re-broadcast the same
+        // item so live clients can render the running row's parameters —
+        // the input-delta channel alone is best-effort and only parses once
+        // the full JSON accumulates.
+        if previously_empty_input
+            && !input_is_empty(&pending.input)
+            && let (Some(item_id), Some(item_seq)) = (pending.item_id, pending.item_seq)
+        {
+            let start_item = tool_start_item_from_input(
+                &id,
+                &name,
+                &pending.command,
+                &pending.input,
+                pending.display_kind,
+                event_tool_registry.preparation_feedback(&name),
+            );
+            runtime
+                .emit_item_started(
+                    session_id,
+                    turn_id,
+                    item_id,
+                    Some(item_seq),
+                    start_item.item_kind,
+                    start_item.payload,
+                )
+                .await;
+        }
+        pending_tool_calls.insert(id, pending);
         return;
     }
     if let (Some(item_id), Some(item_seq)) = (reasoning_item_id.take(), reasoning_item_seq.take()) {

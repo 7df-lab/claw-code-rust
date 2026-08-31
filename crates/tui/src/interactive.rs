@@ -125,6 +125,9 @@ struct InteractiveLoopState {
     // True after clearing the inline UI for a session switch and before the
     // replacement session has been restored into widget state.
     session_switch_pending: bool,
+    // When the pending switch started; guards against a wiped screen staying
+    // blank forever if the switch flow never emits a terminal event.
+    session_switch_pending_since: Option<Instant>,
     pending_backtrack_restore: Option<UserMessage>,
     last_ctrl_c_at: Option<Instant>,
     esc_backtrack_primed: bool,
@@ -135,6 +138,33 @@ struct InteractiveLoopState {
 enum LoopAction {
     Continue,
     ClearAndExit,
+}
+
+/// How long a pending session switch may suppress draws before the loop
+/// force-resumes painting. The inline UI is wiped when the switch begins; if
+/// the worker never emits `SessionSwitched`/`TurnFinished`/`TurnFailed`
+/// (e.g. a failed goal-pause step), the screen would otherwise stay blank.
+const SESSION_SWITCH_PENDING_TIMEOUT: Duration = Duration::from_secs(2);
+
+impl InteractiveLoopState {
+    fn begin_session_switch(&mut self) {
+        self.session_switch_pending = true;
+        self.session_switch_pending_since = Some(Instant::now());
+    }
+
+    fn end_session_switch(&mut self) {
+        self.session_switch_pending = false;
+        self.session_switch_pending_since = None;
+    }
+
+    /// True when a pending switch has outlived its budget and draws must
+    /// resume regardless of the missing terminal event.
+    fn session_switch_pending_expired(&self) -> bool {
+        self.session_switch_pending
+            && self
+                .session_switch_pending_since
+                .is_some_and(|started| started.elapsed() > SESSION_SWITCH_PENDING_TIMEOUT)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,7 +373,6 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
                     LoopAction::Continue => {}
                     LoopAction::ClearAndExit => {
                         tracing::info!("interactive loop exiting from tui event");
-                        clear_before_exit(&mut tui)?;
                         break;
                     }
                 }
@@ -366,7 +395,6 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
                     LoopAction::Continue => {}
                     LoopAction::ClearAndExit => {
                         tracing::info!("interactive loop exiting from app event");
-                        clear_before_exit(&mut tui)?;
                         break;
                     }
                 }
@@ -381,13 +409,14 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
                     LoopAction::Continue => {}
                     LoopAction::ClearAndExit => {
                         tracing::info!("interactive loop exiting from worker event");
-                        clear_before_exit(&mut tui)?;
                         break;
                     }
                 }
             }
         }
     }
+
+    clear_before_exit(&mut tui, &mut chat_widget)?;
 
     // Tear down the terminal wrapper before awaiting worker shutdown.
     tracing::info!("dropping tui before terminal restore");
@@ -458,9 +487,19 @@ fn resolve_initial_model(initial_session: &InitialTuiSession, available_models: 
         })
 }
 
-fn clear_before_exit(tui: &mut Tui) -> Result<()> {
+fn clear_before_exit(tui: &mut Tui, chat_widget: &mut ChatWidget) -> Result<()> {
     tracing::info!("clearing tui before exit");
-    let result = tui.shutdown_terminal_safe();
+    let size = tui.terminal.size()?;
+    let width = size.width.max(1);
+    let completed_history = chat_widget.drain_scrollback_lines(width);
+    if !completed_history.is_empty() {
+        tui.insert_history_lines(completed_history);
+    }
+    let final_live_height = chat_widget
+        .desired_height(width)
+        .min(size.height.saturating_sub(1))
+        .max(3);
+    let result = tui.shutdown_terminal_safe(final_live_height);
     tracing::info!(
         success = result.is_ok(),
         "finished clearing tui before exit"
@@ -532,7 +571,7 @@ fn handle_tui_event(
                     }
                     loop_state.pending_backtrack_restore = Some(user_message);
                     loop_state.overlay.close(tui)?;
-                    loop_state.session_switch_pending = true;
+                    loop_state.begin_session_switch();
                     tui.replace_inline_session_ui()?;
                     worker.rollback_before_user_turn(user_turn_index)?;
                     return Ok(LoopAction::Continue);
@@ -552,7 +591,15 @@ fn handle_tui_event(
     match tui_event {
         TuiEvent::Draw => {
             if loop_state.session_switch_pending {
-                return Ok(LoopAction::Continue);
+                if loop_state.session_switch_pending_expired() {
+                    // The switch flow died without a terminal event; the
+                    // screen was already wiped, so resume painting now
+                    // instead of leaving it blank.
+                    loop_state.end_session_switch();
+                    chat_widget.set_status_message("Session switch stalled; resuming display");
+                } else {
+                    return Ok(LoopAction::Continue);
+                }
             }
 
             // Update time-sensitive widget state before measuring or rendering.
@@ -852,7 +899,7 @@ fn handle_worker_event(
             loop_state.total_output_tokens = *next_total_output_tokens;
             loop_state.total_tokens = *next_total_tokens;
             loop_state.total_cache_read_tokens = *next_total_cache_read_tokens;
-            loop_state.session_switch_pending = false;
+            loop_state.end_session_switch();
         }
         WorkerEvent::InterruptFailed { .. } => {}
         WorkerEvent::TurnStarted { .. } => {
@@ -950,7 +997,7 @@ fn handle_worker_event(
             total_cache_read_tokens,
             ..
         } => {
-            loop_state.session_switch_pending = false;
+            loop_state.end_session_switch();
             loop_state.session_id = devo_core::SessionId::try_from(session_id.as_str()).ok();
             loop_state.total_input_tokens = *total_input_tokens;
             loop_state.total_output_tokens = *total_output_tokens;
@@ -1003,11 +1050,19 @@ fn handle_worker_event(
         | WorkerEvent::GoalReplaceConfirmationRequested { .. }
         | WorkerEvent::GoalEditLoaded { .. }
         | WorkerEvent::GoalCleared { .. }
-        | WorkerEvent::GoalOperationFailed { .. }
         | WorkerEvent::BtwStarted { .. }
         | WorkerEvent::BtwCompleted { .. }
         | WorkerEvent::BtwFailed { .. }
         | WorkerEvent::EffectiveContextWindowUpdated { .. } => {}
+        WorkerEvent::GoalOperationFailed { .. } => {
+            // The switch/rollback flow aborts its goal-pause step with this
+            // event and emits no SessionSwitched/TurnFinished afterwards.
+            // Without clearing the pending flag here the wiped screen would
+            // stay blank (the draw-suppression timeout is the backstop).
+            if loop_state.session_switch_pending {
+                loop_state.end_session_switch();
+            }
+        }
     }
     let session_switched = matches!(&worker_event, WorkerEvent::SessionSwitched { .. });
     let turn_failed = matches!(&worker_event, WorkerEvent::TurnFailed { .. });
@@ -1308,12 +1363,12 @@ fn handle_app_command(
         }
         AppCommand::SwitchSession { session_id } => {
             tracing::trace!(session_id = ?session_id, "switch session requested");
-            loop_state.session_switch_pending = true;
+            loop_state.begin_session_switch();
             tui.replace_inline_session_ui()?;
             worker.switch_session(*session_id)?;
         }
         AppCommand::RollbackToUserTurn { user_turn_index } => {
-            loop_state.session_switch_pending = true;
+            loop_state.begin_session_switch();
             tui.replace_inline_session_ui()?;
             worker.rollback_to_user_turn(*user_turn_index)?;
         }
@@ -1321,7 +1376,7 @@ fn handle_app_command(
             user_turn_index,
             cut,
         } => {
-            loop_state.session_switch_pending = true;
+            loop_state.begin_session_switch();
             tui.replace_inline_session_ui()?;
             worker.fork_at_user_turn(*user_turn_index, *cut)?;
         }

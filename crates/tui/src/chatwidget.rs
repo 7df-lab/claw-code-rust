@@ -212,7 +212,9 @@ struct ActiveToolCall {
     output: String,
     parsed_commands: Vec<devo_protocol::parse_command::ParsedCommand>,
     exec_like: bool,
+    owned_by_active_cell: bool,
     start_time: Option<Instant>,
+    phase: crate::transcript::model::ToolPhase,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,6 +258,7 @@ pub(crate) struct ChatWidget {
     active_cell_revision: u64,
     last_terminal_assistant_visible_hash: Option<(String, u64)>,
     active_tool_calls: HashMap<String, ActiveToolCall>,
+    detached_exec_tool_ids: HashSet<String>,
     pending_tool_calls: Vec<ActiveToolCall>,
     history: Vec<Box<dyn HistoryCell>>,
     next_history_flush_index: usize,
@@ -535,6 +538,7 @@ impl ChatWidget {
             active_cell_revision: 0,
             last_terminal_assistant_visible_hash: None,
             active_tool_calls: HashMap::new(),
+            detached_exec_tool_ids: HashSet::new(),
             pending_tool_calls: Vec::new(),
             history,
             next_history_flush_index: 0,

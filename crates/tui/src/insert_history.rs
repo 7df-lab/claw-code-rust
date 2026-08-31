@@ -48,6 +48,15 @@ impl InsertHistoryMode {
     }
 }
 
+/// Geometry produced by one history insertion transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HistoryInsertOutcome {
+    pub(crate) inserted_rows: u16,
+    pub(crate) scrolled_rows: u16,
+    pub(crate) viewport_before: ratatui::layout::Rect,
+    pub(crate) viewport_after: ratatui::layout::Rect,
+}
+
 /// Insert `lines` above the viewport using the terminal's backend writer
 /// (avoids direct stdout references).
 pub fn insert_history_lines<B>(
@@ -57,7 +66,7 @@ pub fn insert_history_lines<B>(
 where
     B: Backend + Write,
 {
-    insert_history_lines_with_mode(terminal, lines, InsertHistoryMode::Standard)
+    insert_history_lines_with_mode(terminal, lines, InsertHistoryMode::Standard).map(|_| ())
 }
 
 /// Insert `lines` above the viewport, using the escape strategy selected by `mode`.
@@ -72,14 +81,16 @@ pub fn insert_history_lines_with_mode<B>(
     terminal: &mut crate::custom_terminal::Terminal<B>,
     lines: Vec<ScrollbackLine>,
     mode: InsertHistoryMode,
-) -> io::Result<()>
+) -> io::Result<HistoryInsertOutcome>
 where
     B: Backend + Write,
 {
     let screen_size = terminal.backend().size().unwrap_or(Size::new(0, 0));
 
-    let mut area = terminal.viewport_area;
+    let viewport_before = terminal.viewport_area;
+    let mut area = viewport_before;
     let mut should_update_area = false;
+    let mut scrolled_rows = 0;
     let last_cursor_pos = terminal.last_known_cursor_pos;
     let writer = terminal.backend_mut();
 
@@ -97,10 +108,19 @@ where
     }
     let wrapped_lines = wrapped_rows as u16;
 
-    if matches!(mode, InsertHistoryMode::Zellij) {
+    // The Standard strategy needs room above the viewport for a valid DECSTBM
+    // region (`SetScrollRegion(1..area.top())` degenerates to the invalid
+    // `\x1b[1;0r` when the viewport sits at the very top — e.g. right after a
+    // full-screen clear or when the live viewport fills the screen). With no
+    // room above, fall back to the bottom-newline strategy, which only uses
+    // cursor moves and prints and is safe on every terminal.
+    let use_bottom_scroll = matches!(mode, InsertHistoryMode::Zellij) || area.top() < 2;
+
+    if use_bottom_scroll {
         let space_below = screen_size.height.saturating_sub(area.bottom());
         let shift_down = wrapped_lines.min(space_below);
         let scroll_up_amount = wrapped_lines.saturating_sub(shift_down);
+        scrolled_rows = scroll_up_amount;
 
         if scroll_up_amount > 0 {
             // Scroll the entire screen up by emitting \n at the bottom
@@ -127,6 +147,7 @@ where
     } else {
         let cursor_top = if area.bottom() < screen_size.height {
             let scroll_amount = wrapped_lines.min(screen_size.height - area.bottom());
+            scrolled_rows = wrapped_lines.saturating_sub(scroll_amount);
 
             let top_1based = area.top() + 1;
             queue!(writer, SetScrollRegion(top_1based..screen_size.height))?;
@@ -185,7 +206,12 @@ where
         terminal.note_history_rows_inserted(wrapped_lines);
     }
 
-    Ok(())
+    Ok(HistoryInsertOutcome {
+        inserted_rows: wrapped_lines,
+        scrolled_rows,
+        viewport_before,
+        viewport_after: terminal.viewport_area,
+    })
 }
 
 /// Render a single wrapped history line: clear continuation rows for wide lines,
@@ -805,6 +831,52 @@ mod tests {
     }
 
     #[test]
+    fn standard_mode_with_viewport_at_screen_top_uses_bottom_scroll_strategy() {
+        // Degenerate geometry: the viewport sits at the very top of the
+        // screen (e.g. right after a full-screen clear, or a live viewport
+        // that grew to fill the screen). The DECSTBM strategy would emit the
+        // invalid `\x1b[1;0r`; the insert must fall back to the safe
+        // bottom-newline strategy instead.
+        let width: u16 = 30;
+        let height: u16 = 6;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        let viewport = Rect::new(0, 0, width, height);
+        term.set_viewport_area(viewport);
+
+        insert_history_lines(&mut term, vec![Line::from("history line").into()])
+            .expect("insert history with viewport at screen top");
+
+        let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
+        assert!(
+            rows.iter().any(|row| row.contains("history line")),
+            "expected history row in screen output, rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn standard_mode_with_small_viewport_at_screen_top_shifts_viewport_down() {
+        // Viewport at the top with room below: the fallback writes history at
+        // row 0 and moves the tracked viewport area down accordingly.
+        let width: u16 = 30;
+        let height: u16 = 6;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        let viewport = Rect::new(0, 0, width, 2);
+        term.set_viewport_area(viewport);
+
+        insert_history_lines(&mut term, vec![Line::from("history line").into()])
+            .expect("insert history above top-pinned small viewport");
+
+        let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
+        assert!(
+            rows[0].contains("history line"),
+            "expected history row at screen top, rows: {rows:?}"
+        );
+        assert_eq!(term.viewport_area, Rect::new(0, 1, width, 2));
+    }
+
+    #[test]
     fn vt100_zellij_mode_inserts_history_and_updates_viewport() {
         let width: u16 = 32;
         let height: u16 = 8;
@@ -814,8 +886,9 @@ mod tests {
         term.set_viewport_area(viewport);
 
         let line: Line<'static> = Line::from("zellij history");
-        insert_history_lines_with_mode(&mut term, vec![line.into()], InsertHistoryMode::Zellij)
-            .expect("insert zellij history");
+        let outcome =
+            insert_history_lines_with_mode(&mut term, vec![line.into()], InsertHistoryMode::Zellij)
+                .expect("insert zellij history");
 
         let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
         assert!(
@@ -824,5 +897,9 @@ mod tests {
         );
         assert_eq!(term.viewport_area, Rect::new(0, 5, width, 2));
         assert_eq!(term.visible_history_rows(), 1);
+        assert_eq!(outcome.inserted_rows, 1);
+        assert_eq!(outcome.scrolled_rows, 0);
+        assert_eq!(outcome.viewport_before, viewport);
+        assert_eq!(outcome.viewport_after, term.viewport_area);
     }
 }

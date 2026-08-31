@@ -111,6 +111,12 @@ where
         terminal.clear_screen_area(previous_area)?;
     }
     terminal.set_viewport_area(area);
+    // Repaints are diff-based: `set_viewport_area` resizes the diff buffers by
+    // row-major index, so after a rect change they no longer describe the
+    // physical rows. Cells the diff believes unchanged are never rewritten,
+    // leaving stale fragments (e.g. the previous frame's composer chrome)
+    // visible inside the live area. Wipe from the new origin downward — this
+    // never touches scrollback above the viewport — and force a full repaint.
     terminal.clear()?;
     terminal.invalidate_viewport();
     Ok(())
@@ -533,8 +539,8 @@ impl Tui {
     ///
     /// shutdown_terminal_safe()
     ///   1. leave alt-screen if one is active
-    ///   2. drop pending history that was never rendered
-    ///   3. clear from the viewport origin downward
+    ///   2. flush pending completed history
+    ///   3. clear only the final live viewport
     ///   4. outer restore guard restores terminal modes
     ///
     /// after exit
@@ -546,12 +552,40 @@ impl Tui {
     /// The key idea is to avoid bespoke cursor choreography on exit. Clearing the
     /// active viewport and then restoring terminal modes is more robust across
     /// terminals like Terminal.app than trying to place the shell prompt ourselves.
-    pub(crate) fn shutdown_terminal_safe(&mut self) -> Result<()> {
+    pub(crate) fn shutdown_terminal_safe(&mut self, final_live_height: u16) -> Result<()> {
         if self.is_alt_screen_active() {
             self.leave_alt_screen()?;
         }
-        self.clear_pending_history_lines();
-        self.terminal.clear()?;
+        Self::finalize_inline_viewport(
+            &mut self.terminal,
+            &mut self.pending_history_lines,
+            final_live_height,
+            self.is_zellij,
+        )
+    }
+
+    fn finalize_inline_viewport<B>(
+        terminal: &mut CustomTerminal<B>,
+        pending_history_lines: &mut Vec<ScrollbackLine>,
+        final_live_height: u16,
+        is_zellij: bool,
+    ) -> Result<()>
+    where
+        B: Backend + std::io::Write,
+    {
+        let previous_area = terminal.viewport_area;
+        let mut needs_full_repaint =
+            Self::update_inline_viewport(terminal, final_live_height, is_zellij)?;
+        needs_full_repaint |=
+            Self::flush_pending_history_lines(terminal, pending_history_lines, is_zellij)?;
+        needs_full_repaint |= Self::clear_vacated_viewport_tail(terminal, previous_area)?;
+        if needs_full_repaint {
+            terminal.invalidate_viewport();
+        }
+        let final_area = terminal.viewport_area;
+        terminal.clear_screen_area(final_area)?;
+        terminal.set_cursor_position(final_area.as_position())?;
+        std::io::Write::flush(terminal.backend_mut())?;
         Ok(())
     }
 
@@ -590,11 +624,14 @@ impl Tui {
     /// the viewport would extend past the bottom of the screen. Returns `true` when
     /// the caller must invalidate the diff buffer (Zellij mode), because the scroll
     /// was performed with raw newlines that ratatui cannot track.
-    fn update_inline_viewport(
-        terminal: &mut Terminal,
+    fn update_inline_viewport<B>(
+        terminal: &mut CustomTerminal<B>,
         height: u16,
         is_zellij: bool,
-    ) -> Result<bool> {
+    ) -> Result<bool>
+    where
+        B: Backend + std::io::Write,
+    {
         let size = terminal.size()?;
         let (area, scroll_by) = next_inline_viewport_area(terminal.viewport_area, size, height);
         let mut needs_full_repaint = false;
@@ -616,12 +653,15 @@ impl Tui {
     /// This matches append-only inline TUI behavior: when the live area needs
     /// more height, we advance the terminal buffer downward so users who are currently viewing
     /// scrollback do not see previously rendered rows get rewritten in place.
-    fn append_expanded_viewport(
-        terminal: &mut Terminal,
+    fn append_expanded_viewport<B>(
+        terminal: &mut CustomTerminal<B>,
         size: Size,
         scroll_by: u16,
         is_zellij: bool,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        B: Backend + std::io::Write,
+    {
         if is_zellij {
             return Self::scroll_zellij_expanded_viewport(terminal, size, scroll_by);
         }
@@ -638,11 +678,14 @@ impl Tui {
     /// Push content above the viewport upward by `scroll_by` rows using raw
     /// newlines at the screen bottom. This is the Zellij-safe alternative to
     /// backend `append_lines`, which Zellij does not expose in a way ratatui can rely on.
-    fn scroll_zellij_expanded_viewport(
-        terminal: &mut Terminal,
+    fn scroll_zellij_expanded_viewport<B>(
+        terminal: &mut CustomTerminal<B>,
         size: Size,
         scroll_by: u16,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        B: Backend + std::io::Write,
+    {
         crossterm::queue!(
             terminal.backend_mut(),
             crossterm::cursor::MoveTo(0, size.height.saturating_sub(1))
@@ -656,22 +699,47 @@ impl Tui {
     /// Write any buffered history lines above the viewport and clear the buffer.
     /// Returns `true` when Zellij mode was used, signaling that the caller must
     /// invalidate the diff buffer for a full repaint.
-    fn flush_pending_history_lines(
-        terminal: &mut Terminal,
+    fn flush_pending_history_lines<B>(
+        terminal: &mut CustomTerminal<B>,
         pending_history_lines: &mut Vec<ScrollbackLine>,
         is_zellij: bool,
-    ) -> Result<bool> {
+    ) -> Result<bool>
+    where
+        B: Backend + std::io::Write,
+    {
         if pending_history_lines.is_empty() {
             return Ok(false);
         }
 
-        crate::insert_history::insert_history_lines_with_mode(
+        let _outcome = crate::insert_history::insert_history_lines_with_mode(
             terminal,
             pending_history_lines.clone(),
             crate::insert_history::InsertHistoryMode::new(is_zellij),
         )?;
         pending_history_lines.clear();
         Ok(is_zellij)
+    }
+
+    fn clear_vacated_viewport_tail<B>(
+        terminal: &mut CustomTerminal<B>,
+        previous_area: Rect,
+    ) -> Result<bool>
+    where
+        B: Backend + std::io::Write,
+    {
+        let final_area = terminal.viewport_area;
+        let stale_top = final_area.bottom().max(previous_area.y);
+        let stale_bottom = previous_area.bottom();
+        if stale_top >= stale_bottom {
+            return Ok(false);
+        }
+        terminal.clear_screen_area(Rect::new(
+            0,
+            stale_top,
+            final_area.width,
+            stale_bottom - stale_top,
+        ))?;
+        Ok(true)
     }
 
     pub fn draw(
@@ -697,6 +765,7 @@ impl Tui {
             }
 
             let terminal = &mut self.terminal;
+            let previous_area = terminal.viewport_area;
             if let Some(new_area) = pending_viewport_area.take() {
                 apply_inline_viewport_area_change(terminal, new_area)?;
             }
@@ -712,6 +781,7 @@ impl Tui {
                 &mut self.pending_history_lines,
                 self.is_zellij,
             )?;
+            needs_full_repaint |= Self::clear_vacated_viewport_tail(terminal, previous_area)?;
 
             if needs_full_repaint {
                 terminal.invalidate_viewport();
@@ -743,16 +813,15 @@ impl Tui {
 /// Returns `(area, scroll_by)`. When `scroll_by > 0`, the caller must append that
 /// many rows before applying `area` so growth remains append-only.
 ///
-/// Shrinks keep `area.y` unchanged. Pinning the bottom on shrink would move `y`
-/// downward and clear the vacated rows (see `apply_inline_viewport_area_change`),
-/// which accumulates blank gaps after tall bottom-pane views such as `/model`.
+/// Shrinks always keep the old top. Pending history insertion is responsible
+/// for moving the viewport into space released below it.
 fn next_inline_viewport_area(previous: Rect, size: Size, height: u16) -> (Rect, u16) {
     let mut area = previous;
     area.height = height.min(size.height);
     area.width = size.width;
     if area.bottom() > size.height {
         let scroll_by = area.bottom() - size.height;
-        area.y = size.height - area.height;
+        area.y = size.height.saturating_sub(area.height);
         (area, scroll_by)
     } else {
         (area, 0)
@@ -797,14 +866,23 @@ mod tests {
     }
 
     #[test]
-    fn next_inline_viewport_area_shrink_keeps_top_to_avoid_blank_gaps() {
-        // Bottom-aligned full-height viewport shrinking (e.g. closing /model) must
-        // keep y stable. Moving y down would clear the vacated rows into blank gaps.
+    fn next_inline_viewport_area_shrink_while_pinned_keeps_top() {
         let previous = Rect::new(0, 1, 80, 39);
         let size = Size::new(80, 40);
         let (area, scroll_by) = next_inline_viewport_area(previous, size, 5);
         assert_eq!(scroll_by, 0);
         assert_eq!(area, Rect::new(0, 1, 80, 5));
+    }
+
+    #[test]
+    fn next_inline_viewport_area_mid_screen_shrink_keeps_top() {
+        // A viewport that has not reached the screen bottom yet keeps its top
+        // while shrinking; only genuinely vacated rows below are cleared.
+        let previous = Rect::new(0, 10, 80, 10);
+        let size = Size::new(80, 40);
+        let (area, scroll_by) = next_inline_viewport_area(previous, size, 5);
+        assert_eq!(scroll_by, 0);
+        assert_eq!(area, Rect::new(0, 10, 80, 5));
     }
 
     #[test]
@@ -817,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_inline_viewport_area_change_clears_from_new_viewport_when_old_area_is_empty() {
+    fn apply_inline_viewport_area_change_preserves_scrollback_and_wipes_live_rows() {
         let width: u16 = 24;
         let height: u16 = 6;
         let backend = VT100Backend::new(width, height);
@@ -836,14 +914,18 @@ mod tests {
             rows_after[0].contains("shell line"),
             "expected content above viewport to remain visible, rows: {rows_after:?}"
         );
+        // The live region is physically wiped on a rect change so the next
+        // diff-based repaint cannot leave stale fragments (e.g. composer
+        // chrome) on rows the diff believes are unchanged.
         assert!(
-            rows_after.iter().skip(1).all(|row| !row.contains("stale")),
-            "expected stale cells in new viewport to be cleared, rows: {rows_after:?}"
+            rows_after[1..].iter().all(|row| row.trim().is_empty()),
+            "expected live viewport rows to be wiped, rows: {rows_after:?}"
         );
+        assert_eq!(Rect::new(0, 1, width, height - 1), terminal.viewport_area);
     }
 
     #[test]
-    fn apply_inline_viewport_area_change_clears_previous_viewport_rows() {
+    fn moving_viewport_down_preserves_rows_above_previous_origin() {
         let width: u16 = 24;
         let height: u16 = 6;
         let backend = VT100Backend::new(width, height);
@@ -863,14 +945,92 @@ mod tests {
             rows_after[0].contains("history") && rows_after[1].contains("keep"),
             "expected content above previous viewport to remain visible, rows: {rows_after:?}"
         );
+        // Both the vacated previous viewport rows and the new live region are
+        // wiped; history insertion owns the vacated rows in the real flow.
         assert!(
-            rows_after
-                .iter()
-                .skip(2)
-                .all(|row| !row.contains("old") && !row.contains("stale")),
-            "expected previous and new viewport rows to be cleared, rows: {rows_after:?}"
+            rows_after[2..].iter().all(|row| row.trim().is_empty()),
+            "expected previous and new viewport rows to be wiped, rows: {rows_after:?}"
         );
         assert_eq!(Rect::new(0, 3, width, 2), terminal.viewport_area);
+    }
+
+    #[test]
+    fn shrink_then_history_insert_preserves_existing_transcript() {
+        let width = 30;
+        let height = 8;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal = CustomTerminal::with_options(backend).expect("terminal");
+        write!(
+            terminal.backend_mut(),
+            "stable transcript\r\nrunning 1\r\nrunning 2\r\nrunning 3"
+        )
+        .expect("prefill terminal");
+        let previous = Rect::new(0, 1, width, height - 1);
+        terminal.set_viewport_area(previous);
+
+        apply_inline_viewport_area_change(&mut terminal, Rect::new(0, 1, width, 3))
+            .expect("logical shrink");
+        let outcome = insert_history_lines(
+            &mut terminal,
+            vec![
+                Line::from("Ran first").into(),
+                Line::from("Ran second").into(),
+                Line::from("Ran third").into(),
+            ],
+        );
+        outcome.expect("insert committed tools");
+        let final_area = terminal.viewport_area;
+        terminal
+            .clear_screen_area(Rect::new(
+                0,
+                final_area.bottom(),
+                width,
+                previous.bottom().saturating_sub(final_area.bottom()),
+            ))
+            .expect("clear stale tail");
+
+        let rows: Vec<String> = terminal.backend().vt100().screen().rows(0, width).collect();
+        assert!(rows[0].contains("stable transcript"), "rows: {rows:?}");
+        assert!(rows.iter().any(|row| row.contains("Ran first")));
+        assert!(rows.iter().any(|row| row.contains("Ran third")));
+        assert_eq!(final_area, Rect::new(0, 4, width, 3));
+    }
+
+    #[test]
+    fn exit_finalization_flushes_history_and_clears_only_live_rows() {
+        let width = 30;
+        let height = 8;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal = CustomTerminal::with_options(backend).expect("terminal");
+        write!(
+            terminal.backend_mut(),
+            "stable transcript\r\nRunning first\r\ncomposer\r\nstatus"
+        )
+        .expect("prefill terminal");
+        terminal.set_viewport_area(Rect::new(0, 1, width, height - 1));
+        let mut pending_history = vec![
+            ScrollbackLine::from(Line::from("Ran first")),
+            ScrollbackLine::from(Line::from("assistant reply")),
+        ];
+
+        Tui::finalize_inline_viewport(&mut terminal, &mut pending_history, 3, false)
+            .expect("finalize inline viewport");
+
+        let rows: Vec<String> = terminal.backend().vt100().screen().rows(0, width).collect();
+        assert!(pending_history.is_empty());
+        assert!(rows[0].contains("stable transcript"), "rows: {rows:?}");
+        assert!(rows.iter().any(|row| row.contains("Ran first")));
+        assert!(rows.iter().any(|row| row.contains("assistant reply")));
+        assert!(
+            rows.iter()
+                .skip(terminal.viewport_area.top() as usize)
+                .all(|row| row.trim().is_empty()),
+            "final live rows should be empty: {rows:?}"
+        );
+        assert_eq!(
+            terminal.last_known_cursor_pos,
+            terminal.viewport_area.as_position()
+        );
     }
 
     #[test]

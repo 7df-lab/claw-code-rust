@@ -221,6 +221,26 @@ impl StdioServerClient {
             .await
     }
 
+    pub async fn turn_read_native(
+        &mut self,
+        session_id: SessionId,
+        turn_id: TurnId,
+    ) -> Result<devo_protocol::native::rpc_turn::TurnReadResult> {
+        self.core.turn_read_native(session_id, turn_id).await
+    }
+
+    pub async fn turn_items_list_native(
+        &mut self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope>> {
+        self.core
+            .turn_items_list_native(session_id, turn_id, cursor, limit)
+            .await
+    }
+
     /// Native `session/compact/start`; see
     /// `client_core::session_compact_start_native`.
     pub async fn session_compact_start_native(

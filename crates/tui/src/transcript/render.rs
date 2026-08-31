@@ -121,9 +121,57 @@ fn text_cell_to_history(text: &TextCellModel) -> Box<dyn HistoryCell> {
 pub(crate) fn live_tool_display_lines(
     tool: &ToolCellModel,
     width: u16,
+    cwd: &Path,
     pending_dot_prefix: Line<'static>,
     tool_text_style: ratatui::style::Style,
 ) -> Vec<Line<'static>> {
+    let title_line = tool_title_for_cell(tool);
+    if tool.phase == ToolPhase::Preparing {
+        return vec![title_line];
+    }
+    if tool.phase.is_terminal() {
+        return tool_cell_to_history(tool, cwd, pending_dot_prefix, tool_text_style)
+            .display_lines(width);
+    }
+    match (&tool.tool_name, &tool.input) {
+        (Some(tool_name), Some(input)) => ToolIoCell::from_text_output(
+            ToolIoCellOptions {
+                title_line: Some(title_line),
+                dot_prefix: pending_dot_prefix,
+                subsequent_prefix: "  ".into(),
+                output_style: tool_text_style,
+                show_empty_ellipsis: false,
+            },
+            tool_name.clone(),
+            input.clone(),
+            tool.output_preview.clone(),
+        )
+        .display_lines(width),
+        _ => {
+            let mut lines = vec![title_line];
+            lines.extend(
+                tool.output_delta_lines
+                    .iter()
+                    .map(|line| Line::from(line.clone())),
+            );
+            history_cell::AgentMessageCell::new_with_prefix(lines, pending_dot_prefix, "  ", false)
+                .display_lines(width)
+        }
+    }
+}
+
+/// Transcript-overlay rendering for a tool still owned by the current turn.
+pub(crate) fn live_tool_transcript_lines(
+    tool: &ToolCellModel,
+    width: u16,
+    cwd: &Path,
+    pending_dot_prefix: Line<'static>,
+    tool_text_style: ratatui::style::Style,
+) -> Vec<Line<'static>> {
+    if tool.phase.is_terminal() {
+        return tool_cell_to_history(tool, cwd, pending_dot_prefix, tool_text_style)
+            .transcript_lines(width);
+    }
     let title_line = tool_title_for_cell(tool);
     if tool.phase == ToolPhase::Preparing {
         return vec![title_line];
@@ -141,13 +189,16 @@ pub(crate) fn live_tool_display_lines(
             input.clone(),
             tool.output_preview.clone(),
         )
-        .display_lines(width),
-        _ => history_cell::AgentMessageCell::new_with_prefix(
-            vec![title_line],
-            pending_dot_prefix,
-            "  ",
-            false,
-        )
-        .display_lines(width),
+        .transcript_lines(width),
+        _ => {
+            let mut lines = vec![title_line];
+            lines.extend(
+                tool.output_delta_lines
+                    .iter()
+                    .map(|line| Line::from(line.clone())),
+            );
+            history_cell::AgentMessageCell::new_with_prefix(lines, pending_dot_prefix, "  ", false)
+                .transcript_lines(width)
+        }
     }
 }

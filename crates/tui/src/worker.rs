@@ -5802,6 +5802,7 @@ mod tests {
                 input: serde_json::json!({
                     "filePath": "crates/tui/src/mod.rs"
                 }),
+                item_seq: None,
                 command: None,
                 command_source: None,
                 parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::Read {
@@ -5854,6 +5855,7 @@ mod tests {
                         "pattern": "**/Cargo.toml",
                         "path": "crates"
                     }),
+                    item_seq: None,
                     command: None,
                     command_source: None,
                     parsed_commands: vec![devo_protocol::parse_command::ParsedCommand::ListFiles {

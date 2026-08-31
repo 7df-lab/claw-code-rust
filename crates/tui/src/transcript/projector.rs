@@ -41,6 +41,7 @@ impl TranscriptProjector {
                 tool_use_id,
                 tool_name,
                 input,
+                item_seq,
                 command,
                 command_source,
                 parsed_commands,
@@ -56,7 +57,7 @@ impl TranscriptProjector {
                     // the viewport that no future boundary would ever flush.
                     return;
                 }
-                let seq = self.reserve_seq();
+                let seq = self.reserve_seq(item_seq);
                 let tool = ToolModel::new_opened(
                     tool_use_id.clone(),
                     seq,
@@ -209,11 +210,15 @@ impl TranscriptProjector {
                 self.live_text.clear();
                 self.text_order.clear();
             }
-            ItemLifecycleEvent::TextStarted { item_id, kind } => {
+            ItemLifecycleEvent::TextStarted {
+                item_id,
+                kind,
+                item_seq,
+            } => {
                 if self.live_text.contains_key(&item_id) {
                     return;
                 }
-                let seq = self.reserve_seq();
+                let seq = self.reserve_seq(item_seq);
                 self.text_order.push(item_id);
                 self.live_text.insert(
                     item_id,
@@ -237,7 +242,7 @@ impl TranscriptProjector {
                     apply_stream_text_delta(&mut live.text, &delta);
                     return;
                 }
-                let seq = self.reserve_seq();
+                let seq = self.reserve_seq(/*item_seq*/ None);
                 self.text_order.push(item_id);
                 self.live_text.insert(
                     item_id,
@@ -336,7 +341,12 @@ impl TranscriptProjector {
         self.synced_committed = 0;
     }
 
-    fn reserve_seq(&mut self) -> u64 {
+    fn reserve_seq(&mut self, item_seq: Option<u64>) -> u64 {
+        if let Some(item_seq) = item_seq {
+            self.next_seq = self.next_seq.max(item_seq.saturating_add(1));
+            return item_seq;
+        }
+
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
         seq
@@ -390,6 +400,7 @@ mod tests {
             tool_use_id: "read-1".into(),
             tool_name: "read".into(),
             input: serde_json::Value::Null,
+            item_seq: None,
             command: None,
             command_source: None,
             parsed_commands: Vec::new(),
@@ -446,6 +457,7 @@ mod tests {
             tool_use_id: "grep-1".into(),
             tool_name: "grep".into(),
             input: serde_json::json!({"pattern": "plan", "path": "crates"}),
+            item_seq: None,
             command: None,
             command_source: None,
             parsed_commands: Vec::new(),
@@ -502,6 +514,7 @@ mod tests {
             tool_use_id: "bash-1".into(),
             tool_name: "bash".into(),
             input: serde_json::json!({"command": "cargo test"}),
+            item_seq: None,
             command: Some("cargo test".into()),
             command_source: None,
             parsed_commands: Vec::new(),
@@ -541,6 +554,7 @@ mod tests {
             tool_use_id: "bash-1".into(),
             tool_name: "bash".into(),
             input: serde_json::json!({"command": "cargo test"}),
+            item_seq: None,
             command: Some("cargo test".into()),
             command_source: None,
             parsed_commands: Vec::new(),
@@ -558,6 +572,7 @@ mod tests {
             tool_use_id: "grep-1".into(),
             tool_name: "grep".into(),
             input: serde_json::json!({"pattern": "plan"}),
+            item_seq: None,
             command: None,
             command_source: None,
             parsed_commands: Vec::new(),
@@ -566,6 +581,7 @@ mod tests {
         projector.apply(ItemLifecycleEvent::TextStarted {
             item_id,
             kind: crate::events::TextItemKind::Assistant,
+            item_seq: None,
         });
         projector.apply(ItemLifecycleEvent::ToolClosed {
             tool_use_id: "grep-1".into(),
@@ -609,6 +625,7 @@ mod tests {
             tool_use_id: "bash-1".into(),
             tool_name: "bash".into(),
             input: serde_json::json!({"command": "cargo build"}),
+            item_seq: None,
             command: Some("cargo build".into()),
             command_source: None,
             parsed_commands: Vec::new(),
@@ -621,6 +638,7 @@ mod tests {
         projector.apply(ItemLifecycleEvent::TextStarted {
             item_id,
             kind: crate::events::TextItemKind::Assistant,
+            item_seq: None,
         });
         projector.apply(ItemLifecycleEvent::TextCompleted {
             item_id,
@@ -716,6 +734,7 @@ mod tests {
             tool_use_id: "edit-1".into(),
             tool_name: "edit".into(),
             input: serde_json::json!({"filePath": "a.rs"}),
+            item_seq: None,
             command: None,
             command_source: None,
             parsed_commands: Vec::new(),
@@ -761,6 +780,7 @@ mod tests {
                 tool_use_id: "exec-1".into(),
                 tool_name: "exec_command".into(),
                 input,
+                item_seq: None,
                 command: Some("cargo check".into()),
                 command_source: None,
                 parsed_commands: Vec::new(),
@@ -783,6 +803,7 @@ mod tests {
                 tool_use_id: id.into(),
                 tool_name: "exec_command".into(),
                 input: serde_json::json!({"command": id}),
+                item_seq: None,
                 command: Some(id.into()),
                 command_source: None,
                 parsed_commands: Vec::new(),
@@ -834,6 +855,7 @@ mod tests {
             tool_use_id: "missing-result".into(),
             tool_name: "exec_command".into(),
             input: serde_json::json!({"command": "echo hi"}),
+            item_seq: None,
             command: Some("echo hi".into()),
             command_source: None,
             parsed_commands: Vec::new(),
@@ -871,6 +893,7 @@ mod tests {
         projector.apply(ItemLifecycleEvent::TextStarted {
             item_id,
             kind: crate::events::TextItemKind::Reasoning,
+            item_seq: None,
         });
         projector.apply(ItemLifecycleEvent::TextDelta {
             item_id,
@@ -909,6 +932,7 @@ mod tests {
         projector.apply(ItemLifecycleEvent::TextStarted {
             item_id,
             kind: crate::events::TextItemKind::Assistant,
+            item_seq: None,
         });
 
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;

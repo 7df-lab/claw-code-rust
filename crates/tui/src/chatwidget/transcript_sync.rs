@@ -152,7 +152,7 @@ impl ChatWidget {
                         .extend(cell.iter_calls().map(|call| call.call_id.clone()));
                     self.active_cell = None;
                 }
-                self.start_text_item(item_id, live.kind);
+                self.start_text_item(item_id, live.kind, live.seq);
             }
 
             self.sync_live_text_item(item_id);

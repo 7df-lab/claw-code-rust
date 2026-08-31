@@ -27,6 +27,7 @@ pub(crate) enum ItemLifecycleEvent {
     TextStarted {
         item_id: ItemId,
         kind: TextItemKind,
+        item_seq: Option<u64>,
     },
     TextDelta {
         item_id: ItemId,
@@ -54,6 +55,7 @@ pub(crate) enum ItemLifecycleEvent {
         tool_use_id: String,
         tool_name: String,
         input: serde_json::Value,
+        item_seq: Option<u64>,
         command: Option<String>,
         command_source: Option<ExecCommandSource>,
         parsed_commands: Vec<devo_protocol::parse_command::ParsedCommand>,

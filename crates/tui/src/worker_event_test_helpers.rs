@@ -25,7 +25,11 @@ fn transcript(event: ItemLifecycleEvent) -> WorkerEvent {
 
 /// Shim for removed `WorkerEvent::TextItemStarted`.
 pub(crate) fn text_item_started(item_id: ItemId, kind: TextItemKind) -> WorkerEvent {
-    transcript(ItemLifecycleEvent::TextStarted { item_id, kind })
+    transcript(ItemLifecycleEvent::TextStarted {
+        item_id,
+        kind,
+        item_seq: None,
+    })
 }
 
 /// Shim for removed `WorkerEvent::TextItemDelta`.
@@ -181,6 +185,7 @@ fn tool_opened_event(
         command,
         command_source: command_source_from_tool_name(&tool_name),
         input,
+        item_seq: None,
         parsed_commands,
     })
 }
@@ -301,6 +306,7 @@ pub(crate) fn command_execution_started(
         tool_use_id,
         tool_name: "exec_command".to_string(),
         input,
+        item_seq: None,
         command: Some(command),
         command_source: Some(source),
         parsed_commands: command_actions,

@@ -70,7 +70,11 @@ impl ChatWidget {
         self.flush_active_cell();
         let item_id = self.legacy_text_item_id(kind);
         if !self.transcript_projector.has_live_text(item_id) {
-            self.apply_item_lifecycle(ItemLifecycleEvent::TextStarted { item_id, kind });
+            self.apply_item_lifecycle(ItemLifecycleEvent::TextStarted {
+                item_id,
+                kind,
+                item_seq: None,
+            });
         }
         self.apply_item_lifecycle(ItemLifecycleEvent::TextDelta {
             item_id,
@@ -128,7 +132,12 @@ impl ChatWidget {
         self.frame_requester.schedule_frame();
     }
 
-    pub(super) fn start_text_item(&mut self, item_id: ActiveTextItemId, kind: TextItemKind) {
+    pub(super) fn start_text_item(
+        &mut self,
+        item_id: ActiveTextItemId,
+        kind: TextItemKind,
+        seq: u64,
+    ) {
         if self
             .active_text_items
             .iter()
@@ -141,7 +150,6 @@ impl ChatWidget {
             self.commit_completed_assistant_before_next_reasoning();
         }
 
-        let seq = self.reserve_seq();
         let insert_index = self.active_text_item_insert_index(kind);
         tracing::debug!(
             item_id = %item_id.log_label(),
@@ -232,7 +240,8 @@ impl ChatWidget {
             return index;
         }
 
-        self.start_text_item(item_id, kind);
+        let seq = self.reserve_seq();
+        self.start_text_item(item_id, kind, seq);
         self.active_text_items
             .iter()
             .position(|item| item.item_id == item_id)

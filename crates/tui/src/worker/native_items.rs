@@ -10,20 +10,26 @@ use crate::transcript::lifecycle::ItemLifecycleEvent;
 
 use super::tool_lifecycle::{
     native_file_changes, tool_closed_from_command, tool_closed_from_file_change,
-    tool_closed_from_result, tool_opened_from_call, tool_opened_from_command,
-    tool_opened_refresh_from_call,
+    tool_closed_from_result, tool_opened_from_call_with_item_seq,
+    tool_opened_from_command_with_item_seq, tool_opened_refresh_from_call,
 };
 
 /// Projects a native item `item/started` notification into lifecycle events.
-pub(crate) fn started_events(item: &Item, item_id: ItemId) -> Vec<ItemLifecycleEvent> {
+pub(crate) fn started_events(
+    item: &Item,
+    item_id: ItemId,
+    item_seq: Option<u64>,
+) -> Vec<ItemLifecycleEvent> {
     match item {
         Item::AssistantMessage { .. } => vec![ItemLifecycleEvent::TextStarted {
             item_id,
             kind: TextItemKind::Assistant,
+            item_seq,
         }],
         Item::Reasoning { .. } => vec![ItemLifecycleEvent::TextStarted {
             item_id,
             kind: TextItemKind::Reasoning,
+            item_seq,
         }],
         Item::ToolCall {
             call_id,
@@ -37,7 +43,7 @@ pub(crate) fn started_events(item: &Item, item_id: ItemId) -> Vec<ItemLifecycleE
                 parameters: input.clone().unwrap_or(serde_json::Value::Null),
                 command_actions: Vec::new(),
             };
-            vec![tool_opened_from_call(&payload)]
+            vec![tool_opened_from_call_with_item_seq(&payload, item_seq)]
         }
         Item::CommandExecution {
             call_id,
@@ -45,12 +51,13 @@ pub(crate) fn started_events(item: &Item, item_id: ItemId) -> Vec<ItemLifecycleE
             input,
             origin,
             ..
-        } => vec![tool_opened_from_command(
+        } => vec![tool_opened_from_command_with_item_seq(
             call_id.clone(),
             command.clone(),
             input.clone(),
             *origin,
             Vec::new(),
+            item_seq,
         )],
         _ => Vec::new(),
     }
@@ -172,6 +179,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn started_native_reasoning_preserves_item_sequence() {
+        let item_id = ItemId::new();
+        let item = Item::Reasoning {
+            text: String::new(),
+            provider_payload_ref: None,
+        };
+
+        assert_eq!(
+            started_events(&item, item_id, Some(7)),
+            vec![ItemLifecycleEvent::TextStarted {
+                item_id,
+                kind: TextItemKind::Reasoning,
+                item_seq: Some(7),
+            }]
+        );
+    }
+
     /// A streamed tool call opens with empty parameters, the server then
     /// re-broadcasts `item/started` with the complete input, and the result
     /// closes the row. The running row must render the command as soon as the
@@ -181,7 +206,7 @@ mod tests {
         let item_id = ItemId::new();
         let mut projector = TranscriptProjector::default();
 
-        for event in started_events(&tool_call_item(Some(serde_json::json!({}))), item_id) {
+        for event in started_events(&tool_call_item(Some(serde_json::json!({}))), item_id, None) {
             projector.apply(event);
         }
 
@@ -192,6 +217,7 @@ mod tests {
         for event in started_events(
             &tool_call_item(Some(serde_json::json!({ "command": "cargo test" }))),
             item_id,
+            None,
         ) {
             projector.apply(event);
         }

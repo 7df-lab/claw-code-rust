@@ -234,7 +234,7 @@ async fn session_bound_command_exec_resolves_session_cwd() -> Result<()> {
                 "id": 23,
                 "method": "command/exec",
                 "params": {
-                    "sessionId": session_id,
+                    "session_id": session_id,
                     "process_id": "session-bound-1",
                     "program": {
                         "type": "one_shot",

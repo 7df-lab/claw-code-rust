@@ -431,7 +431,7 @@ fn live_write_lines() -> Vec<RolloutLine> {
                 reasoning_effort_selection: Some("medium".into()),
                 cwd: "/tmp/live".into(),
                 additional_directories: vec!["/tmp/live-extra".into()],
-                cli_version: "0.1.36".into(),
+                cli_version: "0.1.37".into(),
                 title: None,
                 title_state: SessionTitleState::Unset,
                 sandbox_policy: "workspace-write".into(),

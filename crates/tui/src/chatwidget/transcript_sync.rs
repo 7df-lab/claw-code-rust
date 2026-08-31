@@ -142,17 +142,21 @@ impl ChatWidget {
                 .iter()
                 .any(|item| item.item_id == item_id)
             {
+                // A completed exploration group is already in its compact
+                // display form and can safely remain alongside live text.
+                // Only detach an unfinished group so later tools do not get
+                // merged across the text boundary.
                 if let Some(cell) = self
                     .active_cell
                     .as_ref()
                     .and_then(|cell| cell.as_any().downcast_ref::<crate::exec_cell::ExecCell>())
-                    .filter(|cell| cell.is_exploring_cell())
+                    .filter(|cell| cell.is_exploring_cell() && cell.is_active())
                 {
                     self.detached_exec_tool_ids
                         .extend(cell.iter_calls().map(|call| call.call_id.clone()));
                     self.active_cell = None;
                 }
-                self.start_text_item(item_id, live.kind);
+                self.start_text_item(item_id, live.kind, live.seq);
             }
 
             self.sync_live_text_item(item_id);

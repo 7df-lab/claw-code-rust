@@ -11041,6 +11041,71 @@ fn merged_explored_group_becomes_explored_after_all_results_arrive() {
 }
 
 #[test]
+fn live_tool_order_stays_before_reasoning_after_reasoning_completes() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+    let _ = widget.drain_scrollback_lines(100);
+
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "Web Search(\"query\")".to_string(),
+        false,
+        None,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "Web Search(\"query\")".to_string(),
+        "status: completed".to_string(),
+        false,
+        false,
+    ));
+    let reasoning_id = devo_core::ItemId::new();
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        reasoning_id,
+        TextItemKind::Reasoning,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        reasoning_id,
+        TextItemKind::Reasoning,
+        "thinking body",
+    ));
+
+    let live = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
+    let tool_position = live
+        .find("Web Search(\"query\")")
+        .expect("live tool row should render");
+    let thinking_position = live
+        .find("Thinking: thinking body")
+        .expect("live reasoning row should render");
+    assert!(
+        tool_position < thinking_position,
+        "tool should stay above live reasoning:\n{live}"
+    );
+
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
+        reasoning_id,
+        TextItemKind::Reasoning,
+        "thinking body",
+    ));
+
+    let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
+    let tool_position = transcript
+        .find("Web Search(\"query\")")
+        .expect("tool row should remain in transcript");
+    let thought_position = transcript
+        .find("Thought: thinking body")
+        .expect("completed reasoning row should render");
+    assert!(
+        tool_position < thought_position,
+        "tool should stay above completed reasoning:\n{transcript}"
+    );
+}
+
+#[test]
 fn live_viewport_shows_explored_group_while_active() {
     let model = Model {
         slug: "test-model".to_string(),

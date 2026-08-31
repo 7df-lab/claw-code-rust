@@ -19,10 +19,18 @@ use super::tool_summaries::tool_call_started_actions;
 use super::tool_summaries::tool_call_updated_actions;
 
 pub(crate) fn tool_opened_from_call(payload: &ToolCallPayload) -> ItemLifecycleEvent {
+    tool_opened_from_call_with_item_seq(payload, None)
+}
+
+pub(crate) fn tool_opened_from_call_with_item_seq(
+    payload: &ToolCallPayload,
+    item_seq: Option<u64>,
+) -> ItemLifecycleEvent {
     ItemLifecycleEvent::ToolOpened {
         tool_use_id: payload.tool_call_id.clone(),
         tool_name: payload.tool_name.clone(),
         input: payload.parameters.clone(),
+        item_seq,
         command: shell_command_from_input(&payload.parameters),
         command_source: command_source_from_tool_name(&payload.tool_name),
         parsed_commands: tool_call_started_actions(payload),
@@ -35,6 +43,7 @@ pub(crate) fn tool_opened_refresh_from_call(payload: &ToolCallPayload) -> ItemLi
         tool_use_id: payload.tool_call_id.clone(),
         tool_name: payload.tool_name.clone(),
         input: payload.parameters.clone(),
+        item_seq: None,
         command: shell_command_from_input(&payload.parameters),
         command_source: command_source_from_tool_name(&payload.tool_name),
         parsed_commands: tool_call_updated_actions(payload, &summary),
@@ -64,11 +73,30 @@ pub(crate) fn tool_opened_from_command_source(
     source: ExecCommandSource,
     command_actions: Vec<devo_protocol::parse_command::ParsedCommand>,
 ) -> ItemLifecycleEvent {
+    tool_opened_from_command_source_with_item_seq(
+        call_id,
+        command,
+        input,
+        source,
+        command_actions,
+        None,
+    )
+}
+
+pub(crate) fn tool_opened_from_command_source_with_item_seq(
+    call_id: String,
+    command: String,
+    input: Option<serde_json::Value>,
+    source: ExecCommandSource,
+    command_actions: Vec<devo_protocol::parse_command::ParsedCommand>,
+    item_seq: Option<u64>,
+) -> ItemLifecycleEvent {
     let input = input.unwrap_or_else(|| serde_json::json!({ "command": command }));
     ItemLifecycleEvent::ToolOpened {
         tool_use_id: call_id,
         tool_name: "exec_command".to_string(),
         input,
+        item_seq,
         command: Some(command),
         command_source: Some(source),
         parsed_commands: command_actions,
@@ -82,11 +110,29 @@ pub(crate) fn tool_opened_from_command(
     origin: ExecOrigin,
     command_actions: Vec<devo_protocol::parse_command::ParsedCommand>,
 ) -> ItemLifecycleEvent {
+    tool_opened_from_command_with_item_seq(call_id, command, input, origin, command_actions, None)
+}
+
+pub(crate) fn tool_opened_from_command_with_item_seq(
+    call_id: String,
+    command: String,
+    input: Option<serde_json::Value>,
+    origin: ExecOrigin,
+    command_actions: Vec<devo_protocol::parse_command::ParsedCommand>,
+    item_seq: Option<u64>,
+) -> ItemLifecycleEvent {
     let source = match origin {
         ExecOrigin::AgentTool => ExecCommandSource::Agent,
         ExecOrigin::UserShell => ExecCommandSource::UserShell,
     };
-    tool_opened_from_command_source(call_id, command, input, source, command_actions)
+    tool_opened_from_command_source_with_item_seq(
+        call_id,
+        command,
+        input,
+        source,
+        command_actions,
+        item_seq,
+    )
 }
 
 pub(crate) fn tool_closed_from_file_change(

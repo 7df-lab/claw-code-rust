@@ -20,7 +20,7 @@ pub(crate) fn dispatch_typed_item_lifecycle(
 ) {
     let item = &payload.item.item;
     let transcript_events = if method == "item/started" {
-        native_items::started_events(item, item_id)
+        native_items::started_events(item, item_id, payload.context.item_seq)
     } else {
         native_items::completed_events(item, item_id)
     };

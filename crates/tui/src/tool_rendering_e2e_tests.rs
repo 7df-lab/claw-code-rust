@@ -53,6 +53,15 @@ fn active_display(widget: &ChatWidget) -> String {
         .join("\n")
 }
 
+fn viewport_display(widget: &ChatWidget) -> String {
+    widget
+        .active_viewport_lines_for_test(100)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn streaming_read_and_glob_updates_render_in_one_explored_cell() {
     let model = Model {
@@ -146,5 +155,76 @@ fn streaming_read_and_glob_updates_render_in_one_explored_cell() {
     assert!(
         !display.contains("List glob"),
         "glob placeholder must be replaced in place:\n{display}"
+    );
+}
+
+#[test]
+fn explored_group_stays_collapsed_when_live_reasoning_starts() {
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
+
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "grep-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+            cmd: "grep 'plan' in crates".to_string(),
+            query: Some("plan".to_string()),
+            path: Some("crates".to_string()),
+        }]),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "grep-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        "match".to_string(),
+        false,
+        false,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "read-1".to_string(),
+        "read crates/tui/src/worker.rs".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Read {
+            cmd: "read crates/tui/src/worker.rs".to_string(),
+            name: "worker.rs".to_string(),
+            path: PathBuf::from("crates/tui/src/worker.rs"),
+        }]),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "read-1".to_string(),
+        "read crates/tui/src/worker.rs".to_string(),
+        "source".to_string(),
+        false,
+        false,
+    ));
+
+    let reasoning_id = devo_core::ItemId::new();
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        reasoning_id,
+        crate::events::TextItemKind::Reasoning,
+        "thinking while the explored group remains collapsed",
+    ));
+
+    let display = viewport_display(&widget);
+    assert!(
+        display.contains("▌ Explored"),
+        "starting live reasoning must not expand the explored group into separate tool cells:\n{display}"
+    );
+    assert!(
+        display.contains("Grepped plan in crates")
+            && display.contains("Read crates/tui/src/worker.rs"),
+        "the grouped explored summary must remain visible:\n{display}"
+    );
+    assert!(
+        display.contains("Thinking: thinking while the explored group remains collapsed"),
+        "live reasoning must still render after the explored group:\n{display}"
     );
 }

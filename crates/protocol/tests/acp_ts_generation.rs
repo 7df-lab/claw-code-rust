@@ -159,3 +159,51 @@ fn generated_protocol_schema_covers_the_complete_native_registry() {
         .expect("item started schema name");
     assert!(value["schemas"][item_started_schema]["properties"]["item"].is_object());
 }
+
+#[test]
+fn embedded_server_notification_fields_match_wire_casing() {
+    let output = devo_protocol::acp_ts::generate_protocol_schema_json();
+    let value: serde_json::Value = serde_json::from_str(&output).expect("schema JSON");
+
+    // `ServerNotification` serializes variant fields with
+    // `rename_all_fields = "camelCase"`, but schemars 0.8 ignores that
+    // attribute. The generator must rewrite the definition embedded in
+    // SubscriptionCreateResult (used to validate subscription replay), or
+    // every multi-word variant field fails validation against snake_case.
+    let branches =
+        value["schemas"]["SubscriptionCreateResult"]["definitions"]["ServerNotification"]["oneOf"]
+            .as_array()
+            .expect("embedded ServerNotification oneOf");
+    assert!(!branches.is_empty());
+    for branch in branches {
+        let params = &branch["properties"]["params"];
+        let required = params["required"].as_array();
+        for field in required.into_iter().flatten() {
+            let field = field.as_str().expect("required field name");
+            assert!(
+                !field.contains('_'),
+                "snake_case required field {field:?} in embedded ServerNotification"
+            );
+        }
+        for field in params["properties"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, _)| name)
+        {
+            assert!(
+                !field.contains('_'),
+                "snake_case property {field:?} in embedded ServerNotification"
+            );
+        }
+    }
+
+    let restore_started = branches
+        .iter()
+        .find(|branch| branch["properties"]["method"]["enum"][0] == "workspace/restoreStarted")
+        .expect("workspace/restoreStarted branch");
+    assert_eq!(
+        restore_started["properties"]["params"]["required"],
+        serde_json::json!(["restorePlanId", "sessionId"])
+    );
+}

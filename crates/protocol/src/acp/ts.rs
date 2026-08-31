@@ -436,6 +436,11 @@ fn protocol_schema_bundle() -> ProtocolSchemaBundle {
     // shapes into the first-party runtime validator.
     register_native_method_registry(&mut schemas, &mut methods);
     register_native_notification_registry(&mut schemas, &mut methods);
+    // Replay-carrying result schemas embed the raw schemars ServerNotification
+    // definition; align its field names with the wire casing.
+    for schema in schemas.values_mut() {
+        camel_case_embedded_server_notification(schema);
+    }
 
     ProtocolSchemaBundle { schemas, methods }
 }
@@ -470,16 +475,7 @@ fn register_native_notification_registry(
             continue;
         };
         let mut params = params.clone().into_object();
-        if let Some(object) = params.object.as_mut() {
-            object.properties = std::mem::take(&mut object.properties)
-                .into_iter()
-                .map(|(name, schema)| (snake_to_lower_camel(&name), schema))
-                .collect();
-            object.required = std::mem::take(&mut object.required)
-                .into_iter()
-                .map(|name| snake_to_lower_camel(&name))
-                .collect();
-        }
+        camel_case_params_fields(&mut params);
         let schema_name = format!(
             "{}NotificationParams",
             method_name
@@ -508,6 +504,58 @@ fn register_native_notification_registry(
             .entry(method_name)
             .or_default()
             .incoming_notification = Some(Box::leak(schema_name.into_boxed_str()));
+    }
+}
+
+/// schemars 0.8 does not honor serde's `rename_all_fields`, so generated
+/// schema objects keep Rust field names (`restore_plan_id`) while the wire
+/// serializes camelCase (`restorePlanId`). Rewrite a notification params
+/// schema's field names so validation accepts what the server actually sends.
+fn camel_case_params_fields(params: &mut schemars::schema::SchemaObject) {
+    if let Some(object) = params.object.as_mut() {
+        object.properties = std::mem::take(&mut object.properties)
+            .into_iter()
+            .map(|(name, schema)| (snake_to_lower_camel(&name), schema))
+            .collect();
+        object.required = std::mem::take(&mut object.required)
+            .into_iter()
+            .map(|name| snake_to_lower_camel(&name))
+            .collect();
+    }
+}
+
+/// Apply the same rewrite to the `ServerNotification` definition embedded in
+/// replay-carrying result schemas (`SubscriptionCreateResult`). The registry
+/// path above already rewrites its standalone copies; without this pass the
+/// embedded definition keeps snake_case field names and replay envelope
+/// validation rejects every notification whose variant fields are multi-word.
+fn camel_case_embedded_server_notification(schema: &mut RootSchema) {
+    let Some(definition) = schema.definitions.get_mut("ServerNotification") else {
+        return;
+    };
+    let schemars::schema::Schema::Object(object) = definition else {
+        return;
+    };
+    let Some(subschemas) = object.subschemas.as_mut() else {
+        return;
+    };
+    let Some(branches) = subschemas.one_of.as_mut() else {
+        return;
+    };
+    for branch in branches {
+        let schemars::schema::Schema::Object(branch_object) = branch else {
+            continue;
+        };
+        let Some(validation) = branch_object.object.as_mut() else {
+            continue;
+        };
+        let Some(params) = validation.properties.get_mut("params") else {
+            continue;
+        };
+        let schemars::schema::Schema::Object(params_object) = params else {
+            continue;
+        };
+        camel_case_params_fields(params_object);
     }
 }
 

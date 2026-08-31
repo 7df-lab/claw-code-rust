@@ -7,6 +7,10 @@ import type { Plugin } from "vite"
 import { protocolTypesPlugin } from "./scripts/protocol-types"
 
 const sdkClientAlias = path.resolve(__dirname, "packages/devo-ai-sdk/src/v2/client.ts")
+const sdkProtocolValidationAlias = path.resolve(
+	__dirname,
+	"packages/devo-ai-sdk/src/v2/protocol-validation.ts",
+)
 
 /**
  * Copies the drizzle migrations directory into the main process output.
@@ -39,6 +43,7 @@ export default defineConfig({
 		resolve: {
 			alias: {
 				"@devo-ai/sdk/v2/client": sdkClientAlias,
+				"@devo-ai/sdk/v2/protocol-validation": sdkProtocolValidationAlias,
 			},
 		},
 		build: {
@@ -53,6 +58,7 @@ export default defineConfig({
 		resolve: {
 			alias: {
 				"@devo-ai/sdk/v2/client": sdkClientAlias,
+				"@devo-ai/sdk/v2/protocol-validation": sdkProtocolValidationAlias,
 			},
 		},
 		build: {
@@ -72,6 +78,7 @@ export default defineConfig({
 				"@": path.resolve(__dirname, "src/renderer"),
 				"@devo/ui": path.resolve(__dirname, "packages/ui/src"),
 				"@devo-ai/sdk/v2/client": sdkClientAlias,
+				"@devo-ai/sdk/v2/protocol-validation": sdkProtocolValidationAlias,
 			},
 		},
 		worker: {

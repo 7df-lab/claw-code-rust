@@ -27,6 +27,10 @@ export default defineConfig({
 				__dirname,
 				"../../packages/devo-ai-sdk/src/v2/client.ts",
 			),
+			"@devo-ai/sdk/v2/protocol-validation": path.resolve(
+				__dirname,
+				"../../packages/devo-ai-sdk/src/v2/protocol-validation.ts",
+			),
 		},
 	},
 	worker: {

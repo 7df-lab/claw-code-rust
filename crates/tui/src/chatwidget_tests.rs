@@ -3919,6 +3919,7 @@ fn live_and_resume_error_share_same_rendering_chain() {
         true,
         false,
     ));
+    finalize_live_turn_for_history(&mut live_widget);
     let live_blob = scrollback_plain_lines(&live_widget.drain_scrollback_lines(80))
         .into_iter()
         .filter(|line| line.contains("Ran bash error") || line.contains("permission denied"))
@@ -5699,7 +5700,7 @@ fn committed_assistant_multiline_text_has_no_extra_blank_rows() {
 }
 
 #[test]
-fn tool_call_start_and_finish_are_both_visible_in_history() {
+fn tool_call_running_row_changes_to_ran_before_turn_commit() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
         slug: "test-model".to_string(),
@@ -5726,7 +5727,7 @@ fn tool_call_start_and_finish_are_both_visible_in_history() {
 
     let running = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
-        running.contains("Running Get-Date"),
+        running.contains("Running") && running.contains("Get-Date"),
         "expected running tool cell, got:\n{running}"
     );
 
@@ -5738,19 +5739,17 @@ fn tool_call_start_and_finish_are_both_visible_in_history() {
         false,
     ));
 
-    let ran = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let ran_live = rendered_rows(&widget, 80, 12).join("\n");
     assert!(
-        !ran.contains("Running Get-Date"),
-        "running tool cell should not remain in history, got:\n{ran}"
+        !ran_live.contains("Running powershell"),
+        "running tool cell should update in place, got:\n{ran_live}"
     );
     assert!(
-        ran.contains("Ran Get-Date"),
-        "expected ran tool cell, got:\n{ran}"
+        ran_live.contains("Ran") && ran_live.contains("Get-Date"),
+        "expected ran tool cell, got:\n{ran_live}"
     );
-    assert!(
-        !ran.contains("2026-05-09"),
-        "shell output should stay out of inline scrollback, got:\n{ran}"
-    );
+    assert!(widget.drain_scrollback_lines(80).is_empty());
+    assert!(!ran_live.contains("2026-05-09"));
     let transcript = widget
         .transcript_overlay_lines(80)
         .into_iter()
@@ -5766,6 +5765,20 @@ fn tool_call_start_and_finish_are_both_visible_in_history() {
         transcript.contains("2026-05-09"),
         "shell output should appear in transcript overlay, got:\n{transcript}"
     );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnFinished {
+        stop_reason: "Completed".to_string(),
+        turn_count: 1,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+    });
+    let committed = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    assert_eq!(committed.matches("Ran").count(), 1, "{committed}");
 }
 
 #[test]
@@ -5817,7 +5830,7 @@ fn web_search_tool_call_renders_title_and_status_without_running_prefix() {
         false,
     ));
 
-    let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join(
+    let rendered = rendered_rows(&widget, 80, 12).join(
         "
 ",
     );
@@ -5887,7 +5900,7 @@ fn web_fetch_tool_call_renders_title_and_status_without_running_prefix() {
         false,
     ));
 
-    let rendered = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join(
+    let rendered = rendered_rows(&widget, 80, 12).join(
         "
 ",
     );
@@ -5996,6 +6009,23 @@ fn generic_running_tool_call_disappears_after_result() {
         !rendered.contains("Running code_search"),
         "running row should disappear after result:\n{rendered}"
     );
+    assert!(rendered.contains("Ran code_search"), "{rendered}");
+    assert!(
+        rendered.contains("Missing necessary parameter display"),
+        "{rendered}"
+    );
+
+    widget.handle_worker_event(crate::events::WorkerEvent::TurnFinished {
+        stop_reason: "Completed".to_string(),
+        turn_count: 1,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+        total_cache_read_tokens: 0,
+        last_query_total_tokens: 0,
+        last_query_input_tokens: 0,
+        prompt_token_estimate: 0,
+    });
 
     let history = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
     assert!(
@@ -6066,10 +6096,9 @@ fn edit_running_row_is_path_free_and_disappears_after_patch_result() {
         !after.contains("Editing"),
         "completed Edit should leave no live row:\n{after}"
     );
-    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
     assert!(
-        history.contains("Edited test_edit_test.md") || history.contains("Edited 1 file"),
-        "completed Edit diff should remain visible:\n{history}"
+        after.contains("Edited test_edit_test.md") || after.contains("Edited 1 file"),
+        "completed Edit diff should remain visible:\n{after}"
     );
 }
 
@@ -6436,6 +6465,166 @@ fn legacy_failed_turn_finished_flushes_explored_before_footer() {
 }
 
 #[test]
+fn late_tool_events_after_turn_finish_do_not_repin_row_to_live_viewport() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
+    let _ = widget.drain_scrollback_lines(100);
+
+    widget.handle_worker_event(crate::worker_event_test_helpers::command_execution_started(
+        "bash-1".to_string(),
+        "cargo test".to_string(),
+        None,
+        devo_protocol::protocol::ExecCommandSource::Agent,
+        Vec::new(),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_output_delta(
+        "bash-1".to_string(),
+        "test result: ok\n".to_string(),
+    ));
+    let live = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
+    assert!(
+        live.contains("cargo test"),
+        "running tool row should render in the live viewport:\n{live}"
+    );
+
+    // Result lands while the turn is still active, then the turn boundary
+    // commits the row into scrollback history.
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "bash-1".to_string(),
+        "Shell cargo test".to_string(),
+        "test result: ok\n".to_string(),
+        false,
+        false,
+    ));
+    finalize_live_turn_for_history(&mut widget);
+
+    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        history.contains("cargo test"),
+        "committed tool row should land in history:\n{history}"
+    );
+
+    // The `ToolResult`/`item` notifications race past the turn's terminal
+    // event and are dispatched afterwards. They must not re-pin the finished
+    // row to the live viewport: after the boundary nothing would ever flush
+    // it into history, so it would sit above the composer forever.
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "bash-1".to_string(),
+        "Shell cargo test".to_string(),
+        "test result: ok\n".to_string(),
+        false,
+        false,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::command_execution_started(
+        "bash-1".to_string(),
+        "cargo test".to_string(),
+        None,
+        devo_protocol::protocol::ExecCommandSource::Agent,
+        Vec::new(),
+    ));
+
+    let live_after = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
+    assert!(
+        !live_after.contains("Ran cargo test") && !live_after.contains("Running cargo test"),
+        "late duplicate events must not re-pin the tool row to the live viewport:\n{live_after}"
+    );
+    let history_after = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        !history_after.contains("cargo test"),
+        "late duplicate events must not append a second committed cell:\n{history_after}"
+    );
+}
+
+#[test]
+fn text_completion_commits_older_explored_tools_before_text() {
+    let cwd = std::env::current_dir().expect("current directory is available");
+    let model = Model {
+        slug: "test-model".to_string(),
+        display_name: "Test Model".to_string(),
+        ..Model::default()
+    };
+    let (mut widget, _app_event_rx) = widget_with_model(model, cwd);
+    let _ = widget.drain_scrollback_lines(100);
+
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_call(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        false,
+        Some(vec![devo_protocol::parse_command::ParsedCommand::Search {
+            cmd: "grep 'plan' in crates".to_string(),
+            query: Some("plan".to_string()),
+            path: Some("crates".to_string()),
+        }]),
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::tool_result(
+        "tool-1".to_string(),
+        "grep 'plan' in crates".to_string(),
+        String::new(),
+        false,
+        false,
+    ));
+
+    // Assistant text starts streaming: the exploring group detaches and the
+    // finished tools render as individual live rows while the text streams
+    // below them.
+    let text_id = devo_core::ItemId::new();
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_started(
+        text_id,
+        crate::events::TextItemKind::Assistant,
+    ));
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_delta(
+        text_id,
+        crate::events::TextItemKind::Assistant,
+        "Found it in ",
+    ));
+    let live = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
+    assert!(
+        live.contains("Found it in"),
+        "streaming text should render in the live viewport:\n{live}"
+    );
+
+    // When the text commits mid-turn, the tools that ran before it must
+    // commit first; otherwise scrollback would show [text, tools] even
+    // though the tools happened first, with the tool rows repinned right
+    // above the composer below the finished reply.
+    widget.handle_worker_event(crate::worker_event_test_helpers::text_item_completed(
+        text_id,
+        crate::events::TextItemKind::Assistant,
+        "Found it in crates/chatwidget.rs.",
+    ));
+
+    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    let tool_row = history.find("Grepped plan in crates");
+    let text_row = history.find("Found it in crates/chatwidget.rs.");
+    assert!(
+        tool_row.is_some() && text_row.is_some(),
+        "expected tool row and assistant text in history:\n{history}"
+    );
+    assert!(
+        tool_row < text_row,
+        "tools that ran before the text must commit above it:\n{history}"
+    );
+    let live_after = line_texts(widget.active_viewport_lines_for_test(100)).join("\n");
+    assert!(
+        !live_after.contains("Found it in"),
+        "committed text must leave the live viewport:\n{live_after}"
+    );
+
+    // The turn boundary has nothing left to flush: no duplicate commits.
+    finalize_live_turn_for_history(&mut widget);
+    let history_after = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    assert!(
+        !history_after.contains("Grepped plan in crates"),
+        "boundary must not re-commit the flushed tool row:\n{history_after}"
+    );
+}
+
+#[test]
 fn preparing_write_disappears_after_patch_applied() {
     let cwd = std::env::current_dir().expect("current directory is available");
     let model = Model {
@@ -6474,11 +6663,10 @@ fn preparing_write_disappears_after_patch_applied() {
         !after.contains("Preparing write..."),
         "preparing state should disappear after patch applied:\n{after}"
     );
-    let history = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
     assert!(
-        history.contains("Added src/lib.rs")
-            || history.contains("Edited src/lib.rs")
-            || history.contains("Added 1 file")
+        after.contains("Added src/lib.rs")
+            || after.contains("Edited src/lib.rs")
+            || after.contains("Added 1 file")
     );
 }
 
@@ -9928,7 +10116,7 @@ fn duplicate_command_execution_start_is_idempotent() {
 
     let transcript = line_texts(widget.transcript_overlay_lines(100)).join("\n");
     assert_eq!(
-        transcript.matches("Ran pwd").count(),
+        transcript.matches("Running pwd").count(),
         1,
         "duplicate starts should retain one command cell:\n{transcript}"
     );
@@ -9969,7 +10157,7 @@ fn transcript_overlay_lines_include_completed_tool_input_and_full_output() {
         false,
     ));
 
-    let inline = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let inline = line_texts(widget.active_viewport_lines_for_test(80)).join("\n");
     let transcript = line_texts(widget.transcript_overlay_lines(80)).join("\n");
 
     assert!(
@@ -10957,9 +11145,15 @@ fn reasoning_start_closes_current_explored_group() {
         .join("\n");
 
     assert_eq!(
-        transcript.matches("Explored").count() + transcript.matches("Exploring").count(),
-        2,
-        "reasoning boundary should split explored groups:\n{transcript}"
+        transcript.matches("Grepping 'plan' in crates").count()
+            + transcript.matches("Grepped 'plan' in crates").count(),
+        1,
+        "{transcript}"
+    );
+    assert_eq!(
+        transcript.matches("Finding crates").count() + transcript.matches("Found crates").count(),
+        1,
+        "{transcript}"
     );
 }
 
@@ -11011,9 +11205,15 @@ fn assistant_text_start_closes_current_explored_group() {
         .join("\n");
 
     assert_eq!(
-        transcript.matches("Explored").count() + transcript.matches("Exploring").count(),
-        2,
-        "assistant text boundary should split explored groups:\n{transcript}"
+        transcript.matches("Grepping 'plan' in crates").count()
+            + transcript.matches("Grepped 'plan' in crates").count(),
+        1,
+        "{transcript}"
+    );
+    assert_eq!(
+        transcript.matches("Finding crates").count() + transcript.matches("Found crates").count(),
+        1,
+        "{transcript}"
     );
 }
 
@@ -11221,7 +11421,7 @@ fn patch_applied_event_renders_edited_block() {
         changes,
     ));
 
-    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let blob = transcript_overlay_text(&widget, 80);
     assert!(
         blob.contains("Edited foo.txt") || blob.contains("Edited 1 file"),
         "expected edited patch block, got:\n{blob}"
@@ -11250,7 +11450,7 @@ fn added_file_patch_applied_event_renders_added_content_lines() {
         changes,
     ));
 
-    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(100)).join("\n");
+    let blob = transcript_overlay_text(&widget, 100);
     assert!(
         blob.contains("Added quicksort.rs")
             || blob.contains("Edited quicksort.rs")
@@ -11291,7 +11491,7 @@ fn apply_patch_style_full_git_diff_reports_non_zero_counts() {
         changes,
     ));
 
-    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let blob = transcript_overlay_text(&widget, 80);
     assert!(
         blob.contains("(+1 -1)"),
         "full git-style apply_patch diff should report non-zero counts:\n{blob}"
@@ -11345,7 +11545,7 @@ fn write_patch_applied_event_renders_edited_block() {
         changes,
     ));
 
-    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let blob = transcript_overlay_text(&widget, 80);
     assert!(
         blob.contains("Edited foo.txt") || blob.contains("Edited 1 file"),
         "expected edited patch block for write result, got:\n{blob}"
@@ -11377,7 +11577,7 @@ fn write_patch_applied_event_reports_non_zero_counts() {
         changes,
     ));
 
-    let blob = scrollback_plain_lines(&widget.drain_scrollback_lines(80)).join("\n");
+    let blob = transcript_overlay_text(&widget, 80);
     assert!(
         !blob.contains("Edited 0 files (+0 -0)"),
         "write-derived edited block should not collapse to zero summary:\n{blob}"

@@ -25,6 +25,10 @@ pub(crate) fn is_exploration_tool(tool: &ToolCellModel) -> bool {
         && !matches!(tool.command_source, Some(ExecCommandSource::UserShell))
 }
 
+pub(crate) fn tool_uses_exec_cell(tool: &ToolCellModel) -> bool {
+    is_exploration_tool(tool) || matches!(tool.command_source, Some(ExecCommandSource::UserShell))
+}
+
 /// Where a finished tool row should land in the transcript.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ToolCommitTarget {
@@ -139,16 +143,22 @@ impl ChatWidget {
 
     fn commit_exec_tool(&mut self, tool: ToolCellModel, target: ToolCommitTarget) {
         if self.complete_exec_tool_from_committed(&tool) {
-            return;
-        }
-
-        if target == ToolCommitTarget::LiveOverlay {
+            // The live overlay or an existing history cell already owns this
+            // call; it was completed in place.
             return;
         }
 
         let exec = exec_cell_from_tool(&tool, &self.session.cwd);
-        self.add_history_entry_without_redraw(Box::new(exec));
-        self.apply_tool_io_to_history_exec(&tool);
+        match target {
+            ToolCommitTarget::LiveOverlay => {
+                self.active_cell = Some(Box::new(exec));
+                self.apply_tool_io_to_active_exec(&tool);
+            }
+            ToolCommitTarget::ScrollbackHistory => {
+                self.add_history_entry_without_redraw(Box::new(exec));
+                self.apply_tool_io_to_history_exec(&tool);
+            }
+        }
     }
 
     fn commit_exploration_tool(&mut self, tool: ToolCellModel, target: ToolCommitTarget) {
@@ -274,11 +284,16 @@ impl ChatWidget {
 
         let Some(cell) = self
             .history
-            .last_mut()
+            .get_mut(self.next_history_flush_index..)
+            .and_then(|history| history.last_mut())
             .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
         else {
             return false;
         };
+        if cell.contains_call(&call_id) {
+            self.apply_tool_io_to_history_exec(tool);
+            return true;
+        }
         let Some(grouped) = cell.with_added_call(
             call_id,
             command_tokens,
@@ -364,6 +379,7 @@ impl ChatWidget {
         for cell in self
             .history
             .iter_mut()
+            .skip(self.next_history_flush_index)
             .rev()
             .filter_map(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
         {
@@ -423,6 +439,7 @@ impl ChatWidget {
         for cell in self
             .history
             .iter_mut()
+            .skip(self.next_history_flush_index)
             .rev()
             .filter_map(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
         {

@@ -42,6 +42,7 @@ impl ChatWidget {
         self.active_proposed_plan = None;
         self.pending_proposed_plan_actions = false;
         self.active_tool_calls.clear();
+        self.detached_exec_tool_ids.clear();
         self.pending_tool_calls.clear();
         self.active_text_items.clear();
         self.boundary_committed_assistant_items.clear();

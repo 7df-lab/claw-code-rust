@@ -45,6 +45,7 @@ enum LiveViewportLineMode {
 
 #[allow(clippy::large_enum_variant)]
 enum LiveItem {
+    ActiveCell,
     Text(usize),
     Tool(String),
 }
@@ -180,18 +181,24 @@ impl ChatWidget {
             LiveViewportLineMode::Display => cell.display_lines(width),
             LiveViewportLineMode::Transcript => cell.transcript_lines(width),
         };
-        if let Some(cell) = &self.active_cell {
-            Self::extend_lines_with_separator(&mut lines, cell_lines(cell.as_ref()));
-        }
-
         let mut items: Vec<(u64, LiveItem)> = Vec::new();
+        if self.active_cell.is_some() {
+            let seq = self
+                .active_tool_calls
+                .values()
+                .filter(|tool| tool.owned_by_active_cell)
+                .map(|tool| tool.seq)
+                .min()
+                .unwrap_or(0);
+            items.push((seq, LiveItem::ActiveCell));
+        }
         for (idx, item) in self.active_text_items.iter().enumerate() {
             if item.cell.is_some() {
                 items.push((item.seq, LiveItem::Text(idx)));
             }
         }
         for tool_call in self.active_tool_calls.values() {
-            if tool_call.exec_like {
+            if tool_call.owned_by_active_cell {
                 continue;
             }
             items.push((tool_call.seq, LiveItem::Tool(tool_call.tool_use_id.clone())));
@@ -208,19 +215,41 @@ impl ChatWidget {
 
         for (_, item) in items {
             match item {
+                LiveItem::ActiveCell => {
+                    if let Some(cell) = &self.active_cell {
+                        Self::extend_lines_with_separator(&mut lines, cell_lines(cell.as_ref()));
+                    }
+                }
                 LiveItem::Text(idx) => {
                     if let Some(cell) = &self.active_text_items[idx].cell {
                         Self::extend_lines_with_separator(&mut lines, cell_lines(cell.as_ref()));
                     }
                 }
                 LiveItem::Tool(tool_use_id) => {
-                    if let Some(tool_call) = self.active_tool_calls.get(&tool_use_id) {
+                    if let Some(tool) = self.transcript_projector.live_tool(&tool_use_id) {
+                        let dot_prefix = if tool.is_error {
+                            Self::failed_dot_prefix()
+                        } else {
+                            Self::tool_dot_prefix()
+                        };
                         let tool_lines = match mode {
                             LiveViewportLineMode::Display => {
-                                Self::live_tool_display_lines(width, tool_call)
+                                crate::transcript::render::live_tool_display_lines(
+                                    tool,
+                                    width,
+                                    &self.session.cwd,
+                                    dot_prefix,
+                                    Self::tool_text_style(),
+                                )
                             }
                             LiveViewportLineMode::Transcript => {
-                                Self::live_tool_transcript_lines(width, tool_call)
+                                crate::transcript::render::live_tool_transcript_lines(
+                                    tool,
+                                    width,
+                                    &self.session.cwd,
+                                    dot_prefix,
+                                    Self::tool_text_style(),
+                                )
                             }
                         };
                         Self::extend_lines_with_separator(&mut lines, tool_lines);
@@ -277,7 +306,7 @@ impl ChatWidget {
             (Some(tool_name), Some(input)) if is_agent_task_tool_name(tool_name) => {
                 AgentToolCell::new(
                     tool_name.clone(),
-                    ToolPhase::Running,
+                    tool_call.phase,
                     Some(input.clone()),
                     None,
                     tool_call.output.clone(),
@@ -287,9 +316,9 @@ impl ChatWidget {
             }
             (Some(tool_name), Some(input)) => {
                 let title_line = tool_title_line(
-                    ToolPhase::Running,
+                    tool_call.phase,
                     &tool_title_parts(
-                        ToolPhase::Running,
+                        tool_call.phase,
                         Some(tool_name.as_str()),
                         Some(input),
                         &tool_call.parsed_commands,
@@ -313,9 +342,9 @@ impl ChatWidget {
             }
             _ => {
                 let title_line = tool_title_line(
-                    ToolPhase::Running,
+                    tool_call.phase,
                     &tool_title_parts(
-                        ToolPhase::Running,
+                        tool_call.phase,
                         tool_call.tool_name.as_deref(),
                         tool_call.input.as_ref(),
                         &tool_call.parsed_commands,
@@ -344,7 +373,7 @@ impl ChatWidget {
             (Some(tool_name), Some(input)) if is_agent_task_tool_name(tool_name) => {
                 AgentToolCell::new(
                     tool_name.clone(),
-                    ToolPhase::Running,
+                    tool_call.phase,
                     Some(input.clone()),
                     None,
                     tool_call.output.clone(),
@@ -354,9 +383,9 @@ impl ChatWidget {
             }
             (Some(tool_name), Some(input)) => {
                 let title_line = tool_title_line(
-                    ToolPhase::Running,
+                    tool_call.phase,
                     &tool_title_parts(
-                        ToolPhase::Running,
+                        tool_call.phase,
                         Some(tool_name.as_str()),
                         Some(input),
                         &tool_call.parsed_commands,
@@ -380,9 +409,9 @@ impl ChatWidget {
             }
             _ => {
                 let title_line = tool_title_line(
-                    ToolPhase::Running,
+                    tool_call.phase,
                     &tool_title_parts(
-                        ToolPhase::Running,
+                        tool_call.phase,
                         tool_call.tool_name.as_deref(),
                         tool_call.input.as_ref(),
                         &tool_call.parsed_commands,
@@ -422,7 +451,7 @@ impl ChatWidget {
 
         let text_kind = |item: &LiveItem| match item {
             LiveItem::Text(idx) => active_text_items.get(*idx).map(|item| item.kind),
-            LiveItem::Tool(_) => None,
+            LiveItem::ActiveCell | LiveItem::Tool(_) => None,
         };
         if let (Some(kind_a), Some(kind_b)) = (text_kind(item_a), text_kind(item_b)) {
             if Self::text_item_precedes_assistant(kind_a) && kind_b == TextItemKind::Assistant {

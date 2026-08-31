@@ -130,7 +130,7 @@ pub(crate) fn tool_title_parts(
     }
 
     if tool_name.is_some_and(super::tool_state::is_shell_tool_name) {
-        let completed = matches!(phase, ToolPhase::Completed | ToolPhase::Failed);
+        let completed = phase.is_terminal();
         let verb = if completed { "Ran" } else { "Running" };
         let detail = super::tool_state::shell_description_from_input(input).unwrap_or_else(|| {
             input
@@ -180,7 +180,7 @@ pub(crate) fn tool_title_parts(
 
     let tool_name = tool_name.unwrap_or("tool");
     let kind = ToolVerbKind::from_tool_name(tool_name);
-    let completed = matches!(phase, ToolPhase::Completed | ToolPhase::Failed);
+    let completed = phase.is_terminal();
     let verb = if completed {
         kind.completed_verb(tool_name, completed_with_add)
             .to_string()
@@ -202,7 +202,7 @@ fn agent_task_title_parts(
     phase: ToolPhase,
     input: Option<&serde_json::Value>,
 ) -> ToolTitleParts {
-    let completed = matches!(phase, ToolPhase::Completed | ToolPhase::Failed);
+    let completed = phase.is_terminal();
     match tool_name {
         "spawn_agent" | "agent_spawn" => {
             let nickname = input
@@ -310,15 +310,24 @@ pub(crate) fn tool_title_line(phase: ToolPhase, parts: &ToolTitleParts) -> Line<
         ]);
     }
 
-    let completed = matches!(phase, ToolPhase::Completed | ToolPhase::Failed);
+    let completed = phase.is_terminal();
     let verb_style = if completed {
         tool_status_done_style()
     } else {
         tool_status_running_style()
     };
 
+    let degraded_suffix = if phase == ToolPhase::Degraded {
+        " · result unavailable"
+    } else {
+        ""
+    };
+
     if parts.verb.is_empty() {
-        return Line::from(Span::styled(parts.detail.clone(), tool_text_style()));
+        return Line::from(Span::styled(
+            format!("{}{degraded_suffix}", parts.detail),
+            tool_text_style(),
+        ));
     }
 
     let detail = if parts.detail.is_empty() {
@@ -330,6 +339,7 @@ pub(crate) fn tool_title_line(phase: ToolPhase, parts: &ToolTitleParts) -> Line<
     Line::from(vec![
         Span::styled(parts.verb.clone(), verb_style),
         Span::styled(detail, tool_text_style()),
+        Span::styled(degraded_suffix, tool_text_style()),
     ])
 }
 
@@ -349,7 +359,7 @@ pub(crate) fn title_from_parsed_command(
     parsed: &ParsedCommand,
     phase: ToolPhase,
 ) -> ToolTitleParts {
-    let completed = matches!(phase, ToolPhase::Completed | ToolPhase::Failed);
+    let completed = phase.is_terminal();
     match parsed {
         ParsedCommand::Read { name, path, cmd } => {
             let detail = read_display_name(name, path, cmd);

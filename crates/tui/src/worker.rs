@@ -123,6 +123,68 @@ fn should_apply_terminal_turn_usage_fallback(
     !saw_usage_update_for_turn && !has_authoritative_usage_totals
 }
 
+async fn reconcile_idle_turn(
+    client: &mut StdioServerClient,
+    session_id: SessionId,
+    turn_id: TurnId,
+    seen_terminal_item_ids: &mut HashSet<String>,
+    seen_terminal_call_ids: &mut HashSet<String>,
+    event_tx: &mpsc::UnboundedSender<WorkerEvent>,
+) -> Result<devo_protocol::native::turn::Turn> {
+    let turn = client.turn_read_native(session_id, turn_id).await?.turn;
+    if turn.status == devo_protocol::native::turn::TurnStatus::InProgress {
+        anyhow::bail!("server still reports turn {turn_id} in progress");
+    }
+
+    let mut cursor = None;
+    loop {
+        let page = client
+            .turn_items_list_native(session_id, turn_id, cursor.clone(), Some(200))
+            .await?;
+        let page_len = page.data.len();
+        let next_cursor = page.next_cursor;
+        for envelope in page.data {
+            if !matches!(
+                envelope.state,
+                devo_protocol::native::item::ItemState::Completed
+                    | devo_protocol::native::item::ItemState::Failed
+                    | devo_protocol::native::item::ItemState::Interrupted
+                    | devo_protocol::native::item::ItemState::Lost
+            ) {
+                continue;
+            }
+            let call_id = match &envelope.item {
+                devo_protocol::native::item::Item::ToolResult { call_id, .. }
+                | devo_protocol::native::item::Item::CommandExecution { call_id, .. }
+                | devo_protocol::native::item::Item::FileChange { call_id, .. } => {
+                    Some(call_id.clone())
+                }
+                _ => None,
+            };
+            let Some(call_id) = call_id else {
+                continue;
+            };
+            let item_id = envelope.id.to_string();
+            if seen_terminal_item_ids.contains(&item_id)
+                || seen_terminal_call_ids.contains(&call_id)
+            {
+                continue;
+            }
+            let legacy_item_id = devo_core::ItemId::try_from(item_id.as_str())?;
+            for event in native_items::completed_events(&envelope.item, legacy_item_id) {
+                let _ = event_tx.send(WorkerEvent::Transcript(event));
+            }
+            seen_terminal_item_ids.insert(item_id);
+            seen_terminal_call_ids.insert(call_id);
+        }
+        match (next_cursor, page_len) {
+            (Some(next), len) if len > 0 => cursor = Some(next),
+            _ => break,
+        }
+    }
+    Ok(turn)
+}
+
 /// Spawn discovery from a typed `item/completed` ToolResult (L2-DES-APP-009
 /// cutover): the typed item carries the same raw output the ACP tool-call
 /// path parsed, so discovery no longer depends on the ACP envelope.
@@ -1066,6 +1128,8 @@ async fn run_worker_inner(
     let mut saw_usage_update_for_turn = false;
     let mut has_authoritative_usage_totals = false;
     let mut latest_completed_agent_message: Option<String> = None;
+    let mut seen_terminal_item_ids: HashSet<String> = HashSet::new();
+    let mut seen_terminal_call_ids: HashSet<String> = HashSet::new();
     let mut child_agent_sessions: HashSet<SessionId> = HashSet::new();
     let mut btw_agent_sessions: HashMap<SessionId, BtwQuestionState> = HashMap::new();
     let mut input_history_cursor: Option<usize> = None;
@@ -3192,6 +3256,8 @@ async fn run_worker_inner(
                                             continue;
                                         }
                                         active_turn_id = Some(turn_id);
+                                        seen_terminal_item_ids.clear();
+                                        seen_terminal_call_ids.clear();
                                         saw_usage_update_for_turn = false;
                                         model = turn.model.model.clone();
                                         model_binding_id =
@@ -3506,13 +3572,12 @@ async fn run_worker_inner(
                                     let changed_session_id = params["sessionId"]
                                         .as_str()
                                         .and_then(|id| SessionId::try_from(id).ok());
+                                    let status = params["status"].as_str().unwrap_or("idle");
                                     if let Some(changed_session_id) = changed_session_id
                                         && child_agent_sessions.contains(&changed_session_id)
                                     {
-                                        let status = match params["status"].as_str() {
-                                            Some("active") => {
-                                                devo_protocol::SessionRuntimeStatus::ActiveTurn
-                                            }
+                                        let status = match status {
+                                            "active" => devo_protocol::SessionRuntimeStatus::ActiveTurn,
                                             _ => devo_protocol::SessionRuntimeStatus::Idle,
                                         };
                                         let _ = event_tx.send(WorkerEvent::SubagentMonitor {
@@ -3521,6 +3586,122 @@ async fn run_worker_inner(
                                                 status,
                                             },
                                         });
+                                    } else if changed_session_id.is_some_and(|id| Some(id) == session_id)
+                                        && status != "active"
+                                        && let (Some(active_session_id), Some(finished_turn_id)) =
+                                            (session_id, active_turn_id)
+                                    {
+                                        tracing::warn!(
+                                            turn_id = %finished_turn_id,
+                                            "turn/completed not observed; reconciling authoritative turn state"
+                                        );
+                                        match reconcile_idle_turn(
+                                            &mut client,
+                                            active_session_id,
+                                            finished_turn_id,
+                                            &mut seen_terminal_item_ids,
+                                            &mut seen_terminal_call_ids,
+                                            event_tx,
+                                        )
+                                        .await
+                                        {
+                                            Ok(turn) => {
+                                                active_turn_id = None;
+                                                if matches!(
+                                                    turn.status,
+                                                    devo_protocol::native::turn::TurnStatus::Completed
+                                                        | devo_protocol::native::turn::TurnStatus::Interrupted
+                                                ) {
+                                                    turn_count += 1;
+                                                }
+                                                if let Some(usage) = &turn.usage {
+                                                    let input = usage.query.input_tokens as usize;
+                                                    let total = usage.query.total_tokens as usize;
+                                                    let cache_read = usage.query.cache_read_input_tokens as usize;
+                                                    if !saw_usage_update_for_turn {
+                                                        last_query_input_tokens = input;
+                                                        last_query_total_tokens = total;
+                                                    }
+                                                    if should_apply_terminal_turn_usage_fallback(
+                                                        saw_usage_update_for_turn,
+                                                        has_authoritative_usage_totals,
+                                                    ) {
+                                                        total_input_tokens += input;
+                                                        total_output_tokens +=
+                                                            usage.query.output_tokens as usize;
+                                                        total_tokens += total;
+                                                        total_cache_read_tokens += cache_read;
+                                                    }
+                                                }
+                                                if let Some(usage) = &turn.usage {
+                                                    let input = usage.query.input_tokens as usize;
+                                                    let total = usage.query.total_tokens as usize;
+                                                    let cache_read = usage.query.cache_read_input_tokens as usize;
+                                                    if !saw_usage_update_for_turn {
+                                                        last_query_input_tokens = input;
+                                                        last_query_total_tokens = total;
+                                                    }
+                                                    if should_apply_terminal_turn_usage_fallback(
+                                                        saw_usage_update_for_turn,
+                                                        has_authoritative_usage_totals,
+                                                    ) {
+                                                        total_input_tokens += input;
+                                                        total_output_tokens +=
+                                                            usage.query.output_tokens as usize;
+                                                        total_tokens += total;
+                                                        total_cache_read_tokens += cache_read;
+                                                    }
+                                                }
+                                                let prompt_token_estimate = turn
+                                                    .usage
+                                                    .as_ref()
+                                                    .map(|usage| usage.query.input_tokens as usize)
+                                                    .unwrap_or(total_input_tokens);
+                                                if turn.status
+                                                    == devo_protocol::native::turn::TurnStatus::Failed
+                                                {
+                                                    let message = turn
+                                                        .error
+                                                        .as_ref()
+                                                        .map(|error| error.message.clone())
+                                                        .unwrap_or_else(|| "Turn failed".to_string());
+                                                    let _ = event_tx.send(WorkerEvent::TurnFailed {
+                                                        hint: devo_provider::recovery_hint_for_message(&message),
+                                                        message,
+                                                        turn_count,
+                                                        total_input_tokens,
+                                                        total_output_tokens,
+                                                        total_tokens,
+                                                        total_cache_read_tokens,
+                                                        prompt_token_estimate,
+                                                        last_query_input_tokens,
+                                                    });
+                                                } else {
+                                                    let _ = event_tx.send(WorkerEvent::TurnFinished {
+                                                        stop_reason: format!("{:?}", turn.status),
+                                                        turn_count,
+                                                        total_input_tokens,
+                                                        total_output_tokens,
+                                                        total_tokens,
+                                                        total_cache_read_tokens,
+                                                        last_query_total_tokens,
+                                                        last_query_input_tokens,
+                                                        prompt_token_estimate,
+                                                    });
+                                                }
+                                                latest_completed_agent_message = None;
+                                            }
+                                            Err(error) => {
+                                                tracing::warn!(
+                                                    turn_id = %finished_turn_id,
+                                                    %error,
+                                                    "idle turn reconciliation failed; preserving live tool state"
+                                                );
+                                                let _ = event_tx.send(WorkerEvent::InterruptFailed {
+                                                    message: "Turn ended, but final tool results are unavailable; preserving live state".to_string(),
+                                                });
+                                            }
+                                        }
                                     }
                                     continue;
                                 }
@@ -3565,10 +3746,11 @@ async fn run_worker_inner(
                                     continue;
                                 }
                                 "item/started" | "item/completed" => {
-                                    if let Ok(payload) = serde_json::from_value::<
+                                    match serde_json::from_value::<
                                         devo_protocol::TypedItemEventPayload,
                                     >(params.clone())
                                     {
+                                        Ok(payload) => {
                                         // Child-session items belong to
                                         // the subagent monitor, not the
                                         // main transcript (L2-DES-APP-009).
@@ -3576,6 +3758,32 @@ async fn run_worker_inner(
                                             SessionId::try_from(payload.item.session_id.as_str())
                                                 .ok();
                                         if item_session_id == session_id {
+                                            if method == "item/completed" {
+                                                let item_id = payload.item.id.to_string();
+                                                if !seen_terminal_item_ids.insert(item_id) {
+                                                    continue;
+                                                }
+                                                let call_id = match &payload.item.item {
+                                                    devo_protocol::native::item::Item::ToolResult {
+                                                        call_id,
+                                                        ..
+                                                    }
+                                                    | devo_protocol::native::item::Item::CommandExecution {
+                                                        call_id,
+                                                        ..
+                                                    }
+                                                    | devo_protocol::native::item::Item::FileChange {
+                                                        call_id,
+                                                        ..
+                                                    } => Some(call_id.clone()),
+                                                    _ => None,
+                                                };
+                                                if let Some(call_id) = call_id
+                                                    && !seen_terminal_call_ids.insert(call_id)
+                                                {
+                                                    continue;
+                                                }
+                                            }
                                             if method == "item/completed"
                                                 && let devo_protocol::native::item::Item::AssistantMessage {
                                                     text,
@@ -3616,13 +3824,26 @@ async fn run_worker_inner(
                                                 )
                                                 .await;
                                             }
-                                            item_dispatch::dispatch_typed_item_lifecycle(
-                                                &method,
-                                                &payload,
-                                                devo_core::ItemId::try_from(payload.item.id.as_str())
-                                                    .expect("typed item id"),
-                                                event_tx,
-                                            );
+                                            match devo_core::ItemId::try_from(
+                                                payload.item.id.as_str(),
+                                            ) {
+                                                Ok(item_id) => {
+                                                    item_dispatch::dispatch_typed_item_lifecycle(
+                                                        &method, &payload, item_id, event_tx,
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    // A malformed id must not take the
+                                                    // whole worker down: the row is
+                                                    // skipped and the turn continues.
+                                                    tracing::warn!(
+                                                        method = %method,
+                                                        item_id = %payload.item.id,
+                                                        %error,
+                                                        "dropping typed item with unparseable id"
+                                                    );
+                                                }
+                                            }
                                         } else if let Some(child_id) = item_session_id
                                             && child_agent_sessions.contains(&child_id)
                                         {
@@ -3632,6 +3853,16 @@ async fn run_worker_inner(
                                             ) {
                                                 let _ = event_tx.send(event);
                                             }
+                                        }
+                                        }
+                                        Err(error) => {
+                                            // Schema drift or a foreign payload must not
+                                            // silently swallow tool completions.
+                                            tracing::warn!(
+                                                method = %method,
+                                                %error,
+                                                "failed to decode typed item event"
+                                            );
                                         }
                                     }
                                     continue;

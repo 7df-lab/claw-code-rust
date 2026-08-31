@@ -12,8 +12,11 @@ pub(crate) const OUTBOUND_RELIABLE_RESERVED_CAPACITY: usize = 64;
 pub(crate) const OUTBOUND_BACKPRESSURE_LOG_THRESHOLD: Duration = Duration::from_millis(50);
 /// Max time streaming notifications wait for outbound capacity before being
 /// dropped. Event streams must not park forever on a slow client: parent+child
-/// turns share one connection and can fill the queue quickly.
-pub(crate) const OUTBOUND_NOTIFICATION_MAX_WAIT: Duration = Duration::from_millis(200);
+/// turns share one connection and can fill the queue quickly. Lifecycle
+/// traffic (`item/completed`, `turn/completed`, …) rides this wait too —
+/// dropping it wedges client render state — so the budget is sized for bursty
+/// slow consumers (Windows console pipes) rather than round-trip latency.
+pub(crate) const OUTBOUND_NOTIFICATION_MAX_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OutboundDeliveryPolicy {

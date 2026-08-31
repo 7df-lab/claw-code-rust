@@ -20,6 +20,14 @@ pub(crate) enum ToolPhase {
     Running,
     Completed,
     Failed,
+    /// The turn completed, but no authoritative result arrived for this tool.
+    Degraded,
+}
+
+impl ToolPhase {
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Degraded)
+    }
 }
 
 /// Unified tool representation: write/edit, exec, and generic tools share one model.
@@ -171,10 +179,6 @@ impl ToolCellModel {
             is_error: false,
             truncated: false,
         }
-    }
-
-    pub(crate) fn is_live(&self) -> bool {
-        matches!(self.phase, ToolPhase::Preparing | ToolPhase::Running)
     }
 }
 

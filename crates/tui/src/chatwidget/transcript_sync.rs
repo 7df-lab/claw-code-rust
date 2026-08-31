@@ -8,6 +8,7 @@ use ratatui::text::Line;
 use crate::events::TextItemKind;
 use crate::events::WorkerEvent;
 use crate::transcript::lifecycle::ItemLifecycleEvent;
+use crate::transcript::lifecycle::TurnToolOutcome;
 use crate::transcript::model::CommittedCellModel;
 use crate::transcript::model::ToolPhase;
 
@@ -32,8 +33,10 @@ impl ChatWidget {
         false
     }
 
-    pub(super) fn clear_turn_live_projection(&mut self) {
-        self.apply_item_lifecycle(ItemLifecycleEvent::TurnLiveToolsCleared);
+    pub(super) fn clear_turn_live_projection(&mut self, outcome: TurnToolOutcome) {
+        self.active_cell = None;
+        self.detached_exec_tool_ids.clear();
+        self.apply_item_lifecycle(ItemLifecycleEvent::TurnLiveToolsCleared { outcome });
     }
 
     pub(super) fn sync_transcript_projection(&mut self) {
@@ -67,7 +70,7 @@ impl ChatWidget {
                     self.add_markdown_history_without_redraw(title, &text.text);
                 }
                 CommittedCellModel::Tool(tool) => {
-                    self.commit_committed_tool_to_live_turn(tool);
+                    self.commit_committed_tool_to_history(tool);
                 }
             }
         }
@@ -91,7 +94,10 @@ impl ChatWidget {
                 output: tool.output_preview.clone(),
                 parsed_commands: tool.parsed_commands.clone(),
                 exec_like: tool.exec_like,
+                owned_by_active_cell: crate::chatwidget::history_commit::tool_uses_exec_cell(tool)
+                    && !self.detached_exec_tool_ids.contains(&tool.tool_use_id),
                 start_time: tool.start_time,
+                phase: tool.phase,
             };
             if tool.phase == ToolPhase::Preparing {
                 self.pending_tool_calls.push(tool_call);
@@ -136,7 +142,16 @@ impl ChatWidget {
                 .iter()
                 .any(|item| item.item_id == item_id)
             {
-                self.flush_active_cell();
+                if let Some(cell) = self
+                    .active_cell
+                    .as_ref()
+                    .and_then(|cell| cell.as_any().downcast_ref::<crate::exec_cell::ExecCell>())
+                    .filter(|cell| cell.is_exploring_cell())
+                {
+                    self.detached_exec_tool_ids
+                        .extend(cell.iter_calls().map(|call| call.call_id.clone()));
+                    self.active_cell = None;
+                }
                 self.start_text_item(item_id, live.kind);
             }
 

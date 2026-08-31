@@ -505,6 +505,45 @@ impl ServerClientCore {
         .await
     }
 
+    pub(crate) async fn turn_read_native(
+        &mut self,
+        session_id: SessionId,
+        turn_id: TurnId,
+    ) -> Result<devo_protocol::native::rpc_turn::TurnReadResult> {
+        self.request(
+            "turn/read",
+            devo_protocol::native::rpc_turn::TurnReadParams {
+                session_id: devo_protocol::native::ids::SessionId::from_string(
+                    session_id.to_string(),
+                ),
+                turn_id: devo_protocol::native::ids::TurnId::from_string(turn_id.to_string()),
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn turn_items_list_native(
+        &mut self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<devo_protocol::native::page::Page<devo_protocol::native::item::ItemEnvelope>> {
+        self.request(
+            "session/items/list",
+            devo_protocol::native::rpc_session::SessionItemsListParams {
+                session_id: devo_protocol::native::ids::SessionId::from_string(
+                    session_id.to_string(),
+                ),
+                turn_id: Some(devo_protocol::native::ids::TurnId::from_string(
+                    turn_id.to_string(),
+                )),
+                page: devo_protocol::native::page::PageParams { cursor, limit },
+            },
+        )
+        .await
+    }
+
     /// Native `session/fork` (L2-DES-APP-008 Phase B).
     pub(crate) async fn session_fork_native(
         &mut self,

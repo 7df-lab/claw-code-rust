@@ -1129,6 +1129,14 @@ async fn remove_pending_client_request(
 
 fn outbound_delivery_policy(event: &ServerEvent) -> OutboundDeliveryPolicy {
     match event {
+        // Tool-call argument deltas are low-volume and drive the client's
+        // running-row parameter display; losing one permanently truncates the
+        // accumulated JSON until the item refresh, so they ride the reliable
+        // lane unlike the high-volume text/output deltas below.
+        ServerEvent::ItemDelta {
+            delta_kind: ItemDeltaKind::ToolCallInputDelta,
+            ..
+        } => OutboundDeliveryPolicy::Reliable,
         ServerEvent::ItemDelta { .. }
         | ServerEvent::TurnUsageUpdated(_)
         | ServerEvent::ContextUsageUpdated(_)

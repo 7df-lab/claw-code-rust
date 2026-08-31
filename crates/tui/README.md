@@ -365,6 +365,13 @@ The bottom pane is the user-facing input area. It contains:
 
 ### Execution Display — `exec_cell/`
 
+Tool rows have one presentation owner per `tool_use_id`. A shell row stays in
+the live viewport for the whole turn: completion changes its title in place
+from `Running` to `Ran`, and the turn boundary commits exactly one durable
+`Ran` row to scrollback. Missing authoritative results use the explicit
+`result unavailable` degraded state; ordinary viewport flushes never invent a
+successful or failed result.
+
 | Module | Purpose |
 |--------|---------|
 | `model.rs` | `ExecCell` data model: command line, output state, exit status. |

@@ -87,6 +87,14 @@ impl SessionInteractiveLanes {
             .insert(request_id, pending);
     }
 
+    pub(crate) async fn has_pending_user_input_request(&self, request_id: &str) -> bool {
+        self.inner
+            .lock()
+            .await
+            .values()
+            .any(|state| state.pending_user_inputs.contains_key(request_id))
+    }
+
     pub(crate) async fn take_pending_user_input(
         &self,
         owner_session_id: SessionId,

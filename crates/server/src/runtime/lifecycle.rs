@@ -238,6 +238,19 @@ impl ServerRuntime {
             }
         }
 
+        if let Some(record) = runtime_session.record.as_ref() {
+            let host_session_id = runtime_session
+                .summary
+                .parent_session_id
+                .unwrap_or(session_id);
+            self.restore_waiting_user_inputs_from_rollout(
+                session_id,
+                host_session_id,
+                &record.rollout_path,
+            )
+            .await;
+        }
+
         Ok(())
     }
 

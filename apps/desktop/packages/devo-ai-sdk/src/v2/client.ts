@@ -246,6 +246,12 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
 }
 
+function nativeItemNotificationMethod(envelope: Record<string, unknown>): "item/started" | "item/completed" {
+	const state = String(envelope.state ?? "")
+	if (state === "completed" || state === "failed" || state === "interrupted") return "item/completed"
+	return "item/started"
+}
+
 function stringOrUndefined(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined
 }
@@ -743,6 +749,7 @@ type SessionSettingsPatch = {
 	modelID?: string
 	reasoningEffort?: string
 	mode?: string
+	permissionProfile?: string
 }
 
 type SessionSettingsWaiter = {
@@ -1171,9 +1178,10 @@ class NativeClient {
 			})
 		},
 		summarize: async (params: { sessionID: string }) => {
-			await this.session.promptAsync({
-				sessionID: params.sessionID,
-				parts: [{ type: "text", text: "/compact" }],
+			await this.ensureInitialized()
+			await this.ensureSessionSubscription(params.sessionID)
+			await this.requestCanonical("session/compact/start", {
+				sessionId: params.sessionID,
 			})
 		},
 		messages: async (params: { sessionID: string; limit?: number }) => ({
@@ -1672,7 +1680,9 @@ class NativeClient {
 				...(cursor ? { cursor } : {}),
 				limit: 500,
 			})) as { data?: Array<Record<string, unknown>>; nextCursor?: string | null }
-			for (const item of page.data ?? []) this.handleNativeItemEnvelope(item, "item/completed")
+			for (const item of page.data ?? []) {
+				this.handleNativeItemEnvelope(item, nativeItemNotificationMethod(item))
+			}
 			cursor = page.nextCursor ?? undefined
 		} while (cursor)
 		this.loadedSessionLimits.set(sessionId, null)
@@ -1966,11 +1976,13 @@ class NativeClient {
 			) ?? {}
 			const requestId = String(value.requestId ?? "")
 			if (!requestId) return true
+			const existing = this.pendingQuestions.get(requestId)
+			const questions = (Array.isArray(value.questions) ? value.questions : []).map(questionInfoFromNative)
 			this.pendingQuestions.set(requestId, {
 				id,
 				method,
-				sessionId: "",
-				questions: (Array.isArray(value.questions) ? value.questions : []).map(questionInfoFromNative),
+				sessionId: existing?.sessionId ?? "",
+				questions: existing?.questions.length ? existing.questions : questions,
 			})
 			return true
 		}
@@ -2287,6 +2299,7 @@ class NativeClient {
 		}
 		if (itemType === "userInputRequest") {
 			const requestId = String(item.requestId ?? "")
+			if (!requestId) return
 			const pending = this.pendingQuestions.get(requestId)
 			if (item.answers || completed) {
 				this.pendingQuestions.delete(requestId)
@@ -2296,10 +2309,18 @@ class NativeClient {
 						properties: { sessionID: pending.sessionId || sessionId, requestID: requestId },
 					})
 				}
-			} else if (pending) {
-				pending.sessionId = sessionId
-				pending.questions = (Array.isArray(item.questions) ? item.questions : []).map(questionInfoFromNative)
-				this.emit(directory, { type: "question.asked", properties: { id: requestId, requestID: requestId, sessionID: sessionId, questions: pending.questions } })
+			} else {
+				const questions = (Array.isArray(item.questions) ? item.questions : []).map(questionInfoFromNative)
+				this.pendingQuestions.set(requestId, {
+					id: pending?.id,
+					method: pending?.method ?? "userInput/request",
+					sessionId,
+					questions,
+				})
+				this.emit(directory, {
+					type: "question.asked",
+					properties: { id: requestId, requestID: requestId, sessionID: sessionId, questions },
+				})
 			}
 			return
 		}
@@ -3128,6 +3149,9 @@ class NativeClient {
 		if (typeof patch.mode === "string" && patch.mode.length > 0) {
 			normalizedPatch.mode = patch.mode
 		}
+		if (typeof patch.permissionProfile === "string" && patch.permissionProfile.length > 0) {
+			normalizedPatch.permissionProfile = patch.permissionProfile
+		}
 		if (Object.keys(normalizedPatch).length === 0) return this.sessions.get(sessionId)
 
 		let queue = this.sessionSettingsQueues.get(sessionId)
@@ -3213,6 +3237,7 @@ class NativeClient {
 				const settings: Record<string, string> = {}
 				if (patch.reasoningEffort) settings.reasoningEffort = patch.reasoningEffort
 				if (patch.mode) settings.mode = patch.mode
+				if (patch.permissionProfile) settings.permissionProfile = patch.permissionProfile
 				if (Object.keys(settings).length > 0) update.settings = settings
 
 				const result = (await this.requestCanonical("session/metadata/update", update)) as {

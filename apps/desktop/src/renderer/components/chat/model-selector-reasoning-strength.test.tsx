@@ -79,19 +79,15 @@ describe("ModelSelectorVariantOptions", () => {
 
 		expect(buttonClassListWithSlot(html, "model-selector-variant-check-slot")).toEqual(
 			expect.arrayContaining([
-				"hover:bg-accent",
-				"hover:text-accent-foreground",
-				"focus-visible:bg-accent",
-				"focus-visible:text-accent-foreground",
+				"hover:bg-muted",
+				"hover:text-foreground",
+				"focus-visible:bg-muted",
+				"focus-visible:text-foreground",
 				"focus-visible:outline-none",
-				"dark:hover:bg-white/[0.08]",
-				"dark:hover:text-foreground",
-				"dark:focus-visible:bg-white/[0.08]",
-				"dark:focus-visible:text-foreground",
 			]),
 		)
 		expect(buttonClassListWithSlot(html, "model-selector-variant-check-slot")).not.toContain(
-			"hover:bg-muted",
+			"hover:bg-accent",
 		)
 	})
 
@@ -150,26 +146,20 @@ describe("ModelSelectorVariantOptions", () => {
 		expect(buttonClassListWithSlot(html, "model-selector-effort-check-slot")).toEqual(
 			expect.arrayContaining([
 				"group",
-				"hover:bg-accent",
-				"hover:text-accent-foreground",
-				"focus-visible:bg-accent",
-				"focus-visible:text-accent-foreground",
+				"hover:bg-muted",
+				"hover:text-foreground",
+				"focus-visible:bg-muted",
+				"focus-visible:text-foreground",
 				"focus-visible:outline-none",
-				"dark:hover:bg-white/[0.08]",
-				"dark:hover:text-foreground",
-				"dark:focus-visible:bg-white/[0.08]",
-				"dark:focus-visible:text-foreground",
 			]),
 		)
 		expect(buttonClassListWithSlot(html, "model-selector-effort-check-slot")).not.toContain(
-			"hover:bg-muted",
+			"hover:bg-accent",
 		)
 		expect(variantValueClassList(html, "Max")).toEqual(
 			expect.arrayContaining([
-				"group-hover:text-accent-foreground/80",
-				"group-focus-visible:text-accent-foreground/80",
-				"dark:group-hover:text-foreground",
-				"dark:group-focus-visible:text-foreground",
+				"group-hover:text-muted-foreground",
+				"group-focus-visible:text-muted-foreground",
 			]),
 		)
 	})

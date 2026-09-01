@@ -22,15 +22,17 @@ describe("Model selector menu", () => {
 
 	test("keeps provider grouping and active model selection", () => {
 		expect({
-			groupsFilteredModelsByProvider: source.includes("groupByProvider(filteredModels)"),
+			groupsFilteredModelsByProvider: source.includes("groupByProvider(models)"),
 			rendersProviderGroups: source.includes("<SearchableListPopoverGroup"),
 			keepsSessionModelsUngrouped: source.includes('providerId === "session"'),
 			keepsActiveModelCheck: source.includes("selected={model.value === activeValue}"),
+			omitsSearchField: !source.includes("SearchableListPopoverSearch") && !source.includes("Search models"),
 		}).toEqual({
 			groupsFilteredModelsByProvider: true,
 			rendersProviderGroups: true,
 			keepsSessionModelsUngrouped: true,
 			keepsActiveModelCheck: true,
+			omitsSearchField: true,
 		})
 	})
 })

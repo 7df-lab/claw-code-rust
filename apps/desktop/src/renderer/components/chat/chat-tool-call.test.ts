@@ -242,6 +242,31 @@ describe("getToolInfo", () => {
 		expect(titles).not.toContain("Patch")
 	})
 
+	test("labels question tools even when the SDK fell back to generic tool", () => {
+		const input = {
+			questions: [{ id: "environment", header: "Environment", question: "Where should this run?" }],
+		}
+		expect({
+			named: getToolInfo("request_user_input").title,
+			alias: getToolInfo("question").title,
+			generic: getToolInfo("tool", { input }).title,
+			subtitle: getToolSubtitle(
+				{
+					callID: "call-1",
+					id: "tool-1",
+					tool: "tool",
+					type: "tool",
+					state: { input, status: "running", time: { start: 0 } },
+				} as any,
+			),
+		}).toEqual({
+			named: "Question",
+			alias: "Question",
+			generic: "Question",
+			subtitle: "Where should this run?",
+		})
+	})
+
 	test("keeps file-change path typography aligned with Read", () => {
 		expect({
 			noMonoOnFileChangePath: !chatToolCallSource.includes(

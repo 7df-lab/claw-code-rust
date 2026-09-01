@@ -6,7 +6,6 @@ import {
 } from "@devo/ui/components/dropdown-menu"
 import { cn } from "@devo/ui/lib/utils"
 import {
-	ChevronRightIcon,
 	CirclePauseIcon,
 	CirclePlayIcon,
 	CornerDownRightIcon,
@@ -16,6 +15,7 @@ import {
 	MoreHorizontalIcon,
 	PencilIcon,
 	Trash2Icon,
+	XIcon,
 } from "lucide-react"
 import { useEffect, useState, type ReactNode } from "react"
 import { formatWorkDuration } from "../../lib/session-metrics"
@@ -119,7 +119,7 @@ function RowIconButton({
 			disabled={disabled}
 			onClick={onClick}
 			className={cn(
-				"grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50",
+				"grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50",
 				active && "bg-muted text-foreground",
 			)}
 		>
@@ -263,7 +263,7 @@ function ActiveGoalRow({
 	const toggleAction = isPaused ? onResumeGoal : onPauseGoal
 
 	return (
-		<div className="flex min-h-10 items-center gap-2 px-3 text-sm text-muted-foreground">
+		<div className="flex min-h-8 items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground">
 			<GoalIcon className="size-3.5 shrink-0 stroke-[1.5] text-muted-foreground/75" />
 			<div className="min-w-0 flex flex-1 items-center gap-1.5">
 				<span className="shrink-0 font-medium text-foreground">{statusLabel}</span>
@@ -298,7 +298,7 @@ function ActiveGoalRow({
 					)}
 				</RowIconButton>
 				<RowIconButton
-					label="Clear goal"
+					label="Cancel goal"
 					disabled={goalAction !== null}
 					active={goalAction === "clear"}
 					onClick={onClearGoal}
@@ -306,11 +306,8 @@ function ActiveGoalRow({
 					{goalAction === "clear" ? (
 						<Loader2Icon className="size-3.5 animate-spin stroke-[1.5]" />
 					) : (
-						<Trash2Icon className="size-3.5 stroke-[1.5]" />
+						<XIcon className="size-3.5 stroke-[1.5]" />
 					)}
-				</RowIconButton>
-				<RowIconButton label="Goal details" disabled>
-					<ChevronRightIcon className="size-3.5 stroke-[1.5]" />
 				</RowIconButton>
 			</div>
 		</div>
@@ -334,17 +331,8 @@ export function ComposerStatusStack({
 	return (
 		// User requirement: reuse this composer-adjacent strip for goal state
 		// and future queued follow-up rows instead of scattering status below messages.
-		<div className="mb-0 overflow-hidden rounded-t-[20px] border border-b-0 border-border/70 bg-background/95 shadow-[0_10px_34px_rgba(0,0,0,0.06)]">
-			<div className="divide-y divide-border/60">
-				{queueItems.map((item) => (
-					<QueueItemRow
-						key={item.id}
-						item={item}
-						onSteer={onSteerQueueItem}
-						onEdit={onEditQueueItem}
-						onRemove={onRemoveQueueItem}
-					/>
-				))}
+		<div className="order-first w-full overflow-hidden border-b border-border/50">
+			<div className="divide-y divide-border/50">
 				{goal && (
 					<ActiveGoalRow
 						goal={goal}
@@ -355,6 +343,15 @@ export function ComposerStatusStack({
 						onClearGoal={onClearGoal}
 					/>
 				)}
+				{queueItems.map((item) => (
+					<QueueItemRow
+						key={item.id}
+						item={item}
+						onSteer={onSteerQueueItem}
+						onEdit={onEditQueueItem}
+						onRemove={onRemoveQueueItem}
+					/>
+				))}
 			</div>
 		</div>
 	)

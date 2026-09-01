@@ -33,7 +33,7 @@ import { Spinner } from "@devo/ui/components/spinner"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@devo/ui/components/tooltip"
 import { cn } from "@devo/ui/lib/utils"
 import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from "ai"
-import { CornerDownLeftIcon, ImageIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react"
+import { ArrowUpIcon, ImageIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react"
 import { nanoid } from "nanoid"
 import type {
 	ChangeEvent,
@@ -1014,12 +1014,12 @@ export const PromptInputSubmit = ({
 }: PromptInputSubmitProps) => {
 	const isGenerating = status === "submitted" || status === "streaming"
 
-	let Icon = <CornerDownLeftIcon className="size-4" />
+	let Icon = <ArrowUpIcon className="size-4" />
 
 	if (status === "submitted") {
 		Icon = <Spinner />
 	} else if (status === "streaming") {
-		Icon = <SquareIcon className="size-4" />
+		Icon = <SquareIcon className="size-3 fill-current" />
 	} else if (status === "error") {
 		Icon = <XIcon className="size-4" />
 	}
@@ -1039,7 +1039,7 @@ export const PromptInputSubmit = ({
 	return (
 		<InputGroupButton
 			aria-label={isGenerating ? "Stop" : "Submit"}
-			className={cn(className)}
+			className={cn(size === "icon-sm" && "rounded-full", className)}
 			onClick={handleClick}
 			size={size}
 			type={isGenerating && onStop ? "button" : "submit"}

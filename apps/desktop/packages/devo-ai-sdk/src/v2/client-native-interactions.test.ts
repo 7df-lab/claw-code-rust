@@ -234,6 +234,7 @@ const userInputEnvelope = {
 	sessionId: "session-1",
 	turnId: "turn-1",
 	revision: 1,
+	seq: 1,
 	state: "waiting",
 	createdAt: "2026-08-22T00:00:02Z",
 	updatedAt: "2026-08-22T00:00:02Z",
@@ -504,6 +505,55 @@ describe("Native desktop SDK interactions", () => {
 		expect(asked.properties.requestID).toBe("approval-1")
 		await client.permission.reply({ requestID: "approval-1", reply: "once" })
 		expect(transport.responses[0]?.id).toBe("reissued-approval")
+	})
+
+	test("restores a waiting user-input item without a prior reverse RPC", async () => {
+		const transport = new FakeNativeTransport()
+		transport.pendingControlRequests = [
+			{ requestId: "input-1", kind: "userInput", item: userInputEnvelope },
+		]
+		transport.subscriptionCreateHook = () => {
+			transport.emit({
+				type: "request",
+				id: "reissued-input",
+				method: "userInput/request",
+				params: userInputItem,
+			})
+		}
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+
+		await client.session.create()
+		const asked = await nextPayloadOfType(stream, "question.asked")
+		expect(asked.properties).toEqual({
+			id: "input-1",
+			requestID: "input-1",
+			sessionID: "session-1",
+			questions: [
+				{
+					id: "environment",
+					header: "Environment",
+					question: "Where should this run?",
+					isOther: false,
+					isSecret: false,
+					options: [{ label: "Local", description: "Use this machine" }],
+				},
+			],
+		})
+		await client.question.reply({ requestID: "input-1", answers: [["Local"]] })
+		expect(transport.responses[0]?.id).toBe("reissued-input")
+	})
+
+	test("restores a waiting user-input item from session history after restart", async () => {
+		const transport = new FakeNativeTransport()
+		transport.sessionItems = [userInputEnvelope]
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+
+		await client.session.messages({ sessionID: "session-1" })
+		const asked = await nextPayloadOfType(stream, "question.asked")
+		expect(asked.properties.requestID).toBe("input-1")
+		expect(asked.properties.sessionID).toBe("session-1")
 	})
 
 	test("disconnect clears stale interactions and creates a fresh event stream", async () => {

@@ -12,7 +12,6 @@ import { cn } from "@devo/ui/lib/utils"
 
 import {
 	AlertTriangleIcon,
-	BookOpenIcon,
 	CodeIcon,
 	EditIcon,
 	EyeIcon,
@@ -20,6 +19,7 @@ import {
 	FileIcon,
 	GlobeIcon,
 	Loader2Icon,
+	MessageCircleQuestionIcon,
 	PlugIcon,
 	SearchIcon,
 	SquareCheckIcon,
@@ -40,6 +40,12 @@ import {
 	hasFileChangeExpandableContent,
 	isFileChangeTool,
 } from "./file-change-presentation"
+import {
+	isQuestionToolInput,
+	parseQuestionToolEntries,
+	QuestionToolContent,
+	questionToolSubtitle,
+} from "./chat-question-tool"
 import { SubAgentCard } from "./sub-agent-card"
 import type { ToolCategory } from "./tool-category"
 import {
@@ -238,8 +244,11 @@ export function getToolInfo(
 			return { icon: SquareCheckIcon, title: "Todos" }
 		case "question":
 		case "request_user_input":
-			return { icon: BookOpenIcon, title: "Question" }
+			return { icon: MessageCircleQuestionIcon, title: "Question" }
 		default:
+			if (isQuestionToolInput(tool, options?.input)) {
+				return { icon: MessageCircleQuestionIcon, title: "Question" }
+			}
 			if (tool.startsWith("mcp__")) {
 				const segments = tool.split("__")
 				const label = segments.slice(2).join("__") || segments[1] || tool
@@ -394,20 +403,17 @@ export function getToolSubtitle(
 		}
 		case "question":
 		case "request_user_input": {
-			const questions = input?.questions as Array<{ question: string }> | undefined
-			if (questions && questions.length > 0) {
-				subtitle = questions.length === 1
-					? questions[0].question
-					: `${questions.length} questions`
-			} else {
-				subtitle = title
-			}
+			subtitle = questionToolSubtitle(part) ?? title
 			break
 		}
 		default:
 			// Unknown / MCP tools: always show compact input params like [key=value, key=value]
 			// Input params are more useful than the SDK-generated title for MCP tools
-			subtitle = formatInputParams(input) ?? title
+			if (isQuestionToolInput(part.tool, input)) {
+				subtitle = questionToolSubtitle(part) ?? title
+			} else {
+				subtitle = formatInputParams(input) ?? title
+			}
 			break
 	}
 
@@ -846,6 +852,9 @@ function hasExpandableContent(part: ToolPart): boolean {
 		const todos = state.input?.todos as Array<{ content: string; status: string }> | undefined
 		return (todos?.length ?? 0) > 0
 	}
+	if (isQuestionToolInput(tool, state.input as Record<string, unknown> | undefined)) {
+		return parseQuestionToolEntries(part).length > 0
+	}
 	if (isFileChangeTool(tool)) {
 		const output = state.status === "completed" ? state.output : undefined
 		if (hasFileChangeExpandableContent(tool, state.input as Record<string, unknown>, output)) {
@@ -894,7 +903,13 @@ function getToolContent(part: ToolPart): ReactNode {
 		case "todowrite":
 		case "todoread":
 			return <TodoContent part={part} />
+		case "question":
+		case "request_user_input":
+			return <QuestionToolContent part={part} />
 		default:
+			if (isQuestionToolInput(part.tool, part.state.input as Record<string, unknown> | undefined)) {
+				return <QuestionToolContent part={part} />
+			}
 			return <GenericContent part={part} />
 	}
 }

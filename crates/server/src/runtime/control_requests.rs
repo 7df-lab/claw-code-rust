@@ -401,4 +401,40 @@ impl ServerRuntime {
         }
         Err(last_error.unwrap_or_else(|| "no Native user-input controller answered".to_string()))
     }
+
+    /// After `session/resume` hydrates waiters, reissue only when this
+    /// connection already subscribed (so `subscription/create` will not).
+    pub(super) async fn reissue_pending_controls_if_subscribed(
+        self: &Arc<Self>,
+        connection_id: u64,
+        session_id: &devo_protocol::native::ids::SessionId,
+    ) {
+        use devo_protocol::native::event::StreamSelector;
+        let subscribed = self
+            .event_subscriptions
+            .lock()
+            .await
+            .values()
+            .any(|subscription| {
+                subscription.connection_id == connection_id
+                    && subscription.selectors.iter().any(|selector| {
+                        matches!(
+                            selector,
+                            StreamSelector::Session {
+                                session_id: subscribed_id
+                            } if subscribed_id.as_str() == session_id.as_str()
+                        )
+                    })
+            });
+        if !subscribed {
+            return;
+        }
+        let pending = self
+            .pending_control_requests(&[StreamSelector::Session {
+                session_id: session_id.clone(),
+            }])
+            .await;
+        self.reissue_pending_control_requests(connection_id, pending)
+            .await;
+    }
 }

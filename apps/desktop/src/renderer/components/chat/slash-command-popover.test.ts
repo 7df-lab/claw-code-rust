@@ -56,6 +56,10 @@ describe("Desktop slash command composer", () => {
 			goalFooterChip:
 				chatViewSource.includes('variant="goal"') &&
 				chatViewSource.includes("ComposerModeChip"),
+			newChatGoalChip:
+				newChatSource.includes('variant="goal"') &&
+				newChatSource.includes("ComposerModeChip"),
+			newChatPlanChip: newChatSource.includes('variant="plan"'),
 			planModeBadge:
 				chatViewSource.includes('variant="plan"') &&
 				chatViewSource.includes("ComposerModeChip"),
@@ -74,7 +78,9 @@ describe("Desktop slash command composer", () => {
 				chipSource.includes("group-hover:opacity-100"),
 			hoverBackground: chipSource.includes("hover:bg-muted"),
 			shiftTabToggle: chatViewSource.includes('e.key === "Tab" && e.shiftKey'),
-			triggeredPrompt: chatViewSource.includes("text: `/${trigger} ${text.trim()}`"),
+			triggeredPrompt:
+				chatViewSource.includes("goalPromptText(text)") &&
+				chatViewSource.includes("`/${trigger} ${text.trim()}`"),
 			iconStrokeMatchesSidebar:
 				popoverSource.includes("composerPopoverIconClass") &&
 				composerPopoverSource.includes("stroke-[1.5]") &&
@@ -83,6 +89,8 @@ describe("Desktop slash command composer", () => {
 			requirementComment: true,
 			chipComponent: true,
 			goalFooterChip: true,
+			newChatGoalChip: true,
+			newChatPlanChip: true,
 			planModeBadge: true,
 			planTint: true,
 			goalIcon: true,

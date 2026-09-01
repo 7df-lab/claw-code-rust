@@ -5,6 +5,7 @@ import {
 	MessageContent,
 } from "@devo/ui/components/ai-elements/message"
 import { Button } from "@devo/ui/components/button"
+import { cn } from "@devo/ui/lib/utils"
 import { CheckIcon, CopyIcon, PencilIcon } from "lucide-react"
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 
@@ -96,6 +97,7 @@ export function UserMessageBlock({
 
 	return (
 		<Message from="user">
+			<span className="relative inline-block max-w-[min(36rem,85%)] text-left align-top">
 			<MessageContent>
 				{children}
 				{editing ? (
@@ -106,14 +108,16 @@ export function UserMessageBlock({
 						onKeyDown={handleKeyDown}
 						disabled={saving}
 						rows={Math.min(12, Math.max(2, draft.split("\n").length))}
-						className="field-sizing-content w-full resize-none bg-transparent p-0 text-[14px] leading-[1.55] tracking-[-0.01em] text-foreground outline-none"
+						className="field-sizing-content w-full min-w-48 resize-none bg-transparent p-0 text-[14px] leading-[1.55] tracking-[-0.01em] text-foreground outline-none"
 					/>
 				) : (
-					<p className="whitespace-pre-wrap">{text}</p>
+					<p className="whitespace-pre-wrap [overflow-wrap:break-word] [word-break:normal]">
+						{text}
+					</p>
 				)}
 			</MessageContent>
 			{editing && (
-				<div className="flex items-center gap-1.5">
+				<div className="mt-1 flex items-center justify-end gap-1.5">
 					<Button type="button" size="xs" variant="ghost" onClick={handleCancel} disabled={saving}>
 						Cancel
 					</Button>
@@ -123,7 +127,15 @@ export function UserMessageBlock({
 				</div>
 			)}
 			{showActions && (
-				<MessageActions className="-mr-1">
+				<MessageActions
+					className={cn(
+						"absolute top-full right-0 z-10 pt-0.5",
+						"opacity-100 [@media(hover:hover)]:pointer-events-none [@media(hover:hover)]:opacity-0",
+						"[@media(hover:hover)]:transition-opacity [@media(hover:hover)]:duration-150",
+						"[@media(hover:hover)]:group-hover:pointer-events-auto [@media(hover:hover)]:group-hover:opacity-100",
+						"[@media(hover:hover)]:group-focus-within:pointer-events-auto [@media(hover:hover)]:group-focus-within:opacity-100",
+					)}
+				>
 					{showCopy && (
 						<MessageAction
 							tooltip={copied ? "Copied" : "Copy message"}
@@ -139,6 +151,7 @@ export function UserMessageBlock({
 					)}
 				</MessageActions>
 			)}
+			</span>
 		</Message>
 	)
 }

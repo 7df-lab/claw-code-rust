@@ -278,6 +278,60 @@ function extractFromRaw(state: ToolPart["state"], ...fields: string[]): string |
 	return undefined
 }
 
+function shellCommandText(
+	input?: Record<string, unknown>,
+	state?: ToolPart["state"],
+): string | undefined {
+	const fromValue = (value: unknown): string | undefined => {
+		if (typeof value === "string") {
+			const trimmed = value.trim()
+			return trimmed || undefined
+		}
+		if (Array.isArray(value)) {
+			const joined = value
+				.map((item) => String(item).trim())
+				.filter(Boolean)
+				.join(" ")
+			return joined || undefined
+		}
+		return undefined
+	}
+	return (
+		fromValue(input?.command) ??
+		fromValue(input?.cmd) ??
+		(state ? extractFromRaw(state, "command", "cmd") : undefined)
+	)
+}
+
+function isGenericShellSubtitle(value: string): boolean {
+	switch (value.trim().toLowerCase()) {
+		case "bash":
+		case "command":
+		case "exec_command":
+		case "execute":
+		case "ran":
+		case "running":
+		case "shell":
+		case "shell_command":
+			return true
+		default:
+			return false
+	}
+}
+
+function shellCommandSubtitle(
+	input: Record<string, unknown> | undefined,
+	state: ToolPart["state"],
+	title?: string,
+): string | undefined {
+	const command = shellCommandText(input, state)
+	if (command) return command
+	if (title && !isGenericShellSubtitle(title)) return title
+	const description = typeof input?.description === "string" ? input.description.trim() : ""
+	if (description && !isGenericShellSubtitle(description)) return description
+	return undefined
+}
+
 /**
  * Returns a "Preparing ..." fallback label for tools in the `pending` state
  * when no meaningful subtitle could be resolved from input/raw yet.
@@ -349,12 +403,7 @@ export function getToolSubtitle(
 		case "bash":
 		case "shell_command":
 		case "exec_command":
-			subtitle =
-				title ??
-				(input.description as string) ??
-				(input.command as string) ??
-				(input.cmd as string) ??
-				extractFromRaw(state, "command", "cmd", "description")
+			subtitle = shellCommandSubtitle(input, state, title)
 			break
 		case "edit":
 			subtitle =
@@ -486,9 +535,7 @@ export function buildBashTerminalOutput(
  * behaviour of the Devo TUI and web UI.
  */
 function BashContent({ part }: { part: ToolPart }) {
-	const command =
-		(part.state.input?.command as string | undefined) ??
-		(part.state.input?.cmd as string | undefined)
+	const command = shellCommandText(part.state.input, part.state)
 
 	// During "running", live output arrives in state.metadata.output.
 	// After completion it moves to state.output.

@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 
 const source = readFileSync(new URL("./session-metrics-bar.tsx", import.meta.url), "utf8")
 const agentDetailSource = readFileSync(new URL("./agent-detail.tsx", import.meta.url), "utf8")
+const chatViewSource = readFileSync(new URL("./chat/chat-view.tsx", import.meta.url), "utf8")
 
 describe("SessionMetricsBar top timer wiring", () => {
 	test("uses current chat turns for the inline timer instead of cumulative session work time", () => {
@@ -63,6 +64,28 @@ describe("SessionMetricsBar top timer wiring", () => {
 			replacesOverviewButtonInHeader: !agentDetailSource.includes("<SessionMetricsOverviewButton"),
 			opensPromptBreakdown: contextUsageSource.includes("Prompt breakdown"),
 			usesOccupancyCategories: contextUsageSource.includes("occupancyCategoryRows"),
+			alignsToConversationSurface:
+				contextUsageSource.includes("data-conversation-surface=") &&
+				chatViewSource.includes("data-conversation-surface={agent.sessionId}") &&
+				contextUsageSource.includes("createPortal") &&
+				contextUsageSource.includes("max-w-3xl"),
+			sitsFlushToTop:
+				contextUsageSource.includes("absolute inset-x-0 top-0") &&
+				contextUsageSource.includes('CONTEXT_USAGE_GUTTER_CLASS = "px-6 sm:px-10 lg:px-12"') &&
+				!contextUsageSource.includes("sm:pt-8"),
+			matchesAppPopoverChrome:
+				contextUsageSource.includes("bg-popover") &&
+				contextUsageSource.includes("ring-foreground/10") &&
+				contextUsageSource.includes("rounded-md") &&
+				contextUsageSource.includes("size-1.5 shrink-0 rounded-full") &&
+				!contextUsageSource.includes("% Full") &&
+				!contextUsageSource.includes("rounded-[3px]"),
+			hasCloseButton:
+				contextUsageSource.includes('aria-label="Close"') &&
+				contextUsageSource.includes("XIcon"),
+			replacesAnchoredPopover:
+				!contextUsageSource.includes("PopoverContent") &&
+				!contextUsageSource.includes("w-64"),
 			doesNotReadBeforeResume: !contextUsageSource.includes("context.usage.read"),
 			usesDefaultColor: contextUsageSource.includes("text-muted-foreground"),
 			doesNotColorByUsage: !contextUsageSource.includes('percent >= 90 ? "text-red-400"') &&
@@ -72,6 +95,11 @@ describe("SessionMetricsBar top timer wiring", () => {
 			replacesOverviewButtonInHeader: true,
 			opensPromptBreakdown: true,
 			usesOccupancyCategories: true,
+			alignsToConversationSurface: true,
+			sitsFlushToTop: true,
+			matchesAppPopoverChrome: true,
+			hasCloseButton: true,
+			replacesAnchoredPopover: true,
 			doesNotReadBeforeResume: true,
 			usesDefaultColor: true,
 			doesNotColorByUsage: true,

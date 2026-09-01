@@ -159,6 +159,10 @@ describe("ChatTurnComponent transcript controls", () => {
         workingStripIndex < processTimelineSectionIndex &&
         workingStripIndex < responseTextIndex,
       removesOldWorkingShimmer: !source.includes("Working shimmer"),
+      hidesRunningCommandStatus: !source.includes("Running command..."),
+      gatesActivityShimmerOnStatusText: source.includes(
+        "working && hasSteps && statusText",
+      ),
       keepsCompletedDurationAffordance: source.includes('Worked for "'),
     }).toEqual({
       definesWorkingStrip: true,
@@ -167,6 +171,8 @@ describe("ChatTurnComponent transcript controls", () => {
       placesStripAfterUserMessage: true,
       placesStripBeforeProcessTimeline: true,
       removesOldWorkingShimmer: true,
+      hidesRunningCommandStatus: true,
+      gatesActivityShimmerOnStatusText: true,
       keepsCompletedDurationAffordance: true,
     });
   });
@@ -448,6 +454,10 @@ describe("ChatTurnComponent transcript controls", () => {
       copiesUserMessage: userMessageBlockSource.includes('tooltip={copied ? "Copied" : "Copy message"}'),
       editsLatestUserMessage: userMessageBlockSource.includes('tooltip="Edit message"'),
       resendsEditedMessage: userMessageBlockSource.includes("{saving ? \"Sending...\" : \"Send\"}"),
+      hoverRevealsActions:
+        userMessageBlockSource.includes("group-hover:opacity-100") &&
+        userMessageBlockSource.includes("absolute top-full right-0") &&
+        userMessageBlockSource.includes("pt-0.5"),
     }).toEqual({
       chatTurnUsesUserMessageBlock: true,
       editOnLatestTurnNotGatedByIdle: true,
@@ -455,6 +465,7 @@ describe("ChatTurnComponent transcript controls", () => {
       copiesUserMessage: true,
       editsLatestUserMessage: true,
       resendsEditedMessage: true,
+      hoverRevealsActions: true,
     });
   });
 });

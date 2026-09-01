@@ -242,6 +242,48 @@ describe("getToolInfo", () => {
 		expect(titles).not.toContain("Patch")
 	})
 
+	test("shows the shell command after Running instead of a generic title", () => {
+		const running = {
+			callID: "call-1",
+			id: "tool-1",
+			tool: "bash",
+			type: "tool",
+			state: {
+				input: { command: "git status", description: "Check git status" },
+				status: "running",
+				time: { start: 0 },
+				title: "Command",
+			},
+		} as any
+		expect({
+			title: getToolInfo("bash", { running: true }).title,
+			subtitle: getToolSubtitle(running),
+			arrayCommand: getToolSubtitle({
+				...running,
+				tool: "shell_command",
+				state: {
+					...running.state,
+					input: { command: ["git", "status", "--short"] },
+				},
+			} as any),
+			fromRaw: getToolSubtitle({
+				...running,
+				state: {
+					input: {},
+					raw: '{"command":"bun test"}',
+					status: "pending",
+					time: { start: 0 },
+					title: "Command",
+				},
+			} as any),
+		}).toEqual({
+			title: "Running",
+			subtitle: "git status",
+			arrayCommand: "git status --short",
+			fromRaw: "bun test",
+		})
+	})
+
 	test("labels question tools even when the SDK fell back to generic tool", () => {
 		const input = {
 			questions: [{ id: "environment", header: "Environment", question: "Where should this run?" }],

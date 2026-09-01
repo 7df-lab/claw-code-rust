@@ -255,7 +255,9 @@ export const SubAgentCard = memo(function SubAgentCard({
 							lastStatus = "Making edits..."
 							break
 						case "bash":
-							lastStatus = "Running command..."
+						case "shell_command":
+						case "exec_command":
+							lastStatus = ""
 							break
 						default:
 							lastStatus = `Running ${p.tool}...`

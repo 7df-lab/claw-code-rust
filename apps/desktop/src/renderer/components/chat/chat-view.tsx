@@ -1170,7 +1170,10 @@ export function ChatView({
 		>
 			{/* Chat messages -- constrained width for readability */}
 			{showTranscript ? (
-			<div className="relative min-h-0 min-w-0 flex-1">
+			<div
+				className="relative min-h-0 min-w-0 flex-1"
+				data-conversation-surface={agent.sessionId}
+			>
 				<Conversation
 					key={agent.sessionId}
 					className="h-full"

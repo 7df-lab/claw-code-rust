@@ -89,6 +89,9 @@ export const sessionAtBottomFamily = atomFamily((sessionId: string) =>
 /** Whether the review panel is open (resets to closed on app start) */
 export const reviewPanelOpenAtom = atom(false)
 
+/** Session-header context occupancy overlay (aligned to the conversation column). */
+export const contextUsageOpenAtom = atom(false)
+
 /**
  * File path to highlight in the review panel.
  * Set by external components (e.g. edit tool card "View diff" button).

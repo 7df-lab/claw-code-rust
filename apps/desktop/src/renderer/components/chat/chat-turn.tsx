@@ -103,7 +103,9 @@ function computeStatus(parts: Part[]): string {
 				case "apply_patch":
 					return "Making edits..."
 				case "bash":
-					return "Running command..."
+				case "shell_command":
+				case "exec_command":
+					return ""
 				case "question":
 				case "request_user_input":
 					return "Asking a question..."
@@ -717,6 +719,7 @@ export const ChatTurnComponent = memo(
 			if (retryStatus) return retryStatusText(retryStatus)
 			for (let m = turn.assistantMessages.length - 1; m >= 0; m--) {
 				const status = computeStatus(turn.assistantMessages[m].parts)
+				if (status === "") return ""
 				if (status !== "Working...") return status
 			}
 			return "Working..."
@@ -889,12 +892,12 @@ export const ChatTurnComponent = memo(
 							working={working}
 						/>
 
-						{working && hasSteps && (
+						{working && hasSteps && statusText ? (
 							<div className="flex items-center gap-2 text-[13px] text-muted-foreground">
 								<Loader2Icon className="size-3 animate-spin text-muted-foreground/30" />
 								<Shimmer className="text-[11px]">{statusText}</Shimmer>
 							</div>
-						)}
+						) : null}
 					</div>
 				)}
 

@@ -49,6 +49,7 @@ import {
 import { SubAgentCard } from "./sub-agent-card"
 import type { ToolCategory } from "./tool-category"
 import {
+	MountWhenVisible,
 	TranscriptDisclosure,
 	TranscriptDisclosureContent,
 	TranscriptDisclosureTrigger,
@@ -1157,9 +1158,11 @@ export const ChatToolCall = memo(
 					/>
 					{hasContent && (
 						<TranscriptDisclosureContent rail className="overflow-hidden">
-							{/* Controlled rows: only mount the body while open so @pierre/diffs
-							    is created after the panel is shown (avoids blank first expand). */}
-							{open === false ? null : getToolContent(part)}
+							{fileChangeRow ? (
+								<MountWhenVisible>{getToolContent(part)}</MountWhenVisible>
+							) : open === false ? null : (
+								getToolContent(part)
+							)}
 						</TranscriptDisclosureContent>
 					)}
 				</TranscriptDisclosure>

@@ -109,6 +109,23 @@ impl ActiveTurnRegistry {
             .turn = Some(turn);
     }
 
+    /// Claims a session for an in-flight turn when no active execution exists.
+    pub(crate) async fn try_claim_session(
+        &self,
+        session_id: SessionId,
+        turn: TurnMetadata,
+    ) -> bool {
+        let mut turns = self.turns.lock().await;
+        if turns.contains_key(&session_id) {
+            return false;
+        }
+        turns
+            .entry(session_id)
+            .or_insert_with(|| Self::entry(session_id))
+            .turn = Some(turn);
+        true
+    }
+
     pub(crate) async fn set_abort_handle(
         &self,
         session_id: SessionId,

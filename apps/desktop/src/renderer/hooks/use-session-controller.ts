@@ -123,10 +123,19 @@ export function useSessionController(sessionId: string, isActive = true) {
 	)
 
 	const handleDenyPermission = useCallback(
-		async (target: Agent, permissionSessionId: string, permissionId: string) => {
+		async (
+			target: Agent,
+			permissionSessionId: string,
+			permissionId: string,
+			note?: string,
+		) => {
 			await respondToPermission(target.directory, permissionSessionId, permissionId, "reject")
+			const trimmed = note?.trim()
+			if (trimmed) {
+				await sendPrompt(target.directory, target.sessionId, trimmed)
+			}
 		},
-		[respondToPermission],
+		[respondToPermission, sendPrompt],
 	)
 
 	const handleReplyQuestion = useCallback(

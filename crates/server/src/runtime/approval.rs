@@ -4,12 +4,12 @@ use crate::execution::PendingApproval;
 use crate::runtime::permission_decision::AuthorizationDecision;
 use crate::runtime::session_actor::approval_scope::{
     apply_approval_scope_to_state, apply_path_scope_to_permission_profile,
+    normalize_permission_path, path_prefix_grant_root,
 };
 use crate::runtime::session_interactive::complete_approval_wait;
 use chrono::Utc;
 use devo_protocol::native::item::{ApprovalDecision, Item};
 
-use std::path::Component;
 use std::path::Path;
 
 enum AutoReviewOutcome {
@@ -528,7 +528,7 @@ impl ServerRuntime {
             .map(|inline| inline.hook_context.config.permission_mode)
     }
 
-    async fn apply_approval_scope_to_turn_inline(
+    pub(crate) async fn apply_approval_scope_to_turn_inline(
         &self,
         session_id: SessionId,
         scope: &ApprovalScopeValue,
@@ -641,7 +641,10 @@ impl ServerRuntime {
         }
     }
 
-    async fn persist_command_prefix_rule(&self, prefix: &[String]) -> Result<(), String> {
+    pub(crate) async fn persist_command_prefix_rule(
+        &self,
+        prefix: &[String],
+    ) -> Result<(), String> {
         let policy_path = crate::exec_policy_store::default_user_rules_path()
             .map_err(|error| error.to_string())?;
         let prefix = prefix.to_vec();
@@ -695,6 +698,10 @@ impl ServerRuntime {
                 &available_scopes,
             )
             .await;
+        let checkpoint = self
+            .persist_approval_checkpoint(host_session_id, session_id, turn_id, &request)
+            .await
+            .map_err(|error| format!("failed to persist approval checkpoint: {error}"))?;
         let (tx, rx) = oneshot::channel();
         let (controller_tx, mut controller_rx) = tokio::sync::mpsc::unbounded_channel();
         let pending = PendingApproval {
@@ -713,6 +720,7 @@ impl ServerRuntime {
                 &request.input,
             ),
             persisted: persisted_approval.clone(),
+            checkpoint: Some(checkpoint),
             tx,
         };
         self.session_interactive
@@ -916,6 +924,7 @@ impl ServerRuntime {
                     cwd: pending.cwd,
                     sandbox_permissions: pending.sandbox_permissions,
                     persisted: pending.persisted,
+                    checkpoint: pending.checkpoint,
                     tx: scope_tx,
                 };
                 // Apply durable scope via the mailbox, and update live
@@ -1198,8 +1207,18 @@ fn token_is_background_ampersand(token: &str) -> bool {
     token != "&&" && (token == "&" || token.ends_with('&'))
 }
 
-fn approval_scopes_for_request(request: &ToolPermissionRequest) -> Vec<String> {
-    let mut scopes = vec!["once".to_string(), "turn".to_string()];
+fn approval_scope_wire_string(scope: ApprovalScopeValue) -> String {
+    serde_json::to_value(native_approval_scope(&scope))
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "once".to_string())
+}
+
+pub(super) fn approval_scopes_for_request(request: &ToolPermissionRequest) -> Vec<String> {
+    let mut scopes = vec![
+        approval_scope_wire_string(ApprovalScopeValue::Once),
+        approval_scope_wire_string(ApprovalScopeValue::Turn),
+    ];
     // Shell commands get a session grant when an exact command string is
     // Prefer exact command + cwd cache when available; generalized patterns are a fallback.
     let session_available = match request.tool_name.as_str() {
@@ -1210,25 +1229,29 @@ fn approval_scopes_for_request(request: &ToolPermissionRequest) -> Vec<String> {
         _ => true,
     };
     if session_available {
-        scopes.push("session".to_string());
+        scopes.push(approval_scope_wire_string(ApprovalScopeValue::Session));
     }
     if request.path.is_some() {
-        scopes.push("path_prefix".to_string());
+        scopes.push(approval_scope_wire_string(ApprovalScopeValue::PathPrefix));
     }
     if request.host.is_some() {
-        scopes.push("host".to_string());
+        scopes.push(approval_scope_wire_string(ApprovalScopeValue::Host));
     }
     if let Some(prefix) = request.command_prefix.as_ref() {
-        scopes.push("command_prefix".to_string());
+        scopes.push(approval_scope_wire_string(
+            ApprovalScopeValue::CommandPrefix,
+        ));
         if !devo_core::tools::is_banned_prefix_suggestion(prefix) {
-            scopes.push("command_prefix_persist".to_string());
+            scopes.push(approval_scope_wire_string(
+                ApprovalScopeValue::CommandPrefixPersist,
+            ));
         }
     }
-    scopes.push("tool".to_string());
+    scopes.push(approval_scope_wire_string(ApprovalScopeValue::Tool));
     scopes
 }
 
-fn native_approval_target(
+pub(super) fn native_approval_target(
     request: &ToolPermissionRequest,
 ) -> Option<devo_protocol::native::item::ApprovalTarget> {
     if let Some(path) = &request.path {
@@ -1268,7 +1291,7 @@ fn native_waiting_approval_item(
     }
 }
 
-fn native_decided_approval_item(
+pub(super) fn native_decided_approval_item(
     approval_id: &str,
     request: &ToolPermissionRequest,
     available_scopes: &[String],
@@ -1296,7 +1319,9 @@ fn native_decided_approval_item(
     }
 }
 
-fn native_approval_scope(scope: &ApprovalScopeValue) -> devo_protocol::native::item::ApprovalScope {
+pub(super) fn native_approval_scope(
+    scope: &ApprovalScopeValue,
+) -> devo_protocol::native::item::ApprovalScope {
     match scope {
         ApprovalScopeValue::Once => devo_protocol::native::item::ApprovalScope::Once,
         ApprovalScopeValue::Turn => devo_protocol::native::item::ApprovalScope::Turn,
@@ -1426,7 +1451,9 @@ fn acp_permission_options_for_scopes(
             meta: None,
         });
     }
-    if scopes.iter().any(|scope| scope == "command_prefix_persist")
+    if scopes
+        .iter()
+        .any(|scope| scope == "commandPrefixPersist" || scope == "command_prefix_persist")
         && let Some(prefix) = command_prefix
     {
         options.push(devo_protocol::AcpPermissionOption {
@@ -1439,17 +1466,18 @@ fn acp_permission_options_for_scopes(
             meta: None,
         });
     }
-    if scopes.iter().any(|scope| scope == "path_prefix")
+    if scopes
+        .iter()
+        .any(|scope| scope == "pathPrefix" || scope == "path_prefix")
         && let Some(path) = path
     {
-        let root = if path.is_dir() {
-            path.display().to_string()
-        } else {
-            path.parent().unwrap_or(path).display().to_string()
-        };
+        let root = path_prefix_grant_root(path);
         options.push(devo_protocol::AcpPermissionOption {
             option_id: "allow_path_prefix".to_string(),
-            name: format!("Yes, and don't ask again for files under `{root}`"),
+            name: format!(
+                "Yes, and don't ask again for files under `{}`",
+                root.display()
+            ),
             kind: devo_protocol::AcpPermissionOptionKind::AllowAlways,
             meta: None,
         });
@@ -1547,13 +1575,25 @@ fn permission_cache_matches(
     {
         return true;
     }
-    request.path.as_ref().is_some_and(|path| {
+    if let Some(path) = request.path.as_ref() {
+        let normalized = normalize_permission_path(path);
+        let exact_matches = match request.resource {
+            devo_safety::ResourceKind::FileWrite => cache.write_exact_paths.contains(&normalized),
+            devo_safety::ResourceKind::FileRead => cache.read_exact_paths.contains(&normalized),
+            _ => false,
+        };
+        if exact_matches {
+            return true;
+        }
         let prefixes = match request.resource {
             devo_safety::ResourceKind::FileWrite => &cache.write_path_prefixes,
             _ => &cache.read_path_prefixes,
         };
-        path_matches_any_prefix(path, prefixes)
-    }) || request.command_prefix.as_ref().is_some_and(|command| {
+        if path_matches_any_prefix(path, prefixes) {
+            return true;
+        }
+    }
+    request.command_prefix.as_ref().is_some_and(|command| {
         cache
             .command_prefixes
             .iter()
@@ -1578,8 +1618,14 @@ fn escalation_permission_grant(request: &ToolPermissionRequest) -> PermissionGra
     }
 }
 
-fn approved_permission_grant(request: &ToolPermissionRequest) -> PermissionGrant {
+pub(super) fn approved_permission_grant_for_request(
+    request: &ToolPermissionRequest,
+) -> PermissionGrant {
     PermissionGrant::from_approval(&request.sandbox_permissions)
+}
+
+fn approved_permission_grant(request: &ToolPermissionRequest) -> PermissionGrant {
+    approved_permission_grant_for_request(request)
 }
 
 fn sandbox_bypass_key_from_request(
@@ -1603,24 +1649,6 @@ where
     prefixes
         .into_iter()
         .any(|prefix| path.starts_with(normalize_permission_path(prefix)))
-}
-
-fn normalize_permission_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    normalized.push(component.as_os_str());
-                }
-            }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
-        }
-    }
-    normalized
 }
 
 fn permission_tool_extra(
@@ -1766,7 +1794,7 @@ mod tests {
         assert!(
             approval_scopes_for_request(&request)
                 .iter()
-                .any(|scope| scope == "command_prefix")
+                .any(|scope| scope == "commandPrefix" || scope == "command_prefix")
         );
     }
 
@@ -1937,14 +1965,14 @@ mod tests {
         let mut request = test_permission_request("shell_command");
         request.command_prefix = Some(vec!["git".to_string(), "pull".to_string()]);
         let scopes = approval_scopes_for_request(&request);
-        assert!(scopes.iter().any(|scope| scope == "command_prefix"));
-        assert!(scopes.iter().any(|scope| scope == "command_prefix_persist"));
+        assert!(scopes.iter().any(|scope| scope == "commandPrefix"));
+        assert!(scopes.iter().any(|scope| scope == "commandPrefixPersist"));
 
         request.command_prefix = Some(vec!["git".to_string()]);
         let scopes = approval_scopes_for_request(&request);
-        assert!(scopes.iter().any(|scope| scope == "command_prefix"));
+        assert!(scopes.iter().any(|scope| scope == "commandPrefix"));
         assert!(
-            !scopes.iter().any(|scope| scope == "command_prefix_persist"),
+            !scopes.iter().any(|scope| scope == "commandPrefixPersist"),
             "banned bare git prefix must not offer persist scope"
         );
     }
@@ -1974,6 +2002,113 @@ mod tests {
 
         assert!(path_matches_any_prefix(&inside, [&root]));
         assert!(!path_matches_any_prefix(&outside, [&root]));
+    }
+
+    #[test]
+    fn file_tool_session_scope_matches_exact_path_only() {
+        let root = abs_path(&["workspace", "src"]);
+        let granted = root.join("main.rs");
+        let sibling = root.join("helper.rs");
+
+        let mut cache = crate::execution::ApprovalGrantCache::default();
+        cache
+            .write_exact_paths
+            .insert(normalize_permission_path(&granted));
+
+        let mut allowed = test_permission_request("write");
+        allowed.resource = devo_safety::ResourceKind::FileWrite;
+        allowed.path = Some(granted.clone());
+
+        let mut sibling_request = test_permission_request("write");
+        sibling_request.resource = devo_safety::ResourceKind::FileWrite;
+        sibling_request.path = Some(sibling);
+
+        let mut read_request = test_permission_request("read");
+        read_request.resource = devo_safety::ResourceKind::FileRead;
+        read_request.path = Some(granted.clone());
+
+        let mut edit_request = test_permission_request("edit");
+        edit_request.resource = devo_safety::ResourceKind::FileWrite;
+        edit_request.path = Some(granted);
+
+        assert!(permission_cache_matches(&cache, &allowed));
+        assert!(permission_cache_matches(&cache, &edit_request));
+        assert!(
+            !permission_cache_matches(&cache, &sibling_request),
+            "session exact-file grant must not cover siblings"
+        );
+        assert!(
+            !permission_cache_matches(&cache, &read_request),
+            "write exact-file grant must not cover reads"
+        );
+    }
+
+    #[test]
+    fn file_tool_path_prefix_matches_directory_siblings() {
+        let root = abs_path(&["workspace", "src"]);
+        let granted = root.join("main.rs");
+        let sibling = root.join("helper.rs");
+        let outside = abs_path(&["workspace", "other.rs"]);
+
+        let mut cache = crate::execution::ApprovalGrantCache::default();
+        cache
+            .write_path_prefixes
+            .insert(path_prefix_grant_root(&granted));
+
+        let mut allowed = test_permission_request("write");
+        allowed.resource = devo_safety::ResourceKind::FileWrite;
+        allowed.path = Some(granted.clone());
+
+        let mut sibling_request = test_permission_request("edit");
+        sibling_request.resource = devo_safety::ResourceKind::FileWrite;
+        sibling_request.path = Some(sibling);
+
+        let mut outside_request = test_permission_request("write");
+        outside_request.resource = devo_safety::ResourceKind::FileWrite;
+        outside_request.path = Some(outside);
+
+        let mut read_request = test_permission_request("read");
+        read_request.resource = devo_safety::ResourceKind::FileRead;
+        read_request.path = Some(root.join("notes.txt"));
+
+        assert!(permission_cache_matches(&cache, &allowed));
+        assert!(permission_cache_matches(&cache, &sibling_request));
+        assert!(!permission_cache_matches(&cache, &outside_request));
+        assert!(
+            !permission_cache_matches(&cache, &read_request),
+            "write path-prefix grant must not cover reads"
+        );
+    }
+
+    #[test]
+    fn approval_decision_from_acp_maps_file_tool_scopes() {
+        assert_eq!(
+            approval_decision_from_acp_outcome(devo_protocol::AcpPermissionOutcome::Selected {
+                option_id: "allow_once".to_string(),
+            }),
+            Ok((ApprovalDecisionValue::Approve, ApprovalScopeValue::Once))
+        );
+        assert_eq!(
+            approval_decision_from_acp_outcome(devo_protocol::AcpPermissionOutcome::Selected {
+                option_id: "allow_session".to_string(),
+            }),
+            Ok((ApprovalDecisionValue::Approve, ApprovalScopeValue::Session))
+        );
+        assert_eq!(
+            approval_decision_from_acp_outcome(devo_protocol::AcpPermissionOutcome::Selected {
+                option_id: "allow_path_prefix".to_string(),
+            }),
+            Ok((
+                ApprovalDecisionValue::Approve,
+                ApprovalScopeValue::PathPrefix
+            ))
+        );
+        assert_eq!(
+            approval_decision_from_acp_outcome(devo_protocol::AcpPermissionOutcome::Selected {
+                option_id: "reject_once".to_string(),
+            }),
+            Ok((ApprovalDecisionValue::Deny, ApprovalScopeValue::Once))
+        );
     }
 
     #[test]

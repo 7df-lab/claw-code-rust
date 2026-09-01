@@ -99,6 +99,28 @@ pub struct LegacyProjector {
     approvals: HashMap<String, ApprovalFold>,
 }
 
+fn permission_profile_from_session_record(
+    record: &crate::conversation::SessionRecord,
+) -> PermissionProfile {
+    use devo_protocol::PermissionPreset;
+
+    match record.permission_preset {
+        Some(PermissionPreset::Default) => PermissionProfile::Default,
+        Some(PermissionPreset::AutoReview) => PermissionProfile::AutoReview,
+        Some(PermissionPreset::FullAccess) => PermissionProfile::FullAccess,
+        None => {
+            let approval_mode = record.approval_mode.to_ascii_lowercase();
+            if approval_mode.contains("auto") {
+                PermissionProfile::AutoReview
+            } else if approval_mode.contains("full") {
+                PermissionProfile::FullAccess
+            } else {
+                PermissionProfile::Default
+            }
+        }
+    }
+}
+
 impl Default for LegacyProjector {
     fn default() -> Self {
         Self::new()
@@ -371,15 +393,10 @@ impl LegacyProjector {
         };
 
         // Legacy approval modes were free-form strings ("on-request",
-        // "full-auto", ...); map by keyword, defaulting to the safest profile.
-        let approval_mode = record.approval_mode.to_ascii_lowercase();
-        let permission_profile = if approval_mode.contains("auto") {
-            PermissionProfile::AutoReview
-        } else if approval_mode.contains("full") {
-            PermissionProfile::FullAccess
-        } else {
-            PermissionProfile::Default
-        };
+        // "full-auto", ...). When `permission_preset` is set on the record it
+        // is authoritative — the actor/runtime preset can disagree with the
+        // legacy `approval_mode` default ("on-request").
+        let permission_profile = permission_profile_from_session_record(record);
 
         let git_info = if record.git_sha.is_some()
             || record.git_branch.is_some()

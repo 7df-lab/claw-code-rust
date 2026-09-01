@@ -203,9 +203,8 @@ impl ServerRuntime {
             params.cwd.clone(),
             params.additional_directories.clone(),
         );
-        let permission_preset = protocol_preset_from_safety(
-            core_session.config.permission_profile.preset,
-        );
+        let permission_preset =
+            protocol_preset_from_safety(core_session.config.permission_profile.preset);
         summary.permission_preset = Some(permission_preset);
         if let Some(record) = record.as_mut() {
             record.permission_preset = Some(permission_preset);
@@ -622,9 +621,7 @@ impl ServerRuntime {
                     );
                 }
                 let settings = devo_protocol::native::session::SessionSettings {
-                    permission_profile: native_permission_profile(
-                        index_metadata.permission_preset,
-                    ),
+                    permission_profile: native_permission_profile(index_metadata.permission_preset),
                     reasoning_effort: index_metadata
                         .reasoning_effort_selection
                         .as_deref()
@@ -655,9 +652,23 @@ impl ServerRuntime {
         let mut overlay_mode: Option<devo_protocol::CollaborationMode> = None;
         let mut applied_window: Option<u64> = None;
         let mut settings_changes = Vec::new();
+        let live_permission_profile = if let Some(handle) = session_handle.as_ref() {
+            native_permission_profile(
+                handle
+                    .summary()
+                    .await
+                    .and_then(|summary| summary.permission_preset),
+            )
+        } else {
+            native_permission_profile(
+                index_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.permission_preset),
+            )
+        };
         if let Some(settings) = &params.settings {
             if let Some(profile) = settings.permission_profile
-                && profile != current.permission_profile
+                && profile != live_permission_profile
             {
                 let preset = match profile {
                     devo_protocol::native::model::PermissionProfile::Default => {
@@ -1732,6 +1743,9 @@ impl ServerRuntime {
             pending_count = pending_texts.len(),
             "resumed session"
         );
+        self.runtime_arc()
+            .resume_pending_queue_if_idle(params.session_id)
+            .await;
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: SessionResumeResult {

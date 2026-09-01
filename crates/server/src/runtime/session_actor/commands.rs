@@ -24,6 +24,13 @@ use devo_core::TurnConfig;
 
 use super::turn_working::TurnWorkingSet;
 
+#[derive(Clone)]
+pub(crate) struct ApprovalCheckpointSnapshot {
+    pub(crate) messages: Vec<devo_protocol::Message>,
+    pub(crate) turn_config: TurnConfig,
+    pub(crate) collaboration_mode: devo_protocol::CollaborationMode,
+}
+
 pub(crate) enum SessionCommand {
     /// Short: clone turn-owned state and install `TurnInlineState` on the shared stream.
     CheckoutTurnWorkingSet {
@@ -78,6 +85,13 @@ pub(crate) enum SessionCommand {
     },
     GetActiveTurnId {
         reply: oneshot::Sender<Option<TurnId>>,
+    },
+    GetApprovalCheckpointSnapshot {
+        reply: oneshot::Sender<Option<ApprovalCheckpointSnapshot>>,
+    },
+    MarkActiveTurnWaitingApproval {
+        turn_id: TurnId,
+        reply: oneshot::Sender<Option<TurnMetadata>>,
     },
     GetRecord {
         reply: oneshot::Sender<Option<devo_core::SessionRecord>>,

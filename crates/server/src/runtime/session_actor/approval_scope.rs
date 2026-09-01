@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use devo_protocol::ApprovalScopeValue;
 use devo_safety::RuntimePermissionProfile;
@@ -28,11 +28,10 @@ pub(crate) fn apply_approval_scope_to_state(
                     .insert((command.clone(), pending.cwd.clone()));
             } else if let Some(pattern) = pending.command_pattern.clone() {
                 session_cache.command_patterns.insert(pattern);
+            } else if let Some(path) = pending.path.as_ref() {
+                insert_exact_file_path_grant(session_cache, pending.resource.as_ref(), path);
             } else {
                 session_cache.tools.insert(pending.tool_name.clone());
-            }
-            if let Some(path) = pending.path.as_ref() {
-                insert_path_prefix_grant(session_cache, pending.resource.as_ref(), path);
             }
         }
         ApprovalScopeValue::PathPrefix => {
@@ -69,16 +68,13 @@ pub(crate) fn apply_approval_scope_to_state(
     }
 }
 
-/// Grants PathPrefix/Session path roots onto a runtime permission profile.
+/// Grants PathPrefix folder roots onto a runtime permission profile.
 pub(crate) fn apply_path_scope_to_permission_profile(
     profile: &mut RuntimePermissionProfile,
     scope: &ApprovalScopeValue,
     pending: &PendingApproval,
 ) {
-    if !matches!(
-        scope,
-        ApprovalScopeValue::PathPrefix | ApprovalScopeValue::Session
-    ) {
+    if !matches!(scope, ApprovalScopeValue::PathPrefix) {
         return;
     }
     let Some(path) = pending.path.as_ref() else {
@@ -92,6 +88,43 @@ pub(crate) fn apply_path_scope_to_permission_profile(
         Some(devo_safety::ResourceKind::FileRead) | Some(_) | None => {
             // Read (and unknown) approvals must not elevate write roots.
             profile.grant_readable_root(grant);
+        }
+    }
+}
+
+pub(crate) fn normalize_permission_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
+}
+
+fn insert_exact_file_path_grant(
+    cache: &mut ApprovalGrantCache,
+    resource: Option<&devo_safety::ResourceKind>,
+    path: &Path,
+) {
+    let grant = normalize_permission_path(path);
+    match resource {
+        Some(devo_safety::ResourceKind::FileWrite) => {
+            cache.write_exact_paths.insert(grant);
+        }
+        Some(devo_safety::ResourceKind::FileRead) => {
+            cache.read_exact_paths.insert(grant);
+        }
+        Some(_) | None => {
+            cache.read_exact_paths.insert(grant);
         }
     }
 }
@@ -133,8 +166,10 @@ mod tests {
 
     use super::apply_approval_scope_to_state;
     use super::apply_path_scope_to_permission_profile;
+    use super::normalize_permission_path;
     use super::path_prefix_grant_root;
     use devo_safety::PermissionPreset;
+    use devo_safety::ResourceKind;
     use devo_safety::RuntimePermissionProfile;
 
     #[test]
@@ -178,6 +213,7 @@ mod tests {
             cwd: PathBuf::from("/workspace"),
             sandbox_permissions: String::new(),
             persisted: None,
+            checkpoint: None,
             tx,
         };
 
@@ -224,6 +260,7 @@ mod tests {
                 String::new()
             },
             persisted: None,
+            checkpoint: None,
             tx,
         }
     }
@@ -248,6 +285,7 @@ mod tests {
             cwd: PathBuf::from("/workspace"),
             sandbox_permissions: String::new(),
             persisted: None,
+            checkpoint: None,
             tx,
         };
 
@@ -286,6 +324,7 @@ mod tests {
             cwd: PathBuf::from("/workspace"),
             sandbox_permissions: String::new(),
             persisted: None,
+            checkpoint: None,
             tx,
         };
 
@@ -436,6 +475,7 @@ mod tests {
             cwd: temp.path().to_path_buf(),
             sandbox_permissions: String::new(),
             persisted: None,
+            checkpoint: None,
             tx,
         };
 
@@ -467,5 +507,217 @@ mod tests {
                 .iter()
                 .any(|prefix| child.starts_with(prefix))
         );
+    }
+
+    fn abs_path(parts: &[&str]) -> PathBuf {
+        #[cfg(windows)]
+        let mut path = PathBuf::from(r"C:\");
+        #[cfg(unix)]
+        let mut path = PathBuf::from("/");
+
+        for part in parts {
+            path.push(part);
+        }
+        path
+    }
+
+    fn file_pending_approval(
+        tool_name: &str,
+        resource: ResourceKind,
+        path: PathBuf,
+    ) -> crate::execution::PendingApproval {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        crate::execution::PendingApproval {
+            owner_session_id: devo_protocol::SessionId::new(),
+            turn_id: devo_core::TurnId::new(),
+            tool_name: tool_name.to_string(),
+            resource: Some(resource),
+            path: Some(path),
+            host: None,
+            command_prefix: None,
+            command_pattern: None,
+            requests_escalation: false,
+            command: None,
+            cwd: abs_path(&["workspace"]),
+            sandbox_permissions: String::new(),
+            persisted: None,
+            checkpoint: None,
+            tx,
+        }
+    }
+
+    #[test]
+    fn once_scope_does_not_store_file_grants() {
+        let file_path = abs_path(&["workspace", "src", "main.rs"]);
+        let pending = file_pending_approval("write", ResourceKind::FileWrite, file_path);
+
+        let mut session_cache = crate::execution::ApprovalGrantCache::default();
+        let mut turn_cache = crate::execution::ApprovalGrantCache::default();
+        apply_approval_scope_to_state(
+            &mut session_cache,
+            &mut turn_cache,
+            &ApprovalScopeValue::Once,
+            &pending,
+        );
+
+        assert_eq!(
+            session_cache,
+            crate::execution::ApprovalGrantCache::default()
+        );
+        assert_eq!(turn_cache, crate::execution::ApprovalGrantCache::default());
+    }
+
+    #[test]
+    fn session_scope_stores_exact_file_path_for_read_write_and_edit() {
+        let cases = [
+            ("read", ResourceKind::FileRead),
+            ("write", ResourceKind::FileWrite),
+            ("edit", ResourceKind::FileWrite),
+        ];
+        let file_path = abs_path(&["workspace", "src", "main.rs"]);
+        let normalized = normalize_permission_path(&file_path);
+
+        for (tool_name, resource) in cases {
+            let pending = file_pending_approval(tool_name, resource.clone(), file_path.clone());
+            let mut session_cache = crate::execution::ApprovalGrantCache::default();
+            let mut turn_cache = crate::execution::ApprovalGrantCache::default();
+
+            apply_approval_scope_to_state(
+                &mut session_cache,
+                &mut turn_cache,
+                &ApprovalScopeValue::Session,
+                &pending,
+            );
+
+            assert!(
+                session_cache.tools.is_empty(),
+                "{tool_name} session scope must not grant the whole tool"
+            );
+            assert!(session_cache.read_path_prefixes.is_empty());
+            assert!(session_cache.write_path_prefixes.is_empty());
+
+            match resource {
+                ResourceKind::FileRead => {
+                    assert_eq!(session_cache.read_exact_paths, [normalized.clone()].into());
+                    assert!(session_cache.write_exact_paths.is_empty());
+                }
+                ResourceKind::FileWrite => {
+                    assert_eq!(session_cache.write_exact_paths, [normalized.clone()].into());
+                    assert!(session_cache.read_exact_paths.is_empty());
+                }
+                _ => unreachable!("file tool test cases only use read/write resources"),
+            }
+            assert_eq!(turn_cache, crate::execution::ApprovalGrantCache::default());
+        }
+    }
+
+    #[test]
+    fn session_scope_does_not_widen_permission_profile_roots() {
+        let file_path = abs_path(&["workspace", "src", "main.rs"]);
+        let pending = file_pending_approval("read", ResourceKind::FileRead, file_path);
+        let mut profile = RuntimePermissionProfile::from_preset(
+            PermissionPreset::Default,
+            abs_path(&["workspace"]),
+        );
+        let before_readable = profile.readable_roots.clone();
+        let before_writable = profile.writable_roots.clone();
+
+        apply_path_scope_to_permission_profile(
+            &mut profile,
+            &ApprovalScopeValue::Session,
+            &pending,
+        );
+
+        assert_eq!(profile.readable_roots, before_readable);
+        assert_eq!(profile.writable_roots, before_writable);
+    }
+
+    #[test]
+    fn path_prefix_scope_allows_sibling_files_in_same_directory() {
+        let dir = abs_path(&["workspace", "src"]);
+        let granted_file = dir.join("main.rs");
+        let sibling_file = dir.join("helper.rs");
+        let outside_file = abs_path(&["workspace", "other.rs"]);
+
+        let cases = [
+            ("read", ResourceKind::FileRead, "read_path_prefixes"),
+            ("write", ResourceKind::FileWrite, "write_path_prefixes"),
+            ("edit", ResourceKind::FileWrite, "write_path_prefixes"),
+        ];
+
+        for (tool_name, resource, prefix_field) in cases {
+            let pending = file_pending_approval(tool_name, resource, granted_file.clone());
+            let mut session_cache = crate::execution::ApprovalGrantCache::default();
+            let mut turn_cache = crate::execution::ApprovalGrantCache::default();
+
+            apply_approval_scope_to_state(
+                &mut session_cache,
+                &mut turn_cache,
+                &ApprovalScopeValue::PathPrefix,
+                &pending,
+            );
+
+            let prefix_root = path_prefix_grant_root(&granted_file);
+            assert_eq!(prefix_root, dir);
+            let prefixes = match prefix_field {
+                "read_path_prefixes" => &session_cache.read_path_prefixes,
+                "write_path_prefixes" => &session_cache.write_path_prefixes,
+                _ => unreachable!(),
+            };
+            assert!(
+                prefixes.contains(&prefix_root),
+                "{tool_name} path prefix grant"
+            );
+            assert!(session_cache.read_exact_paths.is_empty());
+            assert!(session_cache.write_exact_paths.is_empty());
+            assert!(sibling_file.starts_with(prefix_root.as_path()));
+            assert!(!outside_file.starts_with(prefix_root.as_path()));
+        }
+    }
+
+    #[test]
+    fn session_scope_does_not_allow_sibling_files() {
+        let dir = abs_path(&["workspace", "src"]);
+        let granted_file = dir.join("main.rs");
+        let sibling_file = dir.join("helper.rs");
+
+        let mut session_cache = crate::execution::ApprovalGrantCache::default();
+        let mut turn_cache = crate::execution::ApprovalGrantCache::default();
+        let pending = file_pending_approval("write", ResourceKind::FileWrite, granted_file);
+
+        apply_approval_scope_to_state(
+            &mut session_cache,
+            &mut turn_cache,
+            &ApprovalScopeValue::Session,
+            &pending,
+        );
+
+        let normalized_sibling = normalize_permission_path(&sibling_file);
+        assert!(
+            !session_cache
+                .write_exact_paths
+                .contains(&normalized_sibling)
+        );
+        assert!(session_cache.write_path_prefixes.is_empty());
+    }
+
+    #[test]
+    fn read_and_write_session_grants_stay_separate() {
+        let file_path = abs_path(&["workspace", "src", "main.rs"]);
+        let normalized = normalize_permission_path(&file_path);
+
+        let mut session_cache = crate::execution::ApprovalGrantCache::default();
+        let mut turn_cache = crate::execution::ApprovalGrantCache::default();
+        let read_pending = file_pending_approval("read", ResourceKind::FileRead, file_path.clone());
+
+        apply_approval_scope_to_state(
+            &mut session_cache,
+            &mut turn_cache,
+            &ApprovalScopeValue::Session,
+            &read_pending,
+        );
+
+        assert_eq!(session_cache.read_exact_paths, [normalized.clone()].into());
+        assert!(session_cache.write_exact_paths.is_empty());
     }
 }

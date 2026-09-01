@@ -444,9 +444,9 @@ fn native_session_value(metadata: &crate::SessionMetadata) -> serde_json::Value 
         | crate::SessionRuntimeStatus::Unloaded => "idle",
     };
     let permission_profile = match metadata.permission_preset {
-        Some(crate::PermissionPreset::AutoReview) => "autoReview",
+        Some(crate::PermissionPreset::AutoReview) | None => "autoReview",
         Some(crate::PermissionPreset::FullAccess) => "fullAccess",
-        Some(crate::PermissionPreset::Default) | None => "default",
+        Some(crate::PermissionPreset::Default) => "default",
     };
     let parent = metadata.parent_session_id.and_then(|session_id| {
         if metadata.agent_path.is_none()

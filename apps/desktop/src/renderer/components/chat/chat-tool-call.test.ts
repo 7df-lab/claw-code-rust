@@ -4,6 +4,10 @@ import { buildBashTerminalOutput, getToolInfo, getToolSubtitle, parseReadOutput,
 
 const elapsedHookSource = readFileSync(new URL("../../hooks/use-elapsed-time.ts", import.meta.url), "utf8")
 const chatToolCallSource = readFileSync(new URL("./chat-tool-call.tsx", import.meta.url), "utf8")
+const pierreDiffMountSource = readFileSync(
+	new URL("../../../../packages/ui/src/components/ai-elements/pierre-diff-mount.tsx", import.meta.url),
+	"utf8",
+)
 const rendererCssSource = readFileSync(new URL("../../index.css", import.meta.url), "utf8")
 
 describe("buildBashTerminalOutput", () => {
@@ -333,13 +337,21 @@ describe("ChatToolCall memo comparison", () => {
 			hidesSpinnerWhenTurnIdle: chatToolCallSource.includes(
 				"turnWorking && (status === \"running\" || status === \"pending\")",
 			),
-			gatesBodyWhileControlledClosed: chatToolCallSource.includes("open === false ? null"),
+			gatesNonFileChangeWhileControlledClosed: chatToolCallSource.includes("open === false ? null"),
+			defersFileChangeDiffMount: chatToolCallSource.includes(
+				"<MountWhenVisible>{getToolContent(part)}</MountWhenVisible>",
+			),
+			remountsPierreAfterPanelLayout: !pierreDiffMountSource.includes("setInstanceKey((key) => key + 1)"),
+			mountsOnceAfterWarmup: pierreDiffMountSource.includes("isHighlighterLoaded"),
 		}).toEqual({
 			comparesOpen: true,
 			comparesTurnError: true,
 			comparesTurnWorking: true,
 			hidesSpinnerWhenTurnIdle: true,
-			gatesBodyWhileControlledClosed: true,
+			gatesNonFileChangeWhileControlledClosed: true,
+			defersFileChangeDiffMount: true,
+			remountsPierreAfterPanelLayout: true,
+			mountsOnceAfterWarmup: true,
 		})
 	})
 

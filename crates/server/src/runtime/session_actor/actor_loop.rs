@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use super::approval_scope::{
     apply_approval_scope_to_state, apply_path_scope_to_permission_profile,
 };
-use super::commands::SessionCommand;
+use super::commands::{ApprovalCheckpointSnapshot, SessionCommand};
 use super::snapshots::{
     HookContextSnapshot, PendingQueueSnapshot, QueuedTurnInputData, ShellExecContextSnapshot,
     TitleGenerationContext, TurnPersistenceSnapshot, TurnReservationSnapshot,
@@ -142,6 +142,55 @@ pub(super) async fn run_session_actor(
             SessionCommand::GetActiveTurnId { reply } => {
                 let _ = reply.send(state.active_turn.as_ref().map(|turn| turn.turn_id));
             }
+            SessionCommand::GetApprovalCheckpointSnapshot { reply } => {
+                let snapshot = if state.active_turn.is_some() {
+                    let stream = state.stream.lock().await;
+                    let turn_config = stream
+                        .turn_inline
+                        .as_ref()
+                        .and_then(|inline| {
+                            inline
+                                .live_turn_settings
+                                .lock()
+                                .ok()
+                                .and_then(|live| live.turn_config.clone())
+                        })
+                        .or_else(|| {
+                            Some(
+                                state.runtime_context.resolve_turn_config(
+                                    state
+                                        .summary
+                                        .model_binding_id
+                                        .as_deref()
+                                        .or(state.summary.model.as_deref()),
+                                    state.summary.reasoning_effort_selection.clone(),
+                                ),
+                            )
+                        });
+                    turn_config.map(|turn_config| ApprovalCheckpointSnapshot {
+                        messages: state.core.messages.clone(),
+                        turn_config,
+                        collaboration_mode: state.core.collaboration_mode,
+                    })
+                } else {
+                    None
+                };
+                let _ = reply.send(snapshot);
+            }
+            SessionCommand::MarkActiveTurnWaitingApproval { turn_id, reply } => {
+                let turn = state
+                    .active_turn
+                    .as_mut()
+                    .filter(|turn| turn.turn_id == turn_id)
+                    .map(|turn| {
+                        turn.status = TurnStatus::WaitingApproval;
+                        turn.clone()
+                    });
+                if let Some(turn) = &turn {
+                    state.latest_turn = Some(turn.clone());
+                }
+                let _ = reply.send(turn);
+            }
             SessionCommand::GetRecord { reply } => {
                 let _ = reply.send(state.record.clone());
             }
@@ -223,7 +272,15 @@ pub(super) async fn run_session_actor(
                 title_state,
                 reply,
             } => {
-                if matches!(state.summary.title_state, SessionTitleState::Final(_)) {
+                let allow = match (&state.summary.title_state, &title_state) {
+                    (
+                        SessionTitleState::Final(SessionTitleFinalSource::Heuristic),
+                        SessionTitleState::Final(SessionTitleFinalSource::ModelGenerated),
+                    ) => true,
+                    (SessionTitleState::Final(_), _) => false,
+                    _ => true,
+                };
+                if !allow {
                     let _ = reply.send(None);
                     continue;
                 }

@@ -51,4 +51,6 @@ The server runtime uses **one session actor per session**. Durable session state
 
 ### Session title generation
 
-See [`specs/L2/server/L2-DES-SERVER-title-generation.md`](../../../specs/L2/server/L2-DES-SERVER-title-generation.md). Title orchestration lives in `runtime/session_title.rs` (`await_title_before_first_turn`, `prepare_title_from_user_input`, `schedule_final_title_generation`, `cancel_auto_title_generation`). First untitled turn awaits the title LLM before `execute_turn`. Do not derive display titles locally on the server or client.
+See [`specs/L2/server/L2-DES-SERVER-title-generation.md`](../../../specs/L2/server/L2-DES-SERVER-title-generation.md) (Rev 2 Draft: heuristic + optional LLM polish). Historical Rev 1: [`L2-DES-SERVER-title-generation.rev1.md`](../../../specs/L2/server/L2-DES-SERVER-title-generation.rev1.md).
+
+Orchestration lives in `runtime/session_title.rs` (`prepare_title_from_user_input`, `notify_title_polish`, `cancel_auto_title_generation`). First user input applies `Final(Heuristic)` immediately; LLM polish runs only when the session is idle. Clients must not derive display titles locally — they consume `session/metadataUpdated`.

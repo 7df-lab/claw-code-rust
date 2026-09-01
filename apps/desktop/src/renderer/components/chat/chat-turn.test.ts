@@ -21,6 +21,14 @@ const chatViewSource = readFileSync(
   new URL("./chat-view.tsx", import.meta.url),
   "utf8",
 );
+const permissionOptionsSource = readFileSync(
+  new URL("./chat-permission-options.ts", import.meta.url),
+  "utf8",
+);
+const eventProcessorSource = readFileSync(
+  new URL("../../atoms/actions/event-processor.ts", import.meta.url),
+  "utf8",
+);
 const chipSource = readFileSync(
   new URL("./composer-mode-chip.tsx", import.meta.url),
   "utf8",
@@ -99,38 +107,31 @@ describe("ChatTurnComponent transcript controls", () => {
     });
   });
 
-  test("wires pending permission requests into the active chat turn", () => {
+  test("routes pending permission requests through the composer flow", () => {
     expect({
-      chatTurnAcceptsPendingPermission: source.includes(
-        "pendingPermission?: PendingPermission",
-      ),
-      chatTurnRendersPermissionItem:
-        source.includes("<PermissionItem") &&
-        source.includes("pendingPermission.request"),
-      chatViewPassesPermissionToLastTurn: chatViewSource.includes(
-        "pendingPermission={index === turns.length - 1 ? effectivePermission : undefined}",
-      ),
-      inputKeepsNoTurnPermissionFallback: chatViewSource.includes(
-        "turns.length === 0 && effectivePermission",
-      ),
+      chatViewUsesComposerPermissionFlow:
+        chatViewSource.includes("<ChatPermissionFlow") &&
+        chatViewSource.includes("effectivePermission ?"),
+      permissionOptionsFollowTuiShape:
+        permissionOptionsSource.includes("buildApprovalChoices") &&
+        permissionOptionsSource.includes('label: "Deny"') &&
+        permissionOptionsSource.includes("Does not surface turn"),
+      chatViewPrioritizesQuestionOverPermission:
+        chatViewSource.includes("effectiveQuestion ?") &&
+        chatViewSource.indexOf("effectiveQuestion ?") <
+          chatViewSource.indexOf("effectivePermission ?"),
       permissionReplyClearsPendingCard:
-        chatViewSource.includes("removePermissionAtom") &&
-        chatViewSource.includes(
-          "removePermission({ sessionId: permissionSessionId, permissionId })",
-        ),
-      noTurnPermissionFallbackUsesClearingHandlers:
+        eventProcessorSource.includes('case "permission.replied"') &&
+        eventProcessorSource.includes("removePermissionAtom"),
+      composerPermissionUsesClearingHandlers:
         chatViewSource.includes("onApprove={handleApprovePermission}") &&
         chatViewSource.includes("onDeny={handleDenyPermission}"),
-      chatToolCallKeepsUnusedPermissionProp:
-        chatToolCallSource.includes("permission?:"),
     }).toEqual({
-      chatTurnAcceptsPendingPermission: true,
-      chatTurnRendersPermissionItem: true,
-      chatViewPassesPermissionToLastTurn: true,
-      inputKeepsNoTurnPermissionFallback: true,
+      chatViewUsesComposerPermissionFlow: true,
+      permissionOptionsFollowTuiShape: true,
+      chatViewPrioritizesQuestionOverPermission: true,
       permissionReplyClearsPendingCard: true,
-      noTurnPermissionFallbackUsesClearingHandlers: true,
-      chatToolCallKeepsUnusedPermissionProp: false,
+      composerPermissionUsesClearingHandlers: true,
     });
   });
 
@@ -297,6 +298,13 @@ describe("ChatTurnComponent transcript controls", () => {
         transcriptDisclosureSource.includes("{chevron}") &&
         transcriptDisclosureSource.indexOf("{label}</span>") <
           transcriptDisclosureSource.indexOf("{chevron}"),
+      defersDiffMountUntilVisible: transcriptDisclosureSource.includes(
+        "export const MountWhenVisible",
+      ),
+      waitsForCollapsiblePanelNotPlaceholder:
+        transcriptDisclosureSource.includes("isCollapsiblePanelReady"),
+      usesLayoutEffectForPanelReady:
+        transcriptDisclosureSource.includes("useLayoutEffect"),
       toolsOmitLeadingIcons: !chatToolCallSource.includes("leading={"),
       completedWriteHidesSpinner: processTimelineViewSource.includes(
         "turnWorking={working}",
@@ -326,6 +334,9 @@ describe("ChatTurnComponent transcript controls", () => {
       assistantColumnHasNoProcessIndent: true,
       hoverShowsExpandChevron: true,
       expandChevronFollowsLabel: true,
+      defersDiffMountUntilVisible: true,
+      waitsForCollapsiblePanelNotPlaceholder: true,
+      usesLayoutEffectForPanelReady: true,
       toolsOmitLeadingIcons: true,
       completedWriteHidesSpinner: true,
       gatesActionsUntilTurnFinishes: true,
@@ -455,9 +466,9 @@ describe("ChatTurnComponent transcript controls", () => {
       editsLatestUserMessage: userMessageBlockSource.includes('tooltip="Edit message"'),
       resendsEditedMessage: userMessageBlockSource.includes("{saving ? \"Sending...\" : \"Send\"}"),
       hoverRevealsActions:
-        userMessageBlockSource.includes("group-hover:opacity-100") &&
-        userMessageBlockSource.includes("absolute top-full right-0") &&
-        userMessageBlockSource.includes("pt-0.5"),
+        userMessageBlockSource.includes("group-hover/user-msg:opacity-100") &&
+        userMessageBlockSource.includes("relative h-0 w-full") &&
+        userMessageBlockSource.includes("absolute top-0 right-0"),
     }).toEqual({
       chatTurnUsesUserMessageBlock: true,
       editOnLatestTurnNotGatedByIdle: true,

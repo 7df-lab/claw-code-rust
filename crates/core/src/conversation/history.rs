@@ -31,6 +31,11 @@ pub struct CanonicalHistory {
     pub turns: Vec<Turn>,
     /// Item envelopes in ascending `seq` order, approval folds applied.
     pub items: Vec<ItemEnvelope>,
+    /// Latest approval-resume checkpoints keyed by approval id (last wins).
+    pub approval_checkpoints: std::collections::HashMap<
+        String,
+        crate::durable_record::TurnApprovalCheckpointRecordedRecord,
+    >,
     /// Latest context-window occupancy observed while reading the rollout
     /// (turn extras or compaction snapshots), when present.
     pub latest_context_occupancy: Option<devo_protocol::native::item::ContextOccupancy>,
@@ -111,6 +116,14 @@ fn apply_v2_line(history: &mut CanonicalHistory, line: RolloutLineV2) {
             }
         }
         RolloutLineV2::Item { item, .. } => history.items.push(item),
+        RolloutLineV2::Internal {
+            entry: InternalRecordV2::TurnApprovalCheckpoint(checkpoint),
+            ..
+        } => {
+            history
+                .approval_checkpoints
+                .insert(checkpoint.approval_id.clone(), (*checkpoint).clone());
+        }
         RolloutLineV2::Internal {
             entry:
                 InternalRecordV2::SessionSettings {

@@ -382,16 +382,11 @@ export const agentFamily = atomFamily((sessionId: string) => {
 		const effectivePerm = get(effectivePermissionFamily(session.id))
 		const effectiveQ = get(effectiveQuestionFamily(session.id))
 
-		const titleState =
-			typeof (session as { titleState?: string }).titleState === "string"
-				? (session as { titleState?: string }).titleState
-				: undefined
-
 		const next: Agent = {
 			id: session.id,
 			sessionId: session.id,
 			name: session.title || "New Chat",
-			titleGenerating: titleState === "Generating" && !session.title,
+			titleGenerating: false,
 			status: agentStatus,
 			environment: "local" as const,
 			project: projectName,

@@ -684,9 +684,9 @@ impl V2InverseProjector {
             // There is no legacy session-rollout representation for Goal
             // snapshots; old builds continue to use the read-only
             // goal-records compatibility store.
-            InternalRecordV2::GoalState { .. } | InternalRecordV2::UsageRecord { .. } => {
-                Ok(Vec::new())
-            }
+            InternalRecordV2::GoalState { .. }
+            | InternalRecordV2::UsageRecord { .. }
+            | InternalRecordV2::TurnApprovalCheckpoint(_) => Ok(Vec::new()),
         }
     }
 }

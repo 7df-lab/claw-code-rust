@@ -94,6 +94,7 @@ impl ModelProviderSDK for UnusedProvider {
 struct GatedTitleRouter {
     stream_calls: mpsc::UnboundedSender<ModelRequest>,
     title_gate: Arc<Notify>,
+    title_entered: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[async_trait]
@@ -120,7 +121,10 @@ impl ProviderRouter for GatedTitleRouter {
         _route: ProviderRoute,
         _request: ModelRequest,
     ) -> Result<ModelResponse, ProviderError> {
-        self.title_gate.notified().await;
+        let waiting = self.title_gate.notified();
+        self.title_entered
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        waiting.await;
         Ok(model_response("Gated generated title"))
     }
 
@@ -203,27 +207,26 @@ async fn turn_start_append_failure_does_not_launch_model_turn_or_leave_session_a
     Ok(())
 }
 
-/// Regression: the turn/start response must not wait for the title model.
-/// A slow (gated) title LLM parks in the background; the turn answers first,
-/// and the final title lands only after the turn completes — otherwise
-/// clients time out waiting for the turn/start response.
+/// Trace: L2-DES-SERVER-title-generation
+/// Verifies: turn/start returns with a heuristic title before LLM polish;
+/// polish waits until after the turn merges and may park on a slow provider.
 #[tokio::test]
 async fn turn_start_answers_before_slow_title_generation_completes() -> Result<()> {
     let data_root = TempDir::new()?;
     let (stream_calls_tx, mut stream_calls_rx) = mpsc::unbounded_channel();
     let title_gate = Arc::new(Notify::new());
+    let title_entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let runtime = build_runtime_with_router(
         data_root.path(),
         Arc::new(GatedTitleRouter {
             stream_calls: stream_calls_tx,
             title_gate: Arc::clone(&title_gate),
+            title_entered: Arc::clone(&title_entered),
         }),
     )?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
     let session = start_session(&runtime, connection_id, data_root.path()).await?;
 
-    // The title model is still parked here: turn/start must return promptly
-    // instead of blocking on the gated title completion.
     let turn_response = timeout(
         Duration::from_secs(2),
         runtime.handle_incoming(
@@ -245,16 +248,26 @@ async fn turn_start_answers_before_slow_title_generation_completes() -> Result<(
         devo_protocol::native::turn::TurnStatus::InProgress
     );
 
-    // The turn's model request runs while the title call is still parked.
+    wait_for_title_update(&mut notifications_rx, "hello").await?;
+
     timeout(Duration::from_secs(5), stream_calls_rx.recv())
         .await
-        .context("turn stream call while title generation is gated")?
+        .context("turn stream call after heuristic title")?
         .context("stream call channel closed")?;
 
-    // The turn completes end-to-end with the title still ungenerated.
     wait_for_notification(&mut notifications_rx, "turn/completed", 5).await?;
 
-    // Release the parked title model: the final title arrives only now.
+    for _ in 0..500 {
+        if title_entered.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        title_entered.load(std::sync::atomic::Ordering::SeqCst),
+        "title polish should start after the turn merges"
+    );
+
     title_gate.notify_one();
     wait_for_title_update(&mut notifications_rx, "Gated generated title").await?;
 

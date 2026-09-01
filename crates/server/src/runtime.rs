@@ -111,6 +111,7 @@ mod acp_fs;
 mod active_turn;
 mod agents;
 mod approval;
+mod approval_checkpoint;
 mod command_exec;
 mod compaction_persist;
 pub(crate) use compaction_persist::CompactionSummaryPersist;
@@ -232,6 +233,8 @@ pub struct ServerRuntime {
     restore_plans: Mutex<handlers::rollback_plan::RestorePlanStore>,
     /// Sessions with an in-flight model title-generation task.
     title_generation_in_flight: Mutex<HashSet<SessionId>>,
+    /// Sessions waiting for optional LLM title polish after a heuristic title.
+    title_polish_pending: Mutex<HashMap<SessionId, TitlePolishPending>>,
     /// Weak back-reference used when session actors need the owning runtime `Arc`.
     self_weak: std::sync::Weak<ServerRuntime>,
     /// LRU order for loaded root session actors.
@@ -252,7 +255,16 @@ pub struct ServerRuntime {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TurnInputMode {
     VisibleUserMessage,
-    HiddenGoalContinuation { goal: devo_protocol::ThreadGoal },
+    HiddenGoalContinuation {
+        goal: devo_protocol::ThreadGoal,
+    },
+    /// Resume a turn after interactive approval without emitting a user message.
+    ApprovalResume,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TitlePolishPending {
+    pub(crate) attempts: usize,
 }
 
 const TERMINAL_TURN_STATUS_LIMIT: usize = 1024;
@@ -407,6 +419,7 @@ impl ServerRuntime {
             task_start_idempotency: Mutex::new(HashMap::new()),
             restore_plans: Mutex::new(HashMap::new()),
             title_generation_in_flight: Mutex::new(HashSet::new()),
+            title_polish_pending: Mutex::new(HashMap::new()),
             self_weak: self_weak.clone(),
             session_lru: Mutex::new(session_cache::ParentSessionLru::new(
                 session_cache::PARENT_SESSION_LRU_CAPACITY,

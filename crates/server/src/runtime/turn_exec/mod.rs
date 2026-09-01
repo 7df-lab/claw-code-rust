@@ -1,3 +1,4 @@
+mod approval_resume;
 mod context_compaction;
 mod event_stream;
 mod failure;
@@ -35,9 +36,7 @@ pub(crate) fn spawn_post_turn_scheduling(
     should_auto_continue_goal: bool,
 ) {
     tokio::spawn(async move {
-        runtime
-            .schedule_final_title_generation(session_id, None)
-            .await;
+        runtime.notify_title_polish(session_id).await;
         if runtime.chain_queued_followup_turn(session_id).await {
             return;
         }

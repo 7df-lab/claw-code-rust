@@ -510,11 +510,9 @@ impl ServerRuntime {
                 .await;
         }
 
-        // First untitled session: record the first user input and mark the
-        // title Generating, but never call the title model inline — that LLM
-        // round-trip (plus retries) stalls the turn/start response past
-        // client request timeouts. spawn_post_turn_scheduling generates the
-        // final title once this turn merges.
+        // First untitled session: record first user input and apply an
+        // immediate heuristic title. LLM polish runs after the turn merges via
+        // notify_title_polish — never inline here (client turn/start timeouts).
         self.prepare_title_from_user_input(params.session_id, &display_input)
             .await;
 

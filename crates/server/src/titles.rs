@@ -51,6 +51,26 @@ pub(crate) fn build_title_generation_request(
     }
 }
 
+const HEURISTIC_TITLE_MAX_CHARS: usize = 48;
+
+/// Immediate display title from the first user message (no LLM).
+///
+/// Prefers the first non-empty line, collapses whitespace, truncates to 48
+/// Unicode scalars. Empty input returns `None`. Short strings (< 3 chars) are kept.
+pub(crate) fn heuristic_title_from_user_input(input: &str) -> Option<String> {
+    let first_line = input.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let collapsed = collapse_whitespace(first_line);
+    if collapsed.is_empty() {
+        return None;
+    }
+    let truncated: String = collapsed.chars().take(HEURISTIC_TITLE_MAX_CHARS).collect();
+    let trimmed = truncated.trim_end().to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed)
+}
+
 /// Extracts and normalizes one title candidate from a complete provider response.
 pub(crate) fn normalize_generated_title(
     content: &[ResponseContent],
@@ -151,6 +171,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::GeneratedTitleError;
+    use super::heuristic_title_from_user_input;
     use super::normalize_generated_title;
 
     #[test]
@@ -193,5 +214,23 @@ mod tests {
             }]),
             Err(GeneratedTitleError::NoTextContent)
         );
+    }
+
+    /// Trace: L2-DES-SERVER-title-generation
+    /// Verifies: heuristic titles truncate and prefer the first line.
+    #[test]
+    fn heuristic_title_truncates_and_prefers_first_line() {
+        assert_eq!(
+            heuristic_title_from_user_input("  hello   world  \nsecond line"),
+            Some("hello world".to_string())
+        );
+        let long = "字".repeat(60);
+        let title = heuristic_title_from_user_input(&long).expect("title");
+        assert_eq!(title.chars().count(), 48);
+        assert_eq!(
+            heuristic_title_from_user_input("ok"),
+            Some("ok".to_string())
+        );
+        assert_eq!(heuristic_title_from_user_input("   \n  "), None);
     }
 }

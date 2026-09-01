@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs"
 import { describe, expect, test } from "bun:test"
 
 const stackSource = readFileSync(new URL("./composer-status-stack.tsx", import.meta.url), "utf8")
+const queueHookSource = readFileSync(new URL("../../hooks/use-composer-queue.ts", import.meta.url), "utf8")
 const chatViewSource = readFileSync(new URL("./chat-view.tsx", import.meta.url), "utf8")
 const chatTurnSource = readFileSync(new URL("./chat-turn.tsx", import.meta.url), "utf8")
 const clientSource = readFileSync(
@@ -23,6 +24,9 @@ describe("ComposerStatusStack", () => {
 			resumeAction: stackSource.includes("CirclePlayIcon"),
 			clearAction: stackSource.includes('label="Cancel goal"') && stackSource.includes("XIcon"),
 			iconSizeMatchesDesktop: stackSource.includes("size-3.5") && stackSource.includes("stroke-[1.5]"),
+			noQueueNumbering: !stackSource.includes("{index + 1} ›"),
+			actionsAlwaysVisible: stackSource.includes('className="flex shrink-0 items-center gap-0.5"'),
+			noEditBanner: !stackSource.includes("ComposerEditBanner"),
 			composerPlacement: chatViewSource.includes("<ComposerStatusStack"),
 			insideComposerCard:
 				chatViewSource.indexOf("<ComposerStatusStack") >
@@ -40,6 +44,9 @@ describe("ComposerStatusStack", () => {
 			resumeAction: true,
 			clearAction: true,
 			iconSizeMatchesDesktop: true,
+			noQueueNumbering: true,
+			actionsAlwaysVisible: true,
+			noEditBanner: true,
 			composerPlacement: true,
 			insideComposerCard: true,
 		})
@@ -96,6 +103,34 @@ describe("ComposerStatusStack", () => {
 			noSendNowLabel: true,
 			noQueuedInference: true,
 			noQueueLabel: true,
+		})
+	})
+
+	test("wires composer queue controls through chat input", () => {
+		expect({
+			queueHook: chatViewSource.includes("useComposerQueue"),
+			queueItemsProp: chatViewSource.includes("queueItems={queueItems}"),
+			steerHandler: chatViewSource.includes("onSteerQueueItem={steerQueueItem}"),
+			editHandler: chatViewSource.includes("onEditQueueItem={handleEditQueueItem}"),
+			removeHandler: chatViewSource.includes("onRemoveQueueItem={removeQueueItem}"),
+			reorderHandler: chatViewSource.includes("onReorderQueueItem={reorderQueueItem}"),
+			queuePlaceholder: chatViewSource.includes("Add to queue"),
+			clientQueuePush: clientSource.includes('"session/queue/push"'),
+			clientQueueSteer: clientSource.includes('"session/queue/steer"'),
+			queueUpdatedEvent: clientSource.includes('"session.queue.updated"'),
+			editRemovesFromQueue: queueHookSource.includes("await removeQueueItem(item)"),
+		}).toEqual({
+			queueHook: true,
+			queueItemsProp: true,
+			steerHandler: true,
+			editHandler: true,
+			removeHandler: true,
+			reorderHandler: true,
+			queuePlaceholder: true,
+			clientQueuePush: true,
+			clientQueueSteer: true,
+			queueUpdatedEvent: true,
+			editRemovesFromQueue: true,
 		})
 	})
 })

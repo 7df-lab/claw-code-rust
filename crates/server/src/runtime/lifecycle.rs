@@ -1,5 +1,10 @@
 use super::*;
+use std::collections::HashSet;
 use std::path::Path;
+
+use devo_core::TurnStatus;
+use devo_protocol::native::item::{Item, UserInput, UserMessageEntry};
+use devo_protocol::{PendingInputItem, PendingInputKind};
 
 use crate::execution::RuntimeSession;
 use crate::runtime::session_actor::SessionActorState;
@@ -155,12 +160,25 @@ impl ServerRuntime {
         {
             Ok(items) => {
                 if !items.is_empty() {
+                    let materialized = runtime_session
+                        .record
+                        .as_ref()
+                        .map(|record| materialized_steer_keys(&record.rollout_path))
+                        .unwrap_or_default();
                     let core_session = runtime_session.core_session.lock().await;
                     let mut queue = core_session
                         .pending_turn_queue
                         .lock()
                         .expect("pending turn queue mutex should not be poisoned");
+                    let mut restored_steer_count = 0usize;
                     for item in &items {
+                        if steer_already_materialized(item, &materialized) {
+                            tracing::debug!(
+                                session_id = %session_id,
+                                "skipped steer restore for already-materialized input"
+                            );
+                            continue;
+                        }
                         queue.push_back(item.clone());
                         if let Err(error) =
                             self.deps
@@ -173,10 +191,12 @@ impl ServerRuntime {
                                 "failed to restore steer input into the turn queue"
                             );
                         }
+                        restored_steer_count += 1;
                     }
                     tracing::debug!(
                         session_id = %session_id,
-                        restored_steer_count = items.len(),
+                        restored_steer_count,
+                        skipped_steer_count = items.len() - restored_steer_count,
                         "degraded stale steer inputs into the pending turn queue"
                     );
                 }
@@ -249,6 +269,12 @@ impl ServerRuntime {
                 &record.rollout_path,
             )
             .await;
+            self.restore_waiting_approvals_from_rollout(
+                session_id,
+                host_session_id,
+                &record.rollout_path,
+            )
+            .await;
         }
 
         Ok(())
@@ -268,8 +294,10 @@ impl ServerRuntime {
                     .await
                     .map_err(|error| anyhow::anyhow!("{error}"))?;
             } else {
+                let session_id = runtime_session.summary.session_id;
                 self.insert_session_actor(SessionActorState::from_runtime_session(runtime_session))
                     .await;
+                self.resume_pending_queue_if_idle(session_id).await;
             }
         }
         Ok(())
@@ -311,6 +339,26 @@ impl ServerRuntime {
             let Some(turn_id) = snapshot.active_turn_id else {
                 continue;
             };
+
+            if let Some(turn) = self.active_turns.active_turn_metadata(session_id).await
+                && turn.status == TurnStatus::WaitingApproval
+            {
+                if snapshot.record.is_some()
+                    && let Err(error) = self.persist_turn_line_deduped(session_id, &turn).await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %error,
+                        "failed to persist waiting-approval turn on shutdown"
+                    );
+                }
+                tracing::info!(
+                    session_id = %session_id,
+                    turn_id = %turn.turn_id,
+                    "preserved waiting-approval turn on shutdown"
+                );
+                continue;
+            }
 
             if let Some((item_id, item_seq, text)) = snapshot.deferred_assistant
                 && !text.trim().is_empty()
@@ -379,4 +427,75 @@ impl ServerRuntime {
             self.remove_session_actor(session_id).await;
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct MaterializedSteerKeys {
+    texts: HashSet<String>,
+    client_user_message_ids: HashSet<String>,
+}
+
+fn materialized_steer_keys(rollout_path: &Path) -> MaterializedSteerKeys {
+    let mut keys = MaterializedSteerKeys::default();
+    let Ok(history) = devo_core::read_canonical_history(rollout_path) else {
+        return keys;
+    };
+    for envelope in history.items {
+        let Item::UserMessage {
+            entry: UserMessageEntry::Steer,
+            content,
+            client_user_message_id,
+        } = envelope.item
+        else {
+            continue;
+        };
+        if let Some(client_user_message_id) = client_user_message_id {
+            keys.client_user_message_ids.insert(client_user_message_id);
+        }
+        if let Some(text) = user_message_preview_text(&content) {
+            keys.texts.insert(text);
+        }
+    }
+    keys
+}
+
+fn user_message_preview_text(content: &[UserInput]) -> Option<String> {
+    content.iter().find_map(|part| match part {
+        UserInput::Text { text } => text
+            .lines()
+            .next()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned),
+        _ => None,
+    })
+}
+
+fn pending_input_preview_text(item: &PendingInputItem) -> Option<String> {
+    match &item.kind {
+        PendingInputKind::UserText { text } => Some(text.clone()),
+        PendingInputKind::UserInput { display_text, .. } => Some(display_text.clone()),
+        _ => None,
+    }
+}
+
+fn pending_client_user_message_id(item: &PendingInputItem) -> Option<String> {
+    item.metadata.as_ref().and_then(|metadata| {
+        metadata
+            .get("clientUserMessageId")
+            .or_else(|| metadata.get("client_user_message_id"))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+    })
+}
+
+fn steer_already_materialized(item: &PendingInputItem, keys: &MaterializedSteerKeys) -> bool {
+    if let Some(client_user_message_id) = pending_client_user_message_id(item)
+        && keys
+            .client_user_message_ids
+            .contains(&client_user_message_id)
+    {
+        return true;
+    }
+    pending_input_preview_text(item).is_some_and(|text| keys.texts.contains(&text))
 }

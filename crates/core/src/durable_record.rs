@@ -802,6 +802,30 @@ pub struct TurnWorkspaceCheckpointRecordedRecord {
     pub created_at: DateTime<Utc>,
 }
 
+/// Durable snapshot captured when a turn blocks on interactive tool approval.
+/// Used to resume the same turn after a process restart.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TurnApprovalCheckpointRecordedRecord {
+    pub schema_version: u32,
+    pub session_id: SessionId,
+    pub owner_session_id: SessionId,
+    /// Parent session that owns the interactive approval lane (equals
+    /// `owner_session_id` for root sessions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_session_id: Option<SessionId>,
+    pub turn_id: TurnId,
+    pub approval_id: String,
+    /// Serialized [`devo_core::tools::ToolPermissionRequest`].
+    pub permission_request: serde_json::Value,
+    /// Provider conversation tail at the approval boundary.
+    pub messages: Vec<devo_protocol::Message>,
+    /// Serialized turn execution config needed to resume the query loop.
+    pub turn_config: serde_json::Value,
+    #[serde(default)]
+    pub pending_tool_index: u32,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnWorkspaceChangeRecordedRecord {
     pub schema_version: u32,

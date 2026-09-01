@@ -99,6 +99,8 @@ pub(crate) struct PendingApproval {
     pub(crate) sandbox_permissions: String,
     pub(crate) persisted: Option<PersistedLivingItem>,
     pub(crate) tx: oneshot::Sender<ApprovalDecisionValue>,
+    /// Durable resume snapshot when the turn blocks on approval.
+    pub(crate) checkpoint: Option<devo_core::TurnApprovalCheckpointRecordedRecord>,
 }
 
 pub(crate) struct PendingUserInput {
@@ -124,6 +126,9 @@ pub(crate) struct ApprovalGrantCache {
     pub(crate) hosts: HashSet<String>,
     pub(crate) read_path_prefixes: HashSet<PathBuf>,
     pub(crate) write_path_prefixes: HashSet<PathBuf>,
+    /// Exact file-path grants (session-scoped; separate from folder prefixes).
+    pub(crate) read_exact_paths: HashSet<PathBuf>,
+    pub(crate) write_exact_paths: HashSet<PathBuf>,
     pub(crate) command_prefixes: HashSet<Vec<String>>,
     pub(crate) command_patterns: HashSet<Vec<String>>,
     /// Exact shell command + cwd grants (session-scoped; no wildcards).

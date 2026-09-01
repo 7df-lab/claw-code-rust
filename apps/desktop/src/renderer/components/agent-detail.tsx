@@ -92,7 +92,12 @@ interface AgentDetailProps {
 		permissionId: string,
 		response?: PermissionResponse,
 	) => Promise<void>
-	onDeny?: (agent: Agent, permissionSessionId: string, permissionId: string) => Promise<void>
+	onDeny?: (
+		agent: Agent,
+		permissionSessionId: string,
+		permissionId: string,
+		note?: string,
+	) => Promise<void>
 	onReplyQuestion?: (agent: Agent, requestId: string, answers: QuestionAnswer[]) => Promise<void>
 	onRejectQuestion?: (agent: Agent, requestId: string) => Promise<void>
 	onSendMessage?: (

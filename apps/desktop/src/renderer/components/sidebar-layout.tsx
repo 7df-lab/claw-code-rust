@@ -619,7 +619,6 @@ export function SidebarLayout() {
 									onSubmit={handleConfirmCreateFolder}
 								/>
 								<SessionDeleteDialog
-									agent={deleteTarget}
 									open={!!deleteTarget}
 									pending={deletePending}
 									error={deleteError}

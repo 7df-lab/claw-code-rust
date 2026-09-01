@@ -54,3 +54,23 @@ export function composerPermissionLabel(profile: ComposerPermissionProfile): str
 		COMPOSER_PERMISSION_PROFILES.find((entry) => entry.id === profile)?.label ?? "Ask for approval"
 	)
 }
+
+const pendingComposerPermissionBySession = new Map<string, ComposerPermissionProfile>()
+
+/** Carries the new-chat picker choice across navigation before wire settings land. */
+export function stashComposerPermissionForSession(
+	sessionId: string,
+	profile: ComposerPermissionProfile,
+): void {
+	pendingComposerPermissionBySession.set(sessionId, profile)
+}
+
+export function takeComposerPermissionForSession(
+	sessionId: string,
+): ComposerPermissionProfile | undefined {
+	const profile = pendingComposerPermissionBySession.get(sessionId)
+	if (profile !== undefined) {
+		pendingComposerPermissionBySession.delete(sessionId)
+	}
+	return profile
+}

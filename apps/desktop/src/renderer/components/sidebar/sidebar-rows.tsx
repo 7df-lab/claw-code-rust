@@ -495,7 +495,7 @@ export const SessionRow = memo(function SessionRow({
 				projectUnavailable && "text-muted-foreground opacity-55",
 			)}
 		>
-			{!isEditing && (agent.status === "running" || agent.titleGenerating) && (
+			{!isEditing && agent.status === "running" && (
 				<span
 					className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2"
 					aria-hidden="true"

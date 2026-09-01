@@ -816,6 +816,30 @@ impl RolloutStore {
         )
     }
 
+    pub(crate) fn append_approval_checkpoint(
+        &self,
+        rollout_path: &Path,
+        checkpoint: &devo_core::TurnApprovalCheckpointRecordedRecord,
+    ) -> Result<()> {
+        self.append_v2_lines(
+            rollout_path,
+            vec![RolloutLineV2::Internal {
+                v: 2,
+                timestamp: checkpoint.created_at,
+                session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(Uuid::from(
+                    checkpoint.session_id,
+                )),
+                turn_id: Some(devo_protocol::native::ids::TurnId::from_legacy_uuid(
+                    Uuid::from(checkpoint.turn_id),
+                )),
+                seq: 0,
+                entry: devo_core::InternalRecordV2::TurnApprovalCheckpoint(Box::new(
+                    checkpoint.clone(),
+                )),
+            }],
+        )
+    }
+
     fn append_line(&self, rollout_path: &Path, line: &RolloutLine) -> Result<()> {
         self.append_lines(rollout_path, std::slice::from_ref(&line))
     }

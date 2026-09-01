@@ -51,6 +51,14 @@ impl ServerRuntime {
             .await;
     }
 
+    /// After hydrate/resume, start the next queued turn when the session is idle.
+    pub(in crate::runtime) async fn resume_pending_queue_if_idle(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) {
+        self.drain_queue_if_idle(session_id).await;
+    }
+
     async fn spawn_next_turn_from_queue_with_policy(
         self: &Arc<Self>,
         session_id: SessionId,

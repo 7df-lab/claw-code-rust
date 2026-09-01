@@ -135,12 +135,26 @@ impl ServerRuntime {
                             devo_protocol::RequestUserInputResponse { answers },
                         )
                         .await;
-                } else if let Some((_, controller)) = approval_controller
+                } else if let Some((host_session_id, controller)) = approval_controller
                     && let Ok(answer) = serde_json::from_value::<
                         devo_protocol::native::methods::ApprovalRespondParams,
                     >(response)
                 {
-                    let _ = controller.send(approval_decision_from_native(&answer.decision));
+                    let (decision, scope) = approval_decision_from_native(&answer.decision);
+                    if runtime.active_turns.has_session(session_id).await {
+                        let _ = controller.send((decision, scope));
+                    } else {
+                        runtime
+                            .resolve_approval_from_control_response(
+                                host_session_id,
+                                session_id,
+                                turn_id,
+                                &request_id,
+                                decision,
+                                scope,
+                            )
+                            .await;
+                    }
                 }
             });
             if enqueued_rx.recv().await.is_some() {

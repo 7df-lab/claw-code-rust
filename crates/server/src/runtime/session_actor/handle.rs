@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 
 use devo_safety::PermissionMode;
 
-use super::commands::SessionCommand;
+use super::commands::{ApprovalCheckpointSnapshot, SessionCommand};
 use super::snapshots::{
     HookContextSnapshot, PendingQueueSnapshot, PersistItemPrep, QueuedTurnInputData,
     ShellExecContextSnapshot, ShutdownDeferredSnapshot, TitleGenerationContext,
@@ -323,6 +323,34 @@ impl SessionHandle {
             return None;
         }
         reply_rx.await.ok()
+    }
+
+    pub(crate) async fn mark_active_turn_waiting_approval(
+        &self,
+        turn_id: TurnId,
+    ) -> Option<TurnMetadata> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if !self
+            .send(SessionCommand::MarkActiveTurnWaitingApproval {
+                turn_id,
+                reply: reply_tx,
+            })
+            .await
+        {
+            return None;
+        }
+        reply_rx.await.ok().flatten()
+    }
+
+    pub(crate) async fn approval_checkpoint_snapshot(&self) -> Option<ApprovalCheckpointSnapshot> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if !self
+            .send(SessionCommand::GetApprovalCheckpointSnapshot { reply: reply_tx })
+            .await
+        {
+            return None;
+        }
+        reply_rx.await.ok().flatten()
     }
 
     pub(crate) async fn record(&self) -> Option<Option<SessionRecord>> {

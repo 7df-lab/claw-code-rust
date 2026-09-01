@@ -635,8 +635,7 @@ async fn runtime_generates_final_title_and_persists_explicit_rename() -> Result<
         .await
         .context("turn/start response")?;
 
-    // The turn answers first; the final title is generated once the turn
-    // merges, so wait for turn/completed before the title update.
+    // Heuristic title lands at turn/start; polished title arrives after merge.
     wait_for_turn_completed(&mut notifications_rx).await?;
     wait_for_title_update(&mut notifications_rx, "Generated rollout title").await?;
 
@@ -753,8 +752,7 @@ async fn runtime_assigns_generated_title_after_first_turn() -> Result<()> {
         .await
         .context("turn/start response")?;
 
-    // The turn answers first; the final title lands only after the turn
-    // merges (post-turn title generation).
+    // Heuristic title lands at turn/start; polished title arrives after merge.
     wait_for_turn_completed(&mut notifications_rx).await?;
     wait_for_title_update(&mut notifications_rx, "Generated rollout title").await?;
 

@@ -51,7 +51,7 @@ import {
 	setSessionComposerAtom,
 } from "../../atoms/session-composer"
 import type { ProviderRetryStatus, SessionSetupPhase } from "../../atoms/sessions"
-import { removePermissionAtom, sessionFamily } from "../../atoms/sessions"
+import { sessionFamily } from "../../atoms/sessions"
 import {
 	effectivePermissionFamily,
 	effectiveQuestionFamily,
@@ -89,6 +89,7 @@ import {
 	useModelState,
 } from "../../hooks/use-devo-data"
 import type { ChatTurn } from "../../hooks/use-session-chat"
+import { warmDiffHighlighter } from "../../lib/diff-highlighter-warmup"
 import { createLogger } from "../../lib/logger"
 import type { Agent, FileAttachment, PermissionResponse, QuestionAnswer } from "../../lib/types"
 import { getBaseClient, getProjectClient } from "../../services/connection-manager"
@@ -97,8 +98,6 @@ const log = createLogger("chat-view")
 
 /** Session ids whose collaboration mode was already seeded from persisted settings this run. */
 const seededCollaborationModes = new Set<string>()
-/** Session ids whose permission profile was already seeded from persisted settings this run. */
-const seededPermissionProfiles = new Set<string>()
 
 /** Debounce for persist-on-selection: coalesces rapid model/effort/mode changes. */
 const SELECTION_PERSIST_DEBOUNCE_MS = 500
@@ -111,7 +110,7 @@ import {
 	diffCommentsFamily,
 	serializeCommentsForChat,
 } from "../review/review-comments"
-import { PermissionItem } from "./chat-permission"
+import { ChatPermissionFlow } from "./chat-permission"
 import { ChatQuestionFlow } from "./chat-question"
 import { ChatTurnComponent, isSyntheticMessage } from "./chat-turn"
 import { ForkBoundaryDivider } from "./fork-boundary-divider"
@@ -121,7 +120,9 @@ import {
 	ComposerStatusStack,
 	type ComposerGoal,
 	type ComposerGoalStatus,
+	type ComposerQueueItem,
 } from "./composer-status-stack"
+import { useComposerQueue } from "../../hooks/use-composer-queue"
 import { ContextItems } from "./context-items"
 import type { MentionOption } from "./mention-popover"
 import { MentionPopover, type MentionPopoverHandle } from "./mention-popover"
@@ -140,6 +141,7 @@ import {
 	DEFAULT_COMPOSER_PERMISSION_PROFILE,
 	type ComposerPermissionProfile,
 	parseComposerPermissionProfile,
+	takeComposerPermissionForSession,
 } from "./composer-permission"
 import { goalPromptText, parseComposerSlash } from "./composer-slash"
 import { PromptToolbar } from "./prompt-toolbar"
@@ -698,7 +700,12 @@ interface ChatViewProps {
 		permissionId: string,
 		response?: PermissionResponse,
 	) => Promise<void>
-	onDeny?: (agent: Agent, permissionSessionId: string, permissionId: string) => Promise<void>
+	onDeny?: (
+		agent: Agent,
+		permissionSessionId: string,
+		permissionId: string,
+		note?: string,
+	) => Promise<void>
 	/** Question handlers */
 	onReplyQuestion?: (agent: Agent, requestId: string, answers: QuestionAnswer[]) => Promise<void>
 	onRejectQuestion?: (agent: Agent, requestId: string) => Promise<void>
@@ -792,6 +799,12 @@ export function ChatView({
 }: ChatViewProps) {
 	const isWorking = agent.status === "running"
 	const settingsOverlayOpen = useAtomValue(settingsOverlayOpenAtom)
+
+	useEffect(() => {
+		void warmDiffHighlighter().catch(() => {
+			// Best-effort warmup; inline diffs retry via PierreDiffMount remount.
+		})
+	}, [])
 
 	const conversationTargetScrollTop = useCallback(
 		(defaultTarget: number) => {
@@ -967,7 +980,6 @@ export function ChatView({
 		}
 	}, [composerInsetPx, setupPhase, showComposer])
 	const effectivePermission = useAtomValue(effectivePermissionFamily(agent.sessionId))
-	const removePermission = useSetAtom(removePermissionAtom)
 
 	// Format the session-level error for display. Only shown when the last
 	// turn doesn't already carry an assistant-level error (the server emits
@@ -1002,24 +1014,21 @@ export function ChatView({
 			response?: PermissionResponse,
 		) => {
 			await onApprove?.(a, permissionSessionId, permissionId, response)
-			removePermission({ sessionId: permissionSessionId, permissionId })
-			// Permission card disappears after approval — scroll to keep content visible.
 			requestAnimationFrame(() => {
 				scrollRef.current?.scrollToBottom("smooth")
 			})
 		},
-		[onApprove, removePermission],
+		[onApprove],
 	)
 
 	const handleDenyPermission = useCallback(
-		async (a: Agent, permissionSessionId: string, permissionId: string) => {
-			await onDeny?.(a, permissionSessionId, permissionId)
-			removePermission({ sessionId: permissionSessionId, permissionId })
+		async (a: Agent, permissionSessionId: string, permissionId: string, note?: string) => {
+			await onDeny?.(a, permissionSessionId, permissionId, note)
 			requestAnimationFrame(() => {
 				scrollRef.current?.scrollToBottom("smooth")
 			})
 		},
-		[onDeny, removePermission],
+		[onDeny],
 	)
 
 	// Keyboard shortcuts for undo/redo
@@ -1100,12 +1109,9 @@ export function ChatView({
 				isLast={isLastTurn}
 				isWorking={isWorking}
 				agent={agent}
-				pendingPermission={index === turns.length - 1 ? effectivePermission : undefined}
 				isConnected={isConnected}
 				compactionStatus={compactionStatus}
 				retryStatus={activeRetryStatus}
-				onApprovePermission={handleApprovePermission}
-				onDenyPermission={handleDenyPermission}
 				onForkFromTurn={
 					onForkFromTurn
 						? () => onForkFromTurn(turn.turnId)
@@ -1314,7 +1320,12 @@ interface ChatInputSectionProps {
 		permissionId: string,
 		response?: PermissionResponse,
 	) => Promise<void>
-	onDeny?: (agent: Agent, permissionSessionId: string, permissionId: string) => Promise<void>
+	onDeny?: (
+		agent: Agent,
+		permissionSessionId: string,
+		permissionId: string,
+		note?: string,
+	) => Promise<void>
 	onReplyQuestion?: ChatViewProps["onReplyQuestion"]
 	onRejectQuestion?: ChatViewProps["onRejectQuestion"]
 	onForkFromTurn?: ChatViewProps["onForkFromTurn"]
@@ -1353,6 +1364,15 @@ export function ChatInputSection({
 	const [activeGoal, setActiveGoal] = useState<ComposerGoal | null>(null)
 	const [goalAction, setGoalAction] = useState<ComposerGoalAction | null>(null)
 	const [skillPickerOpen, setSkillPickerOpen] = useState(false)
+	const {
+		queueItems,
+		draggingId: draggingQueueItemId,
+		setDraggingId: setDraggingQueueItemId,
+		steerQueueItem,
+		removeQueueItem,
+		editQueueItem,
+		reorderQueueItem,
+	} = useComposerQueue(agent.sessionId, agent.directory ?? null)
 	const [collaborationMode, setCollaborationModeAtom] = useAtom(
 		collaborationModeFamily(agent.sessionId),
 	)
@@ -1365,8 +1385,10 @@ export function ChatInputSection({
 		setActiveTrigger(null)
 		setActiveGoal(null)
 		setGoalAction(null)
-		seededPermissionProfiles.delete(agent.sessionId)
-		setPermissionProfile(DEFAULT_COMPOSER_PERMISSION_PROFILE)
+		const pendingPermission = takeComposerPermissionForSession(agent.sessionId)
+		if (pendingPermission) {
+			setPermissionProfile(pendingPermission)
+		}
 	}, [agent.sessionId])
 
 	const loadGoalStatus = useCallback(async (): Promise<ComposerGoal | null> => {
@@ -1415,7 +1437,6 @@ export function ChatInputSection({
 	// so the parent session's UI can respond on behalf of any descendant.
 	const effectivePermission = useAtomValue(effectivePermissionFamily(agent.sessionId))
 	const effectiveQuestion = useAtomValue(effectiveQuestionFamily(agent.sessionId))
-	const removePermission = useSetAtom(removePermissionAtom)
 
 	// Diff comments integration
 	const diffComments = useAtomValue(diffCommentsFamily(agent.sessionId))
@@ -1459,23 +1480,21 @@ export function ChatInputSection({
 			response?: PermissionResponse,
 		) => {
 			await onApprove?.(a, permissionSessionId, permissionId, response)
-			removePermission({ sessionId: permissionSessionId, permissionId })
 			requestAnimationFrame(() => {
 				scrollRef.current?.scrollToBottom("smooth")
 			})
 		},
-		[onApprove, removePermission, scrollRef],
+		[onApprove, scrollRef],
 	)
 
 	const handleDenyPermission = useCallback(
-		async (a: Agent, permissionSessionId: string, permissionId: string) => {
-			await onDeny?.(a, permissionSessionId, permissionId)
-			removePermission({ sessionId: permissionSessionId, permissionId })
+		async (a: Agent, permissionSessionId: string, permissionId: string, note?: string) => {
+			await onDeny?.(a, permissionSessionId, permissionId, note)
 			requestAnimationFrame(() => {
 				scrollRef.current?.scrollToBottom("smooth")
 			})
 		},
-		[onDeny, removePermission, scrollRef],
+		[onDeny, scrollRef],
 	)
 
 	// Draft persistence
@@ -1585,13 +1604,10 @@ export function ChatInputSection({
 			seededCollaborationModes.add(agent.sessionId)
 			appStore.set(collaborationModeFamily(agent.sessionId), wireMode)
 		}
-		if (!seededPermissionProfiles.has(agent.sessionId) && wireSession?.settings) {
-			seededPermissionProfiles.add(agent.sessionId)
-			setPermissionProfile(
-				parseComposerPermissionProfile(
-					wireSession.settings.permissionProfile ?? wireSession.settings.permission_profile,
-				),
-			)
+		const wirePermission =
+			wireSession?.settings?.permissionProfile ?? wireSession?.settings?.permission_profile
+		if (wirePermission) {
+			setPermissionProfile(parseComposerPermissionProfile(wirePermission))
 		}
 	}, [
 		agent.directory,
@@ -1685,15 +1701,23 @@ export function ChatInputSection({
 	// (and re-persists), acting as a backstop.
 	const pendingSelectionPersistRef = useRef<SelectionPersistPatch | null>(null)
 	const selectionPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+	const permissionProfileDirtyRef = useRef(false)
 
 	const flushSelectionPersist = useCallback((): Promise<void> => {
 		if (selectionPersistTimerRef.current !== null) {
 			clearTimeout(selectionPersistTimerRef.current)
 			selectionPersistTimerRef.current = null
 		}
-		const pending = pendingSelectionPersistRef.current
+		const pending: SelectionPersistPatch = {
+			...pendingSelectionPersistRef.current,
+		}
+		if (permissionProfileDirtyRef.current) {
+			pending.permissionProfile = permissionProfile
+		}
 		pendingSelectionPersistRef.current = null
-		if (!pending || !agent.sessionId) return Promise.resolve()
+		if (!agent.sessionId) return Promise.resolve()
+		const hasPersistableFields = Object.keys(pending).length > 0
+		if (!hasPersistableFields) return Promise.resolve()
 		try {
 			const client =
 				(agent.directory ? getProjectClient(agent.directory) : null) ?? getBaseClient()
@@ -1715,6 +1739,11 @@ export function ChatInputSection({
 			// turn without taking on error handling.
 			return Promise.resolve()
 				.then(() => updateSettings.call(client.session, { sessionID: agent.sessionId, ...pending }))
+				.then(() => {
+					if (pending.permissionProfile) {
+						permissionProfileDirtyRef.current = false
+					}
+				})
 				.catch((error: unknown) => {
 					log.warn("session settings persist failed", { sessionId: agent.sessionId }, error)
 				})
@@ -1722,7 +1751,7 @@ export function ChatInputSection({
 			log.warn("session settings persist failed", { sessionId: agent.sessionId }, error)
 			return Promise.resolve()
 		}
-	}, [agent.directory, agent.sessionId])
+	}, [agent.directory, agent.sessionId, permissionProfile])
 
 	const scheduleSelectionPersist = useCallback(
 		(patch: SelectionPersistPatch) => {
@@ -1777,9 +1806,10 @@ export function ChatInputSection({
 	const handlePermissionProfileChange = useCallback(
 		(profile: ComposerPermissionProfile) => {
 			setPermissionProfile(profile)
+			permissionProfileDirtyRef.current = true
 			scheduleSelectionPersist({ permissionProfile: profile })
 		},
-		[scheduleSelectionPersist],
+		[scheduleSelectionPersist, agent.sessionId],
 	)
 
 	const slashCommandRef = useRef<{
@@ -1956,6 +1986,18 @@ export function ChatInputSection({
 		],
 	)
 
+	const handleEditQueueItem = useCallback(
+		async (item: ComposerQueueItem) => {
+			try {
+				const text = await editQueueItem(item)
+				if (text) slashCommandRef.current?.setText(text)
+			} catch (err) {
+				log.error("edit queue item failed", { sessionId: agent.sessionId, queueItemId: item.id }, err)
+			}
+		},
+		[agent.sessionId, editQueueItem],
+	)
+
 	const handleSend = useCallback(
 		async (text: string, files?: FileAttachment[]) => {
 			log.debug("handleSend called", {
@@ -2073,6 +2115,12 @@ export function ChatInputSection({
 			collaborationMode,
 		],
 	)
+
+	const queuePlaceholder = isWorking
+		? queueItems.length > 0
+			? "Add to queue…"
+			: "Queue a follow-up…"
+		: "What would you like to do?"
 
 	const canSend = isConnected && !sending
 
@@ -2260,23 +2308,6 @@ export function ChatInputSection({
 						</div>
 					)}
 
-					{/* Pending permissions — tree-scoped: shows own OR any sub-agent's permission */}
-					{turns.length === 0 && effectivePermission && (
-						<div className="pb-2">
-								<PermissionItem
-									key={effectivePermission.request.id}
-									agent={agent}
-									permission={effectivePermission.request}
-									onApprove={handleApprovePermission}
-									onDeny={handleDenyPermission}
-									isConnected={isConnected}
-									isFromSubAgent={effectivePermission.sessionId !== agent.sessionId}
-								/>
-						</div>
-					)}
-
-					{/* When questions are pending, replace the input with a focused question flow.
-					    Tree-scoped: shows own OR any sub-agent's question. */}
 					{effectiveQuestion ? (
 						<ChatQuestionFlow
 							questions={[effectiveQuestion.request]}
@@ -2284,6 +2315,15 @@ export function ChatInputSection({
 							onReply={handleReplyQuestion}
 							onReject={handleRejectQuestion}
 							disabled={!isConnected}
+						/>
+					) : effectivePermission ? (
+						<ChatPermissionFlow
+							agent={agent}
+							permission={effectivePermission.request}
+							onApprove={handleApprovePermission}
+							onDeny={handleDenyPermission}
+							disabled={!isConnected}
+							isFromSubAgent={effectivePermission.sessionId !== agent.sessionId}
 						/>
 					) : (
 						/* Input card — PromptInputProvider wraps everything,
@@ -2330,10 +2370,18 @@ export function ChatInputSection({
 									<ComposerStatusStack
 										goal={activeGoal}
 										goalAction={goalAction}
+										queueItems={queueItems}
+										draggingQueueItemId={draggingQueueItemId}
 										onEditGoal={handleEditGoal}
 										onPauseGoal={handlePauseGoal}
 										onResumeGoal={handleResumeGoal}
 										onClearGoal={handleClearGoal}
+										onSteerQueueItem={steerQueueItem}
+										onEditQueueItem={handleEditQueueItem}
+										onRemoveQueueItem={removeQueueItem}
+										onReorderQueueItem={reorderQueueItem}
+										onQueueDragStart={setDraggingQueueItemId}
+										onQueueDragEnd={() => setDraggingQueueItemId(null)}
 									/>
 									{/* Mention chips above the textarea */}
 									<ContextItems mentions={mentions} onRemove={handleMentionRemove} />
@@ -2352,9 +2400,7 @@ export function ChatInputSection({
 										data-prompt-input
 										onKeyDown={handleTextareaKeyDown}
 										disabled={!isConnected}
-										placeholder={
-											isWorking ? "Send a follow-up message..." : "What would you like to do?"
-										}
+										placeholder={queuePlaceholder}
 									/>
 
 									{/* Toolbar inside the card — agent + model + variant selectors + submit */}

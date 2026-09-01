@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crossterm::event::KeyCode;
 use devo_protocol::ApprovalDecisionValue;
 use devo_protocol::ApprovalScopeValue;
@@ -117,6 +119,15 @@ fn looks_like_tool_call_id(value: &str) -> bool {
     trimmed.starts_with("call_") || trimmed.starts_with("call-")
 }
 
+fn path_prefix_display_root(path: &str) -> String {
+    let path = Path::new(path);
+    if path.is_dir() {
+        path.display().to_string()
+    } else {
+        path.parent().unwrap_or(path).display().to_string()
+    }
+}
+
 fn build_params(request: ApprovalOverlayRequest) -> SelectionViewParams {
     let header = build_header(&request);
     let mut items = Vec::new();
@@ -177,11 +188,9 @@ fn build_params(request: ApprovalOverlayRequest) -> SelectionViewParams {
     if has_scope(&request, "path_prefix")
         && let Some(path) = request.path.as_ref()
     {
+        let root = path_prefix_display_root(path);
         items.push(approval_item(
-            &format!(
-                "Yes, and don't ask again for files under `{}`",
-                snippet_for_approval_label(path)
-            ),
+            &format!("Yes, and don't ask again for files under `{root}`"),
             KeyCode::Char('f'),
             &request,
             ApprovalDecisionValue::Approve,
@@ -405,6 +414,26 @@ mod tests {
             vec![
                 "Yes, proceed",
                 "Yes, and don't ask again for this command in this session",
+                "No, continue without running it",
+            ]
+        );
+    }
+
+    #[test]
+    fn path_prefix_item_uses_parent_directory_for_file_paths() {
+        let params = build_params(overlay_request(
+            vec!["once".to_string(), "path_prefix".to_string()],
+            /*command_pattern*/ None,
+            /*command_prefix*/ None,
+            Some("/tmp/out/report.txt".to_string()),
+            /*host*/ None,
+        ));
+
+        assert_eq!(
+            item_names(&params),
+            vec![
+                "Yes, proceed",
+                "Yes, and don't ask again for files under `/tmp/out`",
                 "No, continue without running it",
             ]
         );

@@ -59,6 +59,7 @@ import { ComposerPermissionPicker } from "./chat/composer-permission-picker"
 import {
 	DEFAULT_COMPOSER_PERMISSION_PROFILE,
 	type ComposerPermissionProfile,
+	stashComposerPermissionForSession,
 } from "./chat/composer-permission"
 import { goalPromptText, parseComposerSlash } from "./chat/composer-slash"
 import { PromptAttachmentPreview } from "./chat/prompt-attachments"
@@ -593,9 +594,10 @@ export function NewChat() {
 			}
 
 			persistProjectModel()
+			stashComposerPermissionForSession(session.id, permissionProfile)
+			await persistLaunchSettings(selectedDirectory, session.id)
 			navigateToSession(session.id)
 
-			await persistLaunchSettings(selectedDirectory, session.id)
 			await sendPrompt(selectedDirectory, session.id, promptText, {
 				model: selectedModel ?? undefined,
 				agent: selectedAgent ?? undefined,
@@ -691,12 +693,14 @@ export function NewChat() {
 						branch: result.branchName,
 					})
 
+					stashComposerPermissionForSession(session.id, permissionProfile)
+					await persistLaunchSettings(sdkDirectory, session.id)
+
 					// Navigate to the real session, then clean up the stub
 					navigateToSession(session.id)
 					appStore.set(removeSessionAtom, stubId)
 
 					// Phase 3: Send the prompt
-					await persistLaunchSettings(sdkDirectory, session.id)
 					await sendPrompt(sdkDirectory, session.id, promptText, {
 						model: selectedModel ?? undefined,
 						agent: selectedAgent ?? undefined,

@@ -1,9 +1,3 @@
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@devo/ui/components/dropdown-menu"
 import { cn } from "@devo/ui/lib/utils"
 import {
 	CirclePauseIcon,
@@ -12,13 +6,13 @@ import {
 	GoalIcon,
 	GripVerticalIcon,
 	Loader2Icon,
-	MoreHorizontalIcon,
 	PencilIcon,
 	Trash2Icon,
 	XIcon,
 } from "lucide-react"
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useState, type DragEvent, type ReactNode } from "react"
 import { formatWorkDuration } from "../../lib/session-metrics"
+import { queueRenderPreview } from "../../lib/queue-helpers"
 
 export type ComposerGoalStatus = "active" | "paused" | "budgetLimited" | "complete"
 export type ComposerQueueItemStatus = "submitting" | "queued" | "steering" | "removing" | "error"
@@ -45,6 +39,7 @@ interface ComposerStatusStackProps {
 	goal?: ComposerGoal | null
 	goalAction?: "edit" | "pause" | "resume" | "clear" | null
 	queueItems?: ComposerQueueItem[]
+	draggingQueueItemId?: string | null
 	onEditGoal?: () => void
 	onPauseGoal?: () => void
 	onResumeGoal?: () => void
@@ -52,6 +47,9 @@ interface ComposerStatusStackProps {
 	onSteerQueueItem?: (item: ComposerQueueItem) => void
 	onEditQueueItem?: (item: ComposerQueueItem) => void
 	onRemoveQueueItem?: (item: ComposerQueueItem) => void
+	onReorderQueueItem?: (fromIndex: number, toIndex: number) => void
+	onQueueDragStart?: (itemId: string) => void
+	onQueueDragEnd?: () => void
 }
 
 function protocolNumber(value: number | string | bigint | null | undefined): number {
@@ -102,12 +100,14 @@ function RowIconButton({
 	label,
 	disabled,
 	active,
+	destructive,
 	onClick,
 	children,
 }: {
 	label: string
 	disabled?: boolean
 	active?: boolean
+	destructive?: boolean
 	onClick?: () => void
 	children: ReactNode
 }) {
@@ -121,6 +121,7 @@ function RowIconButton({
 			className={cn(
 				"grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50",
 				active && "bg-muted text-foreground",
+				destructive && "hover:text-destructive",
 			)}
 		>
 			{children}
@@ -132,111 +133,187 @@ function queueItemBusy(status: ComposerQueueItemStatus): boolean {
 	return status === "submitting" || status === "steering" || status === "removing"
 }
 
-function queueItemLabel(item: ComposerQueueItem): string {
-	switch (item.status) {
-		case "submitting":
-			return "Queueing"
-		case "steering":
-			return "Steering"
-		case "removing":
-			return "Removing"
-		case "error":
-			return "Queue failed"
-		case "queued":
-			return "Queued"
-	}
-}
-
 interface QueueItemRowProps {
 	item: ComposerQueueItem
+	index: number
+	dragging?: boolean
+	dragOver?: boolean
 	onSteer?: (item: ComposerQueueItem) => void
 	onEdit?: (item: ComposerQueueItem) => void
 	onRemove?: (item: ComposerQueueItem) => void
+	onDragStart?: (index: number) => void
+	onDragEnter?: (index: number) => void
+	onDragEnd?: () => void
+	onDrop?: (index: number) => void
 }
 
-function QueueItemRow({ item, onSteer, onEdit, onRemove }: QueueItemRowProps) {
+function QueueItemRow({
+	item,
+	index,
+	dragging,
+	dragOver,
+	onSteer,
+	onEdit,
+	onRemove,
+	onDragStart,
+	onDragEnter,
+	onDragEnd,
+	onDrop,
+}: QueueItemRowProps) {
 	const busy = queueItemBusy(item.status)
 	const canAct = item.status === "queued"
 	const canEdit = !busy && (item.fileCount ?? 0) === 0
-	const label = queueItemLabel(item)
-	const detail = item.fileCount ? `${item.text} (${item.fileCount} file${item.fileCount === 1 ? "" : "s"})` : item.text
+	const preview = queueRenderPreview(item.text)
+
+	const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
+		if (!canAct) {
+			event.preventDefault()
+			return
+		}
+		event.dataTransfer.effectAllowed = "move"
+		event.dataTransfer.setData("text/plain", item.id)
+		onDragStart?.(index)
+	}
+
+	const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+		if (!canAct) return
+		event.preventDefault()
+		event.dataTransfer.dropEffect = "move"
+		onDragEnter?.(index)
+	}
+
+	const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+		event.preventDefault()
+		onDrop?.(index)
+	}
 
 	return (
-		<div className="group/queue-row flex min-h-10 items-center gap-2 px-3 text-sm text-muted-foreground">
-			<GripVerticalIcon className="size-3 shrink-0 stroke-[1.5] text-muted-foreground/35 opacity-0 transition-opacity group-hover/queue-row:opacity-100" />
-			<CornerDownRightIcon className="size-3.5 shrink-0 stroke-[1.5] text-muted-foreground/70" />
+		<div
+			draggable={canAct}
+			onDragStart={handleDragStart}
+			onDragOver={handleDragOver}
+			onDragEnter={handleDragOver}
+			onDragEnd={() => onDragEnd?.()}
+			onDrop={handleDrop}
+			className={cn(
+				"group/queue-row flex min-h-9 items-center gap-2 px-3 text-sm text-muted-foreground transition-colors hover:bg-muted/30",
+				dragging && "scale-[1.01] bg-muted/50 shadow-sm",
+				dragOver && !dragging && "bg-muted/20",
+			)}
+		>
+			<GripVerticalIcon
+				className={cn(
+					"size-3.5 shrink-0 cursor-grab stroke-[1.5] text-muted-foreground/40 active:cursor-grabbing",
+					!canAct && "opacity-30",
+				)}
+			/>
 			<div className="min-w-0 flex flex-1 items-center gap-1.5">
-				<span className="truncate">{detail}</span>
+				<span className="truncate">{preview || "(empty)"}</span>
+				{item.fileCount ? (
+					<span className="shrink-0 rounded bg-muted px-1.5 text-[11px] text-muted-foreground">
+						{item.fileCount} file{item.fileCount === 1 ? "" : "s"}
+					</span>
+				) : null}
 				{item.status === "error" && item.error ? (
 					<span className="shrink-0 text-[11px] text-destructive">{item.error}</span>
 				) : null}
 			</div>
-			<span className="shrink-0 text-[12px] text-muted-foreground/70">{label}</span>
-			<button
-				type="button"
-				disabled={!canAct || !onSteer}
-				onClick={() => onSteer?.(item)}
-				className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-			>
-				{item.status === "steering" ? (
-					<Loader2Icon className="size-3.5 animate-spin stroke-[1.5]" />
-				) : (
-					<CornerDownRightIcon className="size-3.5 stroke-[1.5]" />
-				)}
-				Steer
-			</button>
-			<RowIconButton
-				label="Edit queued message"
-				disabled={!canEdit || !onEdit}
-				onClick={() => onEdit?.(item)}
-			>
-				<PencilIcon className="size-3.5 stroke-[1.5]" />
-			</RowIconButton>
-			<RowIconButton
-				label="Remove queued message"
-				disabled={busy || !onRemove}
-				active={item.status === "removing"}
-				onClick={() => onRemove?.(item)}
-			>
-				{item.status === "removing" ? (
-					<Loader2Icon className="size-3.5 animate-spin stroke-[1.5]" />
-				) : (
-					<Trash2Icon className="size-3.5 stroke-[1.5]" />
-				)}
-			</RowIconButton>
-			<DropdownMenu>
-				<DropdownMenuTrigger
-					render={
-						<button
-							type="button"
-							aria-label="Queued message options"
-							disabled={busy}
-							className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-						/>
-					}
+			<div className="flex shrink-0 items-center gap-0.5">
+				<button
+					type="button"
+					disabled={!canAct || !onSteer}
+					onClick={() => onSteer?.(item)}
+					className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
 				>
-					<MoreHorizontalIcon className="size-3.5 stroke-[1.5]" />
-				</DropdownMenuTrigger>
-				<DropdownMenuContent align="end" side="top" className="min-w-[190px]">
-					<DropdownMenuItem
-						disabled={!canEdit || !onEdit}
-						onClick={() => onEdit?.(item)}
-						className="flex items-center gap-2"
-					>
-						<PencilIcon className="size-3.5 stroke-[1.5]" />
-						<span>Edit message</span>
-					</DropdownMenuItem>
-					<DropdownMenuItem
-						disabled={!canAct || !onSteer}
-						onClick={() => onSteer?.(item)}
-						className="flex items-center gap-2"
-					>
+					{item.status === "steering" ? (
+						<Loader2Icon className="size-3.5 animate-spin stroke-[1.5]" />
+					) : (
 						<CornerDownRightIcon className="size-3.5 stroke-[1.5]" />
-						<span>Turn off queueing</span>
-					</DropdownMenuItem>
-				</DropdownMenuContent>
-			</DropdownMenu>
+					)}
+					Steer
+				</button>
+				<RowIconButton
+					label="Edit queued message"
+					disabled={!canEdit || !onEdit}
+					onClick={() => onEdit?.(item)}
+				>
+					<PencilIcon className="size-3.5 stroke-[1.5]" />
+				</RowIconButton>
+				<RowIconButton
+					label="Remove queued message"
+					disabled={busy || !onRemove}
+					active={item.status === "removing"}
+					destructive
+					onClick={() => onRemove?.(item)}
+				>
+					{item.status === "removing" ? (
+						<Loader2Icon className="size-3.5 animate-spin stroke-[1.5]" />
+					) : (
+						<Trash2Icon className="size-3.5 stroke-[1.5]" />
+					)}
+				</RowIconButton>
+			</div>
 		</div>
+	)
+}
+
+interface ComposerQueueListProps {
+	items: ComposerQueueItem[]
+	draggingQueueItemId?: string | null
+	onSteer?: (item: ComposerQueueItem) => void
+	onEdit?: (item: ComposerQueueItem) => void
+	onRemove?: (item: ComposerQueueItem) => void
+	onReorder?: (fromIndex: number, toIndex: number) => void
+	onDragStart?: (itemId: string) => void
+	onDragEnd?: () => void
+}
+
+function ComposerQueueList({
+	items,
+	draggingQueueItemId,
+	onSteer,
+	onEdit,
+	onRemove,
+	onReorder,
+	onDragStart,
+	onDragEnd,
+}: ComposerQueueListProps) {
+	const [dragIndex, setDragIndex] = useState<number | null>(null)
+	const [hoverIndex, setHoverIndex] = useState<number | null>(null)
+
+	if (items.length === 0) return null
+
+	return (
+		<>
+			{items.map((item, index) => (
+				<QueueItemRow
+					key={item.id}
+					item={item}
+					index={index}
+					dragging={draggingQueueItemId === item.id}
+					dragOver={hoverIndex === index && dragIndex !== null && dragIndex !== index}
+					onSteer={onSteer}
+					onEdit={onEdit}
+					onRemove={onRemove}
+					onDragStart={(nextIndex) => {
+						setDragIndex(nextIndex)
+						onDragStart?.(item.id)
+					}}
+					onDragEnter={setHoverIndex}
+					onDragEnd={() => {
+						setDragIndex(null)
+						setHoverIndex(null)
+						onDragEnd?.()
+					}}
+					onDrop={(toIndex) => {
+						if (dragIndex !== null) onReorder?.(dragIndex, toIndex)
+						setDragIndex(null)
+						setHoverIndex(null)
+						onDragEnd?.()
+					}}
+				/>
+			))}
+		</>
 	)
 }
 
@@ -318,6 +395,7 @@ export function ComposerStatusStack({
 	goal,
 	goalAction = null,
 	queueItems = [],
+	draggingQueueItemId = null,
 	onEditGoal,
 	onPauseGoal,
 	onResumeGoal,
@@ -325,12 +403,15 @@ export function ComposerStatusStack({
 	onSteerQueueItem,
 	onEditQueueItem,
 	onRemoveQueueItem,
+	onReorderQueueItem,
+	onQueueDragStart,
+	onQueueDragEnd,
 }: ComposerStatusStackProps) {
 	if (!goal && queueItems.length === 0) return null
 
 	return (
 		// User requirement: reuse this composer-adjacent strip for goal state
-		// and future queued follow-up rows instead of scattering status below messages.
+		// and queued follow-up rows instead of scattering status below messages.
 		<div className="order-first w-full overflow-hidden border-b border-border/50">
 			<div className="divide-y divide-border/50">
 				{goal && (
@@ -343,15 +424,16 @@ export function ComposerStatusStack({
 						onClearGoal={onClearGoal}
 					/>
 				)}
-				{queueItems.map((item) => (
-					<QueueItemRow
-						key={item.id}
-						item={item}
-						onSteer={onSteerQueueItem}
-						onEdit={onEditQueueItem}
-						onRemove={onRemoveQueueItem}
-					/>
-				))}
+				<ComposerQueueList
+					items={queueItems}
+					draggingQueueItemId={draggingQueueItemId}
+					onSteer={onSteerQueueItem}
+					onEdit={onEditQueueItem}
+					onRemove={onRemoveQueueItem}
+					onReorder={onReorderQueueItem}
+					onDragStart={onQueueDragStart}
+					onDragEnd={onQueueDragEnd}
+				/>
 			</div>
 		</div>
 	)

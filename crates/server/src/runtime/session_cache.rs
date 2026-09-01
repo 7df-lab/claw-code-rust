@@ -182,6 +182,7 @@ impl ServerRuntime {
             .await;
         self.touch_parent_session_lru(session_id).await;
         self.evict_parent_sessions_if_needed(Some(session_id)).await;
+        self.resume_pending_queue_if_idle(session_id).await;
         Ok(handle)
     }
 

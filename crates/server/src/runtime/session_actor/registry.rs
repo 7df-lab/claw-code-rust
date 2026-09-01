@@ -35,6 +35,11 @@ impl ServerRuntime {
             return existing;
         }
         sessions.insert(session_id, handle.clone());
+        drop(sessions);
+        let runtime = self.runtime_arc();
+        tokio::spawn(async move {
+            runtime.rearm_title_polish_if_needed(session_id).await;
+        });
         handle
     }
 

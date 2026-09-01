@@ -97,7 +97,11 @@ export function UserMessageBlock({
 
 	return (
 		<Message from="user">
-			<span className="relative inline-block max-w-[min(36rem,85%)] text-left align-top">
+			<span
+				className={cn(
+					"group/user-msg inline-flex max-w-[min(36rem,85%)] flex-col items-end gap-0 text-left",
+				)}
+			>
 			<MessageContent>
 				{children}
 				{editing ? (
@@ -127,15 +131,20 @@ export function UserMessageBlock({
 				</div>
 			)}
 			{showActions && (
-				<MessageActions
-					className={cn(
-						"absolute top-full right-0 z-10 pt-0.5",
-						"opacity-100 [@media(hover:hover)]:pointer-events-none [@media(hover:hover)]:opacity-0",
-						"[@media(hover:hover)]:transition-opacity [@media(hover:hover)]:duration-150",
-						"[@media(hover:hover)]:group-hover:pointer-events-auto [@media(hover:hover)]:group-hover:opacity-100",
-						"[@media(hover:hover)]:group-focus-within:pointer-events-auto [@media(hover:hover)]:group-focus-within:opacity-100",
-					)}
-				>
+				<span className="relative h-0 w-full">
+					<span
+						aria-hidden="true"
+						className="absolute inset-x-0 -top-1 z-0 h-8"
+					/>
+					<MessageActions
+						className={cn(
+							"absolute top-0 right-0 z-10 flex items-center gap-1",
+							"opacity-100 [@media(hover:hover)]:pointer-events-none [@media(hover:hover)]:opacity-0",
+							"[@media(hover:hover)]:transition-opacity [@media(hover:hover)]:duration-150",
+							"[@media(hover:hover)]:group-hover/user-msg:pointer-events-auto [@media(hover:hover)]:group-hover/user-msg:opacity-100",
+							"[@media(hover:hover)]:group-focus-within/user-msg:pointer-events-auto [@media(hover:hover)]:group-focus-within/user-msg:opacity-100",
+						)}
+					>
 					{showCopy && (
 						<MessageAction
 							tooltip={copied ? "Copied" : "Copy message"}
@@ -150,6 +159,7 @@ export function UserMessageBlock({
 						</MessageAction>
 					)}
 				</MessageActions>
+				</span>
 			)}
 			</span>
 		</Message>

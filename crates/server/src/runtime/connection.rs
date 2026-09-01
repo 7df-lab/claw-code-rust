@@ -4476,10 +4476,8 @@ mod tests {
         }
     }
 
-    /// Regression: title generation used to hold `state_change_gate` across a
-    /// parked `update_title` mailbox wait while the actor ran the turn.
-    /// Title apply is now gate-free (persist-first), and the turn no longer
-    /// blocks the actor; queue push must still answer immediately.
+    /// Regression: queue push must answer immediately while a turn stream is
+    /// gated. Heuristic titles apply without LLM; polish runs only after merge.
     #[tokio::test]
     async fn queue_push_responds_immediately_while_title_generation_holds_gate() -> Result<()> {
         let data_root = TempDir::new()?;
@@ -4491,13 +4489,8 @@ mod tests {
         });
         let stream_open = Arc::clone(&provider.stream_open);
         let stream_started = Arc::clone(&provider.stream_started);
-        let completion_open = Arc::clone(&provider.completion_open);
-        let _completion_requested = Arc::clone(&provider.completion_requested);
         let runtime = build_runtime_with_provider(data_root.path(), provider);
         let connection_id = initialized_connection(&runtime).await;
-        // Untitled session: title is awaited before turn work. Open the title
-        // gate first so turn/start can finish title gen and enter the stream.
-        completion_open.store(true, std::sync::atomic::Ordering::SeqCst);
         let response = runtime
             .handle_incoming(
                 connection_id,
@@ -4583,13 +4576,8 @@ mod tests {
         });
         let stream_open = Arc::clone(&provider.stream_open);
         let stream_started = Arc::clone(&provider.stream_started);
-        let completion_open = Arc::clone(&provider.completion_open);
-        let _completion_requested = Arc::clone(&provider.completion_requested);
         let runtime = build_runtime_with_provider(data_root.path(), provider);
         let connection_id = initialized_connection(&runtime).await;
-        // Title is awaited before turn work; open the title gate so the first
-        // turn can start and hold the stream gate for the busy-path checks.
-        completion_open.store(true, std::sync::atomic::Ordering::SeqCst);
         let response = runtime
             .handle_incoming(
                 connection_id,
@@ -5452,9 +5440,10 @@ mod tests {
         rebuilt.load_persisted_sessions().await?;
         let rebuilt_connection = initialized_connection(&rebuilt).await;
         let entries = queue_list(&rebuilt, rebuilt_connection, session_id).await;
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].preview, "queued text");
-        assert_eq!(entries[1].preview, "stale steer");
+        // Idle hydrate auto-drains the first queued entry; the second remains
+        // visible while the follow-up turn is in flight (noop provider blocks).
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].preview, "stale steer");
         // The steer row moved into the turn queue table; the original queued
         // row stays in the database as the durable mirror of the in-memory
         // queue until it is actually consumed.
@@ -5469,20 +5458,207 @@ mod tests {
             .deps
             .db
             .list_pending(&session_id, crate::db::QueueType::Turn)?;
-        assert_eq!(turn_rows.len(), 2);
-        assert_eq!(turn_rows[0].id, queued_item.id);
-        assert_eq!(turn_rows[1].id, steer_item.id);
+        assert_eq!(turn_rows.len(), 1);
+        assert_eq!(turn_rows[0].id, steer_item.id);
         drop(rebuilt);
 
-        // Restart again without consuming the queue: the durable mirror must
-        // still hold both entries.
+        // Restart again: the remaining entry auto-drains on the next idle hydrate.
         let restarted = build_runtime(data_root.path());
         restarted.load_persisted_sessions().await?;
         let restarted_connection = initialized_connection(&restarted).await;
         let entries = queue_list(&restarted, restarted_connection, session_id).await;
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].preview, "queued text");
-        assert_eq!(entries[1].preview, "stale steer");
+        assert!(entries.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn queue_drains_after_restart_when_session_idle() -> Result<()> {
+        use devo_protocol::native::rpc_turn::SessionQueuePushResult;
+
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Arc::clone(&started),
+            }),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        let _turn_id = start_turn(&runtime, connection_id, session_id, "hold open").await?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+
+        let queued = history_request(
+            &runtime,
+            connection_id,
+            3,
+            "session/queue/push",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "after restart" }],
+                "idempotencyKey": "push-after-restart",
+            }),
+        )
+        .await;
+        let queued: SessionQueuePushResult =
+            serde_json::from_value(queued["result"].clone()).expect("push result");
+        assert!(
+            matches!(queued, SessionQueuePushResult::Queued { .. }),
+            "busy push must queue: {queued:?}"
+        );
+
+        runtime.shutdown().await;
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(runtime);
+
+        let rebuilt = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            }),
+        );
+        rebuilt.load_persisted_sessions().await?;
+        let rebuilt_connection = initialized_connection(&rebuilt).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let entries = queue_list(&rebuilt, rebuilt_connection, session_id).await;
+                let turns = session_turns_json(&rebuilt, rebuilt_connection, session_id).await;
+                let drained = turns
+                    .iter()
+                    .any(|turn| turn["status"] == serde_json::json!("completed"));
+                if entries.is_empty() && drained {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await?;
+
+        let entries = queue_list(&rebuilt, rebuilt_connection, session_id).await;
+        assert!(
+            entries.is_empty(),
+            "idle restart must drain the pending queue: {entries:?}"
+        );
+        let turns = session_turns_json(&rebuilt, rebuilt_connection, session_id).await;
+        assert!(
+            turns
+                .iter()
+                .any(|turn| turn["status"] == serde_json::json!("interrupted")),
+            "shutdown should leave the active turn interrupted: {turns:?}"
+        );
+        assert!(
+            turns
+                .iter()
+                .any(|turn| turn["status"] == serde_json::json!("completed")),
+            "drained queue entry should start and complete a follow-up turn: {turns:?}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn steer_restore_skips_already_materialized_input() -> Result<()> {
+        use devo_protocol::native::rpc_turn::{SessionQueuePushResult, SessionQueueSteerResult};
+
+        let data_root = TempDir::new()?;
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime = build_runtime_with_provider(
+            data_root.path(),
+            Arc::new(GatedProvider {
+                open: Arc::clone(&open),
+                started: Arc::clone(&started),
+            }),
+        );
+        let connection_id = initialized_connection(&runtime).await;
+        let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
+        let turn_id = start_turn(&runtime, connection_id, session_id, "go").await?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+
+        let queued = history_request(
+            &runtime,
+            connection_id,
+            3,
+            "session/queue/push",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "input": [{ "type": "text", "text": "duplicate steer" }],
+                "idempotencyKey": "push-steer-dedup",
+            }),
+        )
+        .await;
+        let queued: SessionQueuePushResult =
+            serde_json::from_value(queued["result"].clone()).expect("push result");
+        let SessionQueuePushResult::Queued { entry } = queued else {
+            panic!("busy push must queue");
+        };
+
+        let steered = history_request(
+            &runtime,
+            connection_id,
+            4,
+            "session/queue/steer",
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "queueItemId": entry.queue_item_id.as_str(),
+                "expectedTurnId": turn_id.to_string(),
+            }),
+        )
+        .await;
+        let steered: SessionQueueSteerResult =
+            serde_json::from_value(steered["result"].clone()).expect("steer result");
+        assert!(!steered.item_id.as_str().is_empty());
+
+        open.store(true, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let turns = session_turns_json(&runtime, connection_id, session_id).await;
+                if turns
+                    .iter()
+                    .any(|turn| turn["status"] == serde_json::json!("completed"))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await?;
+
+        let stale_steer = devo_core::PendingInputItem::new(
+            devo_core::PendingInputKind::UserText {
+                text: "duplicate steer".into(),
+            },
+            None,
+            chrono::Utc::now(),
+        );
+        runtime
+            .deps
+            .db
+            .push_pending(&session_id, crate::db::QueueType::Steer, &stale_steer)?;
+        drop(runtime);
+
+        let rebuilt = build_runtime(data_root.path());
+        rebuilt.load_persisted_sessions().await?;
+        let rebuilt_connection = initialized_connection(&rebuilt).await;
+        let entries = queue_list(&rebuilt, rebuilt_connection, session_id).await;
+        assert!(
+            entries.is_empty(),
+            "materialized steer must not be restored into the queue: {entries:?}"
+        );
 
         Ok(())
     }

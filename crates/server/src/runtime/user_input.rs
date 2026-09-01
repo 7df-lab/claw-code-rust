@@ -230,4 +230,44 @@ impl ServerRuntime {
         ))
         .await;
     }
+
+    /// Reconstructs answerable user-input lanes from persisted Waiting items
+    /// after a process restart. The original tool task is gone; answering still
+    /// completes the item so the desktop question UI can round-trip.
+    pub(super) async fn restore_waiting_user_inputs_from_rollout(
+        &self,
+        session_id: SessionId,
+        host_session_id: SessionId,
+        rollout_path: &std::path::Path,
+    ) {
+        let Ok(history) = devo_core::read_canonical_history(rollout_path) else {
+            return;
+        };
+        for recovered in super::interaction_items::latest_waiting_user_inputs(&history.items) {
+            if recovered.owner_session_id != session_id {
+                continue;
+            }
+            if self
+                .session_interactive
+                .has_pending_user_input_request(&recovered.request_id)
+                .await
+            {
+                continue;
+            }
+            let (tx, _rx) = oneshot::channel();
+            self.session_interactive
+                .register_pending_user_input(
+                    host_session_id,
+                    recovered.request_id,
+                    crate::execution::PendingUserInput {
+                        owner_session_id: recovered.owner_session_id,
+                        turn_id: recovered.turn_id,
+                        questions: recovered.questions,
+                        persisted: Some(recovered.persisted),
+                        tx,
+                    },
+                )
+                .await;
+        }
+    }
 }

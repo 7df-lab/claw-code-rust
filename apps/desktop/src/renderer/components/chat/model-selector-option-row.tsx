@@ -29,7 +29,7 @@ export function ModelSelectorOptionRow({
 				{selected && (
 					<CheckIcon
 						data-slot="model-selector-check-icon"
-						className="size-3.5 text-primary"
+						className="size-3.5 text-muted-foreground"
 					/>
 				)}
 			</span>

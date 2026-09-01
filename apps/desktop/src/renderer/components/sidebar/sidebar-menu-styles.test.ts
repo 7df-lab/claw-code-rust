@@ -10,20 +10,20 @@ function classList(className: string): string[] {
 }
 
 describe("sidebar menu styles", () => {
-	test("uses visible hover and focus states in dark mode", () => {
+	test("uses quiet muted hover and focus states", () => {
 		expect(classList(rowMenuItemClass)).toEqual(
 			expect.arrayContaining([
-				"focus:bg-accent",
-				"dark:focus:bg-white/[0.08]",
-				"dark:data-[highlighted]:bg-white/[0.08]",
-				"dark:hover:bg-white/[0.08]",
+				"hover:bg-muted",
+				"focus:bg-muted",
+				"data-[highlighted]:bg-muted",
 			]),
 		)
+		expect(classList(rowMenuItemClass)).not.toContain("dark:focus:bg-white/[0.08]")
 	})
 
 	test("keeps project menus wide and narrows session action menus", () => {
 		expect(classList(projectMenuContentClass)).toContain("w-[232px]")
-		expect(classList(sessionMenuContentClass)).toContain("w-40")
+		expect(classList(sessionMenuContentClass)).toContain("w-44")
 		expect(classList(sessionMenuContentClass)).not.toContain("w-[232px]")
 	})
 })

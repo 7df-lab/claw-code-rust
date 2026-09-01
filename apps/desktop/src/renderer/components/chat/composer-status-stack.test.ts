@@ -21,10 +21,13 @@ describe("ComposerStatusStack", () => {
 			editAction: stackSource.includes("PencilIcon"),
 			pauseAction: stackSource.includes("CirclePauseIcon"),
 			resumeAction: stackSource.includes("CirclePlayIcon"),
-			clearAction: stackSource.includes("Trash2Icon"),
+			clearAction: stackSource.includes('label="Cancel goal"') && stackSource.includes("XIcon"),
 			iconSizeMatchesDesktop: stackSource.includes("size-3.5") && stackSource.includes("stroke-[1.5]"),
 			composerPlacement: chatViewSource.includes("<ComposerStatusStack"),
-			mergedComposerShape: chatViewSource.includes("activeGoal && \"rounded-t-none"),
+			insideComposerCard:
+				chatViewSource.indexOf("<ComposerStatusStack") >
+					chatViewSource.indexOf('className="devo-composer') &&
+				!chatViewSource.includes("rounded-t-none"),
 		}).toEqual({
 			component: true,
 			requirementComment: true,
@@ -38,7 +41,7 @@ describe("ComposerStatusStack", () => {
 			clearAction: true,
 			iconSizeMatchesDesktop: true,
 			composerPlacement: true,
-			mergedComposerShape: true,
+			insideComposerCard: true,
 		})
 	})
 

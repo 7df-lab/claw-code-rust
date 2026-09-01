@@ -761,7 +761,7 @@ pub fn build_tool_registry_plan(config: &ToolPlanConfig) -> ToolRegistryPlan {
     plan.push(
         ToolSpec {
             name: "request_user_input".to_string(),
-            description: "Ask the user one or more Plan Mode questions and wait for the response."
+            description: "Ask the user one or more questions and wait for the response."
                 .to_string(),
             input_schema: question_schema(),
             output_mode: ToolOutputMode::StructuredJson,

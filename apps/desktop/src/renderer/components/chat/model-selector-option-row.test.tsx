@@ -74,18 +74,14 @@ describe("ModelSelectorOptionRow", () => {
 
 		expect(firstButtonClassList(html)).toEqual(
 			expect.arrayContaining([
-				"hover:bg-accent",
-				"hover:text-accent-foreground",
-				"focus-visible:bg-accent",
-				"focus-visible:text-accent-foreground",
+				"hover:bg-muted",
+				"hover:text-foreground",
+				"focus-visible:bg-muted",
+				"focus-visible:text-foreground",
 				"focus-visible:outline-none",
-				"dark:hover:bg-white/[0.08]",
-				"dark:hover:text-foreground",
-				"dark:focus-visible:bg-white/[0.08]",
-				"dark:focus-visible:text-foreground",
 			]),
 		)
-		expect(firstButtonClassList(html)).not.toContain("hover:bg-muted")
+		expect(firstButtonClassList(html)).not.toContain("hover:bg-accent")
 	})
 
 	test("does not render a reasoning badge for reasoning-capable models", () => {

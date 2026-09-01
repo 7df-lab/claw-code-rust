@@ -219,7 +219,7 @@ function SearchableListPopoverGroup({
 }: SearchableListPopoverGroupProps) {
 	return (
 		<div className={className}>
-			<div className="sticky top-0 z-10 flex items-center gap-2 border-b bg-popover px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+			<div className="sticky top-0 z-10 flex items-center gap-2 bg-popover px-2 py-1.5 text-[11px] font-medium text-muted-foreground">
 				{label}
 			</div>
 			{children}
@@ -249,9 +249,9 @@ function SearchableListPopoverItem({
 			type="button"
 			onClick={onSelect}
 			className={cn(
-				"flex w-full min-w-0 items-center text-left transition-colors hover:bg-muted",
+				"flex w-full min-w-0 items-center text-left transition-colors hover:bg-muted hover:text-foreground",
 				optionMenuItemClass,
-				isActive && "bg-accent text-accent-foreground",
+				isActive && "bg-muted text-foreground",
 				className,
 			)}
 		>
@@ -271,7 +271,7 @@ interface SearchableListPopoverEmptyProps {
 
 function SearchableListPopoverEmpty({ children, className }: SearchableListPopoverEmptyProps) {
 	return (
-		<div className={cn("py-4 text-center text-sm text-muted-foreground", className)}>
+		<div className={cn("px-2 py-6 text-center text-[13px] text-muted-foreground", className)}>
 			{children ?? "No results found"}
 		</div>
 	)

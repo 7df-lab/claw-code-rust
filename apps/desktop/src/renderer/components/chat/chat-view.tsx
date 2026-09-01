@@ -23,7 +23,6 @@ import {
 	Loader2Icon,
 	PlusIcon,
 	Redo2Icon,
-	SquareIcon,
 	Undo2Icon,
 	XIcon,
 } from "lucide-react"
@@ -91,7 +90,6 @@ import {
 } from "../../hooks/use-devo-data"
 import type { ChatTurn } from "../../hooks/use-session-chat"
 import { createLogger } from "../../lib/logger"
-import { computeTurnWorkTimeSplit, formatWorkDuration } from "../../lib/session-metrics"
 import type { Agent, FileAttachment, PermissionResponse, QuestionAnswer } from "../../lib/types"
 import { getBaseClient, getProjectClient } from "../../services/connection-manager"
 
@@ -99,6 +97,8 @@ const log = createLogger("chat-view")
 
 /** Session ids whose collaboration mode was already seeded from persisted settings this run. */
 const seededCollaborationModes = new Set<string>()
+/** Session ids whose permission profile was already seeded from persisted settings this run. */
+const seededPermissionProfiles = new Set<string>()
 
 /** Debounce for persist-on-selection: coalesces rapid model/effort/mode changes. */
 const SELECTION_PERSIST_DEBOUNCE_MS = 500
@@ -135,6 +135,13 @@ import {
 	reconcileMentions,
 } from "./prompt-mentions"
 import { ComposerModeChip } from "./composer-mode-chip"
+import { ComposerPermissionPicker } from "./composer-permission-picker"
+import {
+	DEFAULT_COMPOSER_PERMISSION_PROFILE,
+	type ComposerPermissionProfile,
+	parseComposerPermissionProfile,
+} from "./composer-permission"
+import { goalPromptText, parseComposerSlash } from "./composer-slash"
 import { PromptToolbar } from "./prompt-toolbar"
 import { SessionTaskList } from "./session-task-list"
 import { SkillPickerDialog } from "./skill-picker-dialog"
@@ -178,6 +185,7 @@ function AttachButton({ disabled }: { disabled?: boolean }) {
 			tooltip="Attach files"
 			onClick={() => attachments.openFileDialog()}
 			disabled={disabled}
+			className="size-8 rounded-full bg-muted/80 text-muted-foreground hover:bg-muted hover:text-foreground"
 		>
 			<PlusIcon className="size-4" />
 		</PromptInputButton>
@@ -735,6 +743,7 @@ type SelectionPersistPatch = {
 	modelID?: string
 	reasoningEffort?: string
 	mode?: string
+	permissionProfile?: string
 }
 
 /**
@@ -1344,6 +1353,8 @@ export function ChatInputSection({
 	const [collaborationMode, setCollaborationModeAtom] = useAtom(
 		collaborationModeFamily(agent.sessionId),
 	)
+	const [permissionProfile, setPermissionProfile] =
+		useState<ComposerPermissionProfile>(DEFAULT_COMPOSER_PERMISSION_PROFILE)
 
 	// User requirement: the /goal footer chip is only an input trigger;
 	// the composer-adjacent status row reflects the real session goal state.
@@ -1351,6 +1362,8 @@ export function ChatInputSection({
 		setActiveTrigger(null)
 		setActiveGoal(null)
 		setGoalAction(null)
+		seededPermissionProfiles.delete(agent.sessionId)
+		setPermissionProfile(DEFAULT_COMPOSER_PERMISSION_PROFILE)
 	}, [agent.sessionId])
 
 	const loadGoalStatus = useCallback(async (): Promise<ComposerGoal | null> => {
@@ -1404,14 +1417,6 @@ export function ChatInputSection({
 	// Diff comments integration
 	const diffComments = useAtomValue(diffCommentsFamily(agent.sessionId))
 	const setDiffComments = useSetAtom(diffCommentsFamily(agent.sessionId))
-
-	// Elapsed-time split for the current turn — used for the live timer on the submit button.
-	const currentTurnWorkSplit = useMemo(() => {
-		if (!isWorking || turns.length === 0) return null
-		const lastTurn = turns[turns.length - 1]
-		if (lastTurn.assistantMessages.length === 0) return null
-		return computeTurnWorkTimeSplit(lastTurn)
-	}, [isWorking, turns])
 
 	// Mention tracking — files and agents referenced via @
 	const [mentions, setMentions] = useState<PromptMention[]>([])
@@ -1498,6 +1503,8 @@ export function ChatInputSection({
 				mode?: string
 				reasoningEffort?: string
 				reasoning_effort?: string
+				permissionProfile?: string
+				permission_profile?: string
 			}
 		} | null | undefined
 		const persistedReasoningEffort =
@@ -1513,7 +1520,7 @@ export function ChatInputSection({
 			""
 		}|${wireSession?.model?.model ?? ""}|${persistedReasoningEffort ?? ""}|${
 			wireSession?.settings?.mode ?? ""
-		}`
+		}|${wireSession?.settings?.permissionProfile ?? wireSession?.settings?.permission_profile ?? ""}`
 		if (hydratedForMessagesRef.current === messageKey) return
 		const projectDefault = agent.directory ? projectModels[agent.directory] : undefined
 		// Persisted per-session turn settings survive restarts (the server
@@ -1574,6 +1581,14 @@ export function ChatInputSection({
 		) {
 			seededCollaborationModes.add(agent.sessionId)
 			appStore.set(collaborationModeFamily(agent.sessionId), wireMode)
+		}
+		if (!seededPermissionProfiles.has(agent.sessionId) && wireSession?.settings) {
+			seededPermissionProfiles.add(agent.sessionId)
+			setPermissionProfile(
+				parseComposerPermissionProfile(
+					wireSession.settings.permissionProfile ?? wireSession.settings.permission_profile,
+				),
+			)
 		}
 	}, [
 		agent.directory,
@@ -1756,6 +1771,14 @@ export function ChatInputSection({
 		[scheduleSelectionPersist, setCollaborationModeAtom],
 	)
 
+	const handlePermissionProfileChange = useCallback(
+		(profile: ComposerPermissionProfile) => {
+			setPermissionProfile(profile)
+			scheduleSelectionPersist({ permissionProfile: profile })
+		},
+		[scheduleSelectionPersist],
+	)
+
 	const slashCommandRef = useRef<{
 		setText: (text: string) => void
 		getText: () => string
@@ -1822,26 +1845,22 @@ export function ChatInputSection({
 
 	const handleSlashCommand = useCallback(
 		async (text: string): Promise<boolean> => {
-			const trimmed = text.trim()
-			if (!trimmed.startsWith("/")) return false
+			const parsed = parseComposerSlash(text)
+			if (!parsed) return false
 
-			const spaceIndex = trimmed.indexOf(" ")
-			const cmdName = spaceIndex === -1 ? trimmed.slice(1) : trimmed.slice(1, spaceIndex)
-			const args = spaceIndex === -1 ? "" : trimmed.slice(spaceIndex + 1).trim()
+			const { name, args } = parsed
 
 			// Product requirement: Desktop slash commands are limited to first-party
 			// entries. Compact executes immediately; Goal becomes a footer trigger
 			// chip; /plan switches collaboration mode; Research stays as slash text.
-			switch (cmdName.toLowerCase()) {
+			switch (name) {
 				case "compact":
-					if (agent.directory && effectiveModel) {
+					if (agent.directory) {
 						const client = getProjectClient(agent.directory)
 						if (client) {
 							try {
 								await client.session.summarize({
 									sessionID: agent.sessionId,
-									providerID: effectiveModel.providerID,
-									modelID: effectiveModel.modelID,
 								})
 							} catch (err) {
 								log.error("session.summarize failed", { sessionId: agent.sessionId }, err)
@@ -1858,8 +1877,7 @@ export function ChatInputSection({
 						}
 					}
 					return true
-				case "side":
-				case "btw": {
+				case "side": {
 					if (!args) {
 						slashCommandRef.current?.setText("/side ")
 						return true
@@ -1878,15 +1896,12 @@ export function ChatInputSection({
 					return true
 				case "research":
 					return false
-				default:
-					return false
 			}
 		},
 		[
 			agent.directory,
 			agent.sessionId,
 			changeCollaborationMode,
-			effectiveModel,
 			onForkFromTurn,
 			onStartSideQuestion,
 		],
@@ -1904,7 +1919,7 @@ export function ChatInputSection({
 					filename?: string
 					url: string
 				}
-			> = [{ type: "text", text: `/${trigger} ${text.trim()}` }]
+			> = [{ type: "text", text: trigger === "goal" ? goalPromptText(text) : `/${trigger} ${text.trim()}` }]
 			for (const file of files ?? []) {
 				parts.push({
 					type: "file",
@@ -2299,19 +2314,8 @@ export function ChatInputSection({
 									onSelect={handleMentionSelect}
 									onClose={handleMentionClose}
 								/>
-								<ComposerStatusStack
-									goal={activeGoal}
-									goalAction={goalAction}
-									onEditGoal={handleEditGoal}
-									onPauseGoal={handlePauseGoal}
-									onResumeGoal={handleResumeGoal}
-									onClearGoal={handleClearGoal}
-								/>
 								<PromptInput
-									className={cn(
-										"devo-composer bg-background/95 shadow-[0_8px_32px_rgba(0,0,0,0.05)] dark:shadow-[0_10px_36px_rgba(0,0,0,0.28)]",
-										activeGoal && "rounded-t-none border-t-border/70",
-									)}
+									className="devo-composer bg-background/95 shadow-[0_8px_32px_rgba(0,0,0,0.05)] dark:shadow-[0_10px_36px_rgba(0,0,0,0.28)]"
 									accept="image/png,image/jpeg,image/gif,image/webp,application/pdf"
 									multiple
 									maxFileSize={10 * 1024 * 1024}
@@ -2320,6 +2324,14 @@ export function ChatInputSection({
 											handleSend(message.text, message.files.length > 0 ? message.files : undefined)
 									}}
 								>
+									<ComposerStatusStack
+										goal={activeGoal}
+										goalAction={goalAction}
+										onEditGoal={handleEditGoal}
+										onPauseGoal={handlePauseGoal}
+										onResumeGoal={handleResumeGoal}
+										onClearGoal={handleClearGoal}
+									/>
 									{/* Mention chips above the textarea */}
 									<ContextItems mentions={mentions} onRemove={handleMentionRemove} />
 									{/* Diff comment chips above the textarea */}
@@ -2346,17 +2358,9 @@ export function ChatInputSection({
 									<PromptInputFooter>
 										<PromptInputTools>
 											<AttachButton disabled={!isConnected} />
-											<PromptToolbar
-												agents={devoAgents ?? []}
-												selectedAgent={selectedAgent}
-												defaultAgent={config?.defaultAgent}
-												onSelectAgent={setSelectedAgent}
-												providers={providers ?? null}
-												effectiveModel={effectiveModel}
-												hasModelOverride={!!selectedModel}
-												onSelectModel={handleModelSelect}
-												selectedVariant={selectedVariant}
-												onSelectVariant={handleVariantSelect}
+											<ComposerPermissionPicker
+												value={permissionProfile}
+												onChange={handlePermissionProfileChange}
 												disabled={!isConnected}
 											/>
 											{collaborationMode === "plan" && (
@@ -2374,19 +2378,26 @@ export function ChatInputSection({
 												/>
 											)}
 										</PromptInputTools>
-										<PromptInputSubmit
-											disabled={!canSend}
-											status={isWorking ? "streaming" : undefined}
-											onStop={handleStop}
-											size={isWorking && currentTurnWorkSplit ? "xs" : "icon-sm"}
-										>
-											{isWorking && currentTurnWorkSplit ? (
-												<LiveTurnTimer
-													completedMs={currentTurnWorkSplit.completedMs}
-													activeStartMs={currentTurnWorkSplit.activeStartMs}
-												/>
-											) : undefined}
-										</PromptInputSubmit>
+										<div className="ml-auto flex min-w-0 items-center gap-0.5">
+											<PromptToolbar
+												agents={devoAgents ?? []}
+												selectedAgent={selectedAgent}
+												defaultAgent={config?.defaultAgent}
+												onSelectAgent={setSelectedAgent}
+												providers={providers ?? null}
+												effectiveModel={effectiveModel}
+												hasModelOverride={!!selectedModel}
+												onSelectModel={handleModelSelect}
+												selectedVariant={selectedVariant}
+												onSelectVariant={handleVariantSelect}
+												disabled={!isConnected}
+											/>
+											<PromptInputSubmit
+												disabled={!canSend}
+												status={isWorking ? "streaming" : undefined}
+												onStop={handleStop}
+											/>
+										</div>
 									</PromptInputFooter>
 								</PromptInput>
 							</div>
@@ -2409,46 +2420,6 @@ export function ChatInputSection({
 			/>
 
 		</>
-	)
-}
-
-// ============================================================
-// Live turn timer — ticks every second while the agent is working
-// ============================================================
-
-/**
- * Compact live timer that shows elapsed time from the user prompt to now.
- */
-function LiveTurnTimer({
-	completedMs,
-	activeStartMs,
-}: {
-	completedMs: number
-	activeStartMs: number | null
-}) {
-	const computeDisplay = useCallback(
-		() =>
-			formatWorkDuration(completedMs + (activeStartMs != null ? Date.now() - activeStartMs : 0)),
-		[completedMs, activeStartMs],
-	)
-
-	const [elapsed, setElapsed] = useState(computeDisplay)
-
-	useEffect(() => {
-		const tick = () => setElapsed(computeDisplay())
-		tick()
-		// Only tick if there's an active (in-progress) message
-		if (activeStartMs != null) {
-			const id = setInterval(tick, 1_000)
-			return () => clearInterval(id)
-		}
-	}, [computeDisplay, activeStartMs])
-
-	return (
-		<span className="inline-flex items-center gap-1.5 text-xs tabular-nums">
-			<SquareIcon className="size-3.5" />
-			{elapsed}
-		</span>
 	)
 }
 

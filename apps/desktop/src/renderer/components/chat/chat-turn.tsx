@@ -105,8 +105,10 @@ function computeStatus(parts: Part[]): string {
 				case "bash":
 					return "Running command..."
 				case "question":
+				case "request_user_input":
 					return "Asking a question..."
 				default:
+					if (Array.isArray(part.state.input?.questions)) return "Asking a question..."
 					return `Running ${part.tool}...`
 			}
 		}

@@ -59,6 +59,7 @@ function AttachButton({ disabled }: { disabled?: boolean }) {
 			tooltip="Attach files"
 			onClick={() => attachments.openFileDialog()}
 			disabled={disabled}
+			className="size-8 rounded-full bg-muted/80 text-muted-foreground hover:bg-muted hover:text-foreground"
 		>
 			<PlusIcon className="size-4" />
 		</PromptInputButton>
@@ -376,6 +377,8 @@ export function ChatInput({
 					<PromptInputFooter>
 						<PromptInputTools>
 							<AttachButton disabled={!isConnected} />
+						</PromptInputTools>
+						<div className="ml-auto flex min-w-0 items-center gap-0.5">
 							<PromptToolbar
 								agents={devoAgents ?? []}
 								selectedAgent={selectedAgent}
@@ -395,12 +398,12 @@ export function ChatInput({
 								onSelectVariant={(v) => startTransition(() => setSelectedVariant(v))}
 								disabled={!isConnected}
 							/>
-						</PromptInputTools>
-						<PromptInputSubmit
-							disabled={!isConnected || sending}
-							status={isWorking ? "streaming" : undefined}
-							onStop={() => onStop?.(agent)}
-						/>
+							<PromptInputSubmit
+								disabled={!isConnected || sending}
+								status={isWorking ? "streaming" : undefined}
+								onStop={() => onStop?.(agent)}
+							/>
+						</div>
 					</PromptInputFooter>
 				</PromptInput>
 			</div>

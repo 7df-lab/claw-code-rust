@@ -628,7 +628,7 @@ impl ServerRuntime {
 
     /// Pending approvals/structured questions of the subscribed sessions
     /// (08 §4: reconnecting clients must be able to answer them).
-    async fn pending_control_requests(
+    pub(crate) async fn pending_control_requests(
         &self,
         selectors: &[StreamSelector],
     ) -> Vec<PendingControlRequest> {
@@ -726,10 +726,8 @@ impl ServerRuntime {
                 });
             }
 
-            // Only live lanes are actionable. Native waiting revisions stay
-            // in history for audit after a crash, but are not advertised as
-            // pending because the interrupted tool continuation and its reply
-            // channel cannot be reconstructed honestly yet.
+            // Waiting items are restored into live lanes on hydrate so a
+            // reconnecting desktop client can still answer them after restart.
         }
         out
     }

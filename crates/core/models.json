@@ -76,7 +76,7 @@
       "mode": "tokens",
       "limit": 10000
     },
-    "input_modalities": ["text"],
+    "input_modalities": ["text", "image"],
     "reasoning_implementation": {
       "model_variant": {
         "variants": [

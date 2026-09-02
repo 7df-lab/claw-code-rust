@@ -154,6 +154,26 @@ mod tests {
     }
 
     #[test]
+    fn builtin_minimax_catalog_contains_both_target_models() {
+        let models = load_builtin_models().expect("load builtin models");
+        let m3 = models
+            .iter()
+            .find(|model| model.slug == "MiniMax-M3")
+            .expect("MiniMax-M3 model");
+        let m27 = models
+            .iter()
+            .find(|model| model.slug == "MiniMax-M2.7")
+            .expect("MiniMax-M2.7 model");
+
+        assert_eq!(m3.context_window, 1_000_000);
+        assert_eq!(m27.context_window, 204_800);
+        assert!(matches!(
+            m27.reasoning_capability,
+            ReasoningCapability::Unsupported
+        ));
+    }
+
+    #[test]
     fn load_from_config_applies_partial_builtin_override_without_replacing_metadata() {
         let builtin = load_builtin_models()
             .expect("load builtins")

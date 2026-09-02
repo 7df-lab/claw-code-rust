@@ -104,6 +104,16 @@
     }
   },
   {
+    "slug": "MiniMax-M2.7",
+    "display_name": "MiniMax-M2.7",
+    "channel": "MiniMax",
+    "provider": "openai_chat_completions",
+    "description": "MiniMax M2.7 model with 204.8k-token context by MiniMax",
+    "reasoning_capability": "unsupported",
+    "context_window": 204800,
+    "input_modalities": ["text"]
+  },
+  {
     "slug": "glm-5.2",
     "display_name": "glm-5.2",
     "channel": "GLM",

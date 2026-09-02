@@ -244,6 +244,7 @@ impl RolloutStore {
         &self,
         rollout_path: &Path,
         session_id: SessionId,
+        settings_epoch: u64,
         settings: &[(SessionSettingsField, serde_json::Value)],
     ) -> Result<()> {
         let lines = settings
@@ -254,7 +255,7 @@ impl RolloutStore {
                     session_id,
                     field: *field,
                     value: value.clone(),
-                    epoch: 0,
+                    epoch: settings_epoch,
                 })
             })
             .collect::<Vec<_>>();
@@ -5147,6 +5148,7 @@ mod tests {
             .append_session_settings_batch_at(
                 &record.rollout_path,
                 record.id,
+                1,
                 &[(
                     devo_core::SessionSettingsField::SandboxProfile,
                     serde_json::Value::String("workspace".into()),

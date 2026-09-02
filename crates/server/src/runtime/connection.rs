@@ -5791,19 +5791,16 @@ mod tests {
         let connection_id = initialized_connection(&runtime).await;
         let session_id = start_durable_session(&runtime, connection_id, data_root.path()).await?;
 
-        let params = |version| {
-            serde_json::json!({
-                "sessionId": session_id.to_string(),
-                "expectedVersion": version,
-                "settings": { "permissionProfile": "autoReview" },
-            })
-        };
         let first = history_request(
             &runtime,
             connection_id,
             7,
             "session/metadata/update",
-            params(1),
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "expectedVersion": 1,
+                "settings": { "permissionProfile": "fullAccess" },
+            }),
         )
         .await;
         assert!(first.get("result").is_some(), "first update: {first}");
@@ -5813,7 +5810,11 @@ mod tests {
             connection_id,
             8,
             "session/metadata/update",
-            params(1),
+            serde_json::json!({
+                "sessionId": session_id.to_string(),
+                "expectedVersion": 1,
+                "settings": { "permissionProfile": "autoReview" },
+            }),
         )
         .await;
         assert_eq!(

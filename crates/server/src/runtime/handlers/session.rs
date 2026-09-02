@@ -643,7 +643,6 @@ impl ServerRuntime {
                     settings,
                 )
             };
-        let _ = session_version;
         let mut overlay_profile: Option<devo_safety::RuntimePermissionProfile> = None;
         let mut overlay_sandbox: Option<String> = None;
         let mut overlay_effort: Option<String> = None;
@@ -846,6 +845,7 @@ impl ServerRuntime {
             && let Err(error) = self.rollout_store.append_session_settings_batch_at(
                 path,
                 legacy_session_id,
+                session_version,
                 &settings_changes,
             )
         {

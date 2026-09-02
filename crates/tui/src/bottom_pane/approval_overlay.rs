@@ -121,10 +121,14 @@ fn looks_like_tool_call_id(value: &str) -> bool {
 
 fn path_prefix_display_root(path: &str) -> String {
     let path = Path::new(path);
-    if path.is_dir() {
-        path.display().to_string()
-    } else {
+    let looks_like_file = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains('.') && name != "." && name != "..");
+    if looks_like_file {
         path.parent().unwrap_or(path).display().to_string()
+    } else {
+        path.display().to_string()
     }
 }
 

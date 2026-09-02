@@ -725,7 +725,7 @@ impl ServerRuntime {
     pub(crate) async fn restore_waiting_approvals_from_rollout(
         self: &Arc<Self>,
         session_id: SessionId,
-        host_session_id: SessionId,
+        _host_session_id: SessionId,
         rollout_path: &std::path::Path,
     ) {
         let Ok(history) = devo_core::read_canonical_history(rollout_path) else {

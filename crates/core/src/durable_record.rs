@@ -815,7 +815,7 @@ pub struct TurnApprovalCheckpointRecordedRecord {
     pub host_session_id: Option<SessionId>,
     pub turn_id: TurnId,
     pub approval_id: String,
-    /// Serialized [`devo_core::tools::ToolPermissionRequest`].
+    /// Serialized [`crate::tools::ToolPermissionRequest`].
     pub permission_request: serde_json::Value,
     /// Provider conversation tail at the approval boundary.
     pub messages: Vec<devo_protocol::Message>,

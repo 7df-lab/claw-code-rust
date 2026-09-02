@@ -13,6 +13,7 @@ class FakeNativeTransport implements DevoNativeTransport {
 	subscriptionCreateHook?: () => void
 	pendingControlRequests: unknown[] = []
 	subscriptionCursors: Array<{ streamId: string; seq: number }> = []
+	subscriptionSnapshots: unknown[] = []
 	sessionItems: unknown[] = []
 	resumeSession?: unknown
 
@@ -31,6 +32,7 @@ class FakeNativeTransport implements DevoNativeTransport {
 					subscriptionId: `sub-${this.requests.length}`,
 					cursors: this.subscriptionCursors,
 					pendingControlRequests: this.pendingControlRequests,
+					snapshots: this.subscriptionSnapshots,
 				}
 			case "subscription/ack":
 				return { serverTimeMs: 1 }
@@ -48,6 +50,40 @@ class FakeNativeTransport implements DevoNativeTransport {
 				return { views: [nativeWorkspaceView] }
 			case "turn/start":
 				return { turn: nativeTurnInProgress }
+			case "session/queue/push":
+				if (
+					typeof (params as { input?: Array<{ text?: string }> })?.input?.[0]?.text ===
+						"string" &&
+					(params as { input: Array<{ text: string }> }).input[0]?.text === "queue me"
+				) {
+					return {
+						outcome: "queued",
+						entry: {
+							queueItemId: "queue-1",
+							position: 0,
+							preview: "queue me",
+							input: [{ type: "text", text: "queue me" }],
+							enqueuedAt: "2026-08-22T00:00:00Z",
+						},
+					}
+				}
+				return { outcome: "started", turn: nativeTurnInProgress }
+			case "session/queue/list":
+				return { entries: [] }
+			case "session/queue/update":
+				return {
+					entry: {
+						queueItemId: "queue-1",
+						position: 0,
+						preview: "updated",
+						input: [{ type: "text", text: "updated" }],
+						enqueuedAt: "2026-08-22T00:00:00Z",
+					},
+				}
+			case "session/queue/remove":
+				return {}
+			case "session/queue/steer":
+				return { itemId: "item-steer-1" }
 			case "session/message/edit":
 				return editedMessageResult
 			case "session/resume":
@@ -234,6 +270,7 @@ const userInputEnvelope = {
 	sessionId: "session-1",
 	turnId: "turn-1",
 	revision: 1,
+	seq: 1,
 	state: "waiting",
 	createdAt: "2026-08-22T00:00:02Z",
 	updatedAt: "2026-08-22T00:00:02Z",
@@ -502,8 +539,112 @@ describe("Native desktop SDK interactions", () => {
 		await client.session.create()
 		const asked = await nextPayloadOfType(stream, "permission.asked")
 		expect(asked.properties.requestID).toBe("approval-1")
+		expect(asked.properties.metadata.answerable).toBe(true)
 		await client.permission.reply({ requestID: "approval-1", reply: "once" })
 		expect(transport.responses[0]?.id).toBe("reissued-approval")
+	})
+
+	test("restores a waiting user-input item without a prior reverse RPC", async () => {
+		const transport = new FakeNativeTransport()
+		transport.pendingControlRequests = [
+			{ requestId: "input-1", kind: "userInput", item: userInputEnvelope },
+		]
+		transport.subscriptionCreateHook = () => {
+			transport.emit({
+				type: "request",
+				id: "reissued-input",
+				method: "userInput/request",
+				params: userInputItem,
+			})
+		}
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+
+		await client.session.create()
+		const asked = await nextPayloadOfType(stream, "question.asked")
+		expect(asked.properties).toEqual({
+			id: "input-1",
+			requestID: "input-1",
+			sessionID: "session-1",
+			questions: [
+				{
+					id: "environment",
+					header: "Environment",
+					question: "Where should this run?",
+					isOther: false,
+					isSecret: false,
+					options: [{ label: "Local", description: "Use this machine" }],
+				},
+			],
+		})
+		await client.question.reply({ requestID: "input-1", answers: [["Local"]] })
+		expect(transport.responses[0]?.id).toBe("reissued-input")
+	})
+
+	test("restores a waiting approval item from session history after restart", async () => {
+		const transport = new FakeNativeTransport()
+		transport.sessionItems = [approvalEnvelope]
+		transport.pendingControlRequests = [
+			{ requestId: "approval-1", kind: "approvalCommand", item: approvalEnvelope },
+		]
+		transport.subscriptionCreateHook = () => {
+			transport.emit({
+				type: "request",
+				id: "reissued-approval",
+				method: "approval/command/request",
+				params: approvalItem,
+			})
+		}
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+
+		await client.session.messages({ sessionID: "session-1" })
+		const asked = await nextPayloadOfType(stream, "permission.asked")
+		expect(asked.properties.requestID).toBe("approval-1")
+		expect(asked.properties.sessionID).toBe("session-1")
+		expect(asked.properties.metadata.availableScopes).toEqual([
+			"once",
+			"session",
+			"commandPrefixPersist",
+		])
+		expect(asked.properties.metadata.answerable).toBe(true)
+		await client.permission.reply({ requestID: "approval-1", reply: "once" })
+		expect(transport.responses[0]?.id).toBe("reissued-approval")
+	})
+
+	test("normalizes snake_case approval scopes from legacy rollout items", async () => {
+		const transport = new FakeNativeTransport()
+		transport.sessionItems = [
+			{
+				...approvalEnvelope,
+				item: {
+					...approvalItem,
+					availableScopes: ["once", "path_prefix", "command_prefix_persist"],
+				},
+			},
+		]
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+
+		await client.session.messages({ sessionID: "session-1" })
+		const asked = await nextPayloadOfType(stream, "permission.asked")
+		expect(asked.properties.metadata.availableScopes).toEqual([
+			"once",
+			"pathPrefix",
+			"commandPrefixPersist",
+		])
+	})
+
+	test("restores a waiting user-input item from session history after restart", async () => {
+		const transport = new FakeNativeTransport()
+		transport.sessionItems = [userInputEnvelope]
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+
+		await client.session.messages({ sessionID: "session-1" })
+		const asked = await nextPayloadOfType(stream, "question.asked")
+		expect(asked.properties.requestID).toBe("input-1")
+		expect(asked.properties.sessionID).toBe("session-1")
 	})
 
 	test("disconnect clears stale interactions and creates a fresh event stream", async () => {
@@ -984,6 +1125,9 @@ describe("Native desktop SDK interactions", () => {
 			parts: [{ type: "text", text: "hello" }],
 		})
 
+		expect(transport.requests.some((request) => request.method === "session/queue/push")).toBe(
+			true,
+		)
 		expect((await client.session.status()).data["session-1"]).toEqual({ type: "busy" })
 
 		transport.emit({
@@ -993,6 +1137,78 @@ describe("Native desktop SDK interactions", () => {
 		})
 
 		expect((await client.session.status()).data["session-1"]).toEqual({ type: "idle" })
+	})
+
+	test("queues follow-up input without forcing idle when a turn is already active", async () => {
+		const transport = new FakeNativeTransport()
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+		await client.session.create()
+
+		await client.session.promptAsync({
+			sessionID: "session-1",
+			parts: [{ type: "text", text: "hello" }],
+		})
+		expect((await client.session.status()).data["session-1"]).toEqual({ type: "busy" })
+
+		await client.session.promptAsync({
+			sessionID: "session-1",
+			parts: [{ type: "text", text: "queue me" }],
+		})
+
+		expect((await client.session.status()).data["session-1"]).toEqual({ type: "busy" })
+		const queueEvent = await nextPayloadOfType(stream, "session.queue.updated")
+		expect(queueEvent.properties.entries).toEqual([
+			expect.objectContaining({ queueItemId: "queue-1", preview: "queue me" }),
+		])
+	})
+
+	test("subscription snapshot seeds queue and active turn state", async () => {
+		const transport = new FakeNativeTransport()
+		transport.subscriptionSnapshots = [
+			{
+				streamId: "session:session-1",
+				barrierSeq: 1,
+				data: {
+					kind: "session",
+					session: nativeSession,
+					queue: [
+						{
+							queueItemId: "queue-snap-1",
+							position: 1,
+							preview: "queued from snapshot",
+							input: [{ type: "text", text: "queued from snapshot" }],
+							enqueuedAt: "2026-08-22T00:00:00Z",
+						},
+					],
+					activeTurn: nativeTurnInProgress,
+				},
+			},
+		]
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+
+		await client.session.create()
+
+		const queueEvent = await nextPayloadOfType(stream, "session.queue.updated")
+		expect(queueEvent.properties).toEqual(
+			expect.objectContaining({
+				sessionID: "session-1",
+				change: "sync",
+				entries: [
+					expect.objectContaining({
+						queueItemId: "queue-snap-1",
+						preview: "queued from snapshot",
+					}),
+				],
+			}),
+		)
+		const activeTurnEvent = await nextPayloadOfType(stream, "session.activeTurn")
+		expect(activeTurnEvent.properties).toEqual({
+			sessionID: "session-1",
+			turnID: nativeTurnInProgress.id,
+		})
+		expect((await client.session.status()).data["session-1"]).toEqual({ type: "busy" })
 	})
 
 	test("session/list does not clear busy status while a turn is in flight", async () => {

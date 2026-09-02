@@ -25,6 +25,26 @@ fn normalize_session_list_cwd(path: &std::path::Path) -> String {
         .to_ascii_lowercase()
 }
 
+/// Native snapshot mapping for a stored permission preset.
+///
+/// `None` matches `new_session_state`: project config may override, otherwise
+/// new sessions default to AutoReview ("Approve for me").
+fn native_permission_profile(
+    preset: Option<devo_protocol::PermissionPreset>,
+) -> devo_protocol::native::model::PermissionProfile {
+    match preset {
+        Some(devo_protocol::PermissionPreset::Default) => {
+            devo_protocol::native::model::PermissionProfile::Default
+        }
+        Some(devo_protocol::PermissionPreset::FullAccess) => {
+            devo_protocol::native::model::PermissionProfile::FullAccess
+        }
+        Some(devo_protocol::PermissionPreset::AutoReview) | None => {
+            devo_protocol::native::model::PermissionProfile::AutoReview
+        }
+    }
+}
+
 pub(crate) struct RuntimeSessionTurnCutOptions {
     pub(crate) session_id: SessionId,
     pub(crate) user_turn_index: Option<u32>,
@@ -114,7 +134,7 @@ impl ServerRuntime {
         let initial_turn_config = runtime_context.resolve_turn_config(requested_model, None);
         let model = initial_turn_config.model.slug.clone();
         let model_binding_id = initial_turn_config.model_binding_id.clone();
-        let record = (!params.ephemeral).then(|| {
+        let mut record = (!params.ephemeral).then(|| {
             self.rollout_store.create_session_record(
                 session_id,
                 now,
@@ -178,6 +198,17 @@ impl ServerRuntime {
         );
         let mut summary = summary;
         summary.effective_context_window = Some(applied_compaction_limit);
+        let mut core_session = runtime_context.new_session_state(
+            session_id,
+            params.cwd.clone(),
+            params.additional_directories.clone(),
+        );
+        let permission_preset =
+            protocol_preset_from_safety(core_session.config.permission_profile.preset);
+        summary.permission_preset = Some(permission_preset);
+        if let Some(record) = record.as_mut() {
+            record.permission_preset = Some(permission_preset);
+        }
         if let Some(record) = &record
             && let Err(error) = self.rollout_store.append_session_meta(record)
         {
@@ -187,14 +218,6 @@ impl ServerRuntime {
                 format!("failed to persist session metadata: {error}"),
             );
         }
-        let mut core_session = runtime_context.new_session_state(
-            session_id,
-            params.cwd.clone(),
-            params.additional_directories.clone(),
-        );
-        summary.permission_preset = Some(protocol_preset_from_safety(
-            core_session.config.permission_profile.preset,
-        ));
         crate::runtime::context_occupancy::apply_resolved_compaction_limit(
             &mut core_session.config,
             applied_compaction_limit as usize,
@@ -598,17 +621,7 @@ impl ServerRuntime {
                     );
                 }
                 let settings = devo_protocol::native::session::SessionSettings {
-                    permission_profile: match index_metadata.permission_preset {
-                        Some(devo_protocol::PermissionPreset::Default) | None => {
-                            devo_protocol::native::model::PermissionProfile::Default
-                        }
-                        Some(devo_protocol::PermissionPreset::AutoReview) => {
-                            devo_protocol::native::model::PermissionProfile::AutoReview
-                        }
-                        Some(devo_protocol::PermissionPreset::FullAccess) => {
-                            devo_protocol::native::model::PermissionProfile::FullAccess
-                        }
-                    },
+                    permission_profile: native_permission_profile(index_metadata.permission_preset),
                     reasoning_effort: index_metadata
                         .reasoning_effort_selection
                         .as_deref()
@@ -630,7 +643,6 @@ impl ServerRuntime {
                     settings,
                 )
             };
-        let _ = session_version;
         let mut overlay_profile: Option<devo_safety::RuntimePermissionProfile> = None;
         let mut overlay_sandbox: Option<String> = None;
         let mut overlay_effort: Option<String> = None;
@@ -639,9 +651,23 @@ impl ServerRuntime {
         let mut overlay_mode: Option<devo_protocol::CollaborationMode> = None;
         let mut applied_window: Option<u64> = None;
         let mut settings_changes = Vec::new();
+        let live_permission_profile = if let Some(handle) = session_handle.as_ref() {
+            native_permission_profile(
+                handle
+                    .summary()
+                    .await
+                    .and_then(|summary| summary.permission_preset),
+            )
+        } else {
+            native_permission_profile(
+                index_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.permission_preset),
+            )
+        };
         if let Some(settings) = &params.settings {
             if let Some(profile) = settings.permission_profile
-                && profile != current.permission_profile
+                && profile != live_permission_profile
             {
                 let preset = match profile {
                     devo_protocol::native::model::PermissionProfile::Default => {
@@ -819,6 +845,7 @@ impl ServerRuntime {
             && let Err(error) = self.rollout_store.append_session_settings_batch_at(
                 path,
                 legacy_session_id,
+                session_version,
                 &settings_changes,
             )
         {
@@ -1133,17 +1160,7 @@ impl ServerRuntime {
                     .and_then(|selection| selection.parse().ok()),
             },
             settings: devo_protocol::native::session::SessionSettings {
-                permission_profile: match metadata.permission_preset {
-                    Some(devo_protocol::PermissionPreset::Default) | None => {
-                        devo_protocol::native::model::PermissionProfile::Default
-                    }
-                    Some(devo_protocol::PermissionPreset::AutoReview) => {
-                        devo_protocol::native::model::PermissionProfile::AutoReview
-                    }
-                    Some(devo_protocol::PermissionPreset::FullAccess) => {
-                        devo_protocol::native::model::PermissionProfile::FullAccess
-                    }
-                },
+                permission_profile: native_permission_profile(metadata.permission_preset),
                 reasoning_effort: metadata
                     .reasoning_effort_selection
                     .as_deref()
@@ -1566,6 +1583,9 @@ impl ServerRuntime {
         if response.get("error").is_some() {
             return response;
         }
+        self.runtime_arc()
+            .reissue_pending_controls_if_subscribed(connection_id, &params.session_id)
+            .await;
         self.native_session_resume_response(request_id, legacy_session_id)
             .await
             .unwrap_or(response)
@@ -1723,6 +1743,9 @@ impl ServerRuntime {
             pending_count = pending_texts.len(),
             "resumed session"
         );
+        self.runtime_arc()
+            .resume_pending_queue_if_idle(params.session_id)
+            .await;
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: SessionResumeResult {
@@ -2173,7 +2196,7 @@ impl ServerRuntime {
             status: SessionRuntimeStatus::Idle,
             collaboration_mode: core_session.collaboration_mode,
             effective_context_window: None,
-            permission_preset: None,
+            permission_preset: source.summary.permission_preset,
         };
         drop(source_core_session);
 

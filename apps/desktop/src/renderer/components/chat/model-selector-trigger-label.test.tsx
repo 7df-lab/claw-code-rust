@@ -8,14 +8,16 @@ function slotClassList(html: string, slot: string): string[] {
 }
 
 describe("ModelSelectorTriggerLabel", () => {
-	test("renders the model name with foreground text and the variant with muted text", () => {
+	test("renders the model name and reasoning strength in quiet 13px type", () => {
 		const html = renderToStaticMarkup(
 			<ModelSelectorTriggerLabel displayName="deepseek-v4-flash" variantLabel="max" />,
 		)
 
-		expect(slotClassList(html, "model-selector-trigger-model")).toContain("text-foreground")
-		expect(slotClassList(html, "model-selector-trigger-variant")).toContain(
-			"text-muted-foreground/60",
+		expect(slotClassList(html, "model-selector-trigger-model")).toEqual(
+			expect.arrayContaining(["text-[13px]", "font-normal", "text-muted-foreground"]),
+		)
+		expect(slotClassList(html, "model-selector-trigger-variant")).toEqual(
+			expect.arrayContaining(["text-[12px]", "font-normal", "text-muted-foreground/50"]),
 		)
 		expect(html).toContain("deepseek-v4-flash")
 		expect(html).toContain("max")

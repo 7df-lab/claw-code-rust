@@ -35,6 +35,11 @@ impl ServerRuntime {
             return existing;
         }
         sessions.insert(session_id, handle.clone());
+        drop(sessions);
+        let runtime = self.runtime_arc();
+        tokio::spawn(async move {
+            runtime.rearm_title_polish_if_needed(session_id).await;
+        });
         handle
     }
 
@@ -43,23 +48,11 @@ impl ServerRuntime {
         session_id: SessionId,
     ) -> Option<super::SessionHandle> {
         let handle = self.sessions.lock().await.remove(&session_id)?;
-        let pending_user_inputs = self
-            .session_interactive
+        // Drop in-memory waiters without rewriting Waiting items to Interrupted.
+        // App restart must still be able to restore unanswered questions.
+        self.session_interactive
             .drain_pending_user_inputs_for_session(session_id)
             .await;
-        for (request_id, pending) in pending_user_inputs {
-            if let Some(persisted) = &pending.persisted {
-                self.persist_terminal_user_input_item(
-                    pending.owner_session_id,
-                    pending.turn_id,
-                    request_id,
-                    &pending.questions,
-                    devo_protocol::native::item::ItemState::Interrupted,
-                    persisted,
-                )
-                .await;
-            }
-        }
         self.session_interactive.clear_session(session_id).await;
         self.active_turns.remove_session(session_id).await;
         Some(handle)

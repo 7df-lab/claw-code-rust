@@ -226,7 +226,7 @@ type PendingQuestion = {
 }
 
 type PendingPermission = {
-	id: JsonRpcId
+	id?: JsonRpcId
 	method: string
 	sessionId?: string
 	options: Array<{ optionId: string; kind: string }>
@@ -244,6 +244,65 @@ function renderedNativeItemKey(sessionId: string, itemId: string): string {
 
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
+}
+
+const KNOWN_PERMISSION_SCOPES: PermissionResponse[] = [
+	"once",
+	"turn",
+	"session",
+	"pathPrefix",
+	"host",
+	"tool",
+	"commandPrefix",
+	"commandPrefixPersist",
+]
+
+function snakeCaseToCamelCase(value: string): string {
+	return value.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase())
+}
+
+export function normalizeApprovalScope(scope: string): PermissionResponse | null {
+	for (const candidate of [scope, snakeCaseToCamelCase(scope)]) {
+		if ((KNOWN_PERMISSION_SCOPES as string[]).includes(candidate)) {
+			return candidate as PermissionResponse
+		}
+	}
+	return null
+}
+
+export function normalizeApprovalScopes(scopes: string[] | undefined): PermissionResponse[] {
+	const normalized: PermissionResponse[] = []
+	const seen = new Set<string>()
+	for (const scope of scopes ?? ["once"]) {
+		const value = normalizeApprovalScope(scope)
+		if (value && !seen.has(value)) {
+			seen.add(value)
+			normalized.push(value)
+		}
+	}
+	return normalized.length > 0 ? normalized : ["once"]
+}
+
+function approvalMethodFromResource(resource: unknown): string {
+	const resourceText = String(resource ?? "").toLowerCase()
+	if (resourceText.includes("filewrite") || resourceText.includes("file_write")) {
+		return "approval/fileChange/request"
+	}
+	if (
+		resourceText.includes("shellexec") ||
+		resourceText.includes("shell") ||
+		resourceText.includes("command") ||
+		resourceText.includes("process")
+	) {
+		return "approval/command/request"
+	}
+	return "approval/permission/request"
+}
+
+function nativeItemNotificationMethod(envelope: Record<string, unknown>): "item/started" | "item/completed" {
+	const state = String(envelope.state ?? "")
+	if (state === "completed" || state === "failed" || state === "interrupted") return "item/completed"
+	return "item/started"
 }
 
 function stringOrUndefined(value: unknown): string | undefined {
@@ -743,6 +802,7 @@ type SessionSettingsPatch = {
 	modelID?: string
 	reasoningEffort?: string
 	mode?: string
+	permissionProfile?: string
 }
 
 type SessionSettingsWaiter = {
@@ -788,6 +848,42 @@ function pathFromFileUri(uri: string): string | null {
 	} catch {
 		return uri.slice("file://".length)
 	}
+}
+
+export type PromptAsyncOutcome =
+	| { outcome: "started" }
+	| { outcome: "queued"; queueItemId: string }
+
+export type QueueWireEntry = {
+	queueItemId: string
+	position: number
+	preview: string
+	enqueuedAt?: string
+	input?: Array<{ type: string; text?: string }>
+}
+
+function parseQueueWireEntries(value: unknown): QueueWireEntry[] {
+	if (!Array.isArray(value)) return []
+	return value
+		.map((entry) => objectRecord(entry))
+		.filter((entry): entry is Record<string, unknown> => !!entry)
+		.map((entry) => ({
+			queueItemId: String(entry.queueItemId ?? ""),
+			position: Number(entry.position ?? 0),
+			preview: String(entry.preview ?? ""),
+			enqueuedAt: typeof entry.enqueuedAt === "string" ? entry.enqueuedAt : undefined,
+			input: Array.isArray(entry.input)
+				? entry.input.map((part) => {
+						const record = objectRecord(part)
+						return {
+							type: String(record?.type ?? "text"),
+							text: typeof record?.text === "string" ? record.text : undefined,
+						}
+					})
+				: undefined,
+		}))
+		.filter((entry) => entry.queueItemId.length > 0)
+		.sort((left, right) => left.position - right.position)
 }
 
 function inputItemsFromPromptParts(parts: PromptPartInput[]): InputItem[] {
@@ -1007,6 +1103,8 @@ class NativeClient {
 	private subscriptionCursors = new Map<string, Array<{ streamId: string; seq: number }>>()
 	private renderedNativeItems = new Set<string>()
 	private turnSessions = new Map<string, string>()
+	private activeTurnIds = new Map<string, string>()
+	private queueEntriesBySession = new Map<string, QueueWireEntry[]>()
 	private nativeItemCallIds = new Map<string, string>()
 	private sessionDiscovery = new Map<string, Promise<Session | undefined>>()
 	private sessionLoads = new Map<string, Promise<void>>()
@@ -1034,39 +1132,109 @@ class NativeClient {
 		}) => {
 			const directory = this.sessionDirectories.get(params.sessionID) ?? this.options.directory ?? defaultCwd()
 			this.lastUserMessageBySession.delete(params.sessionID)
-			const promptStartedAt = Math.max(Date.now(), this.lastEventTime + 1)
-			this.promptStartedAtBySession.set(params.sessionID, promptStartedAt)
-			const busyStatus = { type: "busy" }
-			this.sessionStatuses.set(params.sessionID, busyStatus)
-			this.emit(directory, {
-				type: "session.status",
-				properties: { sessionID: params.sessionID, status: busyStatus },
-			})
-			// Sidebar / agents list read session.time.lastActivity via session.updated;
-			// bump immediately so sending a message refreshes relative age without
-			// waiting for turn/* (server does not project activity-only metadata).
-			this.touchNativeSessionActivity(params.sessionID, promptStartedAt)
-			// turn/start returns when the turn is accepted, not when it finishes.
-			// Stay busy until turn/completed (or a failed start below).
+			const activityAt = Math.max(Date.now(), this.lastEventTime + 1)
+			this.touchNativeSessionActivity(params.sessionID, activityAt)
+			const wasBusy = this.sessionStatuses.get(params.sessionID)?.type === "busy"
 			try {
-				await this.turn.start({
+				const result = await this.pushSessionQueue({
 					sessionID: params.sessionID,
 					parts: params.parts,
-					model: params.model,
-					variant: params.variant,
 					collaborationMode: params.collaborationMode,
 				})
+				if (result.outcome === "started") {
+					const promptStartedAt = Math.max(Date.now(), this.lastEventTime + 1)
+					this.promptStartedAtBySession.set(params.sessionID, promptStartedAt)
+					const busyStatus = { type: "busy" }
+					this.sessionStatuses.set(params.sessionID, busyStatus)
+					this.emit(directory, {
+						type: "session.status",
+						properties: { sessionID: params.sessionID, status: busyStatus },
+					})
+				}
+				return { data: result }
 			} catch (error) {
-				this.promptStartedAtBySession.delete(params.sessionID)
-				this.completeOpenAssistantMessages(params.sessionID, directory, promptStartedAt)
-				const idleStatus = { type: "idle" }
-				this.sessionStatuses.set(params.sessionID, idleStatus)
+				if (!wasBusy && !this.activeTurnIds.has(params.sessionID)) {
+					this.promptStartedAtBySession.delete(params.sessionID)
+					this.completeOpenAssistantMessages(params.sessionID, directory, activityAt)
+					const idleStatus = { type: "idle" }
+					this.sessionStatuses.set(params.sessionID, idleStatus)
+					this.emit(directory, {
+						type: "session.status",
+						properties: { sessionID: params.sessionID, status: idleStatus },
+					})
+				}
 				this.emit(directory, sessionErrorEvent(params.sessionID, error))
-				this.emit(directory, {
-					type: "session.status",
-					properties: { sessionID: params.sessionID, status: idleStatus },
-				})
+				throw error
 			}
+		},
+		queue: {
+			list: async (params: { sessionID: string }) => {
+				await this.ensureSessionSubscription(params.sessionID)
+				const result = (await this.requestCanonical("session/queue/list", {
+					sessionId: params.sessionID,
+				})) as { entries?: unknown }
+				const entries = parseQueueWireEntries(result.entries)
+				this.emitQueueSnapshot(params.sessionID, entries, "sync")
+				return { data: { entries } }
+			},
+			push: async (params: {
+				sessionID: string
+				parts: PromptPartInput[]
+				collaborationMode?: string
+			}) => ({ data: await this.pushSessionQueue(params) }),
+			update: async (params: {
+				sessionID: string
+				queueItemId: string
+				parts?: PromptPartInput[]
+				position?: number
+			}) => {
+				const result = (await this.requestCanonical("session/queue/update", {
+					sessionId: params.sessionID,
+					queueItemId: params.queueItemId,
+					...(params.parts
+						? { input: inputItemsFromPromptParts(params.parts) }
+						: {}),
+					...(params.position !== undefined ? { position: params.position } : {}),
+				})) as { entry?: unknown }
+				const entry = objectRecord(result.entry)
+				if (entry) {
+					const entries = parseQueueWireEntries([entry])
+					if (entries[0]) {
+						const current = this.queueEntriesForSession(params.sessionID)
+						const next = current.map((item) =>
+							item.queueItemId === entries[0].queueItemId ? entries[0] : item,
+						)
+						if (!next.some((item) => item.queueItemId === entries[0].queueItemId)) {
+							next.push(entries[0])
+						}
+						this.emitQueueSnapshot(
+							params.sessionID,
+							next.sort((left, right) => left.position - right.position),
+							"updated",
+						)
+					}
+				}
+				return { data: result }
+			},
+			remove: async (params: { sessionID: string; queueItemId: string }) => {
+				await this.requestCanonical("session/queue/remove", {
+					sessionId: params.sessionID,
+					queueItemId: params.queueItemId,
+				})
+				return { data: null }
+			},
+			steer: async (params: { sessionID: string; queueItemId: string }) => {
+				const expectedTurnId = this.activeTurnIds.get(params.sessionID)
+				if (!expectedTurnId) {
+					throw new Error("No active turn to steer")
+				}
+				const result = await this.requestCanonical("session/queue/steer", {
+					sessionId: params.sessionID,
+					queueItemId: params.queueItemId,
+					expectedTurnId,
+				})
+				return { data: result }
+			},
 		},
 		editMessage: async (params: { sessionID: string; itemID: string; text: string }) => {
 			const directory = this.sessionDirectories.get(params.sessionID) ?? this.options.directory ?? defaultCwd()
@@ -1171,9 +1339,10 @@ class NativeClient {
 			})
 		},
 		summarize: async (params: { sessionID: string }) => {
-			await this.session.promptAsync({
-				sessionID: params.sessionID,
-				parts: [{ type: "text", text: "/compact" }],
+			await this.ensureInitialized()
+			await this.ensureSessionSubscription(params.sessionID)
+			await this.requestCanonical("session/compact/start", {
+				sessionId: params.sessionID,
 			})
 		},
 		messages: async (params: { sessionID: string; limit?: number }) => ({
@@ -1664,7 +1833,6 @@ class NativeClient {
 			sessionId,
 			resumed.lastContextOccupancy ?? resumed.last_context_occupancy,
 		)
-		await this.ensureSessionSubscription(sessionId)
 		let cursor: string | undefined
 		do {
 			const page = (await this.requestCanonical("session/items/list", {
@@ -1672,9 +1840,16 @@ class NativeClient {
 				...(cursor ? { cursor } : {}),
 				limit: 500,
 			})) as { data?: Array<Record<string, unknown>>; nextCursor?: string | null }
-			for (const item of page.data ?? []) this.handleNativeItemEnvelope(item, "item/completed")
+			for (const item of page.data ?? []) {
+				this.handleNativeItemEnvelope(item, nativeItemNotificationMethod(item))
+			}
 			cursor = page.nextCursor ?? undefined
 		} while (cursor)
+		const queueResult = (await this.requestCanonical("session/queue/list", {
+			sessionId,
+		})) as { entries?: unknown }
+		this.emitQueueSnapshot(sessionId, parseQueueWireEntries(queueResult.entries), "sync")
+		await this.ensureSessionSubscription(sessionId)
 		this.loadedSessionLimits.set(sessionId, null)
 	}
 
@@ -1949,15 +2124,24 @@ class NativeClient {
 			) ?? {}
 			const approvalId = String(value.approvalId ?? value.requestId ?? "")
 			if (!approvalId) return true
+			const availableScopes = normalizeApprovalScopes(
+				Array.isArray(value.availableScopes) ? value.availableScopes.map(String) : undefined,
+			)
+			const existing = this.pendingPermissions.get(approvalId)
 			this.pendingPermissions.set(approvalId, {
 				id,
 				method,
+				sessionId: existing?.sessionId,
 				options: [],
-				availableScopes: Array.isArray(value.availableScopes)
-					? value.availableScopes.map(String)
-					: ["once"],
+				availableScopes,
 				native: true,
 			})
+			const sessionId = existing?.sessionId
+			if (sessionId) {
+				const directory =
+					this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
+				this.emitPermissionAsked(sessionId, directory, approvalId, value, availableScopes)
+			}
 			return true
 		}
 		if (method === "userInput/request") {
@@ -1966,11 +2150,13 @@ class NativeClient {
 			) ?? {}
 			const requestId = String(value.requestId ?? "")
 			if (!requestId) return true
+			const existing = this.pendingQuestions.get(requestId)
+			const questions = (Array.isArray(value.questions) ? value.questions : []).map(questionInfoFromNative)
 			this.pendingQuestions.set(requestId, {
 				id,
 				method,
-				sessionId: "",
-				questions: (Array.isArray(value.questions) ? value.questions : []).map(questionInfoFromNative),
+				sessionId: existing?.sessionId ?? "",
+				questions: existing?.questions.length ? existing.questions : questions,
 			})
 			return true
 		}
@@ -2047,6 +2233,13 @@ class NativeClient {
 			const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
 			const turnStatus = String(turn?.status ?? value.status ?? "")
 			const terminal = method === "turn/completed" || ["completed", "interrupted", "failed"].includes(turnStatus)
+			if (method === "turn/started" && turnId) {
+				this.activeTurnIds.set(sessionId, turnId)
+				this.emit(directory, {
+					type: "session.activeTurn",
+					properties: { sessionID: sessionId, turnID: turnId },
+				})
+			}
 			const status = { type: terminal ? "idle" : "busy" }
 			this.sessionStatuses.set(sessionId, status)
 			this.emit(directory, { type: "session.status", properties: { sessionID: sessionId, status } })
@@ -2059,6 +2252,11 @@ class NativeClient {
 				this.touchNativeSessionActivity(sessionId, activityAt)
 			}
 			if (terminal) {
+				this.activeTurnIds.delete(sessionId)
+				this.emit(directory, {
+					type: "session.activeTurn",
+					properties: { sessionID: sessionId, turnID: null },
+				})
 				const startedAt = this.promptStartedAtBySession.get(sessionId) ?? 0
 				this.promptStartedAtBySession.delete(sessionId)
 				this.completeOpenAssistantMessages(sessionId, directory, startedAt)
@@ -2195,6 +2393,13 @@ class NativeClient {
 			this.handleWorkspaceChangesUpdated(payload as WorkspaceChangesUpdatedPayload)
 			return true
 		}
+		if (method === "queue/updated") {
+			const sessionId = String(value.sessionId ?? "")
+			if (!sessionId) return true
+			const entries = parseQueueWireEntries(value.queue)
+			this.emitQueueSnapshot(sessionId, entries, String(value.change ?? "updated"))
+			return true
+		}
 		if (method === "turn/superseded") {
 			const sessionId = String(value.sessionId ?? "")
 			const supersededTurnId = String(value.supersededTurnId ?? "")
@@ -2250,43 +2455,33 @@ class NativeClient {
 
 		if (itemType === "approval") {
 			const approvalId = String(item.approvalId ?? "")
-			const pending = this.pendingPermissions.get(approvalId)
-			if (pending) {
-				pending.sessionId = sessionId
-				pending.availableScopes = Array.isArray(item.availableScopes) ? item.availableScopes.map(String) : pending.availableScopes
-			}
+			if (!approvalId) return
+			const availableScopes = normalizeApprovalScopes(
+				Array.isArray(item.availableScopes) ? item.availableScopes.map(String) : undefined,
+			)
 			if (item.decision) {
 				this.pendingPermissions.delete(approvalId)
-				this.emit(directory, { type: "permission.replied", properties: { sessionID: sessionId, requestID: approvalId } })
-			} else if (pending) {
-				const target = objectRecord(item.target)
-				const targetKind = String(target?.kind ?? "")
 				this.emit(directory, {
-					type: "permission.asked",
-					properties: {
-						id: approvalId,
-						requestID: approvalId,
-						sessionID: sessionId,
-						permission: String(item.actionSummary ?? "Agent requested permission"),
-						metadata: {
-							tool: item.resource,
-							command: targetKind === "command" ? target?.command : undefined,
-							path: targetKind === "path" ? target?.path : undefined,
-							host: targetKind === "host" ? target?.host : undefined,
-							justification: item.justification,
-							resource: item.resource,
-							target: target?.command ?? target?.path ?? target?.host,
-							availableScopes: pending.availableScopes,
-							commandPattern: item.commandPattern,
-							commandPrefix: item.commandPrefix,
-						},
-					},
+					type: "permission.replied",
+					properties: { sessionID: sessionId, requestID: approvalId },
 				})
+				return
 			}
+			const existing = this.pendingPermissions.get(approvalId)
+			this.pendingPermissions.set(approvalId, {
+				id: existing?.id,
+				method: existing?.method ?? approvalMethodFromResource(item.resource),
+				sessionId,
+				options: existing?.options ?? [],
+				availableScopes,
+				native: true,
+			})
+			this.emitPermissionAsked(sessionId, directory, approvalId, item, availableScopes)
 			return
 		}
 		if (itemType === "userInputRequest") {
 			const requestId = String(item.requestId ?? "")
+			if (!requestId) return
 			const pending = this.pendingQuestions.get(requestId)
 			if (item.answers || completed) {
 				this.pendingQuestions.delete(requestId)
@@ -2296,10 +2491,18 @@ class NativeClient {
 						properties: { sessionID: pending.sessionId || sessionId, requestID: requestId },
 					})
 				}
-			} else if (pending) {
-				pending.sessionId = sessionId
-				pending.questions = (Array.isArray(item.questions) ? item.questions : []).map(questionInfoFromNative)
-				this.emit(directory, { type: "question.asked", properties: { id: requestId, requestID: requestId, sessionID: sessionId, questions: pending.questions } })
+			} else {
+				const questions = (Array.isArray(item.questions) ? item.questions : []).map(questionInfoFromNative)
+				this.pendingQuestions.set(requestId, {
+					id: pending?.id,
+					method: pending?.method ?? "userInput/request",
+					sessionId,
+					questions,
+				})
+				this.emit(directory, {
+					type: "question.asked",
+					properties: { id: requestId, requestID: requestId, sessionID: sessionId, questions },
+				})
 			}
 			return
 		}
@@ -2445,6 +2648,32 @@ class NativeClient {
 		this.emit(directory, { type: "message.part.updated", properties: { part: updatedPart } })
 	}
 
+	private applySubscriptionSessionSnapshot(snapshot: Record<string, unknown>): void {
+		const data = objectRecord(snapshot.data)
+		const session = objectRecord(data?.session)
+		if (session) this.rememberNativeSession(session)
+		const sessionId = String(session?.id ?? snapshot.sessionId ?? "")
+		if (!sessionId) return
+		const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
+		if (data?.queue !== undefined) {
+			this.emitQueueSnapshot(sessionId, parseQueueWireEntries(data.queue), "sync")
+		}
+		const activeTurn = objectRecord(data?.active_turn ?? data?.activeTurn)
+		if (activeTurn?.id) {
+			const turnId = String(activeTurn.id)
+			this.activeTurnIds.set(sessionId, turnId)
+			this.sessionStatuses.set(sessionId, { type: "busy" })
+			this.emit(directory, {
+				type: "session.status",
+				properties: { sessionID: sessionId, status: { type: "busy" } },
+			})
+			this.emit(directory, {
+				type: "session.activeTurn",
+				properties: { sessionID: sessionId, turnID: turnId },
+			})
+		}
+	}
+
 	private async ensureSessionSubscription(sessionId: string): Promise<void> {
 		if (this.subscriptions.has(sessionId)) return
 		const after = this.subscriptionCursors.get(sessionId) ?? []
@@ -2463,9 +2692,7 @@ class NativeClient {
 		this.subscriptions.set(sessionId, { subscriptionId: result.subscriptionId, cursors })
 		this.subscriptionCursors.set(sessionId, cursors)
 		for (const snapshot of result.snapshots ?? []) {
-			const data = objectRecord(snapshot.data)
-			const session = objectRecord(data?.session)
-			if (session) this.rememberNativeSession(session)
+			this.applySubscriptionSessionSnapshot(snapshot)
 		}
 		for (const envelope of result.replay ?? []) {
 			const notification = objectRecord(envelope.notification)
@@ -2487,6 +2714,40 @@ class NativeClient {
 		for (const session of sessions) await this.ensureSessionSubscription(session.id)
 	}
 
+	private emitPermissionAsked(
+		sessionId: string,
+		directory: string,
+		approvalId: string,
+		item: Record<string, unknown>,
+		availableScopes: PermissionResponse[],
+	): void {
+		const target = objectRecord(item.target)
+		const targetKind = String(target?.kind ?? "")
+		const answerable = this.pendingPermissions.get(approvalId)?.id !== undefined
+		this.emit(directory, {
+			type: "permission.asked",
+			properties: {
+				id: approvalId,
+				requestID: approvalId,
+				sessionID: sessionId,
+				permission: String(item.actionSummary ?? "Agent requested permission"),
+				metadata: {
+					tool: item.resource,
+					command: targetKind === "command" ? target?.command : undefined,
+					path: targetKind === "path" ? target?.path : undefined,
+					host: targetKind === "host" ? target?.host : undefined,
+					justification: item.justification,
+					resource: item.resource,
+					target: target?.command ?? target?.path ?? target?.host,
+					availableScopes,
+					commandPattern: item.commandPattern,
+					commandPrefix: item.commandPrefix,
+					answerable,
+				},
+			},
+		})
+	}
+
 	private async respondToPermission(
 		permissionId: string,
 		response: PermissionResponse,
@@ -2495,13 +2756,16 @@ class NativeClient {
 		if (!this.transport) throw new Error("Devo Native transport is not connected")
 		const pending = this.pendingPermissions.get(permissionId)
 		if (!pending) return
+		if (pending.id === undefined) {
+			throw new Error("Permission request is not answerable yet; wait for the connection to restore")
+		}
 		this.pendingPermissions.delete(permissionId)
-		const scopes = pending.availableScopes ?? ["once"]
+		const scopes = normalizeApprovalScopes(pending.availableScopes)
 		const requestedScope = response === "always"
 			? ["commandPrefixPersist", "commandPrefix", "pathPrefix", "host", "tool", "session", "turn", "once"]
-				.find((candidate) => scopes.includes(candidate)) ?? "once"
+				.find((candidate) => scopes.includes(candidate as PermissionResponse)) ?? "once"
 			: response === "reject" ? "once" : response
-		const scope = scopes.includes(requestedScope) ? requestedScope : "once"
+		const scope = scopes.includes(requestedScope as PermissionResponse) ? requestedScope : "once"
 		const result = assertValidProtocolPayload({
 			method: pending.method,
 			direction: "outgoingResponse",
@@ -2587,6 +2851,8 @@ class NativeClient {
 		this.sessionDirectories.delete(sessionId)
 		this.loadedSessionLimits.delete(sessionId)
 		this.messages.delete(sessionId)
+		this.activeTurnIds.delete(sessionId)
+		this.queueEntriesBySession.delete(sessionId)
 		for (const [messageId, parts] of this.parts) {
 			if (parts.some((part) => part.sessionID === sessionId)) {
 				this.parts.delete(messageId)
@@ -3096,6 +3362,68 @@ class NativeClient {
 		return eventTime
 	}
 
+	private queueEntriesForSession(sessionId: string): QueueWireEntry[] {
+		return this.queueEntriesBySession.get(sessionId) ?? []
+	}
+
+	private emitQueueSnapshot(sessionId: string, entries: QueueWireEntry[], change: string): void {
+		this.queueEntriesBySession.set(sessionId, entries)
+		const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
+		this.emit(directory, {
+			type: "session.queue.updated",
+			properties: {
+				sessionID: sessionId,
+				change,
+				entries,
+			},
+		})
+	}
+
+	private async pushSessionQueue(params: {
+		sessionID: string
+		parts: PromptPartInput[]
+		collaborationMode?: string
+	}): Promise<PromptAsyncOutcome> {
+		if (params.collaborationMode) {
+			const settingsPatch: SessionSettingsPatch = {
+				mode: params.collaborationMode,
+			}
+			await this.enqueueSessionSettings(params.sessionID, settingsPatch)
+		}
+		await this.ensureSessionSubscription(params.sessionID)
+		const result = (await this.requestCanonical("session/queue/push", {
+			sessionId: params.sessionID,
+			input: inputItemsFromPromptParts(params.parts),
+			idempotencyKey: crypto.randomUUID(),
+		})) as Record<string, unknown>
+		const outcome = String(result.outcome ?? "")
+		if (outcome === "queued" || result.entry) {
+			const entry = objectRecord(result.entry) ?? result
+			const entries = parseQueueWireEntries([entry])
+			if (entries[0]) {
+				const current = this.queueEntriesForSession(params.sessionID)
+				const merged = [...current.filter((item) => item.queueItemId !== entries[0].queueItemId), entries[0]]
+				this.emitQueueSnapshot(
+					params.sessionID,
+					merged.sort((left, right) => left.position - right.position),
+					"added",
+				)
+				return { outcome: "queued", queueItemId: entries[0].queueItemId }
+			}
+			return { outcome: "queued", queueItemId: String(entry.queueItemId ?? "") }
+		}
+		const turn = objectRecord(result.turn)
+		if (turn?.id) {
+			this.activeTurnIds.set(params.sessionID, String(turn.id))
+			const directory = this.sessionDirectories.get(params.sessionID) ?? this.options.directory ?? defaultCwd()
+			this.emit(directory, {
+				type: "session.activeTurn",
+				properties: { sessionID: params.sessionID, turnID: String(turn.id) },
+			})
+		}
+		return { outcome: "started" }
+	}
+
 	private rememberConfigOptions(
 		sessionId: string,
 		directory: string,
@@ -3127,6 +3455,9 @@ class NativeClient {
 		}
 		if (typeof patch.mode === "string" && patch.mode.length > 0) {
 			normalizedPatch.mode = patch.mode
+		}
+		if (typeof patch.permissionProfile === "string" && patch.permissionProfile.length > 0) {
+			normalizedPatch.permissionProfile = patch.permissionProfile
 		}
 		if (Object.keys(normalizedPatch).length === 0) return this.sessions.get(sessionId)
 
@@ -3213,6 +3544,7 @@ class NativeClient {
 				const settings: Record<string, string> = {}
 				if (patch.reasoningEffort) settings.reasoningEffort = patch.reasoningEffort
 				if (patch.mode) settings.mode = patch.mode
+				if (patch.permissionProfile) settings.permissionProfile = patch.permissionProfile
 				if (Object.keys(settings).length > 0) update.settings = settings
 
 				const result = (await this.requestCanonical("session/metadata/update", update)) as {

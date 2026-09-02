@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use devo_protocol::CollaborationMode;
 use devo_protocol::RequestUserInputArgs;
 use devo_protocol::RequestUserInputQuestion;
 
@@ -49,10 +48,6 @@ impl ToolHandler for QuestionHandler {
         input: serde_json::Value,
         _progress: Option<ToolProgressSender>,
     ) -> Result<ToolResult, ToolCallError> {
-        if ctx.collaboration_mode != CollaborationMode::Plan {
-            return Err(ToolCallError::BlockedByMode("plan mode".to_string()));
-        }
-
         let args = request_user_input_args(input)?;
         let turn_id = ctx.turn_id.clone().ok_or_else(|| {
             ToolCallError::ExecutionFailed("request_user_input requires an active turn".to_string())
@@ -188,5 +183,51 @@ mod tests {
                 .expect("options description");
         assert!(options_description.contains("at least two meaningful choices"));
         assert!(options_description.contains("do not provide exactly one option"));
+    }
+
+    #[tokio::test]
+    async fn question_tool_is_available_in_build_mode() {
+        let handler = QuestionHandler::new();
+        let ctx = ToolContext {
+            tool_call_id: crate::invocation::ToolCallId("call-1".into()),
+            session_id: "session-1".into(),
+            turn_id: Some("turn-1".into()),
+            workspace_root: std::env::temp_dir(),
+            budgets: crate::contracts::ToolBudgets {
+                output_limit_bytes: 1024,
+                wall_time_limit_ms: None,
+            },
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            agent_scope: crate::contracts::ToolAgentScope::Parent,
+            collaboration_mode: devo_protocol::CollaborationMode::Build,
+            agent_coordinator: None,
+            client_filesystem: None,
+            file_read_ledger: None,
+            network_proxy: None,
+            network_no_proxy: None,
+            sandbox_permission_overlay: None,
+            sandbox_profile: None,
+        };
+
+        let error = handler
+            .handle(
+                ctx,
+                serde_json::json!({
+                    "questions": [{
+                        "id": "topic",
+                        "header": "Topic",
+                        "question": "Which topic?"
+                    }]
+                }),
+                None,
+            )
+            .await
+            .expect_err("missing coordinator should fail after the mode gate");
+
+        assert!(
+            !matches!(error, ToolCallError::BlockedByMode(_)),
+            "request_user_input must not require plan mode: {error}"
+        );
+        assert!(matches!(error, ToolCallError::ExecutionFailed(_)));
     }
 }

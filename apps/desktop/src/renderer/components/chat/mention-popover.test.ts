@@ -5,10 +5,7 @@ import { isMentionOptionDisabled, isMentionOptionVisible, mapReferenceSearchResu
 import { createMentionFromOption, insertMentionIntoText } from "./prompt-mentions"
 
 const mentionPopoverSource = readFileSync(new URL("./mention-popover.tsx", import.meta.url), "utf8")
-const popoverStylesSource = readFileSync(
-	new URL("./composer-popover-styles.ts", import.meta.url),
-	"utf8",
-)
+const popoverSource = readFileSync(new URL("./composer-popover.tsx", import.meta.url), "utf8")
 
 describe("mention popover reference results", () => {
 	test("preserves skill, MCP, and file results from the server", () => {
@@ -166,20 +163,20 @@ describe("mention popover reference results", () => {
 		expect({
 			noScrollAreaImport: !mentionPopoverSource.includes("@devo/ui/components/scroll-area"),
 			outerOverflowYAuto:
-				popoverStylesSource.includes("overflow-y-auto") &&
-				!popoverStylesSource.includes("scroll-area-viewport"),
-			usesSharedScrollClass: mentionPopoverSource.includes("composerPopoverScrollClass"),
+				popoverSource.includes("overflow-y-auto") &&
+				!popoverSource.includes("scroll-area-viewport"),
+			usesSharedPopover: mentionPopoverSource.includes("<ComposerPopover"),
 		}).toEqual({
 			noScrollAreaImport: true,
 			outerOverflowYAuto: true,
-			usesSharedScrollClass: true,
+			usesSharedPopover: true,
 		})
 	})
 
 	test("renders skill and MCP rows as a single compact line", () => {
 		expect({
 			skillMcpSingleLine: mentionPopoverSource.includes(
-				'<span className="shrink-0 font-medium tracking-normal">{option.display}</span>',
+				'<span className="shrink-0">{option.display}</span>',
 			),
 			noStackedSkillBody: !mentionPopoverSource.includes(
 				'className="min-w-0 flex-1"',
@@ -192,28 +189,31 @@ describe("mention popover reference results", () => {
 		})
 	})
 
-	test("matches the shared minimal composer popover surface", () => {
+	test("omits a search header and matches the shared composer popover", () => {
 		expect({
-			usesSharedShell: mentionPopoverSource.includes("composerPopoverShellClass"),
-			usesSharedItems: mentionPopoverSource.includes("composerPopoverItemClass"),
+			omitsSearchHeader:
+				!mentionPopoverSource.includes("SearchIcon") &&
+				!mentionPopoverSource.includes("composerPopoverHeaderClass") &&
+				!popoverSource.includes("composerPopoverHeaderClass"),
+			usesSharedPopover: mentionPopoverSource.includes("<ComposerPopover"),
+			usesSharedItems: mentionPopoverSource.includes("ComposerPopoverItem"),
 			usesMutedIcons: mentionPopoverSource.includes("composerPopoverIconClass"),
 			omitsAccentIconColors:
 				!mentionPopoverSource.includes("text-blue-400") &&
 				!mentionPopoverSource.includes("text-cyan-500") &&
 				!mentionPopoverSource.includes("text-fuchsia-500"),
-			shellIsQuiet:
-				popoverStylesSource.includes("shadow-sm") &&
-				popoverStylesSource.includes("border-border/70") &&
-				!popoverStylesSource.includes("shadow-md"),
+			shellUsesOptionMenu: popoverSource.includes("optionMenuContentClass"),
+			itemUsesOptionMenu: popoverSource.includes("optionMenuItemClass"),
 			activeUsesMuted:
-				popoverStylesSource.includes("bg-muted/80") &&
-				!popoverStylesSource.includes("bg-accent"),
+				popoverSource.includes("bg-muted") && !popoverSource.includes("bg-accent"),
 		}).toEqual({
-			usesSharedShell: true,
+			omitsSearchHeader: true,
+			usesSharedPopover: true,
 			usesSharedItems: true,
 			usesMutedIcons: true,
 			omitsAccentIconColors: true,
-			shellIsQuiet: true,
+			shellUsesOptionMenu: true,
+			itemUsesOptionMenu: true,
 			activeUsesMuted: true,
 		})
 	})

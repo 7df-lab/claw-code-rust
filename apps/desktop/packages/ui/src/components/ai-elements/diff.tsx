@@ -2,7 +2,7 @@
 
 import { Button } from "@devo/ui/components/button"
 import { cn } from "@devo/ui/lib/utils"
-import { MultiFileDiff, PatchDiff } from "@pierre/diffs/react"
+import { PierreDiffMount } from "@devo/ui/components/ai-elements/pierre-diff-mount"
 import { CheckIcon, CopyIcon, MinusIcon, PlusIcon } from "lucide-react"
 import {
 	type ComponentProps,
@@ -332,7 +332,8 @@ export const DiffContent = ({
 			{...props}
 		>
 			{context.mode === "files" ? (
-				<MultiFileDiff
+				<PierreDiffMount
+					mode="files"
 					options={options}
 					newFile={{
 						name: context.newFile.name,
@@ -344,7 +345,7 @@ export const DiffContent = ({
 					}}
 				/>
 			) : (
-				<PatchDiff options={options} patch={context.patch} />
+				<PierreDiffMount mode="patch" options={options} patch={context.patch} />
 			)}
 		</div>
 	)

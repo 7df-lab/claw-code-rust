@@ -135,12 +135,26 @@ impl ServerRuntime {
                             devo_protocol::RequestUserInputResponse { answers },
                         )
                         .await;
-                } else if let Some((_, controller)) = approval_controller
+                } else if let Some((host_session_id, controller)) = approval_controller
                     && let Ok(answer) = serde_json::from_value::<
                         devo_protocol::native::methods::ApprovalRespondParams,
                     >(response)
                 {
-                    let _ = controller.send(approval_decision_from_native(&answer.decision));
+                    let (decision, scope) = approval_decision_from_native(&answer.decision);
+                    if runtime.active_turns.has_session(session_id).await {
+                        let _ = controller.send((decision, scope));
+                    } else {
+                        runtime
+                            .resolve_approval_from_control_response(
+                                host_session_id,
+                                session_id,
+                                turn_id,
+                                &request_id,
+                                decision,
+                                scope,
+                            )
+                            .await;
+                    }
                 }
             });
             if enqueued_rx.recv().await.is_some() {
@@ -400,5 +414,41 @@ impl ServerRuntime {
             }
         }
         Err(last_error.unwrap_or_else(|| "no Native user-input controller answered".to_string()))
+    }
+
+    /// After `session/resume` hydrates waiters, reissue only when this
+    /// connection already subscribed (so `subscription/create` will not).
+    pub(super) async fn reissue_pending_controls_if_subscribed(
+        self: &Arc<Self>,
+        connection_id: u64,
+        session_id: &devo_protocol::native::ids::SessionId,
+    ) {
+        use devo_protocol::native::event::StreamSelector;
+        let subscribed = self
+            .event_subscriptions
+            .lock()
+            .await
+            .values()
+            .any(|subscription| {
+                subscription.connection_id == connection_id
+                    && subscription.selectors.iter().any(|selector| {
+                        matches!(
+                            selector,
+                            StreamSelector::Session {
+                                session_id: subscribed_id
+                            } if subscribed_id.as_str() == session_id.as_str()
+                        )
+                    })
+            });
+        if !subscribed {
+            return;
+        }
+        let pending = self
+            .pending_control_requests(&[StreamSelector::Session {
+                session_id: session_id.clone(),
+            }])
+            .await;
+        self.reissue_pending_control_requests(connection_id, pending)
+            .await;
     }
 }

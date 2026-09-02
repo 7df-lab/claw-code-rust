@@ -23,7 +23,6 @@ import {
 	Loader2Icon,
 	PlusIcon,
 	Redo2Icon,
-	SquareIcon,
 	Undo2Icon,
 	XIcon,
 } from "lucide-react"
@@ -52,7 +51,7 @@ import {
 	setSessionComposerAtom,
 } from "../../atoms/session-composer"
 import type { ProviderRetryStatus, SessionSetupPhase } from "../../atoms/sessions"
-import { removePermissionAtom, sessionFamily } from "../../atoms/sessions"
+import { sessionFamily } from "../../atoms/sessions"
 import {
 	effectivePermissionFamily,
 	effectiveQuestionFamily,
@@ -90,8 +89,8 @@ import {
 	useModelState,
 } from "../../hooks/use-devo-data"
 import type { ChatTurn } from "../../hooks/use-session-chat"
+import { warmDiffHighlighter } from "../../lib/diff-highlighter-warmup"
 import { createLogger } from "../../lib/logger"
-import { computeTurnWorkTimeSplit, formatWorkDuration } from "../../lib/session-metrics"
 import type { Agent, FileAttachment, PermissionResponse, QuestionAnswer } from "../../lib/types"
 import { getBaseClient, getProjectClient } from "../../services/connection-manager"
 
@@ -111,7 +110,7 @@ import {
 	diffCommentsFamily,
 	serializeCommentsForChat,
 } from "../review/review-comments"
-import { PermissionItem } from "./chat-permission"
+import { ChatPermissionFlow } from "./chat-permission"
 import { ChatQuestionFlow } from "./chat-question"
 import { ChatTurnComponent, isSyntheticMessage } from "./chat-turn"
 import { ForkBoundaryDivider } from "./fork-boundary-divider"
@@ -121,7 +120,9 @@ import {
 	ComposerStatusStack,
 	type ComposerGoal,
 	type ComposerGoalStatus,
+	type ComposerQueueItem,
 } from "./composer-status-stack"
+import { useComposerQueue } from "../../hooks/use-composer-queue"
 import { ContextItems } from "./context-items"
 import type { MentionOption } from "./mention-popover"
 import { MentionPopover, type MentionPopoverHandle } from "./mention-popover"
@@ -135,6 +136,14 @@ import {
 	reconcileMentions,
 } from "./prompt-mentions"
 import { ComposerModeChip } from "./composer-mode-chip"
+import { ComposerPermissionPicker } from "./composer-permission-picker"
+import {
+	DEFAULT_COMPOSER_PERMISSION_PROFILE,
+	type ComposerPermissionProfile,
+	parseComposerPermissionProfile,
+	takeComposerPermissionForSession,
+} from "./composer-permission"
+import { goalPromptText, parseComposerSlash } from "./composer-slash"
 import { PromptToolbar } from "./prompt-toolbar"
 import { SessionTaskList } from "./session-task-list"
 import { SkillPickerDialog } from "./skill-picker-dialog"
@@ -178,6 +187,7 @@ function AttachButton({ disabled }: { disabled?: boolean }) {
 			tooltip="Attach files"
 			onClick={() => attachments.openFileDialog()}
 			disabled={disabled}
+			className="size-8 rounded-full bg-muted/80 text-muted-foreground hover:bg-muted hover:text-foreground"
 		>
 			<PlusIcon className="size-4" />
 		</PromptInputButton>
@@ -690,7 +700,12 @@ interface ChatViewProps {
 		permissionId: string,
 		response?: PermissionResponse,
 	) => Promise<void>
-	onDeny?: (agent: Agent, permissionSessionId: string, permissionId: string) => Promise<void>
+	onDeny?: (
+		agent: Agent,
+		permissionSessionId: string,
+		permissionId: string,
+		note?: string,
+	) => Promise<void>
 	/** Question handlers */
 	onReplyQuestion?: (agent: Agent, requestId: string, answers: QuestionAnswer[]) => Promise<void>
 	onRejectQuestion?: (agent: Agent, requestId: string) => Promise<void>
@@ -735,6 +750,7 @@ type SelectionPersistPatch = {
 	modelID?: string
 	reasoningEffort?: string
 	mode?: string
+	permissionProfile?: string
 }
 
 /**
@@ -783,6 +799,12 @@ export function ChatView({
 }: ChatViewProps) {
 	const isWorking = agent.status === "running"
 	const settingsOverlayOpen = useAtomValue(settingsOverlayOpenAtom)
+
+	useEffect(() => {
+		void warmDiffHighlighter().catch(() => {
+			// Best-effort warmup; inline diffs retry via PierreDiffMount remount.
+		})
+	}, [])
 
 	const conversationTargetScrollTop = useCallback(
 		(defaultTarget: number) => {
@@ -958,7 +980,6 @@ export function ChatView({
 		}
 	}, [composerInsetPx, setupPhase, showComposer])
 	const effectivePermission = useAtomValue(effectivePermissionFamily(agent.sessionId))
-	const removePermission = useSetAtom(removePermissionAtom)
 
 	// Format the session-level error for display. Only shown when the last
 	// turn doesn't already carry an assistant-level error (the server emits
@@ -993,24 +1014,21 @@ export function ChatView({
 			response?: PermissionResponse,
 		) => {
 			await onApprove?.(a, permissionSessionId, permissionId, response)
-			removePermission({ sessionId: permissionSessionId, permissionId })
-			// Permission card disappears after approval — scroll to keep content visible.
 			requestAnimationFrame(() => {
 				scrollRef.current?.scrollToBottom("smooth")
 			})
 		},
-		[onApprove, removePermission],
+		[onApprove],
 	)
 
 	const handleDenyPermission = useCallback(
-		async (a: Agent, permissionSessionId: string, permissionId: string) => {
-			await onDeny?.(a, permissionSessionId, permissionId)
-			removePermission({ sessionId: permissionSessionId, permissionId })
+		async (a: Agent, permissionSessionId: string, permissionId: string, note?: string) => {
+			await onDeny?.(a, permissionSessionId, permissionId, note)
 			requestAnimationFrame(() => {
 				scrollRef.current?.scrollToBottom("smooth")
 			})
 		},
-		[onDeny, removePermission],
+		[onDeny],
 	)
 
 	// Keyboard shortcuts for undo/redo
@@ -1091,12 +1109,9 @@ export function ChatView({
 				isLast={isLastTurn}
 				isWorking={isWorking}
 				agent={agent}
-				pendingPermission={index === turns.length - 1 ? effectivePermission : undefined}
 				isConnected={isConnected}
 				compactionStatus={compactionStatus}
 				retryStatus={activeRetryStatus}
-				onApprovePermission={handleApprovePermission}
-				onDenyPermission={handleDenyPermission}
 				onForkFromTurn={
 					onForkFromTurn
 						? () => onForkFromTurn(turn.turnId)
@@ -1161,7 +1176,10 @@ export function ChatView({
 		>
 			{/* Chat messages -- constrained width for readability */}
 			{showTranscript ? (
-			<div className="relative min-h-0 min-w-0 flex-1">
+			<div
+				className="relative min-h-0 min-w-0 flex-1"
+				data-conversation-surface={agent.sessionId}
+			>
 				<Conversation
 					key={agent.sessionId}
 					className="h-full"
@@ -1302,7 +1320,12 @@ interface ChatInputSectionProps {
 		permissionId: string,
 		response?: PermissionResponse,
 	) => Promise<void>
-	onDeny?: (agent: Agent, permissionSessionId: string, permissionId: string) => Promise<void>
+	onDeny?: (
+		agent: Agent,
+		permissionSessionId: string,
+		permissionId: string,
+		note?: string,
+	) => Promise<void>
 	onReplyQuestion?: ChatViewProps["onReplyQuestion"]
 	onRejectQuestion?: ChatViewProps["onRejectQuestion"]
 	onForkFromTurn?: ChatViewProps["onForkFromTurn"]
@@ -1341,9 +1364,20 @@ export function ChatInputSection({
 	const [activeGoal, setActiveGoal] = useState<ComposerGoal | null>(null)
 	const [goalAction, setGoalAction] = useState<ComposerGoalAction | null>(null)
 	const [skillPickerOpen, setSkillPickerOpen] = useState(false)
+	const {
+		queueItems,
+		draggingId: draggingQueueItemId,
+		setDraggingId: setDraggingQueueItemId,
+		steerQueueItem,
+		removeQueueItem,
+		editQueueItem,
+		reorderQueueItem,
+	} = useComposerQueue(agent.sessionId, agent.directory ?? null)
 	const [collaborationMode, setCollaborationModeAtom] = useAtom(
 		collaborationModeFamily(agent.sessionId),
 	)
+	const [permissionProfile, setPermissionProfile] =
+		useState<ComposerPermissionProfile>(DEFAULT_COMPOSER_PERMISSION_PROFILE)
 
 	// User requirement: the /goal footer chip is only an input trigger;
 	// the composer-adjacent status row reflects the real session goal state.
@@ -1351,6 +1385,10 @@ export function ChatInputSection({
 		setActiveTrigger(null)
 		setActiveGoal(null)
 		setGoalAction(null)
+		const pendingPermission = takeComposerPermissionForSession(agent.sessionId)
+		if (pendingPermission) {
+			setPermissionProfile(pendingPermission)
+		}
 	}, [agent.sessionId])
 
 	const loadGoalStatus = useCallback(async (): Promise<ComposerGoal | null> => {
@@ -1399,19 +1437,10 @@ export function ChatInputSection({
 	// so the parent session's UI can respond on behalf of any descendant.
 	const effectivePermission = useAtomValue(effectivePermissionFamily(agent.sessionId))
 	const effectiveQuestion = useAtomValue(effectiveQuestionFamily(agent.sessionId))
-	const removePermission = useSetAtom(removePermissionAtom)
 
 	// Diff comments integration
 	const diffComments = useAtomValue(diffCommentsFamily(agent.sessionId))
 	const setDiffComments = useSetAtom(diffCommentsFamily(agent.sessionId))
-
-	// Elapsed-time split for the current turn — used for the live timer on the submit button.
-	const currentTurnWorkSplit = useMemo(() => {
-		if (!isWorking || turns.length === 0) return null
-		const lastTurn = turns[turns.length - 1]
-		if (lastTurn.assistantMessages.length === 0) return null
-		return computeTurnWorkTimeSplit(lastTurn)
-	}, [isWorking, turns])
 
 	// Mention tracking — files and agents referenced via @
 	const [mentions, setMentions] = useState<PromptMention[]>([])
@@ -1451,23 +1480,21 @@ export function ChatInputSection({
 			response?: PermissionResponse,
 		) => {
 			await onApprove?.(a, permissionSessionId, permissionId, response)
-			removePermission({ sessionId: permissionSessionId, permissionId })
 			requestAnimationFrame(() => {
 				scrollRef.current?.scrollToBottom("smooth")
 			})
 		},
-		[onApprove, removePermission, scrollRef],
+		[onApprove, scrollRef],
 	)
 
 	const handleDenyPermission = useCallback(
-		async (a: Agent, permissionSessionId: string, permissionId: string) => {
-			await onDeny?.(a, permissionSessionId, permissionId)
-			removePermission({ sessionId: permissionSessionId, permissionId })
+		async (a: Agent, permissionSessionId: string, permissionId: string, note?: string) => {
+			await onDeny?.(a, permissionSessionId, permissionId, note)
 			requestAnimationFrame(() => {
 				scrollRef.current?.scrollToBottom("smooth")
 			})
 		},
-		[onDeny, removePermission, scrollRef],
+		[onDeny, scrollRef],
 	)
 
 	// Draft persistence
@@ -1498,6 +1525,8 @@ export function ChatInputSection({
 				mode?: string
 				reasoningEffort?: string
 				reasoning_effort?: string
+				permissionProfile?: string
+				permission_profile?: string
 			}
 		} | null | undefined
 		const persistedReasoningEffort =
@@ -1513,7 +1542,7 @@ export function ChatInputSection({
 			""
 		}|${wireSession?.model?.model ?? ""}|${persistedReasoningEffort ?? ""}|${
 			wireSession?.settings?.mode ?? ""
-		}`
+		}|${wireSession?.settings?.permissionProfile ?? wireSession?.settings?.permission_profile ?? ""}`
 		if (hydratedForMessagesRef.current === messageKey) return
 		const projectDefault = agent.directory ? projectModels[agent.directory] : undefined
 		// Persisted per-session turn settings survive restarts (the server
@@ -1574,6 +1603,11 @@ export function ChatInputSection({
 		) {
 			seededCollaborationModes.add(agent.sessionId)
 			appStore.set(collaborationModeFamily(agent.sessionId), wireMode)
+		}
+		const wirePermission =
+			wireSession?.settings?.permissionProfile ?? wireSession?.settings?.permission_profile
+		if (wirePermission) {
+			setPermissionProfile(parseComposerPermissionProfile(wirePermission))
 		}
 	}, [
 		agent.directory,
@@ -1667,15 +1701,23 @@ export function ChatInputSection({
 	// (and re-persists), acting as a backstop.
 	const pendingSelectionPersistRef = useRef<SelectionPersistPatch | null>(null)
 	const selectionPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+	const permissionProfileDirtyRef = useRef(false)
 
 	const flushSelectionPersist = useCallback((): Promise<void> => {
 		if (selectionPersistTimerRef.current !== null) {
 			clearTimeout(selectionPersistTimerRef.current)
 			selectionPersistTimerRef.current = null
 		}
-		const pending = pendingSelectionPersistRef.current
+		const pending: SelectionPersistPatch = {
+			...pendingSelectionPersistRef.current,
+		}
+		if (permissionProfileDirtyRef.current) {
+			pending.permissionProfile = permissionProfile
+		}
 		pendingSelectionPersistRef.current = null
-		if (!pending || !agent.sessionId) return Promise.resolve()
+		if (!agent.sessionId) return Promise.resolve()
+		const hasPersistableFields = Object.keys(pending).length > 0
+		if (!hasPersistableFields) return Promise.resolve()
 		try {
 			const client =
 				(agent.directory ? getProjectClient(agent.directory) : null) ?? getBaseClient()
@@ -1697,6 +1739,11 @@ export function ChatInputSection({
 			// turn without taking on error handling.
 			return Promise.resolve()
 				.then(() => updateSettings.call(client.session, { sessionID: agent.sessionId, ...pending }))
+				.then(() => {
+					if (pending.permissionProfile) {
+						permissionProfileDirtyRef.current = false
+					}
+				})
 				.catch((error: unknown) => {
 					log.warn("session settings persist failed", { sessionId: agent.sessionId }, error)
 				})
@@ -1704,7 +1751,7 @@ export function ChatInputSection({
 			log.warn("session settings persist failed", { sessionId: agent.sessionId }, error)
 			return Promise.resolve()
 		}
-	}, [agent.directory, agent.sessionId])
+	}, [agent.directory, agent.sessionId, permissionProfile])
 
 	const scheduleSelectionPersist = useCallback(
 		(patch: SelectionPersistPatch) => {
@@ -1754,6 +1801,15 @@ export function ChatInputSection({
 			scheduleSelectionPersist({ mode: next })
 		},
 		[scheduleSelectionPersist, setCollaborationModeAtom],
+	)
+
+	const handlePermissionProfileChange = useCallback(
+		(profile: ComposerPermissionProfile) => {
+			setPermissionProfile(profile)
+			permissionProfileDirtyRef.current = true
+			scheduleSelectionPersist({ permissionProfile: profile })
+		},
+		[scheduleSelectionPersist, agent.sessionId],
 	)
 
 	const slashCommandRef = useRef<{
@@ -1822,26 +1878,22 @@ export function ChatInputSection({
 
 	const handleSlashCommand = useCallback(
 		async (text: string): Promise<boolean> => {
-			const trimmed = text.trim()
-			if (!trimmed.startsWith("/")) return false
+			const parsed = parseComposerSlash(text)
+			if (!parsed) return false
 
-			const spaceIndex = trimmed.indexOf(" ")
-			const cmdName = spaceIndex === -1 ? trimmed.slice(1) : trimmed.slice(1, spaceIndex)
-			const args = spaceIndex === -1 ? "" : trimmed.slice(spaceIndex + 1).trim()
+			const { name, args } = parsed
 
 			// Product requirement: Desktop slash commands are limited to first-party
 			// entries. Compact executes immediately; Goal becomes a footer trigger
 			// chip; /plan switches collaboration mode; Research stays as slash text.
-			switch (cmdName.toLowerCase()) {
+			switch (name) {
 				case "compact":
-					if (agent.directory && effectiveModel) {
+					if (agent.directory) {
 						const client = getProjectClient(agent.directory)
 						if (client) {
 							try {
 								await client.session.summarize({
 									sessionID: agent.sessionId,
-									providerID: effectiveModel.providerID,
-									modelID: effectiveModel.modelID,
 								})
 							} catch (err) {
 								log.error("session.summarize failed", { sessionId: agent.sessionId }, err)
@@ -1858,8 +1910,7 @@ export function ChatInputSection({
 						}
 					}
 					return true
-				case "side":
-				case "btw": {
+				case "side": {
 					if (!args) {
 						slashCommandRef.current?.setText("/side ")
 						return true
@@ -1878,15 +1929,12 @@ export function ChatInputSection({
 					return true
 				case "research":
 					return false
-				default:
-					return false
 			}
 		},
 		[
 			agent.directory,
 			agent.sessionId,
 			changeCollaborationMode,
-			effectiveModel,
 			onForkFromTurn,
 			onStartSideQuestion,
 		],
@@ -1904,7 +1952,7 @@ export function ChatInputSection({
 					filename?: string
 					url: string
 				}
-			> = [{ type: "text", text: `/${trigger} ${text.trim()}` }]
+			> = [{ type: "text", text: trigger === "goal" ? goalPromptText(text) : `/${trigger} ${text.trim()}` }]
 			for (const file of files ?? []) {
 				parts.push({
 					type: "file",
@@ -1936,6 +1984,18 @@ export function ChatInputSection({
 			selectedAgent,
 			selectedVariant,
 		],
+	)
+
+	const handleEditQueueItem = useCallback(
+		async (item: ComposerQueueItem) => {
+			try {
+				const text = await editQueueItem(item)
+				if (text) slashCommandRef.current?.setText(text)
+			} catch (err) {
+				log.error("edit queue item failed", { sessionId: agent.sessionId, queueItemId: item.id }, err)
+			}
+		},
+		[agent.sessionId, editQueueItem],
 	)
 
 	const handleSend = useCallback(
@@ -2055,6 +2115,12 @@ export function ChatInputSection({
 			collaborationMode,
 		],
 	)
+
+	const queuePlaceholder = isWorking
+		? queueItems.length > 0
+			? "Add to queue…"
+			: "Queue a follow-up…"
+		: "What would you like to do?"
 
 	const canSend = isConnected && !sending
 
@@ -2242,23 +2308,6 @@ export function ChatInputSection({
 						</div>
 					)}
 
-					{/* Pending permissions — tree-scoped: shows own OR any sub-agent's permission */}
-					{turns.length === 0 && effectivePermission && (
-						<div className="pb-2">
-								<PermissionItem
-									key={effectivePermission.request.id}
-									agent={agent}
-									permission={effectivePermission.request}
-									onApprove={handleApprovePermission}
-									onDeny={handleDenyPermission}
-									isConnected={isConnected}
-									isFromSubAgent={effectivePermission.sessionId !== agent.sessionId}
-								/>
-						</div>
-					)}
-
-					{/* When questions are pending, replace the input with a focused question flow.
-					    Tree-scoped: shows own OR any sub-agent's question. */}
 					{effectiveQuestion ? (
 						<ChatQuestionFlow
 							questions={[effectiveQuestion.request]}
@@ -2266,6 +2315,15 @@ export function ChatInputSection({
 							onReply={handleReplyQuestion}
 							onReject={handleRejectQuestion}
 							disabled={!isConnected}
+						/>
+					) : effectivePermission ? (
+						<ChatPermissionFlow
+							agent={agent}
+							permission={effectivePermission.request}
+							onApprove={handleApprovePermission}
+							onDeny={handleDenyPermission}
+							disabled={!isConnected}
+							isFromSubAgent={effectivePermission.sessionId !== agent.sessionId}
 						/>
 					) : (
 						/* Input card — PromptInputProvider wraps everything,
@@ -2299,19 +2357,8 @@ export function ChatInputSection({
 									onSelect={handleMentionSelect}
 									onClose={handleMentionClose}
 								/>
-								<ComposerStatusStack
-									goal={activeGoal}
-									goalAction={goalAction}
-									onEditGoal={handleEditGoal}
-									onPauseGoal={handlePauseGoal}
-									onResumeGoal={handleResumeGoal}
-									onClearGoal={handleClearGoal}
-								/>
 								<PromptInput
-									className={cn(
-										"devo-composer bg-background/95 shadow-[0_8px_32px_rgba(0,0,0,0.05)] dark:shadow-[0_10px_36px_rgba(0,0,0,0.28)]",
-										activeGoal && "rounded-t-none border-t-border/70",
-									)}
+									className="devo-composer bg-background/95 shadow-[0_8px_32px_rgba(0,0,0,0.05)] dark:shadow-[0_10px_36px_rgba(0,0,0,0.28)]"
 									accept="image/png,image/jpeg,image/gif,image/webp,application/pdf"
 									multiple
 									maxFileSize={10 * 1024 * 1024}
@@ -2320,6 +2367,22 @@ export function ChatInputSection({
 											handleSend(message.text, message.files.length > 0 ? message.files : undefined)
 									}}
 								>
+									<ComposerStatusStack
+										goal={activeGoal}
+										goalAction={goalAction}
+										queueItems={queueItems}
+										draggingQueueItemId={draggingQueueItemId}
+										onEditGoal={handleEditGoal}
+										onPauseGoal={handlePauseGoal}
+										onResumeGoal={handleResumeGoal}
+										onClearGoal={handleClearGoal}
+										onSteerQueueItem={steerQueueItem}
+										onEditQueueItem={handleEditQueueItem}
+										onRemoveQueueItem={removeQueueItem}
+										onReorderQueueItem={reorderQueueItem}
+										onQueueDragStart={setDraggingQueueItemId}
+										onQueueDragEnd={() => setDraggingQueueItemId(null)}
+									/>
 									{/* Mention chips above the textarea */}
 									<ContextItems mentions={mentions} onRemove={handleMentionRemove} />
 									{/* Diff comment chips above the textarea */}
@@ -2337,26 +2400,16 @@ export function ChatInputSection({
 										data-prompt-input
 										onKeyDown={handleTextareaKeyDown}
 										disabled={!isConnected}
-										placeholder={
-											isWorking ? "Send a follow-up message..." : "What would you like to do?"
-										}
+										placeholder={queuePlaceholder}
 									/>
 
 									{/* Toolbar inside the card — agent + model + variant selectors + submit */}
 									<PromptInputFooter>
 										<PromptInputTools>
 											<AttachButton disabled={!isConnected} />
-											<PromptToolbar
-												agents={devoAgents ?? []}
-												selectedAgent={selectedAgent}
-												defaultAgent={config?.defaultAgent}
-												onSelectAgent={setSelectedAgent}
-												providers={providers ?? null}
-												effectiveModel={effectiveModel}
-												hasModelOverride={!!selectedModel}
-												onSelectModel={handleModelSelect}
-												selectedVariant={selectedVariant}
-												onSelectVariant={handleVariantSelect}
+											<ComposerPermissionPicker
+												value={permissionProfile}
+												onChange={handlePermissionProfileChange}
 												disabled={!isConnected}
 											/>
 											{collaborationMode === "plan" && (
@@ -2374,19 +2427,26 @@ export function ChatInputSection({
 												/>
 											)}
 										</PromptInputTools>
-										<PromptInputSubmit
-											disabled={!canSend}
-											status={isWorking ? "streaming" : undefined}
-											onStop={handleStop}
-											size={isWorking && currentTurnWorkSplit ? "xs" : "icon-sm"}
-										>
-											{isWorking && currentTurnWorkSplit ? (
-												<LiveTurnTimer
-													completedMs={currentTurnWorkSplit.completedMs}
-													activeStartMs={currentTurnWorkSplit.activeStartMs}
-												/>
-											) : undefined}
-										</PromptInputSubmit>
+										<div className="ml-auto flex min-w-0 items-center gap-0.5">
+											<PromptToolbar
+												agents={devoAgents ?? []}
+												selectedAgent={selectedAgent}
+												defaultAgent={config?.defaultAgent}
+												onSelectAgent={setSelectedAgent}
+												providers={providers ?? null}
+												effectiveModel={effectiveModel}
+												hasModelOverride={!!selectedModel}
+												onSelectModel={handleModelSelect}
+												selectedVariant={selectedVariant}
+												onSelectVariant={handleVariantSelect}
+												disabled={!isConnected}
+											/>
+											<PromptInputSubmit
+												disabled={!canSend}
+												status={isWorking ? "streaming" : undefined}
+												onStop={handleStop}
+											/>
+										</div>
 									</PromptInputFooter>
 								</PromptInput>
 							</div>
@@ -2409,46 +2469,6 @@ export function ChatInputSection({
 			/>
 
 		</>
-	)
-}
-
-// ============================================================
-// Live turn timer — ticks every second while the agent is working
-// ============================================================
-
-/**
- * Compact live timer that shows elapsed time from the user prompt to now.
- */
-function LiveTurnTimer({
-	completedMs,
-	activeStartMs,
-}: {
-	completedMs: number
-	activeStartMs: number | null
-}) {
-	const computeDisplay = useCallback(
-		() =>
-			formatWorkDuration(completedMs + (activeStartMs != null ? Date.now() - activeStartMs : 0)),
-		[completedMs, activeStartMs],
-	)
-
-	const [elapsed, setElapsed] = useState(computeDisplay)
-
-	useEffect(() => {
-		const tick = () => setElapsed(computeDisplay())
-		tick()
-		// Only tick if there's an active (in-progress) message
-		if (activeStartMs != null) {
-			const id = setInterval(tick, 1_000)
-			return () => clearInterval(id)
-		}
-	}, [computeDisplay, activeStartMs])
-
-	return (
-		<span className="inline-flex items-center gap-1.5 text-xs tabular-nums">
-			<SquareIcon className="size-3.5" />
-			{elapsed}
-		</span>
 	)
 }
 

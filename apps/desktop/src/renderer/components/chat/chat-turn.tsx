@@ -22,6 +22,7 @@ import {
 } from "lucide-react"
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import { useDisplayMode } from "../../hooks/use-agents"
+import { usePreserveChatScroll } from "../../hooks/use-preserve-chat-scroll"
 import type { SessionCompactionStatus } from "../../atoms/compaction"
 import type { ProviderRetryStatus } from "../../atoms/sessions"
 import type { ChatMessageEntry, ChatTurn as ChatTurnType } from "../../hooks/use-session-chat"
@@ -36,8 +37,6 @@ import type {
 	Agent,
 	FilePart,
 	Part,
-	PermissionRequest,
-	PermissionResponse,
 	ReasoningPart,
 	TextPart,
 	ToolPart,
@@ -49,7 +48,6 @@ import {
 	compactionStatusFromMetadata,
 	isCompactionStatusText,
 } from "./compaction-status-divider"
-import { PermissionItem } from "./chat-permission"
 import { PlanBlock, isPlanTextPart } from "./plan-block"
 import { UserMessageBlock } from "./user-message-block"
 
@@ -103,10 +101,14 @@ function computeStatus(parts: Part[]): string {
 				case "apply_patch":
 					return "Making edits..."
 				case "bash":
-					return "Running command..."
+				case "shell_command":
+				case "exec_command":
+					return ""
 				case "question":
+				case "request_user_input":
 					return "Asking a question..."
 				default:
+					if (Array.isArray(part.state.input?.questions)) return "Asking a question..."
 					return `Running ${part.tool}...`
 			}
 		}
@@ -506,31 +508,14 @@ function areTurnsEqual(a: ChatTurnType, b: ChatTurnType): boolean {
 // ChatTurnComponent
 // ============================================================
 
-type PendingPermission = {
-	request: PermissionRequest
-	sessionId: string
-}
-
 interface ChatTurnProps {
 	turn: ChatTurnType
 	isLast: boolean
 	isWorking: boolean
 	agent?: Agent
-	pendingPermission?: PendingPermission
 	isConnected?: boolean
 	compactionStatus?: SessionCompactionStatus | null
 	retryStatus?: ProviderRetryStatus
-	onApprovePermission?: (
-		agent: Agent,
-		permissionSessionId: string,
-		permissionId: string,
-		response?: PermissionResponse,
-	) => Promise<void>
-	onDenyPermission?: (
-		agent: Agent,
-		permissionSessionId: string,
-		permissionId: string,
-	) => Promise<void>
 	/** Fork the conversation from this turn boundary */
 	onForkFromTurn?: () => Promise<void>
 	/** Edit and resend this turn's user message */
@@ -539,17 +524,6 @@ interface ChatTurnProps {
 	onDeletePart?: (sessionId: string, messageId: string, partId: string) => Promise<void>
 	onImplementPlan?: () => void
 	onRevisePlan?: () => void
-}
-
-function pendingPermissionFingerprint(permission: PendingPermission | undefined): string {
-	if (!permission) return ""
-	const requestId =
-		typeof permission.request.id === "string"
-			? permission.request.id
-			: typeof permission.request.requestID === "string"
-				? permission.request.requestID
-				: ""
-	return `${permission.sessionId}:${requestId}`
 }
 
 function retryStatusText(status: ProviderRetryStatus): string {
@@ -657,12 +631,9 @@ export const ChatTurnComponent = memo(
 		isLast,
 		isWorking,
 		agent,
-		pendingPermission,
 		isConnected = false,
 		compactionStatus,
 		retryStatus,
-		onApprovePermission,
-		onDenyPermission,
 		onForkFromTurn,
 		onEditUserMessage,
 		onDeletePart,
@@ -673,6 +644,7 @@ export const ChatTurnComponent = memo(
 		const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(() => new Set())
 		const [copied, setCopied] = useState(false)
 		const displayMode = useDisplayMode()
+		const preserveChatScroll = usePreserveChatScroll()
 		const toolPathRoot = agent?.worktreePath ?? agent?.directory ?? agent?.projectDirectory
 		const turnRef = useRef<HTMLDivElement>(null)
 		useEffect(() => {
@@ -715,6 +687,7 @@ export const ChatTurnComponent = memo(
 			if (retryStatus) return retryStatusText(retryStatus)
 			for (let m = turn.assistantMessages.length - 1; m >= 0; m--) {
 				const status = computeStatus(turn.assistantMessages[m].parts)
+				if (status === "") return ""
 				if (status !== "Working...") return status
 			}
 			return "Working..."
@@ -798,8 +771,10 @@ export const ChatTurnComponent = memo(
 		}, [])
 
 		const handleToggleCompletedProcess = useCallback(() => {
-			setCompletedProcessExpanded((expanded) => !expanded)
-		}, [])
+			preserveChatScroll(() => {
+				setCompletedProcessExpanded((expanded) => !expanded)
+			})
+		}, [preserveChatScroll])
 
 		const [forking, setForking] = useState(false)
 		const handleFork = useCallback(async () => {
@@ -887,24 +862,13 @@ export const ChatTurnComponent = memo(
 							working={working}
 						/>
 
-						{working && hasSteps && (
+						{working && hasSteps && statusText ? (
 							<div className="flex items-center gap-2 text-[13px] text-muted-foreground">
 								<Loader2Icon className="size-3 animate-spin text-muted-foreground/30" />
 								<Shimmer className="text-[11px]">{statusText}</Shimmer>
 							</div>
-						)}
+						) : null}
 					</div>
-				)}
-
-				{pendingPermission && agent && (
-					<PermissionItem
-						agent={agent}
-						permission={pendingPermission.request}
-						onApprove={onApprovePermission}
-						onDeny={onDenyPermission}
-						isConnected={isConnected}
-						isFromSubAgent={pendingPermission.sessionId !== agent.sessionId}
-					/>
 				)}
 
 				{/* Error */}
@@ -993,12 +957,6 @@ export const ChatTurnComponent = memo(
 		if (prev.agent?.worktreePath !== next.agent?.worktreePath) return false
 		if (prev.isConnected !== next.isConnected) return false
 		if (prev.compactionStatus !== next.compactionStatus) return false
-		if (
-			pendingPermissionFingerprint(prev.pendingPermission) !==
-			pendingPermissionFingerprint(next.pendingPermission)
-		) {
-			return false
-		}
 		// Skip reference comparison for callbacks - they close over stable values
 		// and their identity changes don't affect rendered output
 		return true

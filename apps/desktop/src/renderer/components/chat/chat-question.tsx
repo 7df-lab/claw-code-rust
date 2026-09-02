@@ -1,34 +1,24 @@
 import { Button } from "@devo/ui/components/button"
+import { cn } from "@devo/ui/lib/utils"
 import {
 	ArrowRightIcon,
+	ArrowUpIcon,
+	CheckIcon,
+	ChevronLeftIcon,
+	ChevronRightIcon,
 	Loader2Icon,
-	MessageCircleQuestionIcon,
-	SendIcon,
-	SkipForwardIcon,
-	ZapIcon,
 } from "lucide-react"
-import { memo, useCallback, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import type { QuestionAnswer, QuestionInfo, QuestionRequest } from "../../lib/types"
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 interface ChatQuestionFlowProps {
-	/** All pending question requests for this agent */
 	questions: QuestionRequest[]
 	onReply: (requestId: string, answers: QuestionAnswer[]) => Promise<void>
 	onReject: (requestId: string) => Promise<void>
 	disabled?: boolean
-	/** When true, the question originated from a sub-agent session */
 	isFromSubAgent?: boolean
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Build the final answers array from selections + custom text per question. */
 function buildAnswers(
 	questions: QuestionInfo[],
 	selections: Map<number, Set<string>>,
@@ -41,7 +31,6 @@ function buildAnswers(
 	})
 }
 
-/** Check that a single question index has at least one answer selected or typed. */
 function isQuestionAnswered(
 	index: number,
 	selections: Map<number, Set<string>>,
@@ -52,9 +41,17 @@ function isQuestionAnswered(
 	return (selected && selected.size > 0) || custom.length > 0
 }
 
-// ---------------------------------------------------------------------------
-// Sub-component: single question renderer
-// ---------------------------------------------------------------------------
+function answerLabel(
+	info: QuestionInfo,
+	index: number,
+	selections: Map<number, Set<string>>,
+	customTexts: Map<number, string>,
+): string | null {
+	const custom = (customTexts.get(index) ?? "").trim()
+	if (custom) return info.isSecret ? "••••••" : custom
+	const selected = Array.from(selections.get(index) ?? [])[0]
+	return selected ?? null
+}
 
 interface QuestionSectionProps {
 	info: QuestionInfo
@@ -77,22 +74,14 @@ function QuestionSection({
 	onSubmitCustom,
 	disabled,
 }: QuestionSectionProps) {
-	// Note: the protocol doesn't support multi-select yet; always false for now.
-	const isMultiple = false
 	const allowCustom = info.isOther !== false
 
 	return (
-		<fieldset aria-label={info.header} className="border-none p-0 m-0">
+		<fieldset aria-label={info.header} className="m-0 border-none p-0">
 			<legend className="sr-only">{info.question}</legend>
-			{/* Options */}
-			<div
-				role="radiogroup"
-				aria-label={info.header}
-				className="space-y-1.5 px-3 pt-3 pb-1.5"
-			>
+			<div role="radiogroup" aria-label={info.header} className="flex flex-col px-1">
 				{info.options.map((option: { label: string; description: string }) => {
 					const isSelected = selected.has(option.label)
-
 					return (
 						<button
 							key={option.label}
@@ -101,58 +90,35 @@ function QuestionSection({
 							aria-checked={isSelected}
 							onClick={() => onToggle(index, option.label)}
 							disabled={disabled}
-							className={`flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-2 text-left text-sm transition-all ${
-								isSelected
-									? "border-primary/30 bg-primary/10 shadow-xs"
-									: "border-transparent bg-muted/25 hover:border-border/70 hover:bg-muted/50"
-							} ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
+							className={cn(
+								"flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] leading-snug transition-colors",
+								isSelected ? "bg-muted text-foreground" : "text-popover-foreground hover:bg-muted/70",
+								disabled ? "cursor-not-allowed opacity-45 hover:bg-transparent" : "cursor-pointer",
+							)}
 						>
-							{/* Radio / checkbox indicator */}
 							<span
-								className={`mt-0.5 flex size-3.5 shrink-0 items-center justify-center border transition-colors ${
-									isMultiple ? "rounded" : "rounded-full"
-								} ${isSelected ? "border-primary bg-primary" : "border-muted-foreground/40 bg-card"}`}
+								className={cn(
+									"mt-0.5 flex size-3.5 shrink-0 items-center justify-center",
+									isSelected ? "text-foreground" : "text-transparent",
+								)}
 								aria-hidden="true"
 							>
-								{isSelected && (
-									<svg
-										viewBox="0 0 12 12"
-										className="size-2 fill-current text-primary-foreground"
-										aria-hidden="true"
-									>
-										{isMultiple ? (
-											<path
-												d="M10 3L4.5 8.5L2 6"
-												fill="none"
-												stroke="currentColor"
-												strokeWidth="2"
-												strokeLinecap="round"
-												strokeLinejoin="round"
-											/>
-										) : (
-											<circle cx="6" cy="6" r="3" />
-										)}
-									</svg>
-								)}
+								<CheckIcon className="size-3.5 stroke-[1.5]" />
 							</span>
-
-							{/* Label + description */}
 							<span className="min-w-0 flex-1">
-								<span className="font-medium text-foreground">{option.label}</span>
-								{option.description && (
-									<span className="block text-muted-foreground text-xs mt-0.5 line-clamp-2">
+								<span className="font-normal">{option.label}</span>
+								{option.description ? (
+									<span className="mt-0.5 block text-[12px] leading-4 text-muted-foreground">
 										{option.description}
 									</span>
-								)}
+								) : null}
 							</span>
 						</button>
 					)
 				})}
 			</div>
-
-			{/* Custom text input */}
-			{allowCustom && (
-				<div className="px-3 pb-3 pt-1.5">
+			{allowCustom ? (
+				<div className="px-2 pb-1.5 pt-0.5">
 					<label htmlFor={`question-custom-${index}`} className="sr-only">
 						Other answer for {info.header || info.question}
 					</label>
@@ -167,19 +133,62 @@ function QuestionSection({
 								onSubmitCustom?.()
 							}
 						}}
-						placeholder={info.isSecret ? "Type a secret value..." : "Type a custom answer..."}
+						placeholder={info.isSecret ? "Type a secret value…" : "Or type your own answer…"}
 						disabled={disabled}
-						className="w-full rounded-lg border border-border/70 bg-background px-3 py-2 text-sm text-foreground shadow-xs placeholder:text-muted-foreground/50 transition-[border-color,box-shadow] focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+						className="h-8 w-full rounded-lg border border-border/60 bg-transparent px-2 text-[13px] text-foreground placeholder:text-muted-foreground/60 outline-none transition-colors focus:border-border focus:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50"
 					/>
 				</div>
-			)}
+			) : null}
 		</fieldset>
 	)
 }
 
-// ---------------------------------------------------------------------------
-// Progress dots
-// ---------------------------------------------------------------------------
+function AnswerReview({
+	questions,
+	selections,
+	customTexts,
+	onSelectQuestion,
+	disabled,
+}: {
+	questions: QuestionInfo[]
+	selections: Map<number, Set<string>>
+	customTexts: Map<number, string>
+	onSelectQuestion: (index: number) => void
+	disabled: boolean
+}) {
+	return (
+		<ul className="flex flex-col px-1">
+			{questions.map((info, index) => {
+				const answer = answerLabel(info, index, selections, customTexts)
+				return (
+					<li key={info.id || `question-${index}`}>
+						<button
+							type="button"
+							onClick={() => onSelectQuestion(index)}
+							disabled={disabled}
+							className={cn(
+								"flex w-full flex-col items-start gap-0.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-muted/70",
+								disabled && "cursor-not-allowed opacity-45 hover:bg-transparent",
+							)}
+						>
+							<span className="text-[13px] leading-5 text-muted-foreground">
+								{info.header || info.question}
+							</span>
+							<span
+								className={cn(
+									"text-[13px] leading-5",
+									answer ? "text-foreground" : "text-muted-foreground/70",
+								)}
+							>
+								{answer ?? "No answer yet"}
+							</span>
+						</button>
+					</li>
+				)
+			})}
+		</ul>
+	)
+}
 
 function StepDots({
 	total,
@@ -196,13 +205,14 @@ function StepDots({
 		dots.push(
 			<span
 				key={`dot-${i}-of-${total}`}
-				className={`size-1.5 rounded-full transition-colors ${
+				className={cn(
+					"size-1.5 rounded-full transition-colors",
 					i === current
 						? "bg-foreground"
 						: answered.has(i)
 							? "bg-foreground/40"
-							: "bg-muted-foreground/25"
-				}`}
+							: "bg-muted-foreground/25",
+				)}
 				aria-hidden="true"
 			/>,
 		)
@@ -214,9 +224,30 @@ function StepDots({
 	)
 }
 
-// ---------------------------------------------------------------------------
-// Main component: question flow (replaces chat input entirely)
-// ---------------------------------------------------------------------------
+function QuestionNavButton({
+	label,
+	disabled,
+	onClick,
+	children,
+}: {
+	label: string
+	disabled: boolean
+	onClick: () => void
+	children: ReactNode
+}) {
+	return (
+		<button
+			type="button"
+			aria-label={label}
+			title={label}
+			disabled={disabled}
+			onClick={onClick}
+			className="grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+		>
+			{children}
+		</button>
+	)
+}
 
 export const ChatQuestionFlow = memo(function ChatQuestionFlow({
 	questions,
@@ -225,7 +256,6 @@ export const ChatQuestionFlow = memo(function ChatQuestionFlow({
 	disabled = false,
 	isFromSubAgent = false,
 }: ChatQuestionFlowProps) {
-	// Current question request being worked on (first in the queue)
 	const currentRequest = questions[0]
 	if (!currentRequest) return null
 
@@ -241,10 +271,6 @@ export const ChatQuestionFlow = memo(function ChatQuestionFlow({
 		/>
 	)
 })
-
-// ---------------------------------------------------------------------------
-// Inner component: handles stepping through QuestionInfos in one request
-// ---------------------------------------------------------------------------
 
 interface QuestionRequestStepperProps {
 	request: QuestionRequest
@@ -264,7 +290,9 @@ const QuestionRequestStepper = memo(function QuestionRequestStepper({
 	isFromSubAgent = false,
 }: QuestionRequestStepperProps) {
 	const questions = request.questions
-	const totalSteps = questions.length
+	const questionCount = questions.length
+	const reviewStep = questionCount
+	const pageCount = questionCount + 1
 
 	const [currentStep, setCurrentStep] = useState(0)
 	const [selections, setSelections] = useState<Map<number, Set<string>>>(() => new Map())
@@ -272,40 +300,37 @@ const QuestionRequestStepper = memo(function QuestionRequestStepper({
 	const [submitting, setSubmitting] = useState(false)
 	const cardRef = useRef<HTMLElement>(null)
 
-	const currentQuestion = questions[currentStep]
-	const isLastStep = currentStep === totalSteps - 1
-	const currentAnswered = isQuestionAnswered(currentStep, selections, customTexts)
+	const isReview = currentStep === reviewStep
+	const currentQuestion = isReview ? undefined : questions[currentStep]
+	const currentAnswered = !isReview && isQuestionAnswered(currentStep, selections, customTexts)
+	const allAnswered = questions.every((_, index) =>
+		isQuestionAnswered(index, selections, customTexts),
+	)
 
-	// Track which steps have been answered
 	const answeredSteps = new Set<number>()
-	for (let i = 0; i < totalSteps; i++) {
+	for (let i = 0; i < questionCount; i++) {
 		if (isQuestionAnswered(i, selections, customTexts)) {
 			answeredSteps.add(i)
 		}
 	}
+	if (allAnswered) answeredSteps.add(reviewStep)
 
-	// --- Selection toggle ---
-	const handleToggle = useCallback(
-		(questionIndex: number, label: string) => {
-			setCustomTexts((prev) => {
-				if (!prev.has(questionIndex)) return prev
-				const next = new Map(prev)
-				next.delete(questionIndex)
-				return next
-			})
-			setSelections((prev) => {
-				const next = new Map(prev)
-				const current = new Set(next.get(questionIndex) ?? [])
-				current.clear()
-				current.add(label)
-				next.set(questionIndex, current)
-				return next
-			})
-		},
-		[],
-	)
+	const handleToggle = useCallback((questionIndex: number, label: string) => {
+		setCustomTexts((prev) => {
+			if (!prev.has(questionIndex)) return prev
+			const next = new Map(prev)
+			next.delete(questionIndex)
+			return next
+		})
+		setSelections((prev) => {
+			const next = new Map(prev)
+			const current = new Set<string>()
+			current.add(label)
+			next.set(questionIndex, current)
+			return next
+		})
+	}, [])
 
-	// --- Custom text change ---
 	const handleCustomChange = useCallback((questionIndex: number, value: string) => {
 		if (value.trim()) {
 			setSelections((prev) => {
@@ -322,19 +347,23 @@ const QuestionRequestStepper = memo(function QuestionRequestStepper({
 		})
 	}, [])
 
-	// --- Advance to next step or submit ---
-	const handleNext = useCallback(() => {
-		if (!currentAnswered || disabled || submitting) return
-		if (!isLastStep) {
-			setCurrentStep((s) => s + 1)
-		}
-	}, [currentAnswered, disabled, submitting, isLastStep])
-
-	// --- Submit all answers ---
-	const handleSubmit = useCallback(async () => {
+	const handlePrevPage = useCallback(() => {
 		if (disabled || submitting) return
-		// If on last step, current must be answered. Otherwise all must be answered.
-		if (isLastStep && !currentAnswered) return
+		setCurrentStep((step) => Math.max(0, step - 1))
+	}, [disabled, submitting])
+
+	const handleNextPage = useCallback(() => {
+		if (disabled || submitting) return
+		setCurrentStep((step) => Math.min(pageCount - 1, step + 1))
+	}, [disabled, submitting, pageCount])
+
+	const handleNext = useCallback(() => {
+		if (isReview || !currentAnswered || disabled || submitting) return
+		setCurrentStep((step) => Math.min(pageCount - 1, step + 1))
+	}, [isReview, currentAnswered, disabled, submitting, pageCount])
+
+	const handleSubmit = useCallback(async () => {
+		if (disabled || submitting || !allAnswered) return
 		setSubmitting(true)
 		try {
 			const answers = buildAnswers(questions, selections, customTexts)
@@ -342,28 +371,16 @@ const QuestionRequestStepper = memo(function QuestionRequestStepper({
 		} finally {
 			setSubmitting(false)
 		}
-	}, [
-		disabled,
-		submitting,
-		isLastStep,
-		currentAnswered,
-		questions,
-		selections,
-		customTexts,
-		onReply,
-		request.id,
-	])
+	}, [disabled, submitting, allAnswered, questions, selections, customTexts, onReply, request.id])
 
-	// Combined handler: next or submit
 	const handleAdvance = useCallback(() => {
-		if (isLastStep) {
+		if (isReview) {
 			handleSubmit()
 		} else {
 			handleNext()
 		}
-	}, [isLastStep, handleSubmit, handleNext])
+	}, [isReview, handleSubmit, handleNext])
 
-	// --- Skip entire request ---
 	const handleSkip = useCallback(async () => {
 		if (disabled || submitting) return
 		setSubmitting(true)
@@ -374,36 +391,45 @@ const QuestionRequestStepper = memo(function QuestionRequestStepper({
 		}
 	}, [disabled, submitting, onReject, request.id])
 
-	// --- Go back ---
-	const handleBack = useCallback(() => {
-		if (currentStep > 0) setCurrentStep((s) => s - 1)
-	}, [currentStep])
-
-	// --- Keyboard shortcuts ---
 	useEffect(() => {
 		function handleKeyDown(e: KeyboardEvent) {
-			// Allow Enter from custom input to advance
 			if (e.target instanceof HTMLInputElement && e.target.id?.startsWith("question-custom-")) {
-				return // handled by onSubmitCustom prop
+				return
 			}
-
-			if (e.key === "Enter" && !e.shiftKey && currentAnswered) {
-				e.preventDefault()
-				handleAdvance()
+			if (e.key === "Enter" && !e.shiftKey) {
+				if (isReview ? allAnswered : currentAnswered) {
+					e.preventDefault()
+					handleAdvance()
+				}
 			} else if (e.key === "Escape") {
 				e.preventDefault()
 				handleSkip()
+			} else if (e.key === "ArrowLeft") {
+				e.preventDefault()
+				handlePrevPage()
+			} else if (e.key === "ArrowRight") {
+				e.preventDefault()
+				handleNextPage()
 			}
 		}
-
 		document.addEventListener("keydown", handleKeyDown)
 		return () => document.removeEventListener("keydown", handleKeyDown)
-	}, [currentAnswered, handleAdvance, handleSkip])
+	}, [
+		isReview,
+		allAnswered,
+		currentAnswered,
+		handleAdvance,
+		handleSkip,
+		handlePrevPage,
+		handleNextPage,
+	])
 
-	// --- Auto-focus the card on mount and step change ---
 	useEffect(() => {
-		// Focus the custom input if available, otherwise the card
 		const timer = requestAnimationFrame(() => {
+			if (isReview) {
+				cardRef.current?.focus()
+				return
+			}
 			const customInput = document.getElementById(
 				`question-custom-${currentStep}`,
 			) as HTMLInputElement | null
@@ -414,115 +440,116 @@ const QuestionRequestStepper = memo(function QuestionRequestStepper({
 			}
 		})
 		return () => cancelAnimationFrame(timer)
-	}, [currentStep])
+	}, [currentStep, isReview])
 
-	if (!currentQuestion) return null
+	const headerTitle = isReview ? "Your answers" : currentQuestion?.header
+	const headerBody = isReview
+		? "Review before sending. Select an answer to edit it."
+		: currentQuestion?.question
 
 	return (
 		<section
 			ref={cardRef}
 			tabIndex={-1}
 			aria-label="Agent question"
-			className="animate-in fade-in slide-in-from-bottom-2 overflow-hidden rounded-xl border border-border/70 bg-card shadow-lg shadow-black/5 ring-1 ring-foreground/5 outline-none duration-300"
+			className="devo-composer animate-in fade-in slide-in-from-bottom-2 bg-background/95 shadow-[0_8px_32px_rgba(0,0,0,0.05)] outline-none duration-200 dark:shadow-[0_10px_36px_rgba(0,0,0,0.28)]"
 		>
-			{/* Sub-agent indicator */}
-			{isFromSubAgent && (
-				<div className="flex items-center gap-1 px-4 pt-3 text-[11px] font-medium text-muted-foreground/70">
-					<ZapIcon className="size-3.5 shrink-0 stroke-[1.5]" aria-hidden="true" />
-					<span>Sub-agent asking a question</span>
-				</div>
-			)}
-			{/* Header */}
-			<div className="flex items-start gap-3 px-4 py-3.5">
-				<div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/15">
-					<MessageCircleQuestionIcon
-						className="size-3.5 stroke-[1.5]"
-						aria-hidden="true"
-					/>
-				</div>
-				<div className="min-w-0 flex-1">
-					<div className="mb-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-						{currentQuestion.header || "Question"}
+			<div className="px-3 pt-3">
+				{isFromSubAgent ? (
+					<p className="mb-1.5 text-[11px] font-medium text-muted-foreground">From a sub-agent</p>
+				) : null}
+				<div className="flex items-start gap-2">
+					<div className="min-w-0 flex-1">
+						{headerTitle ? (
+							<div className="text-[13px] font-medium text-muted-foreground">{headerTitle}</div>
+						) : null}
+						{headerBody ? (
+							<div className={cn("text-[13px] leading-5 text-foreground", headerTitle && "mt-0.5")}>
+								{headerBody}
+							</div>
+						) : null}
 					</div>
-					<div className="text-sm font-medium leading-5 text-foreground">
-						{currentQuestion.question}
-					</div>
-				</div>
-				{totalRequests > 1 && (
-					<span className="mt-1 shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-						+{totalRequests - 1} more
-					</span>
-				)}
-			</div>
-
-			{/* Question content */}
-			<div className="border-t border-border/60 bg-muted/10">
-				<QuestionSection
-					info={currentQuestion}
-					index={currentStep}
-					selected={selections.get(currentStep) ?? new Set()}
-					customText={customTexts.get(currentStep) ?? ""}
-					onToggle={handleToggle}
-					onCustomChange={handleCustomChange}
-					onSubmitCustom={currentAnswered ? handleAdvance : undefined}
-					disabled={disabled || submitting}
-				/>
-			</div>
-
-			{/* Footer with navigation */}
-			<div className="flex items-center gap-2 border-t border-border/60 bg-card px-3 py-2.5">
-				{/* Left side: back + step dots */}
-				<div className="flex flex-1 items-center gap-2">
-					{currentStep > 0 && (
-						<button
-							type="button"
-							onClick={handleBack}
-							disabled={disabled || submitting}
-							className="text-xs text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+					<div className="flex shrink-0 items-center gap-0.5">
+						{totalRequests > 1 ? (
+							<span className="mr-1 text-[11px] text-muted-foreground">+{totalRequests - 1} more</span>
+						) : null}
+						<QuestionNavButton
+							label="Previous question"
+							disabled={currentStep <= 0 || disabled || submitting}
+							onClick={handlePrevPage}
 						>
-							Back
-						</button>
-					)}
-					<StepDots total={totalSteps} current={currentStep} answered={answeredSteps} />
+							<ChevronLeftIcon className="size-3.5 stroke-[1.5]" aria-hidden="true" />
+						</QuestionNavButton>
+						<QuestionNavButton
+							label="Next question"
+							disabled={currentStep >= pageCount - 1 || disabled || submitting}
+							onClick={handleNextPage}
+						>
+							<ChevronRightIcon className="size-3.5 stroke-[1.5]" aria-hidden="true" />
+						</QuestionNavButton>
+					</div>
 				</div>
+			</div>
 
-				{/* Right side: skip + action button */}
+			<div className="pt-1.5">
+				{isReview ? (
+					<AnswerReview
+						questions={questions}
+						selections={selections}
+						customTexts={customTexts}
+						onSelectQuestion={setCurrentStep}
+						disabled={disabled || submitting}
+					/>
+				) : currentQuestion ? (
+					<QuestionSection
+						info={currentQuestion}
+						index={currentStep}
+						selected={selections.get(currentStep) ?? new Set()}
+						customText={customTexts.get(currentStep) ?? ""}
+						onToggle={handleToggle}
+						onCustomChange={handleCustomChange}
+						onSubmitCustom={currentAnswered ? handleAdvance : undefined}
+						disabled={disabled || submitting}
+					/>
+				) : null}
+			</div>
+
+			<div className="flex items-center gap-1 px-2 pb-2 pt-1">
+				<div className="flex min-w-0 flex-1 items-center gap-2 px-1">
+					<StepDots total={pageCount} current={currentStep} answered={answeredSteps} />
+				</div>
 				<button
 					type="button"
 					onClick={handleSkip}
 					disabled={disabled || submitting}
-					className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+					className="h-8 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
 					aria-label="Skip question"
 				>
-					<SkipForwardIcon className="size-3.5 stroke-[1.5]" aria-hidden="true" />
 					Skip
 				</button>
-				{isLastStep ? (
+				{isReview ? (
 					<Button
-						size="sm"
+						size="icon-sm"
 						onClick={handleSubmit}
-						disabled={!currentAnswered || disabled || submitting}
-						className="h-7 gap-1 text-xs"
-						aria-label="Send answer"
+						disabled={!allAnswered || disabled || submitting}
+						className="size-8 rounded-full"
+						aria-label="Send answers"
 					>
 						{submitting ? (
-							<Loader2Icon className="size-3.5 animate-spin stroke-[1.5]" aria-hidden="true" />
+							<Loader2Icon className="size-4 animate-spin stroke-[1.5]" aria-hidden="true" />
 						) : (
-							<SendIcon className="size-3.5 stroke-[1.5]" aria-hidden="true" />
+							<ArrowUpIcon className="size-4" aria-hidden="true" />
 						)}
-						Send
 					</Button>
 				) : (
 					<Button
-						size="sm"
-						variant="secondary"
+						size="icon-sm"
 						onClick={handleNext}
 						disabled={!currentAnswered || disabled || submitting}
-						className="h-7 gap-1 text-xs"
+						className="size-8 rounded-full"
 						aria-label="Next question"
 					>
-						Next
-						<ArrowRightIcon className="size-3.5 stroke-[1.5]" aria-hidden="true" />
+						<ArrowRightIcon className="size-4" aria-hidden="true" />
 					</Button>
 				)}
 			</div>

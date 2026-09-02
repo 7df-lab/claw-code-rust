@@ -347,6 +347,9 @@ function toolNameFromUpdateKind(kind: string, input: Record<string, unknown>): s
 			return "webfetch"
 		case "think":
 			return "think"
+		case "question":
+		case "request_user_input":
+			return "request_user_input"
 		case "other":
 			return inferToolNameFromInput(input)
 		default:
@@ -355,6 +358,7 @@ function toolNameFromUpdateKind(kind: string, input: Record<string, unknown>): s
 }
 
 function inferToolNameFromInput(input: Record<string, unknown>, title?: string): string {
+	if (Array.isArray(input.questions)) return "request_user_input"
 	if (typeof input.command === "string") return "bash"
 	if (typeof input.url === "string") return "webfetch"
 	if (typeof input.pattern === "string") return "grep"
@@ -374,6 +378,9 @@ function inferToolNameFromInput(input: Record<string, unknown>, title?: string):
 	if (normalizedTitle?.startsWith("search")) return "grep"
 	if (normalizedTitle?.startsWith("fetch")) return "webfetch"
 	if (normalizedTitle?.startsWith("run") || normalizedTitle?.startsWith("execute")) return "bash"
+	if (normalizedTitle === "question" || normalizedTitle === "request_user_input") {
+		return "request_user_input"
+	}
 	return "tool"
 }
 

@@ -518,7 +518,17 @@ impl ServerRuntime {
             return;
         }
         self.signal_active_turn_interrupt(session_id).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), receiver).await;
+        if tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+            .await
+            .is_err()
+            && self.runtime_active_turn_id(session_id).await.is_some()
+        {
+            tracing::warn!(
+                session_id = %session_id,
+                turn_id = %turn_id,
+                "turn interrupt timed out before session delete"
+            );
+        }
     }
 
     async fn clear_deleted_session_runtime_state(&self, session_id: SessionId) {

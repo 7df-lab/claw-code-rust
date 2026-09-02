@@ -126,6 +126,8 @@ pub enum SessionTitleFinalSource {
     ModelGenerated,
     UserRename,
     ExplicitCreate,
+    /// Truncated first user message applied before optional LLM polish.
+    Heuristic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

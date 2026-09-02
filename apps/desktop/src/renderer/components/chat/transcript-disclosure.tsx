@@ -10,10 +10,14 @@ import {
 	memo,
 	useCallback,
 	useContext,
+	useEffect,
+	useLayoutEffect,
 	useMemo,
+	useRef,
 	useState,
 	type ReactNode,
 } from "react"
+import { usePreserveChatScroll } from "../../hooks/use-preserve-chat-scroll"
 
 interface TranscriptDisclosureContextValue {
 	isOpen: boolean
@@ -50,16 +54,19 @@ export const TranscriptDisclosure = memo(function TranscriptDisclosure({
 	children,
 }: TranscriptDisclosureProps) {
 	const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen)
+	const preserveChatScroll = usePreserveChatScroll()
 	const isControlled = openProp !== undefined
 	const isOpen = forceOpen || (isControlled ? openProp : uncontrolledOpen)
 
 	const handleOpenChange = useCallback(
 		(nextOpen: boolean) => {
 			if (forceOpen) return
-			if (!isControlled) setUncontrolledOpen(nextOpen)
-			onOpenChange?.(nextOpen)
+			preserveChatScroll(() => {
+				if (!isControlled) setUncontrolledOpen(nextOpen)
+				onOpenChange?.(nextOpen)
+			})
 		},
-		[forceOpen, isControlled, onOpenChange],
+		[forceOpen, isControlled, onOpenChange, preserveChatScroll],
 	)
 
 	const contextValue = useMemo(
@@ -191,5 +198,100 @@ export const TranscriptDisclosureContent = memo(function TranscriptDisclosureCon
 				{children}
 			</div>
 		</CollapsibleContent>
+	)
+})
+
+const PANEL_READY_MIN_HEIGHT_PX = 8
+/** Safety net only — happy path resolves on the next animation frame. */
+const PANEL_READY_FALLBACK_MS = 48
+
+function findCollapsiblePanel(node: HTMLElement): HTMLElement | null {
+	let current: HTMLElement | null = node
+	while (current) {
+		if (current.dataset.slot === "collapsible-content") return current
+		current = current.parentElement
+	}
+	return null
+}
+
+function isCollapsiblePanelReady(anchor: HTMLElement): boolean {
+	const panel = findCollapsiblePanel(anchor)
+	if (!panel) return true
+	const height = Math.max(panel.getBoundingClientRect().height, panel.scrollHeight)
+	return height >= PANEL_READY_MIN_HEIGHT_PX
+}
+
+/**
+ * Mount disclosure body only after the Base UI collapsible panel has opened in
+ * layout. Do not key off the placeholder's own min-height — that fires too
+ * early and leaves @pierre/diffs in a 0×0 host (blank first expand).
+ */
+export const MountWhenVisible = memo(function MountWhenVisible({
+	children,
+}: {
+	children: ReactNode
+}) {
+	const { isOpen } = useTranscriptDisclosure()
+	const anchorRef = useRef<HTMLDivElement>(null)
+	const [ready, setReady] = useState(false)
+
+	useLayoutEffect(() => {
+		if (!isOpen) {
+			setReady(false)
+			return
+		}
+
+		let cancelled = false
+		const anchor = anchorRef.current
+		if (!anchor) return
+
+		const markReady = () => {
+			if (!cancelled) setReady(true)
+		}
+
+		const tryMarkReady = () => {
+			if (cancelled || !anchorRef.current) return false
+			if (!isCollapsiblePanelReady(anchorRef.current)) return false
+			markReady()
+			return true
+		}
+
+		if (tryMarkReady()) {
+			return () => {
+				cancelled = true
+			}
+		}
+
+		const panel = findCollapsiblePanel(anchor)
+		const observer =
+			typeof ResizeObserver !== "undefined" && panel
+				? new ResizeObserver(() => {
+						if (tryMarkReady()) observer?.disconnect()
+					})
+				: null
+		observer?.observe(panel ?? anchor)
+
+		const rafId = requestAnimationFrame(() => {
+			tryMarkReady()
+		})
+
+		const fallbackId = window.setTimeout(() => {
+			markReady()
+		}, PANEL_READY_FALLBACK_MS)
+
+		return () => {
+			cancelled = true
+			observer?.disconnect()
+			cancelAnimationFrame(rafId)
+			clearTimeout(fallbackId)
+		}
+	}, [isOpen])
+
+	if (!isOpen) return null
+
+	return (
+		<div ref={anchorRef} className="w-full">
+			{ready ? children : <div className="h-px w-full shrink-0" aria-hidden />}
+		</div>
 	)
 })

@@ -2,40 +2,24 @@
  * @mention popover for Skill, MCP, file, and agent references.
  *
  * Preserves server-ranked references and combines them with local agents.
+ * Shares the composer popover chrome with `/` commands.
  */
 
 import type { ReferenceSearchResult } from "@devo-ai/sdk/v2/client"
 import fuzzysort from "fuzzysort"
-import {
-	BrainIcon,
-	FileIcon,
-	FolderIcon,
-	PlugIcon,
-	SearchIcon,
-	SparklesIcon,
-} from "lucide-react"
-import {
-	forwardRef,
-	memo,
-	useCallback,
-	useEffect,
-	useImperativeHandle,
-	useMemo,
-	useRef,
-	useState,
-} from "react"
+import { BrainIcon, FileIcon, FolderIcon, PlugIcon, SparklesIcon } from "lucide-react"
+import { forwardRef, memo, useImperativeHandle, useMemo } from "react"
 import { useReferenceSearch } from "../../hooks/use-reference-search"
 import type { SdkAgent } from "../../hooks/use-devo-data"
 import {
-	composerPopoverEmptyClass,
-	composerPopoverGroupLabelClass,
-	composerPopoverHeaderClass,
+	ComposerPopover,
+	ComposerPopoverEmpty,
+	ComposerPopoverGroup,
+	ComposerPopoverItem,
+	composerPopoverHintClass,
 	composerPopoverIconClass,
-	composerPopoverItemClass,
-	composerPopoverListClass,
-	composerPopoverScrollClass,
-	composerPopoverShellClass,
-} from "./composer-popover-styles"
+	useComposerPopoverNavigation,
+} from "./composer-popover"
 
 // ============================================================
 // Types
@@ -151,10 +135,6 @@ export const MentionPopover = memo(
 		{ query, open, directory, agents, onSelect, onClose },
 		ref,
 	) {
-		const [activeIndex, setActiveIndex] = useState(0)
-		const listRef = useRef<HTMLDivElement>(null)
-
-		// --- Data: agents ---
 		const agentOptions = useMemo<MentionOption[]>(
 			() =>
 				agents
@@ -163,26 +143,21 @@ export const MentionPopover = memo(
 			[agents],
 		)
 
-		// --- Data: server-ranked Skill, MCP, and File references ---
 		const { results, isLoading, error } = useReferenceSearch(directory, query, open)
 		const referenceOptions = useMemo(
 			() => mapReferenceSearchResults(results).filter(isMentionOptionVisible),
 			[results],
 		)
 
-		// --- Merge and filter ---
 		const allOptions = useMemo<MentionOption[]>(() => {
 			if (!query) {
-				// No query — show agents + initial references from the server.
 				return [...agentOptions, ...referenceOptions]
 			}
 
-			// Fuzzy filter agents
 			const agentResults = fuzzysort
 				.go(query, agentOptions, { key: "display", threshold: 0.3 })
 				.map((r) => r.obj)
 
-			// References come pre-filtered and ranked by the server.
 			return [...agentResults, ...referenceOptions]
 		}, [query, agentOptions, referenceOptions])
 		const selectableOptions = useMemo(
@@ -190,63 +165,18 @@ export const MentionPopover = memo(
 			[allOptions],
 		)
 
-		// Reset active index when options or query change
-		// biome-ignore lint/correctness/useExhaustiveDependencies: intentional — reset on options/query change
-		useEffect(() => {
-			setActiveIndex(0)
-		}, [allOptions.length, query])
-
-		// Scroll active item into view
-		// biome-ignore lint/correctness/useExhaustiveDependencies: intentional — scroll when active index changes
-		useEffect(() => {
-			const list = listRef.current
-			if (!list) return
-			const active = list.querySelector("[data-active=true]")
-			if (active) {
-				active.scrollIntoView({ block: "nearest" })
-			}
-		}, [activeIndex])
-
-		// --- Keyboard handler ---
-		const handleKeyDown = useCallback(
-			(e: React.KeyboardEvent): boolean => {
-				if (!open || selectableOptions.length === 0) return false
-
-				switch (e.key) {
-					case "ArrowDown": {
-						e.preventDefault()
-						setActiveIndex((i) => (i + 1) % selectableOptions.length)
-						return true
-					}
-					case "ArrowUp": {
-						e.preventDefault()
-						setActiveIndex((i) => (i - 1 + selectableOptions.length) % selectableOptions.length)
-						return true
-					}
-					case "Tab":
-					case "Enter": {
-						e.preventDefault()
-						const selected = selectableOptions[activeIndex]
-						if (selected) onSelect(selected)
-						return true
-					}
-					case "Escape": {
-						e.preventDefault()
-						onClose()
-						return true
-					}
-					default:
-						return false
-				}
-			},
-			[open, selectableOptions, activeIndex, onSelect, onClose],
-		)
+		const { activeIndex, setActiveIndex, listRef, handleKeyDown } = useComposerPopoverNavigation({
+			items: selectableOptions,
+			open,
+			resetKey: query,
+			onSelect,
+			onClose,
+		})
 
 		useImperativeHandle(ref, () => ({ handleKeyDown }), [handleKeyDown])
 
 		if (!open) return null
 
-		// --- Group options ---
 		const agentItems = allOptions.filter((option) => option.type === "agent")
 		const skillItems = allOptions.filter((option) => option.type === "skill")
 		const mcpItems = allOptions.filter((option) => option.type === "mcp")
@@ -254,102 +184,77 @@ export const MentionPopover = memo(
 		const hasResults = allOptions.length > 0
 		const showLoading = isLoading && !hasResults
 		const showError = !!error && !hasResults && !isLoading
-
 		const selectableIndex = (option: MentionOption) => selectableOptions.indexOf(option)
 
 		return (
-			<div
-				role="listbox"
-				className={composerPopoverShellClass}
-				onMouseDown={(e) => e.preventDefault()}
-			>
-				<div className={composerPopoverHeaderClass}>
-					<SearchIcon className={composerPopoverIconClass} aria-hidden="true" />
-					<span className="min-w-0 truncate text-[13px] leading-5 text-muted-foreground/70">
-						{query ? `Searching for “${query}”` : "Mention a file, skill, MCP, or agent"}
-					</span>
-				</div>
+			<ComposerPopover open={open} listRef={listRef}>
+				{!hasResults && (
+					<ComposerPopoverEmpty>
+						{showLoading
+							? query
+								? `Searching for “${query}”…`
+								: "Searching references and agents…"
+							: showError
+								? error
+								: query
+									? "No results found"
+									: "No references or agents available"}
+					</ComposerPopoverEmpty>
+				)}
 
-				{/* Single outer scroll only — avoid nested ScrollArea scrollbars. */}
-				<div className={composerPopoverScrollClass}>
-					<div ref={listRef} className={composerPopoverListClass}>
-						{!hasResults && (
-							<div className={composerPopoverEmptyClass}>
-								{showLoading
-									? query
-										? `Searching for “${query}”…`
-										: "Searching references and agents…"
-									: showError
-										? error
-										: query
-											? "No results found"
-											: "No references or agents available"}
-							</div>
-						)}
+				{agentItems.length > 0 && (
+					<MentionGroup
+						label="Agents"
+						options={agentItems}
+						activeIndex={activeIndex}
+						selectableIndex={selectableIndex}
+						onSelect={onSelect}
+						onHover={setActiveIndex}
+					/>
+				)}
 
-						{agentItems.length > 0 && (
-							<div>
-								<div className={composerPopoverGroupLabelClass}>Agents</div>
-								{agentItems.map((option) => {
-									const idx = selectableIndex(option)
-									return (
-										<MentionItem
-											key={`agent:${option.type === "agent" ? option.name : ""}`}
-											option={option}
-											isActive={idx === activeIndex}
-											onSelect={() => onSelect(option)}
-											onHover={() => setActiveIndex(idx)}
-										/>
-									)
-								})}
-							</div>
-						)}
+				{skillItems.length > 0 && (
+					<MentionGroup
+						label="Skills"
+						options={skillItems}
+						activeIndex={activeIndex}
+						selectableIndex={selectableIndex}
+						onSelect={onSelect}
+						onHover={setActiveIndex}
+					/>
+				)}
 
-						{skillItems.length > 0 && (
-							<MentionGroup
-								label="Skills"
-								options={skillItems}
-								activeIndex={activeIndex}
-								selectableIndex={selectableIndex}
-								onSelect={onSelect}
-								onHover={setActiveIndex}
-							/>
-						)}
+				{mcpItems.length > 0 && (
+					<MentionGroup
+						label="MCPs"
+						options={mcpItems}
+						activeIndex={activeIndex}
+						selectableIndex={selectableIndex}
+						onSelect={onSelect}
+						onHover={setActiveIndex}
+					/>
+				)}
 
-						{mcpItems.length > 0 && (
-							<MentionGroup
-								label="MCPs"
-								options={mcpItems}
-								activeIndex={activeIndex}
-								selectableIndex={selectableIndex}
-								onSelect={onSelect}
-								onHover={setActiveIndex}
-							/>
-						)}
-
-						{fileItems.length > 0 && (
-							<div>
-								<div className={composerPopoverGroupLabelClass}>Files</div>
-								{fileItems.map((option) => {
-									const idx = selectableIndex(option)
-									const path = option.type === "file" ? option.path : ""
-									return (
-										<MentionItem
-											key={`file:${path}`}
-											option={option}
-											isActive={idx === activeIndex}
-											onSelect={() => onSelect(option)}
-											onHover={() => {
-												if (idx >= 0) setActiveIndex(idx)
-											}}
-										/>
-									)
-								})}
-							</div>
-						)}
-					</div>
-				</div>
-			</div>
+				{fileItems.length > 0 && (
+					<ComposerPopoverGroup label="Files">
+						{fileItems.map((option) => {
+							const idx = selectableIndex(option)
+							const path = option.type === "file" ? option.path : ""
+							return (
+								<MentionItem
+									key={`file:${path}`}
+									option={option}
+									isActive={idx === activeIndex}
+									onSelect={() => onSelect(option)}
+									onHover={() => {
+										if (idx >= 0) setActiveIndex(idx)
+									}}
+								/>
+							)
+						})}
+					</ComposerPopoverGroup>
+				)}
+			</ComposerPopover>
 		)
 	}),
 )
@@ -370,8 +275,7 @@ const MentionGroup = memo(function MentionGroup({
 	onHover: (index: number) => void
 }) {
 	return (
-		<div>
-			<div className={composerPopoverGroupLabelClass}>{label}</div>
+		<ComposerPopoverGroup label={label}>
 			{options.map((option) => {
 				const idx = selectableIndex(option)
 				return (
@@ -386,7 +290,7 @@ const MentionGroup = memo(function MentionGroup({
 					/>
 				)
 			})}
-		</div>
+		</ComposerPopoverGroup>
 	)
 })
 
@@ -407,16 +311,10 @@ const MentionItem = memo(function MentionItem({
 }) {
 	if (option.type === "agent") {
 		return (
-			<button
-				type="button"
-				data-active={isActive}
-				className={composerPopoverItemClass(isActive)}
-				onClick={onSelect}
-				onMouseEnter={onHover}
-			>
+			<ComposerPopoverItem isActive={isActive} onSelect={onSelect} onHover={onHover}>
 				<BrainIcon className={composerPopoverIconClass} aria-hidden="true" />
-				<span className="font-medium tracking-normal">@{option.name}</span>
-			</button>
+				<span className="shrink-0">@{option.name}</span>
+			</ComposerPopoverItem>
 		)
 	}
 
@@ -425,21 +323,17 @@ const MentionItem = memo(function MentionItem({
 		const Icon = option.type === "skill" ? SparklesIcon : PlugIcon
 		const detail = option.disabledReason ?? option.description
 		return (
-			<button
-				type="button"
-				data-active={isActive}
+			<ComposerPopoverItem
+				isActive={isActive}
 				disabled={disabled}
 				title={detail}
-				className={composerPopoverItemClass(isActive, disabled)}
-				onClick={onSelect}
-				onMouseEnter={onHover}
+				onSelect={onSelect}
+				onHover={onHover}
 			>
 				<Icon className={composerPopoverIconClass} aria-hidden="true" />
-				<span className="shrink-0 font-medium tracking-normal">{option.display}</span>
-				{detail && (
-					<span className="min-w-0 truncate text-muted-foreground/70">{detail}</span>
-				)}
-			</button>
+				<span className="shrink-0">{option.display}</span>
+				{detail && <span className={composerPopoverHintClass}>{detail}</span>}
+			</ComposerPopoverItem>
 		)
 	}
 
@@ -447,26 +341,19 @@ const MentionItem = memo(function MentionItem({
 	const dir = getDirectory(path)
 	const name = getFileName(path)
 	const isDir = isDirectory(path)
+	const Icon = isDir ? FolderIcon : FileIcon
 
 	return (
-		<button
-			type="button"
-			data-active={isActive}
+		<ComposerPopoverItem
+			isActive={isActive}
 			disabled={option.disabled}
 			title={option.disabled ? option.disabledReason : path}
-			className={composerPopoverItemClass(isActive, option.disabled)}
-			onClick={onSelect}
-			onMouseEnter={onHover}
+			onSelect={onSelect}
+			onHover={onHover}
 		>
-			{isDir ? (
-				<FolderIcon className={composerPopoverIconClass} aria-hidden="true" />
-			) : (
-				<FileIcon className={composerPopoverIconClass} aria-hidden="true" />
-			)}
-			<div className="flex min-w-0 items-baseline gap-1.5">
-				<span className="shrink-0 font-medium tracking-normal">{name}</span>
-				{dir && <span className="truncate text-muted-foreground/70">{dir}</span>}
-			</div>
-		</button>
+			<Icon className={composerPopoverIconClass} aria-hidden="true" />
+			<span className="shrink-0">{name}</span>
+			{dir && <span className={composerPopoverHintClass}>{dir}</span>}
+		</ComposerPopoverItem>
 	)
 })

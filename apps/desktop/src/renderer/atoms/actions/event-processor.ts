@@ -17,6 +17,7 @@ import {
 	setSessionStatusAtom,
 	upsertSessionAtom,
 } from "../sessions"
+import { setSessionActiveTurnAtom, setSessionQueueAtom } from "../queue"
 import { sessionNativeFamily } from "../session-native"
 import { appStore } from "../store"
 import { isStreamingField, streamingVersionFamily } from "../streaming"
@@ -140,6 +141,20 @@ export function processEvent(event: Event): void {
 					error: undefined,
 				})
 			}
+			break
+
+		case "session.activeTurn":
+			set(setSessionActiveTurnAtom, {
+				sessionId: event.properties.sessionID,
+				turnId: event.properties.turnID ?? null,
+			})
+			break
+
+		case "session.queue.updated":
+			set(setSessionQueueAtom, {
+				sessionId: event.properties.sessionID,
+				entries: event.properties.entries ?? [],
+			})
 			break
 
 		case "session.error": {

@@ -82,6 +82,8 @@ impl ModelProviderSDK for GoalTitleProvider {
     }
 }
 
+/// Trace: L2-DES-SERVER-title-generation
+/// Verifies: goal/set applies a heuristic title immediately, then optional LLM polish.
 #[tokio::test]
 async fn goal_set_objective_generates_session_title_for_new_session() -> Result<()> {
     let data_root = TempDir::new()?;
@@ -107,6 +109,7 @@ async fn goal_set_objective_generates_session_title_for_new_session() -> Result<
         .await
         .context("session/goal/set response")?;
 
+    wait_for_title_update(&mut notifications_rx, "investigate goal title generation").await?;
     wait_for_title_update(&mut notifications_rx, "Generated goal title").await?;
 
     let list_response = runtime
@@ -133,7 +136,6 @@ async fn goal_set_objective_generates_session_title_for_new_session() -> Result<
         !title_request_contains(&title_requests[0], "/goal"),
         "title request should not include the slash-command wrapper"
     );
-    // goal/set awaits title before continuation; title is Final by RPC return.
     Ok(())
 }
 

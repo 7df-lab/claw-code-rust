@@ -234,6 +234,8 @@ pub enum InternalRecordV2 {
         /// projector at write time.
         epoch: u64,
     },
+    /// Turn blocked on interactive approval; used to resume after restart.
+    TurnApprovalCheckpoint(Box<crate::TurnApprovalCheckpointRecordedRecord>),
 }
 
 /// A rollout line parsed from disk in either supported format.

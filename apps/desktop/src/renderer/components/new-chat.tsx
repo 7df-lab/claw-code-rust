@@ -51,10 +51,20 @@ import { useAgentActions } from "../hooks/use-server"
 import { persistRuntimeModelConfigOption, persistRuntimeModelSelection } from "../lib/model-config-options"
 import { resolveSelectedProjectDirectory, navigateToNewChat } from "../lib/project-selection"
 import type { FileAttachment } from "../lib/types"
+import { getProjectClient } from "../services/connection-manager"
 import { createWorktree, randomWorktreeName } from "../services/worktree-service"
 import { BranchPicker } from "./branch-picker"
+import { ComposerModeChip } from "./chat/composer-mode-chip"
+import { ComposerPermissionPicker } from "./chat/composer-permission-picker"
+import {
+	DEFAULT_COMPOSER_PERMISSION_PROFILE,
+	type ComposerPermissionProfile,
+	stashComposerPermissionForSession,
+} from "./chat/composer-permission"
+import { goalPromptText, parseComposerSlash } from "./chat/composer-slash"
 import { PromptAttachmentPreview } from "./chat/prompt-attachments"
 import { PromptToolbar, StatusBar } from "./chat/prompt-toolbar"
+import { SkillPickerDialog } from "./chat/skill-picker-dialog"
 import { NewChatProjectPicker } from "./new-chat-project-picker"
 
 // ============================================================
@@ -207,6 +217,7 @@ function AttachButton({ disabled }: { disabled?: boolean }) {
 			tooltip="Attach files"
 			onClick={() => attachments.openFileDialog()}
 			disabled={disabled}
+			className="size-8 rounded-full bg-muted/80 text-muted-foreground hover:bg-muted hover:text-foreground"
 		>
 			<PlusIcon className="size-4" />
 		</PromptInputButton>
@@ -239,6 +250,11 @@ export function NewChat() {
 	const [selectedModel, setSelectedModel] = useState<ModelRef | null>(null)
 	const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
 	const [selectedVariant, setSelectedVariant] = useState<string | undefined>(undefined)
+	const [collaborationMode, setCollaborationMode] = useState<"build" | "plan">("build")
+	const [activeTrigger, setActiveTrigger] = useState<"goal" | null>(null)
+	const [permissionProfile, setPermissionProfile] =
+		useState<ComposerPermissionProfile>(DEFAULT_COMPOSER_PERMISSION_PROFILE)
+	const [skillPickerOpen, setSkillPickerOpen] = useState(false)
 
 	// Slash command and mention popover state
 	const [slashOpen, setSlashOpen] = useState(false)
@@ -357,9 +373,38 @@ export function NewChat() {
 		setMentionQuery("")
 	}, [])
 
+	const applyComposerSlash = useCallback((text: string): boolean => {
+		const parsed = parseComposerSlash(text)
+		if (!parsed) return false
+		switch (parsed.name) {
+			case "plan":
+				setCollaborationMode("plan")
+				controllerRef.current?.setText("")
+				return true
+			case "goal":
+				setActiveTrigger("goal")
+				controllerRef.current?.setText("")
+				return true
+			case "skills":
+				setSkillPickerOpen(true)
+				controllerRef.current?.setText("")
+				return true
+			case "compact":
+			case "fork":
+				controllerRef.current?.setText("")
+				return true
+			case "side":
+				controllerRef.current?.setText("/side ")
+				return true
+			case "research":
+				return false
+		}
+	}, [])
+
 	const handleSlashSelect = useCallback(
 		(command: string) => {
 			handleSlashClose()
+			if (applyComposerSlash(command)) return
 			const ctrl = controllerRef.current
 			if (!ctrl) return
 			ctrl.setText(command)
@@ -371,7 +416,7 @@ export function NewChat() {
 				}
 			})
 		},
-		[handleSlashClose],
+		[applyComposerSlash, handleSlashClose],
 	)
 
 	// Insert a selected mention into the prompt textarea
@@ -404,10 +449,17 @@ export function NewChat() {
 	// Delegate keyboard events to open popovers before the composer handles Enter.
 	const handleTextareaKeyDown = useCallback(
 		(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+			if (e.key === "Tab" && e.shiftKey) {
+				e.preventDefault()
+				handleSlashClose()
+				handleMentionClose()
+				setCollaborationMode((mode) => (mode === "plan" ? "build" : "plan"))
+				return
+			}
 			if (slashPopoverRef.current?.handleKeyDown(e)) return
 			if (mentionPopoverRef.current?.handleKeyDown(e)) return
 		},
-		[],
+		[handleMentionClose, handleSlashClose],
 	)
 
 	// Resolve active agent for model resolution
@@ -498,6 +550,23 @@ export function NewChat() {
 		})
 	}, [selectedModel, selectedDirectory, selectedVariant, selectedAgent])
 
+	const persistLaunchSettings = useCallback(
+		async (directory: string, sessionId: string) => {
+			const client = getProjectClient(directory)
+			if (!client?.session?.updateSettings) return
+			try {
+				await client.session.updateSettings({
+					sessionID: sessionId,
+					permissionProfile,
+					mode: collaborationMode,
+				})
+			} catch (err) {
+				console.error("Failed to persist launch session settings:", err)
+			}
+		},
+		[collaborationMode, permissionProfile],
+	)
+
 	/** Navigate to the chat view for a given session. */
 	const navigateToSession = useCallback(
 		(sessionId: string) => {
@@ -525,6 +594,8 @@ export function NewChat() {
 			}
 
 			persistProjectModel()
+			stashComposerPermissionForSession(session.id, permissionProfile)
+			await persistLaunchSettings(selectedDirectory, session.id)
 			navigateToSession(session.id)
 
 			await sendPrompt(selectedDirectory, session.id, promptText, {
@@ -532,6 +603,7 @@ export function NewChat() {
 				agent: selectedAgent ?? undefined,
 				variant: selectedVariant,
 				files,
+				collaborationMode,
 			})
 			clearDraft()
 		},
@@ -544,7 +616,9 @@ export function NewChat() {
 			selectedVariant,
 			clearDraft,
 			persistProjectModel,
+			persistLaunchSettings,
 			navigateToSession,
+			collaborationMode,
 			vcs,
 		],
 	)
@@ -619,6 +693,9 @@ export function NewChat() {
 						branch: result.branchName,
 					})
 
+					stashComposerPermissionForSession(session.id, permissionProfile)
+					await persistLaunchSettings(sdkDirectory, session.id)
+
 					// Navigate to the real session, then clean up the stub
 					navigateToSession(session.id)
 					appStore.set(removeSessionAtom, stubId)
@@ -629,6 +706,7 @@ export function NewChat() {
 						agent: selectedAgent ?? undefined,
 						variant: selectedVariant,
 						files,
+						collaborationMode,
 					})
 				} catch (err) {
 					console.error("Worktree launch failed:", err)
@@ -650,7 +728,9 @@ export function NewChat() {
 			selectedVariant,
 			clearDraft,
 			persistProjectModel,
+			persistLaunchSettings,
 			navigateToSession,
+			collaborationMode,
 			navigate,
 			projects,
 			selectedProject,
@@ -661,16 +741,16 @@ export function NewChat() {
 	const handleLaunch = useCallback(
 		async (promptText: string, files?: FileAttachment[]) => {
 			if (!selectedDirectory || !promptText) return
+			if (applyComposerSlash(promptText)) return
+			const launchText = activeTrigger === "goal" ? goalPromptText(promptText) : promptText
 			setLaunching(true)
 			setError(null)
 			try {
 				if (worktreeMode === "worktree") {
-					// Worktree mode navigates immediately and runs setup in the background.
-					// The launching state is cleared right away since the chat view takes over.
-					launchWorktree(promptText, files)
+					launchWorktree(launchText, files)
 					setLaunching(false)
 				} else {
-					await launchLocal(promptText, files)
+					await launchLocal(launchText, files)
 				}
 			} catch (err) {
 				setError(err instanceof Error ? err.message : "Failed to create session")
@@ -678,7 +758,14 @@ export function NewChat() {
 				setLaunching(false)
 			}
 		},
-		[selectedDirectory, worktreeMode, launchLocal, launchWorktree],
+		[
+			selectedDirectory,
+			worktreeMode,
+			launchLocal,
+			launchWorktree,
+			applyComposerSlash,
+			activeTrigger,
+		],
 	)
 
 	const hasToolbar = providers
@@ -756,6 +843,27 @@ export function NewChat() {
 								<PromptInputFooter className="px-4 pb-2">
 									<PromptInputTools>
 										<AttachButton disabled={launching || !selectedDirectory} />
+										<ComposerPermissionPicker
+											value={permissionProfile}
+											onChange={setPermissionProfile}
+											disabled={launching || !selectedDirectory}
+										/>
+										{collaborationMode === "plan" && (
+											<ComposerModeChip
+												variant="plan"
+												disabled={launching}
+												onRemove={() => setCollaborationMode("build")}
+											/>
+										)}
+										{activeTrigger === "goal" && (
+											<ComposerModeChip
+												variant="goal"
+												disabled={launching}
+												onRemove={() => setActiveTrigger(null)}
+											/>
+										)}
+									</PromptInputTools>
+									<div className="ml-auto flex min-w-0 items-center gap-0.5">
 										{hasToolbar && (
 											<PromptToolbar
 												agents={devoAgents ?? []}
@@ -771,8 +879,8 @@ export function NewChat() {
 												disabled={launching || !selectedDirectory}
 											/>
 										)}
-									</PromptInputTools>
-									<PromptInputSubmit disabled={launching || !selectedDirectory} />
+										<PromptInputSubmit disabled={launching || !selectedDirectory} />
+									</div>
 								</PromptInputFooter>
 							</PromptInput>
 						</div>
@@ -821,6 +929,18 @@ export function NewChat() {
 					)}
 				</div>
 			</div>
+			<SkillPickerDialog
+				directory={selectedDirectory || null}
+				onOpenChange={setSkillPickerOpen}
+				onSelect={(skillName) => {
+					const ctrl = controllerRef.current
+					if (!ctrl) return
+					const current = ctrl.getText()
+					const insertion = `$${skillName} `
+					ctrl.setText(current.trim() ? `${current} ${insertion}` : insertion)
+				}}
+				open={skillPickerOpen}
+			/>
 		</div>
 	)
 }

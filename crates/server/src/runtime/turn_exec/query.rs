@@ -59,6 +59,7 @@ impl ServerRuntime {
                     .map(crate::goal::Goal::to_thread_goal)
             }
             super::super::TurnInputMode::HiddenGoalContinuation { goal } => Some(goal.clone()),
+            super::super::TurnInputMode::ApprovalResume => None,
         };
         state.core.config.token_budget = turn_config
             .token_budget_for_session(state.core.config.effective_context_window_override);

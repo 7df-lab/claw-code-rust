@@ -72,6 +72,23 @@ impl SessionInteractiveLanes {
         removed
     }
 
+    pub(crate) async fn take_pending_approval(
+        &self,
+        host_session_id: SessionId,
+        approval_id: &str,
+    ) -> Option<PendingApproval> {
+        self.remove_pending_approval(host_session_id, approval_id)
+            .await
+    }
+
+    pub(crate) async fn has_pending_approval(&self, approval_id: &str) -> bool {
+        self.inner
+            .lock()
+            .await
+            .values()
+            .any(|state| state.pending_approvals.contains_key(approval_id))
+    }
+
     pub(crate) async fn register_pending_user_input(
         &self,
         session_id: SessionId,
@@ -85,6 +102,14 @@ impl SessionInteractiveLanes {
             .or_default()
             .pending_user_inputs
             .insert(request_id, pending);
+    }
+
+    pub(crate) async fn has_pending_user_input_request(&self, request_id: &str) -> bool {
+        self.inner
+            .lock()
+            .await
+            .values()
+            .any(|state| state.pending_user_inputs.contains_key(request_id))
     }
 
     pub(crate) async fn take_pending_user_input(
@@ -385,6 +410,7 @@ mod tests {
                     cwd: std::path::PathBuf::new(),
                     sandbox_permissions: String::new(),
                     persisted: None,
+                    checkpoint: None,
                     tx,
                 },
                 controller_tx,

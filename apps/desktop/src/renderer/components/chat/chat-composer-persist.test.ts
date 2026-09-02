@@ -7,6 +7,10 @@ const clientSource = readFileSync(
 	new URL("../../../../packages/devo-ai-sdk/src/v2/client.ts", import.meta.url),
 	"utf8",
 ).replace(/\r\n/g, "\n")
+const newChatSource = readFileSync(new URL("../new-chat.tsx", import.meta.url), "utf8").replace(
+	/\r\n/g,
+	"\n",
+)
 
 /**
  * Persist-on-selection: changing model / reasoning effort / mode in the
@@ -22,6 +26,9 @@ describe("composer persist-on-selection", () => {
 			persistsModel: chatViewSource.includes("scheduleSelectionPersist({ modelID: model.modelID })"),
 			persistsEffort: chatViewSource.includes("scheduleSelectionPersist({ reasoningEffort: variant })"),
 			persistsMode: chatViewSource.includes('scheduleSelectionPersist({ mode: next })'),
+			persistsPermission: chatViewSource.includes(
+				"scheduleSelectionPersist({ permissionProfile: profile })",
+			),
 			flushesOnUnmount: chatViewSource.includes("return () => {\n\t\t\tflushSelectionPersist()\n\t\t}"),
 			usesCombinedUpdate: chatViewSource.includes("updateSettings.call(client.session"),
 			showsSaveStatus: chatViewSource.includes("Saving session settings") || chatViewSource.includes("Session settings saved"),
@@ -37,6 +44,7 @@ describe("composer persist-on-selection", () => {
 			persistsModel: true,
 			persistsEffort: true,
 			persistsMode: true,
+			persistsPermission: true,
 			flushesOnUnmount: true,
 			usesCombinedUpdate: true,
 			showsSaveStatus: false,
@@ -53,6 +61,15 @@ describe("composer persist-on-selection", () => {
 	test("SDK exposes session.updateSettings with a combined metadata patch", () => {
 		expect(clientSource.includes("updateSettings: async (params")).toBe(true)
 		expect(clientSource.includes('"session/metadata/update"')).toBe(true)
+	})
+
+	test("SDK persist patch can include a permission profile", () => {
+		expect(clientSource.includes("if (patch.permissionProfile) settings.permissionProfile")).toBe(
+			true,
+		)
+		expect(clientSource.includes("normalizedPatch.permissionProfile = patch.permissionProfile")).toBe(
+			true,
+		)
 	})
 
 	/**
@@ -107,5 +124,12 @@ describe("composer persist-on-selection", () => {
 				"if (hydratedForMessagesRef.current === messageKey) return\n\t\thydratedForMessagesRef.current = messageKey",
 			),
 		).toBe(false)
+	})
+
+	test("new-session composer persists permission and plan onto the created session", () => {
+		expect(newChatSource.includes("persistLaunchSettings")).toBe(true)
+		expect(newChatSource.includes("permissionProfile,")).toBe(true)
+		expect(newChatSource.includes("mode: collaborationMode")).toBe(true)
+		expect(newChatSource.includes("DEFAULT_COMPOSER_PERMISSION_PROFILE")).toBe(true)
 	})
 })

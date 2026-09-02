@@ -4,9 +4,7 @@ import {
 	SearchableListPopoverEmpty,
 	SearchableListPopoverGroup,
 	SearchableListPopoverList,
-	SearchableListPopoverSearch,
 	SearchableListPopoverTrigger,
-	useSearchableListPopoverSearch,
 } from "@devo/ui/components/searchable-list-popover"
 import {
 	Select,
@@ -63,14 +61,14 @@ import { getVariantTriggerLabel, resolveSelectedVariant } from "./model-selector
 
 /** Base classes shared by ALL toolbar triggers (Popover + Select). */
 const TOOLBAR_TRIGGER_BASE_CN =
-	"flex h-7 items-center gap-1 rounded-md border-none bg-transparent px-2 text-xs shadow-none transition-colors"
+	"flex h-7 items-center gap-1 rounded-md border-none bg-transparent px-2 text-[13px] font-normal shadow-none transition-colors"
 
 /**
  * Classes for SelectTrigger overrides. Uses `!` modifier to beat the base
  * component's `py-2 pl-2.5 pr-2 dark:bg-input/30 dark:hover:bg-input/50`.
  */
 const TOOLBAR_TRIGGER_CN =
-	"h-7! gap-1 border-none bg-transparent! hover:bg-muted! px-2! py-0! text-xs shadow-none transition-colors"
+	"h-7! gap-1 border-none bg-transparent! hover:bg-muted! px-2! py-0! text-[13px] font-normal text-muted-foreground shadow-none transition-colors"
 
 // ============================================================
 // Agent Selector
@@ -276,7 +274,7 @@ export function ModelSelector({
 				) : (
 					<span className="text-muted-foreground">Select model...</span>
 				)}
-				<ChevronDownIcon className="size-4 shrink-0 text-muted-foreground pointer-events-none" />
+				<ChevronDownIcon className="size-3 shrink-0 text-muted-foreground/50 pointer-events-none" />
 			</SearchableListPopoverTrigger>
 			<SearchableListPopoverContent side="top" align="start" width="w-56">
 				{mobileVariantView && hasVariants ? (
@@ -290,7 +288,6 @@ export function ModelSelector({
 					/>
 				) : (
 					<>
-						<SearchableListPopoverSearch placeholder="Search models..." />
 						<ModelSelectorList
 							models={models}
 							activeValue={activeValue}
@@ -324,24 +321,11 @@ function ModelSelectorList({
 	activeValue: string | null
 	onSelect: (value: string) => void
 }) {
-	const search = useSearchableListPopoverSearch()
-
-	const filteredModels = useMemo(() => {
-		if (!search) return models
-		const q = search.toLowerCase()
-		return models.filter(
-			(m) =>
-				m.displayName.toLowerCase().includes(q) ||
-				m.providerName.toLowerCase().includes(q) ||
-				m.modelID.toLowerCase().includes(q),
-		)
-	}, [models, search])
-
-	const grouped = useMemo(() => groupByProvider(filteredModels), [filteredModels])
+	const grouped = useMemo(() => groupByProvider(models), [models])
 
 	return (
 		<SearchableListPopoverList>
-			{filteredModels.length === 0 ? (
+			{models.length === 0 ? (
 				<SearchableListPopoverEmpty>No models found</SearchableListPopoverEmpty>
 			) : (
 				<>

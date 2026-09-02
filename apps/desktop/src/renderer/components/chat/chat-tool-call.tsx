@@ -12,7 +12,6 @@ import { cn } from "@devo/ui/lib/utils"
 
 import {
 	AlertTriangleIcon,
-	BookOpenIcon,
 	CodeIcon,
 	EditIcon,
 	EyeIcon,
@@ -20,6 +19,7 @@ import {
 	FileIcon,
 	GlobeIcon,
 	Loader2Icon,
+	MessageCircleQuestionIcon,
 	PlugIcon,
 	SearchIcon,
 	SquareCheckIcon,
@@ -40,9 +40,16 @@ import {
 	hasFileChangeExpandableContent,
 	isFileChangeTool,
 } from "./file-change-presentation"
+import {
+	isQuestionToolInput,
+	parseQuestionToolEntries,
+	QuestionToolContent,
+	questionToolSubtitle,
+} from "./chat-question-tool"
 import { SubAgentCard } from "./sub-agent-card"
 import type { ToolCategory } from "./tool-category"
 import {
+	MountWhenVisible,
 	TranscriptDisclosure,
 	TranscriptDisclosureContent,
 	TranscriptDisclosureTrigger,
@@ -238,8 +245,11 @@ export function getToolInfo(
 			return { icon: SquareCheckIcon, title: "Todos" }
 		case "question":
 		case "request_user_input":
-			return { icon: BookOpenIcon, title: "Question" }
+			return { icon: MessageCircleQuestionIcon, title: "Question" }
 		default:
+			if (isQuestionToolInput(tool, options?.input)) {
+				return { icon: MessageCircleQuestionIcon, title: "Question" }
+			}
 			if (tool.startsWith("mcp__")) {
 				const segments = tool.split("__")
 				const label = segments.slice(2).join("__") || segments[1] || tool
@@ -266,6 +276,60 @@ function extractFromRaw(state: ToolPart["state"], ...fields: string[]): string |
 		const match = raw.match(pattern)
 		if (match?.[1]) return match[1]
 	}
+	return undefined
+}
+
+function shellCommandText(
+	input?: Record<string, unknown>,
+	state?: ToolPart["state"],
+): string | undefined {
+	const fromValue = (value: unknown): string | undefined => {
+		if (typeof value === "string") {
+			const trimmed = value.trim()
+			return trimmed || undefined
+		}
+		if (Array.isArray(value)) {
+			const joined = value
+				.map((item) => String(item).trim())
+				.filter(Boolean)
+				.join(" ")
+			return joined || undefined
+		}
+		return undefined
+	}
+	return (
+		fromValue(input?.command) ??
+		fromValue(input?.cmd) ??
+		(state ? extractFromRaw(state, "command", "cmd") : undefined)
+	)
+}
+
+function isGenericShellSubtitle(value: string): boolean {
+	switch (value.trim().toLowerCase()) {
+		case "bash":
+		case "command":
+		case "exec_command":
+		case "execute":
+		case "ran":
+		case "running":
+		case "shell":
+		case "shell_command":
+			return true
+		default:
+			return false
+	}
+}
+
+function shellCommandSubtitle(
+	input: Record<string, unknown> | undefined,
+	state: ToolPart["state"],
+	title?: string,
+): string | undefined {
+	const command = shellCommandText(input, state)
+	if (command) return command
+	if (title && !isGenericShellSubtitle(title)) return title
+	const description = typeof input?.description === "string" ? input.description.trim() : ""
+	if (description && !isGenericShellSubtitle(description)) return description
 	return undefined
 }
 
@@ -340,12 +404,7 @@ export function getToolSubtitle(
 		case "bash":
 		case "shell_command":
 		case "exec_command":
-			subtitle =
-				title ??
-				(input.description as string) ??
-				(input.command as string) ??
-				(input.cmd as string) ??
-				extractFromRaw(state, "command", "cmd", "description")
+			subtitle = shellCommandSubtitle(input, state, title)
 			break
 		case "edit":
 			subtitle =
@@ -394,20 +453,17 @@ export function getToolSubtitle(
 		}
 		case "question":
 		case "request_user_input": {
-			const questions = input?.questions as Array<{ question: string }> | undefined
-			if (questions && questions.length > 0) {
-				subtitle = questions.length === 1
-					? questions[0].question
-					: `${questions.length} questions`
-			} else {
-				subtitle = title
-			}
+			subtitle = questionToolSubtitle(part) ?? title
 			break
 		}
 		default:
 			// Unknown / MCP tools: always show compact input params like [key=value, key=value]
 			// Input params are more useful than the SDK-generated title for MCP tools
-			subtitle = formatInputParams(input) ?? title
+			if (isQuestionToolInput(part.tool, input)) {
+				subtitle = questionToolSubtitle(part) ?? title
+			} else {
+				subtitle = formatInputParams(input) ?? title
+			}
 			break
 	}
 
@@ -480,9 +536,7 @@ export function buildBashTerminalOutput(
  * behaviour of the Devo TUI and web UI.
  */
 function BashContent({ part }: { part: ToolPart }) {
-	const command =
-		(part.state.input?.command as string | undefined) ??
-		(part.state.input?.cmd as string | undefined)
+	const command = shellCommandText(part.state.input, part.state)
 
 	// During "running", live output arrives in state.metadata.output.
 	// After completion it moves to state.output.
@@ -846,6 +900,9 @@ function hasExpandableContent(part: ToolPart): boolean {
 		const todos = state.input?.todos as Array<{ content: string; status: string }> | undefined
 		return (todos?.length ?? 0) > 0
 	}
+	if (isQuestionToolInput(tool, state.input as Record<string, unknown> | undefined)) {
+		return parseQuestionToolEntries(part).length > 0
+	}
 	if (isFileChangeTool(tool)) {
 		const output = state.status === "completed" ? state.output : undefined
 		if (hasFileChangeExpandableContent(tool, state.input as Record<string, unknown>, output)) {
@@ -894,7 +951,13 @@ function getToolContent(part: ToolPart): ReactNode {
 		case "todowrite":
 		case "todoread":
 			return <TodoContent part={part} />
+		case "question":
+		case "request_user_input":
+			return <QuestionToolContent part={part} />
 		default:
+			if (isQuestionToolInput(part.tool, part.state.input as Record<string, unknown> | undefined)) {
+				return <QuestionToolContent part={part} />
+			}
 			return <GenericContent part={part} />
 	}
 }
@@ -1095,9 +1158,11 @@ export const ChatToolCall = memo(
 					/>
 					{hasContent && (
 						<TranscriptDisclosureContent rail className="overflow-hidden">
-							{/* Controlled rows: only mount the body while open so @pierre/diffs
-							    is created after the panel is shown (avoids blank first expand). */}
-							{open === false ? null : getToolContent(part)}
+							{fileChangeRow ? (
+								<MountWhenVisible>{getToolContent(part)}</MountWhenVisible>
+							) : open === false ? null : (
+								getToolContent(part)
+							)}
 						</TranscriptDisclosureContent>
 					)}
 				</TranscriptDisclosure>

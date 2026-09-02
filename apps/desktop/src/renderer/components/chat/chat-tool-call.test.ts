@@ -4,6 +4,10 @@ import { buildBashTerminalOutput, getToolInfo, getToolSubtitle, parseReadOutput,
 
 const elapsedHookSource = readFileSync(new URL("../../hooks/use-elapsed-time.ts", import.meta.url), "utf8")
 const chatToolCallSource = readFileSync(new URL("./chat-tool-call.tsx", import.meta.url), "utf8")
+const pierreDiffMountSource = readFileSync(
+	new URL("../../../../packages/ui/src/components/ai-elements/pierre-diff-mount.tsx", import.meta.url),
+	"utf8",
+)
 const rendererCssSource = readFileSync(new URL("../../index.css", import.meta.url), "utf8")
 
 describe("buildBashTerminalOutput", () => {
@@ -242,6 +246,73 @@ describe("getToolInfo", () => {
 		expect(titles).not.toContain("Patch")
 	})
 
+	test("shows the shell command after Running instead of a generic title", () => {
+		const running = {
+			callID: "call-1",
+			id: "tool-1",
+			tool: "bash",
+			type: "tool",
+			state: {
+				input: { command: "git status", description: "Check git status" },
+				status: "running",
+				time: { start: 0 },
+				title: "Command",
+			},
+		} as any
+		expect({
+			title: getToolInfo("bash", { running: true }).title,
+			subtitle: getToolSubtitle(running),
+			arrayCommand: getToolSubtitle({
+				...running,
+				tool: "shell_command",
+				state: {
+					...running.state,
+					input: { command: ["git", "status", "--short"] },
+				},
+			} as any),
+			fromRaw: getToolSubtitle({
+				...running,
+				state: {
+					input: {},
+					raw: '{"command":"bun test"}',
+					status: "pending",
+					time: { start: 0 },
+					title: "Command",
+				},
+			} as any),
+		}).toEqual({
+			title: "Running",
+			subtitle: "git status",
+			arrayCommand: "git status --short",
+			fromRaw: "bun test",
+		})
+	})
+
+	test("labels question tools even when the SDK fell back to generic tool", () => {
+		const input = {
+			questions: [{ id: "environment", header: "Environment", question: "Where should this run?" }],
+		}
+		expect({
+			named: getToolInfo("request_user_input").title,
+			alias: getToolInfo("question").title,
+			generic: getToolInfo("tool", { input }).title,
+			subtitle: getToolSubtitle(
+				{
+					callID: "call-1",
+					id: "tool-1",
+					tool: "tool",
+					type: "tool",
+					state: { input, status: "running", time: { start: 0 } },
+				} as any,
+			),
+		}).toEqual({
+			named: "Question",
+			alias: "Question",
+			generic: "Question",
+			subtitle: "Where should this run?",
+		})
+	})
+
 	test("keeps file-change path typography aligned with Read", () => {
 		expect({
 			noMonoOnFileChangePath: !chatToolCallSource.includes(
@@ -266,13 +337,21 @@ describe("ChatToolCall memo comparison", () => {
 			hidesSpinnerWhenTurnIdle: chatToolCallSource.includes(
 				"turnWorking && (status === \"running\" || status === \"pending\")",
 			),
-			gatesBodyWhileControlledClosed: chatToolCallSource.includes("open === false ? null"),
+			gatesNonFileChangeWhileControlledClosed: chatToolCallSource.includes("open === false ? null"),
+			defersFileChangeDiffMount: chatToolCallSource.includes(
+				"<MountWhenVisible>{getToolContent(part)}</MountWhenVisible>",
+			),
+			remountsPierreAfterPanelLayout: !pierreDiffMountSource.includes("setInstanceKey((key) => key + 1)"),
+			mountsOnceAfterWarmup: pierreDiffMountSource.includes("isHighlighterLoaded"),
 		}).toEqual({
 			comparesOpen: true,
 			comparesTurnError: true,
 			comparesTurnWorking: true,
 			hidesSpinnerWhenTurnIdle: true,
-			gatesBodyWhileControlledClosed: true,
+			gatesNonFileChangeWhileControlledClosed: true,
+			defersFileChangeDiffMount: true,
+			remountsPierreAfterPanelLayout: true,
+			mountsOnceAfterWarmup: true,
 		})
 	})
 

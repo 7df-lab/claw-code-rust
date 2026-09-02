@@ -244,6 +244,7 @@ impl RolloutStore {
         &self,
         rollout_path: &Path,
         session_id: SessionId,
+        settings_epoch: u64,
         settings: &[(SessionSettingsField, serde_json::Value)],
     ) -> Result<()> {
         let lines = settings
@@ -254,7 +255,7 @@ impl RolloutStore {
                     session_id,
                     field: *field,
                     value: value.clone(),
-                    epoch: 0,
+                    epoch: settings_epoch,
                 })
             })
             .collect::<Vec<_>>();
@@ -812,6 +813,30 @@ impl RolloutStore {
                 turn_id: record.turn_id.clone(),
                 seq: 0,
                 entry: devo_core::InternalRecordV2::UsageRecord { record },
+            }],
+        )
+    }
+
+    pub(crate) fn append_approval_checkpoint(
+        &self,
+        rollout_path: &Path,
+        checkpoint: &devo_core::TurnApprovalCheckpointRecordedRecord,
+    ) -> Result<()> {
+        self.append_v2_lines(
+            rollout_path,
+            vec![RolloutLineV2::Internal {
+                v: 2,
+                timestamp: checkpoint.created_at,
+                session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(Uuid::from(
+                    checkpoint.session_id,
+                )),
+                turn_id: Some(devo_protocol::native::ids::TurnId::from_legacy_uuid(
+                    Uuid::from(checkpoint.turn_id),
+                )),
+                seq: 0,
+                entry: devo_core::InternalRecordV2::TurnApprovalCheckpoint(Box::new(
+                    checkpoint.clone(),
+                )),
             }],
         )
     }
@@ -5123,6 +5148,7 @@ mod tests {
             .append_session_settings_batch_at(
                 &record.rollout_path,
                 record.id,
+                1,
                 &[(
                     devo_core::SessionSettingsField::SandboxProfile,
                     serde_json::Value::String("workspace".into()),

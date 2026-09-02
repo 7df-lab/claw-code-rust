@@ -51,7 +51,7 @@ export function ModelSelectorVariantOptions({
 							"flex w-full min-w-0 items-center text-left transition-colors",
 							optionMenuItemClass,
 							MODEL_SELECTOR_ROW_INTERACTION_CLASS,
-							selected && "bg-accent text-accent-foreground",
+							selected && "bg-muted text-foreground",
 						)}
 						onClick={() => onSelectVariant(option.value)}
 					>
@@ -63,7 +63,7 @@ export function ModelSelectorVariantOptions({
 							{selected && (
 								<CheckIcon
 									data-slot="model-selector-variant-check-icon"
-									className="size-3.5 text-primary"
+									className="size-3.5 text-muted-foreground"
 								/>
 							)}
 						</span>

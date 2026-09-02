@@ -3,8 +3,8 @@ import { describe, expect, test } from "bun:test"
 
 const popoverSource = readFileSync(new URL("./slash-command-popover.tsx", import.meta.url), "utf8")
 const chipSource = readFileSync(new URL("./composer-mode-chip.tsx", import.meta.url), "utf8")
-const popoverStylesSource = readFileSync(
-	new URL("./composer-popover-styles.ts", import.meta.url),
+const composerPopoverSource = readFileSync(
+	new URL("./composer-popover.tsx", import.meta.url),
 	"utf8",
 )
 const chatViewSource = readFileSync(new URL("./chat-view.tsx", import.meta.url), "utf8")
@@ -26,11 +26,11 @@ describe("Desktop slash command composer", () => {
 			omitsUserCommandDispatch: !chatViewSource.includes("session.command"),
 			omitsSearchHeader:
 				!popoverSource.includes("SearchIcon") && !popoverSource.includes("Commands</span>"),
-			usesSharedPopoverShell: popoverSource.includes("composerPopoverShellClass"),
-			usesSharedPopoverItem: popoverSource.includes("composerPopoverItemClass"),
+			usesSharedPopover: popoverSource.includes("<ComposerPopover"),
+			usesSharedPopoverItem: popoverSource.includes("ComposerPopoverItem"),
 			singleOuterScroll:
 				!popoverSource.includes("@devo/ui/components/scroll-area") &&
-				popoverStylesSource.includes("overflow-y-auto"),
+				composerPopoverSource.includes("overflow-y-auto"),
 		}).toEqual({
 			showsCompact: true,
 			showsGoal: true,
@@ -41,7 +41,7 @@ describe("Desktop slash command composer", () => {
 			omitsServerCommands: true,
 			omitsUserCommandDispatch: true,
 			omitsSearchHeader: true,
-			usesSharedPopoverShell: true,
+			usesSharedPopover: true,
 			usesSharedPopoverItem: true,
 			singleOuterScroll: true,
 		})
@@ -56,6 +56,10 @@ describe("Desktop slash command composer", () => {
 			goalFooterChip:
 				chatViewSource.includes('variant="goal"') &&
 				chatViewSource.includes("ComposerModeChip"),
+			newChatGoalChip:
+				newChatSource.includes('variant="goal"') &&
+				newChatSource.includes("ComposerModeChip"),
+			newChatPlanChip: newChatSource.includes('variant="plan"'),
 			planModeBadge:
 				chatViewSource.includes('variant="plan"') &&
 				chatViewSource.includes("ComposerModeChip"),
@@ -74,15 +78,19 @@ describe("Desktop slash command composer", () => {
 				chipSource.includes("group-hover:opacity-100"),
 			hoverBackground: chipSource.includes("hover:bg-muted"),
 			shiftTabToggle: chatViewSource.includes('e.key === "Tab" && e.shiftKey'),
-			triggeredPrompt: chatViewSource.includes("text: `/${trigger} ${text.trim()}`"),
+			triggeredPrompt:
+				chatViewSource.includes("goalPromptText(text)") &&
+				chatViewSource.includes("`/${trigger} ${text.trim()}`"),
 			iconStrokeMatchesSidebar:
 				popoverSource.includes("composerPopoverIconClass") &&
-				popoverStylesSource.includes("stroke-[1.5]") &&
+				composerPopoverSource.includes("stroke-[1.5]") &&
 				chipSource.includes("size-3.5 stroke-[1.5]"),
 		}).toEqual({
 			requirementComment: true,
 			chipComponent: true,
 			goalFooterChip: true,
+			newChatGoalChip: true,
+			newChatPlanChip: true,
 			planModeBadge: true,
 			planTint: true,
 			goalIcon: true,

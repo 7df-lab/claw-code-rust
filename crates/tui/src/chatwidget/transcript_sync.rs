@@ -198,7 +198,7 @@ impl ChatWidget {
                 let history_cell = crate::transcript::render::committed_cell_to_history(
                     &CommittedCellModel::Tool(tool),
                     &self.session.cwd,
-                    |title| Self::ran_tool_line(title),
+                    Self::ran_tool_line,
                     dot_prefix,
                     Self::tool_text_style(),
                 );

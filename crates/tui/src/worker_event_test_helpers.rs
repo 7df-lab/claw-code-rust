@@ -248,6 +248,7 @@ pub(crate) fn tool_result(
 }
 
 /// Shim for removed `WorkerEvent::ToolResultIo`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn tool_result_io(
     tool_use_id: String,
     tool_name: String,

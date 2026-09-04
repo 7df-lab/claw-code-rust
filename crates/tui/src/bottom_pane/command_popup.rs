@@ -179,8 +179,7 @@ impl CommandPopup {
     ) -> Vec<GenericDisplayRow> {
         matches
             .into_iter()
-            .enumerate()
-            .map(|(_, (item, indices))| {
+            .map(|(item, indices)| {
                 let CommandItem::Builtin(cmd) = item;
                 let name = format!("/{}", cmd.command());
                 let description = cmd.description().to_string();

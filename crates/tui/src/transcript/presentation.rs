@@ -155,27 +155,25 @@ pub(crate) fn tool_title_parts(
         };
     }
 
-    if tool_name == Some("web_search") || tool_name == Some("websearch") {
-        if let Some(query) = input
+    if (tool_name == Some("web_search") || tool_name == Some("websearch"))
+        && let Some(query) = input
             .and_then(|value| value.get("query"))
             .and_then(serde_json::Value::as_str)
-        {
-            return ToolTitleParts {
-                verb: String::new(),
-                detail: format!("Web Search(\"{query}\")"),
-            };
-        }
+    {
+        return ToolTitleParts {
+            verb: String::new(),
+            detail: format!("Web Search(\"{query}\")"),
+        };
     }
-    if tool_name == Some("web_fetch") || tool_name == Some("webfetch") {
-        if let Some(url) = input
+    if (tool_name == Some("web_fetch") || tool_name == Some("webfetch"))
+        && let Some(url) = input
             .and_then(|value| value.get("url"))
             .and_then(serde_json::Value::as_str)
-        {
-            return ToolTitleParts {
-                verb: String::new(),
-                detail: format!("Web Fetch(\"{url}\")"),
-            };
-        }
+    {
+        return ToolTitleParts {
+            verb: String::new(),
+            detail: format!("Web Fetch(\"{url}\")"),
+        };
     }
 
     let tool_name = tool_name.unwrap_or("tool");

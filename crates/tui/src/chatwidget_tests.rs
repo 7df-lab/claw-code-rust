@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
@@ -11,8 +12,8 @@ use devo_protocol::InputItem;
 use devo_protocol::ItemId;
 use devo_protocol::Model;
 use devo_protocol::PermissionPreset;
-use devo_protocol::ProviderModelBinding;
-use devo_protocol::ProviderVendor;
+use devo_protocol::ProviderInfo;
+use devo_protocol::ProviderModelInfo;
 use devo_protocol::ProviderWireApi;
 use devo_protocol::ReasoningCapability;
 use devo_protocol::ReasoningEffort;
@@ -27,6 +28,28 @@ use ratatui::style::Color;
 use ratatui::text::Line;
 use tokio::sync::mpsc;
 
+fn deepseek_provider_info() -> ProviderInfo {
+    ProviderInfo {
+        id: "deepseek".to_string(),
+        name: "Deepseek".to_string(),
+        description: None,
+        base_url: Some("https://api.deepseek.com".to_string()),
+        credential: Some("deepseek_api_key".to_string()),
+        headers: BTreeMap::new(),
+        options: None,
+        request: None,
+        wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
+        models: BTreeMap::from([(
+            "deepseek-v4-flash".to_string(),
+            ProviderModelInfo {
+                name: Some("DeepSeek-V4-Flash".to_string()),
+                wire_api: Some(ProviderWireApi::OpenAIChatCompletions),
+                ..ProviderModelInfo::default()
+            },
+        )]),
+        enabled: true,
+    }
+}
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
@@ -2145,8 +2168,8 @@ fn reasoning_effort_entries_are_generated_from_model_capability_options() {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
         reasoning_capability: ReasoningCapability::Levels(vec![
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
+            ReasoningEffort::Low.into(),
+            ReasoningEffort::Medium.into(),
         ]),
         default_reasoning_effort: Some(ReasoningEffort::Medium),
         ..Model::default()
@@ -2178,8 +2201,8 @@ fn initial_reasoning_effort_selection_overrides_model_default() {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
         reasoning_capability: ReasoningCapability::Levels(vec![
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
+            ReasoningEffort::Low.into(),
+            ReasoningEffort::Medium.into(),
         ]),
         default_reasoning_effort: Some(ReasoningEffort::Medium),
         ..Model::default()
@@ -2717,14 +2740,13 @@ fn theme_selection_applies_header_accent_immediately() {
 }
 
 #[test]
-fn toggle_with_levels_treats_enabled_as_default_effort_in_picker() {
+fn levels_with_off_treats_enabled_as_default_effort_in_picker() {
     let model = Model {
         slug: "deepseek-v4".to_string(),
         display_name: "Deepseek V4".to_string(),
-        reasoning_capability: ReasoningCapability::ToggleWithLevels(vec![
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
-        ]),
+        reasoning_capability: ReasoningCapability::Levels(devo_protocol::levels_with_leading_off(
+            [ReasoningEffort::High, ReasoningEffort::Max],
+        )),
         default_reasoning_effort: Some(ReasoningEffort::High),
         ..Model::default()
     };
@@ -2741,7 +2763,7 @@ fn toggle_with_levels_treats_enabled_as_default_effort_in_picker() {
                 is_current: false,
                 label: "Off".to_string(),
                 description: "Disable reasoning effort for this turn".to_string(),
-                value: "disabled".to_string(),
+                value: "off".to_string(),
             },
             ReasoningEffortListEntry {
                 is_current: true,
@@ -2760,16 +2782,16 @@ fn toggle_with_levels_treats_enabled_as_default_effort_in_picker() {
 }
 
 #[test]
-fn reasoning_effort_entries_show_off_and_levels_for_toggle_models_with_supported_levels() {
-    let model = devo_core::ModelPreset {
+fn reasoning_effort_entries_show_off_and_levels_when_levels_include_off() {
+    let model = devo_core::Model {
         slug: "deepseek-v4".to_string(),
         display_name: "Deepseek V4".to_string(),
-        reasoning_capability: ReasoningCapability::Toggle,
-        supported_reasoning_levels: vec![ReasoningEffort::High, ReasoningEffort::Max],
+        reasoning_capability: ReasoningCapability::Levels(devo_protocol::levels_with_leading_off(
+            [ReasoningEffort::High, ReasoningEffort::Max],
+        )),
         default_reasoning_effort: None,
-        ..devo_core::ModelPreset::default()
-    }
-    .into();
+        ..devo_core::Model::default()
+    };
     let (widget, _app_event_rx) = widget_with_model(model, PathBuf::from("."));
 
     assert_eq!(
@@ -2779,7 +2801,7 @@ fn reasoning_effort_entries_show_off_and_levels_for_toggle_models_with_supported
                 is_current: false,
                 label: "Off".to_string(),
                 description: "Disable reasoning effort for this turn".to_string(),
-                value: "disabled".to_string(),
+                value: "off".to_string(),
             },
             ReasoningEffortListEntry {
                 is_current: true,
@@ -4368,16 +4390,15 @@ fn onboarding_validation_succeeded_waits_for_provider_upsert() {
     let (mut widget, mut app_event_rx) = onboarding_widget_with_available_model(model, cwd);
 
     let _ = app_event_rx.try_recv().expect("provider list command");
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorsListed {
-        provider_vendors: vec![ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        }],
+    widget.handle_worker_event(crate::events::WorkerEvent::ProvidersListed {
+        providers: vec![deepseek_provider_info()],
+        template_provider_ids: Vec::new(),
+        connected_provider_ids: Vec::new(),
+        connection_models: BTreeMap::new(),
     });
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
@@ -4391,25 +4412,9 @@ fn onboarding_validation_succeeded_waits_for_provider_upsert() {
 
     assert_eq!(widget.is_onboarding_active(), true);
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorUpserted {
-        provider_vendor: ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        },
-        model_binding: Some(ProviderModelBinding {
-            binding_id: "deepseek-v4-flash-deepseek".to_string(),
-            model_slug: "deepseek-v4-flash".to_string(),
-            provider: "Deepseek".to_string(),
-            request_model: "DeepSeek-V4-Flash".to_string(),
-            display_name: Some("DeepSeek-V4-Flash".to_string()),
-            invocation_method: ProviderWireApi::OpenAIChatCompletions,
-            default_reasoning_effort: None,
-            enabled: true,
-        }),
+    widget.handle_worker_event(crate::events::WorkerEvent::ProviderUpserted {
+        provider: deepseek_provider_info(),
+        default_model: Some("deepseek/deepseek-v4-flash".to_string()),
     });
 
     assert_eq!(
@@ -4442,16 +4447,15 @@ fn onboarding_validation_succeeded_exits_when_configured() {
         );
 
     let _ = app_event_rx.try_recv().expect("provider list command");
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorsListed {
-        provider_vendors: vec![ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        }],
+    widget.handle_worker_event(crate::events::WorkerEvent::ProvidersListed {
+        providers: vec![deepseek_provider_info()],
+        template_provider_ids: Vec::new(),
+        connected_provider_ids: Vec::new(),
+        connection_models: BTreeMap::new(),
     });
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
@@ -4462,25 +4466,9 @@ fn onboarding_validation_succeeded_exits_when_configured() {
     widget.handle_worker_event(crate::events::WorkerEvent::ProviderValidationSucceeded {
         reply_preview: "OK".to_string(),
     });
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorUpserted {
-        provider_vendor: ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        },
-        model_binding: Some(ProviderModelBinding {
-            binding_id: "deepseek-v4-flash-deepseek".to_string(),
-            model_slug: "deepseek-v4-flash".to_string(),
-            provider: "Deepseek".to_string(),
-            request_model: "DeepSeek-V4-Flash".to_string(),
-            display_name: Some("DeepSeek-V4-Flash".to_string()),
-            invocation_method: ProviderWireApi::OpenAIChatCompletions,
-            default_reasoning_effort: None,
-            enabled: true,
-        }),
+    widget.handle_worker_event(crate::events::WorkerEvent::ProviderUpserted {
+        provider: deepseek_provider_info(),
+        default_model: Some("deepseek/deepseek-v4-flash".to_string()),
     });
 
     assert_eq!(widget.is_onboarding_active(), false);
@@ -4508,16 +4496,15 @@ fn onboarding_validation_bypassed_exits_when_configured() {
         );
 
     let _ = app_event_rx.try_recv().expect("provider list command");
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorsListed {
-        provider_vendors: vec![ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        }],
+    widget.handle_worker_event(crate::events::WorkerEvent::ProvidersListed {
+        providers: vec![deepseek_provider_info()],
+        template_provider_ids: Vec::new(),
+        connected_provider_ids: Vec::new(),
+        connection_models: BTreeMap::new(),
     });
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
@@ -4530,32 +4517,20 @@ fn onboarding_validation_bypassed_exits_when_configured() {
         hint: None,
     });
     widget.handle_key_event(press_key(KeyCode::Enter));
-    match app_event_rx.try_recv().expect("skip validation command") {
-        AppEvent::Command(AppCommand::RunUserShellCommand { command }) => {
-            assert_eq!(command.starts_with("onboard-skip-validation "), true);
+    match app_event_rx.try_recv().expect("provider upsert command") {
+        AppEvent::Command(AppCommand::ProviderUpsert { params }) => {
+            assert_eq!(params.provider.id, "deepseek");
+            assert_eq!(
+                params.default_model,
+                Some("deepseek/deepseek-v4-flash".to_string())
+            );
         }
-        other => panic!("expected skip validation command, got {other:?}"),
+        other => panic!("expected provider upsert command, got {other:?}"),
     }
 
-    widget.handle_worker_event(crate::events::WorkerEvent::ProviderVendorUpserted {
-        provider_vendor: ProviderVendor {
-            name: "Deepseek".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            credential: Some("deepseek_api_key".to_string()),
-            headers: None,
-            wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-            enabled: true,
-        },
-        model_binding: Some(ProviderModelBinding {
-            binding_id: "deepseek-v4-flash-deepseek".to_string(),
-            model_slug: "deepseek-v4-flash".to_string(),
-            provider: "Deepseek".to_string(),
-            request_model: "DeepSeek-V4-Flash".to_string(),
-            display_name: Some("DeepSeek-V4-Flash".to_string()),
-            invocation_method: ProviderWireApi::OpenAIChatCompletions,
-            default_reasoning_effort: None,
-            enabled: true,
-        }),
+    widget.handle_worker_event(crate::events::WorkerEvent::ProviderUpserted {
+        provider: deepseek_provider_info(),
+        default_model: Some("deepseek/deepseek-v4-flash".to_string()),
     });
 
     assert_eq!(widget.is_onboarding_active(), false);
@@ -7352,8 +7327,8 @@ fn slash_model_opens_model_picker_instead_of_printing_current_model() {
         slug: "second-model".to_string(),
         display_name: "Second Model".to_string(),
         reasoning_capability: ReasoningCapability::Levels(vec![
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
+            ReasoningEffort::High.into(),
+            ReasoningEffort::Max.into(),
         ]),
         default_reasoning_effort: Some(ReasoningEffort::High),
         ..Model::default()
@@ -8983,7 +8958,7 @@ fn new_session_prepared_restores_default_compaction_limit() {
         slug: "test-model".to_string(),
         display_name: "Test Model".to_string(),
         context_window: 200_000,
-        effective_context_window_percent: Some(95),
+        effective_context_window_percent: Some(95.0),
         ..Model::default()
     };
     let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
@@ -9182,8 +9157,8 @@ fn model_selection_updates_session_projection_and_emits_context_override() {
         slug: "second-model".to_string(),
         display_name: "Second Model".to_string(),
         reasoning_capability: ReasoningCapability::Levels(vec![
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
+            ReasoningEffort::High.into(),
+            ReasoningEffort::Max.into(),
         ]),
         default_reasoning_effort: Some(ReasoningEffort::High),
         ..Model::default()
@@ -9265,8 +9240,8 @@ fn model_selection_with_reasoning_effort_support_applies_default_immediately() {
         slug: "second-model".to_string(),
         display_name: "Second Model".to_string(),
         reasoning_capability: ReasoningCapability::Levels(vec![
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
+            ReasoningEffort::High.into(),
+            ReasoningEffort::Max.into(),
         ]),
         default_reasoning_effort: Some(ReasoningEffort::High),
         ..Model::default()

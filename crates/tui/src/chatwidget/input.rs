@@ -343,7 +343,10 @@ impl ChatWidget {
                 self.open_reasoning_view_picker();
             }
             AppEvent::SettingsOpenCompaction => {
-                self.open_compaction_threshold_picker();
+                self.set_status_message(
+                    "Context limit is set per model (usable window). No separate compaction threshold."
+                        .to_string(),
+                );
             }
             AppEvent::SettingsCycleMode => {
                 self.bottom_pane.cycle_build_plan_mode();

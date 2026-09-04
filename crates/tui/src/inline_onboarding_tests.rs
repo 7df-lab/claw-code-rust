@@ -1,5 +1,6 @@
 //! Inline onboarding transcript and header behavior tests.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
@@ -8,8 +9,8 @@ use crossterm::event::KeyEventKind;
 use crossterm::event::KeyEventState;
 use crossterm::event::KeyModifiers;
 use devo_protocol::Model;
-use devo_protocol::ProviderModelBinding;
-use devo_protocol::ProviderVendor;
+use devo_protocol::ProviderInfo;
+use devo_protocol::ProviderModelInfo;
 use devo_protocol::ProviderWireApi;
 use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
@@ -67,13 +68,25 @@ fn test_model() -> Model {
     }
 }
 
-fn deepseek_vendor() -> ProviderVendor {
-    ProviderVendor {
+fn deepseek_provider() -> ProviderInfo {
+    ProviderInfo {
+        id: "deepseek".to_string(),
         name: "Deepseek".to_string(),
+        description: None,
         base_url: Some("https://api.deepseek.com".to_string()),
         credential: Some("deepseek_api_key".to_string()),
-        headers: None,
+        headers: BTreeMap::new(),
+        options: None,
+        request: None,
         wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
+        models: BTreeMap::from([(
+            "deepseek-v4-flash".to_string(),
+            ProviderModelInfo {
+                name: Some("DeepSeek-V4-Flash".to_string()),
+                wire_api: Some(ProviderWireApi::OpenAIChatCompletions),
+                ..ProviderModelInfo::default()
+            },
+        )]),
         enabled: true,
     }
 }
@@ -124,14 +137,15 @@ fn first_run_onboarding_starts_with_logo_and_hides_composer() {
     assert!(!scrollback.contains("Model      deepseek-v4-flash"));
 
     let rows = rendered_rows(&widget, 100, 24).join("\n");
-    assert!(rows.contains("Choose model profile"));
-    assert!(rows.contains("Enter select  ·  Esc cancel"));
+    assert!(rows.contains("Choose a provider"));
+    assert!(rows.contains("Add custom provider"));
+    assert!(rows.contains("Enter select   Esc cancel"));
     assert!(!rows.contains("Complete onboarding to start chatting"));
     assert!(!rows.contains("SHIFT+TAB switch"));
     assert!(widget.desired_height(100) < u16::MAX);
 
     let rows = rendered_rows(&widget, 100, widget.desired_height(100)).join("\n");
-    assert!(rows.contains("Enter select  ·  Esc cancel"));
+    assert!(rows.contains("Enter select"));
 }
 
 #[test]
@@ -146,6 +160,24 @@ fn model_selection_footer_stays_visible_in_short_viewport() {
         .collect::<Vec<_>>();
     let initial_model = models.first().cloned();
     let (mut widget, _app_event_rx) = onboarding_widget_with_models(models, initial_model, cwd);
+    let connection_models = (0..12)
+        .map(|idx| {
+            (
+                format!("model-{idx:02}"),
+                ProviderModelInfo {
+                    name: Some(format!("Model {idx:02} Display Name")),
+                    ..ProviderModelInfo::default()
+                },
+            )
+        })
+        .collect();
+    widget.handle_worker_event(WorkerEvent::ProvidersListed {
+        providers: vec![deepseek_provider()],
+        template_provider_ids: vec!["deepseek".to_string()],
+        connected_provider_ids: vec!["deepseek".to_string()],
+        connection_models: BTreeMap::from([("deepseek".to_string(), connection_models)]),
+    });
+    widget.handle_key_event(press_key(KeyCode::Enter));
 
     for _ in 0..10 {
         widget.handle_key_event(press_key(KeyCode::Down));
@@ -158,15 +190,11 @@ fn model_selection_footer_stays_visible_in_short_viewport() {
         "expected selected model in:\n{rows}"
     );
     assert!(
-        rows.contains("↓ more") || rows.contains("↑ more"),
-        "expected scroll overflow marker in:\n{rows}"
+        rows.contains("Model 10 Display Name"),
+        "display name should remain visible for catalog models:\n{rows}"
     );
     assert!(
-        !rows.contains("Model 10 Display Name"),
-        "display name subtitle should not render:\n{rows}"
-    );
-    assert!(
-        rows.contains("Enter select  ·  Esc cancel"),
+        rows.contains("Enter select"),
         "expected fixed onboarding footer in:\n{rows}"
     );
     assert!(!rows.contains("Complete onboarding to start chatting"));
@@ -178,7 +206,7 @@ fn model_selection_footer_stays_visible_in_short_viewport() {
         "expected selected model in short viewport:\n{short}"
     );
     assert!(
-        short.contains("Enter select  ·  Esc cancel"),
+        short.contains("Enter select"),
         "expected fixed onboarding footer in short viewport:\n{short}"
     );
 }
@@ -189,9 +217,15 @@ fn onboarding_completion_appends_header_after_success_record() {
     let (mut widget, mut app_event_rx) = onboarding_widget_with_available_model(test_model(), cwd);
 
     let _ = app_event_rx.try_recv().expect("provider list command");
-    widget.handle_worker_event(WorkerEvent::ProviderVendorsListed {
-        provider_vendors: vec![deepseek_vendor()],
+    widget.handle_worker_event(WorkerEvent::ProvidersListed {
+        providers: vec![deepseek_provider()],
+        template_provider_ids: Vec::new(),
+        connected_provider_ids: Vec::new(),
+        connection_models: BTreeMap::new(),
     });
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
+    widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
     widget.handle_key_event(press_key(KeyCode::Enter));
@@ -204,18 +238,9 @@ fn onboarding_completion_appends_header_after_success_record() {
     });
     assert_eq!(widget.is_onboarding_active(), true);
 
-    widget.handle_worker_event(WorkerEvent::ProviderVendorUpserted {
-        provider_vendor: deepseek_vendor(),
-        model_binding: Some(ProviderModelBinding {
-            binding_id: "deepseek-v4-flash-deepseek".to_string(),
-            model_slug: "deepseek-v4-flash".to_string(),
-            provider: "Deepseek".to_string(),
-            request_model: "DeepSeek-V4-Flash".to_string(),
-            display_name: Some("DeepSeek-V4-Flash".to_string()),
-            invocation_method: ProviderWireApi::OpenAIChatCompletions,
-            default_reasoning_effort: None,
-            enabled: true,
-        }),
+    widget.handle_worker_event(WorkerEvent::ProviderUpserted {
+        provider: deepseek_provider(),
+        default_model: Some("deepseek/deepseek-v4-flash".to_string()),
     });
 
     assert_eq!(widget.is_onboarding_active(), false);

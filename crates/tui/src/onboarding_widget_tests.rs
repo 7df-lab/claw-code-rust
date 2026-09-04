@@ -1,11 +1,13 @@
+use std::collections::BTreeMap;
+
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyEventState;
 use crossterm::event::KeyModifiers;
 use devo_protocol::Model;
-use devo_protocol::ProviderModelBinding;
-use devo_protocol::ProviderVendor;
+use devo_protocol::ProviderInfo;
+use devo_protocol::ProviderModelInfo;
 use devo_protocol::ProviderWireApi;
 use devo_protocol::ReasoningCapability;
 use devo_protocol::ReasoningEffort;
@@ -54,13 +56,6 @@ fn type_text(widget: &mut OnboardingWidget, text: &str) {
     }
 }
 
-fn command_payload(command: &str, prefix: &str) -> serde_json::Value {
-    let payload = command
-        .strip_prefix(prefix)
-        .expect("command should have expected prefix");
-    serde_json::from_str(payload).expect("command payload should be JSON")
-}
-
 fn rendered_rows(widget: &OnboardingWidget, width: u16, height: u16) -> Vec<String> {
     let area = ratatui::layout::Rect::new(0, 0, width, height);
     let mut buf = ratatui::buffer::Buffer::empty(area);
@@ -74,59 +69,82 @@ fn rendered_rows(widget: &OnboardingWidget, width: u16, height: u16) -> Vec<Stri
         .collect()
 }
 
-fn next_shell_command(app_event_rx: &mut mpsc::UnboundedReceiver<AppEvent>) -> String {
-    loop {
-        if let AppEvent::Command(AppCommand::RunUserShellCommand { command }) =
-            app_event_rx.try_recv().expect("expected queued app event")
-        {
-            return command;
-        }
+fn next_command(app_event_rx: &mut mpsc::UnboundedReceiver<AppEvent>) -> AppCommand {
+    match app_event_rx.try_recv().expect("expected queued app event") {
+        AppEvent::Command(command) => command,
+        event => panic!("expected queued app command, got {event:?}"),
+    }
+}
+
+fn next_provider_validate(
+    app_event_rx: &mut mpsc::UnboundedReceiver<AppEvent>,
+) -> devo_protocol::native::rpc_admin::ProviderValidateParams {
+    match next_command(app_event_rx) {
+        AppCommand::ProviderValidate { params } => params,
+        command => panic!("expected provider validation command, got {command:?}"),
+    }
+}
+
+fn next_provider_upsert(
+    app_event_rx: &mut mpsc::UnboundedReceiver<AppEvent>,
+) -> devo_protocol::native::rpc_admin::ProviderUpsertParams {
+    match next_command(app_event_rx) {
+        AppCommand::ProviderUpsert { params } => params,
+        command => panic!("expected provider upsert command, got {command:?}"),
     }
 }
 
 fn deepseek_model() -> Model {
-    devo_core::ModelPreset {
+    Model {
         slug: "deepseek-v4-flash".to_string(),
         display_name: "Deepseek V4 Flash".to_string(),
-        reasoning_capability: ReasoningCapability::Toggle,
-        supported_reasoning_levels: vec![ReasoningEffort::High, ReasoningEffort::Max],
+        reasoning_capability: ReasoningCapability::Levels(devo_protocol::levels_with_leading_off(
+            [ReasoningEffort::High, ReasoningEffort::Max],
+        )),
         default_reasoning_effort: Some(ReasoningEffort::High),
-        ..devo_core::ModelPreset::default()
+        ..Model::default()
     }
-    .into()
 }
 
 fn toggle_only_model() -> Model {
-    devo_core::ModelPreset {
+    Model {
         slug: "laguna-s-2.1".to_string(),
         display_name: "laguna-s-2.1".to_string(),
         reasoning_capability: ReasoningCapability::Toggle,
-        supported_reasoning_levels: Vec::new(),
         default_reasoning_effort: Some(ReasoningEffort::Medium),
-        ..devo_core::ModelPreset::default()
+        ..Model::default()
     }
-    .into()
 }
 
-fn toggle_only_provider_vendor() -> ProviderVendor {
-    ProviderVendor {
+fn toggle_only_provider() -> ProviderInfo {
+    ProviderInfo {
+        id: "poolside".to_string(),
         name: "Poolside".to_string(),
+        description: None,
         base_url: Some("https://api.poolside.ai".to_string()),
         credential: Some("poolside_api_key".to_string()),
-        headers: None,
+        headers: BTreeMap::new(),
+        options: None,
+        request: None,
         wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
         enabled: true,
+        models: BTreeMap::new(),
     }
 }
 
-fn deepseek_provider_vendor() -> ProviderVendor {
-    ProviderVendor {
+fn deepseek_provider() -> ProviderInfo {
+    ProviderInfo {
+        id: "deepseek".to_string(),
         name: "Deepseek".to_string(),
+        description: None,
         base_url: Some("https://api.deepseek.com".to_string()),
         credential: Some("deepseek_api_key".to_string()),
-        headers: None,
+        headers: BTreeMap::new(),
+        options: None,
+        request: None,
         wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
         enabled: true,
+        models: BTreeMap::new(),
     }
 }
 
@@ -139,12 +157,9 @@ fn widget_at_invocation_method_popup() -> OnboardingWidget {
         FrameRequester::test_dummy(),
         true,
     );
-    assert_eq!(
-        next_shell_command(&mut app_event_rx),
-        "provider list".to_string()
-    );
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
 
-    widget.on_provider_vendors_listed(vec![deepseek_provider_vendor()]);
+    widget.on_providers_listed(vec![deepseek_provider()]);
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
@@ -167,21 +182,15 @@ fn failed_validation_widget() -> (OnboardingWidget, mpsc::UnboundedReceiver<AppE
         FrameRequester::test_dummy(),
         true,
     );
-    assert_eq!(
-        next_shell_command(&mut app_event_rx),
-        "provider list".to_string()
-    );
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
 
-    widget.on_provider_vendors_listed(vec![deepseek_provider_vendor()]);
-    widget.handle_key_event(press(KeyCode::Enter));
-    widget.handle_key_event(press(KeyCode::Enter));
-    widget.handle_key_event(press(KeyCode::Enter));
-    widget.handle_key_event(press(KeyCode::Enter));
-    widget.handle_key_event(press(KeyCode::Enter));
-    widget.handle_key_event(press(KeyCode::Enter));
+    widget.on_providers_listed(vec![deepseek_provider()]);
+    for _ in 0..9 {
+        widget.handle_key_event(press(KeyCode::Enter));
+    }
 
-    let command = next_shell_command(&mut app_event_rx);
-    assert_eq!(command.starts_with("onboard "), true);
+    let command = next_command(&mut app_event_rx);
+    assert!(matches!(command, AppCommand::ProviderValidate { .. }));
     widget.on_validation_failed("probe failed".to_string(), /*recovery_hint*/ None);
     (widget, app_event_rx)
 }
@@ -195,18 +204,20 @@ fn edited_existing_provider_widget() -> (OnboardingWidget, mpsc::UnboundedReceiv
         FrameRequester::test_dummy(),
         true,
     );
-    assert_eq!(
-        next_shell_command(&mut app_event_rx),
-        "provider list".to_string()
-    );
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
 
-    widget.on_provider_vendors_listed(vec![deepseek_provider_vendor()]);
+    widget.on_providers_listed(vec![deepseek_provider()]);
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     for _ in 0.."deepseek-v4-flash".chars().count() {
         widget.handle_key_event(press(KeyCode::Backspace));
     }
     type_text(&mut widget, "DeepSeek-V4-Flash");
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
@@ -224,12 +235,9 @@ fn edited_display_name_widget() -> (OnboardingWidget, mpsc::UnboundedReceiver<Ap
         FrameRequester::test_dummy(),
         true,
     );
-    assert_eq!(
-        next_shell_command(&mut app_event_rx),
-        "provider list".to_string()
-    );
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
 
-    widget.on_provider_vendors_listed(vec![deepseek_provider_vendor()]);
+    widget.on_providers_listed(vec![deepseek_provider()]);
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
@@ -237,6 +245,9 @@ fn edited_display_name_widget() -> (OnboardingWidget, mpsc::UnboundedReceiver<Ap
         widget.handle_key_event(press(KeyCode::Backspace));
     }
     type_text(&mut widget, "DeepSeek V4 Flash Custom");
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
@@ -254,12 +265,9 @@ fn onboarding_inline_input_backspace_handles_non_ascii_characters() {
         FrameRequester::test_dummy(),
         true,
     );
-    assert_eq!(
-        next_shell_command(&mut app_event_rx),
-        "provider list".to_string()
-    );
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
 
-    widget.on_provider_vendors_listed(Vec::new());
+    widget.on_providers_listed(Vec::new());
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(plain_char('你'));
@@ -280,7 +288,7 @@ fn onboarding_validation_failure_defaults_to_add_model_anyway() {
     let (widget, _app_event_rx) = failed_validation_widget();
 
     let view = rendered_rows(&widget, 160, 40).join("\n");
-    assert_eq!(view.contains("› Add model anyway"), true);
+    assert_eq!(view.contains("> Add model anyway"), true);
     assert_eq!(view.contains("  Retry with current settings"), true);
 }
 
@@ -288,28 +296,35 @@ fn onboarding_validation_failure_defaults_to_add_model_anyway() {
 fn onboarding_existing_provider_validation_payload_preserves_edited_model_name() {
     let (_widget, mut app_event_rx) = edited_existing_provider_widget();
 
-    let command = next_shell_command(&mut app_event_rx);
-    let payload = command_payload(&command, "onboard ");
-
-    assert_eq!(payload["model_slug"], "deepseek-v4-flash");
-    assert_eq!(payload["request_model"], "DeepSeek-V4-Flash");
-    assert_eq!(payload["display_name"], "Deepseek V4 Flash");
+    let params = next_provider_validate(&mut app_event_rx);
+    assert_eq!(params.provider.id, "deepseek");
+    assert_eq!(params.model, "DeepSeek-V4-Flash");
+    assert_eq!(params.api_key, None);
+    assert_eq!(
+        params.provider.models["DeepSeek-V4-Flash"].name,
+        Some("Deepseek V4 Flash".to_string())
+    );
 }
 
 #[test]
 fn onboarding_existing_provider_bypass_payload_preserves_edited_model_name() {
     let (mut widget, mut app_event_rx) = edited_existing_provider_widget();
-    let _ = next_shell_command(&mut app_event_rx);
+    let _ = next_provider_validate(&mut app_event_rx);
     widget.on_validation_failed("probe failed".to_string(), /*recovery_hint*/ None);
 
     widget.handle_key_event(press(KeyCode::Enter));
 
-    let command = next_shell_command(&mut app_event_rx);
-    let payload = command_payload(&command, "onboard-skip-validation ");
-
-    assert_eq!(payload["model_slug"], "deepseek-v4-flash");
-    assert_eq!(payload["request_model"], "DeepSeek-V4-Flash");
-    assert_eq!(payload["display_name"], "Deepseek V4 Flash");
+    let params = next_provider_upsert(&mut app_event_rx);
+    assert_eq!(params.provider.id, "deepseek");
+    assert_eq!(
+        params.default_model,
+        Some("deepseek/DeepSeek-V4-Flash".to_string())
+    );
+    assert_eq!(params.api_key, None);
+    assert_eq!(
+        params.provider.models["DeepSeek-V4-Flash"].name,
+        Some("Deepseek V4 Flash".to_string())
+    );
     assert_eq!(widget.take_result(), None);
 }
 
@@ -317,12 +332,12 @@ fn onboarding_existing_provider_bypass_payload_preserves_edited_model_name() {
 fn onboarding_existing_provider_validation_payload_preserves_edited_display_name() {
     let (_widget, mut app_event_rx) = edited_display_name_widget();
 
-    let command = next_shell_command(&mut app_event_rx);
-    let payload = command_payload(&command, "onboard ");
-
-    assert_eq!(payload["model_slug"], "deepseek-v4-flash");
-    assert_eq!(payload["request_model"], "deepseek-v4-flash");
-    assert_eq!(payload["display_name"], "DeepSeek V4 Flash Custom");
+    let params = next_provider_validate(&mut app_event_rx);
+    assert_eq!(params.model, "deepseek-v4-flash");
+    assert_eq!(
+        params.provider.models["deepseek-v4-flash"].name,
+        Some("DeepSeek V4 Flash Custom".to_string())
+    );
 }
 
 #[test]
@@ -331,26 +346,20 @@ fn onboarding_validation_failure_can_bypass_validation() {
 
     widget.handle_key_event(press(KeyCode::Enter));
 
-    let command = next_shell_command(&mut app_event_rx);
-    assert_eq!(command.starts_with("onboard-skip-validation "), true);
+    let params = next_provider_upsert(&mut app_event_rx);
+    assert_eq!(
+        params.default_model,
+        Some("deepseek/deepseek-v4-flash".to_string())
+    );
     assert_eq!(widget.take_result(), None);
 
-    widget.on_provider_saved(Some(&ProviderModelBinding {
-        binding_id: "deepseek-v4-flash-deepseek".to_string(),
-        model_slug: "deepseek-v4-flash".to_string(),
-        provider: "Deepseek".to_string(),
-        request_model: "deepseek-v4-flash".to_string(),
-        display_name: Some("deepseek-v4-flash".to_string()),
-        invocation_method: ProviderWireApi::OpenAIChatCompletions,
-        default_reasoning_effort: Some("high".to_string()),
-        enabled: true,
-    }));
+    widget.on_provider_upserted(&deepseek_provider(), Some("deepseek/deepseek-v4-flash"));
     assert_eq!(
         widget.take_result(),
         Some(OnboardingResult::ValidationBypassed {
             model_slug: "deepseek-v4-flash".to_string(),
             request_model: "deepseek-v4-flash".to_string(),
-            display_name: "deepseek-v4-flash".to_string(),
+            display_name: "Deepseek V4 Flash".to_string(),
         })
     );
 }
@@ -362,9 +371,8 @@ fn onboarding_validation_failure_retry_still_validates() {
     widget.handle_key_event(press(KeyCode::Down));
     widget.handle_key_event(press(KeyCode::Enter));
 
-    let command = next_shell_command(&mut app_event_rx);
-    assert_eq!(command.starts_with("onboard "), true);
-    assert_eq!(command.starts_with("onboard-skip-validation "), false);
+    let command = next_command(&mut app_event_rx);
+    assert!(matches!(command, AppCommand::ProviderValidate { .. }));
     assert_eq!(widget.take_result(), None);
 }
 
@@ -378,11 +386,8 @@ fn onboarding_settings_summary_masks_entered_api_key() {
         FrameRequester::test_dummy(),
         true,
     );
-    assert_eq!(
-        next_shell_command(&mut app_event_rx),
-        "provider list".to_string()
-    );
-    widget.on_provider_vendors_listed(Vec::new());
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
+    widget.on_providers_listed(Vec::new());
 
     widget.handle_key_event(press(KeyCode::Enter));
     let _ = widget.take_transcript_events();
@@ -394,6 +399,10 @@ fn onboarding_settings_summary_masks_entered_api_key() {
     type_text(&mut widget, "https://api.deepseek.com");
     widget.handle_key_event(press(KeyCode::Enter));
     type_text(&mut widget, "secret-key");
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    let _ = widget.take_transcript_events();
+    widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
@@ -417,6 +426,68 @@ fn onboarding_settings_summary_masks_entered_api_key() {
 }
 
 #[test]
+fn onboarding_custom_provider_and_model_can_use_advanced_settings() {
+    let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = OnboardingWidget::new(
+        &[],
+        AppEventSender::new(app_event_tx),
+        FrameRequester::test_dummy(),
+        true,
+    );
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
+    widget.on_providers_listed(Vec::new());
+
+    widget.handle_key_event(press(KeyCode::Enter));
+    let setup_view = rendered_rows(&widget, 100, 24).join("\n");
+    assert!(setup_view.contains("Enter the connection details for this provider."));
+    assert!(setup_view.contains("Stored securely in auth.json."));
+    for glyph in ["█", "╚", "╝", "═", "▌", "─", "│", "●"] {
+        assert!(
+            !setup_view.contains(glyph),
+            "unexpected decorative glyph: {glyph}"
+        );
+    }
+    type_text(&mut widget, "Acme Gateway");
+    widget.handle_key_event(press(KeyCode::Enter));
+    type_text(&mut widget, "https://api.example.com/v1");
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+
+    widget.handle_key_event(press(KeyCode::Enter));
+    type_text(&mut widget, "custom-model");
+    let custom_model_form = rendered_rows(&widget, 100, 24).join(" ");
+    assert!(custom_model_form.contains("Add a custom model"));
+    assert!(custom_model_form.contains("Provider model ID"));
+    assert!(custom_model_form.contains("Display name"));
+    assert!(!custom_model_form.contains("model slug"));
+    widget.handle_key_event(press(KeyCode::Enter));
+    type_text(&mut widget, "Custom Model");
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Char(' ')));
+    type_text(&mut widget, "128000");
+    for _ in 0..33 {
+        widget.handle_key_event(press(KeyCode::Enter));
+    }
+    widget.handle_key_event(press(KeyCode::Enter));
+
+    let params = next_provider_validate(&mut app_event_rx);
+    assert_eq!(params.provider.id, "acme-gateway");
+    assert_eq!(params.model, "custom-model");
+    assert_eq!(params.api_key, None);
+    assert_eq!(
+        params.provider.models["custom-model"].name,
+        Some("Custom Model".to_string())
+    );
+    assert_eq!(
+        params.provider.models["custom-model"].context_window,
+        Some(128000)
+    );
+}
+
+#[test]
 fn onboarding_existing_provider_renders_values_after_labels_and_masks_saved_key() {
     let models = vec![deepseek_model()];
     let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
@@ -426,12 +497,9 @@ fn onboarding_existing_provider_renders_values_after_labels_and_masks_saved_key(
         FrameRequester::test_dummy(),
         true,
     );
-    assert_eq!(
-        next_shell_command(&mut app_event_rx),
-        "provider list".to_string()
-    );
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
 
-    widget.on_provider_vendors_listed(vec![deepseek_provider_vendor()]);
+    widget.on_providers_listed(vec![deepseek_provider()]);
 
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
@@ -478,12 +546,9 @@ fn onboarding_required_provider_name_and_base_url_do_not_advance_when_empty() {
         FrameRequester::test_dummy(),
         true,
     );
-    assert_eq!(
-        next_shell_command(&mut app_event_rx),
-        "provider list".to_string()
-    );
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
 
-    widget.on_provider_vendors_listed(Vec::new());
+    widget.on_providers_listed(Vec::new());
 
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
@@ -520,12 +585,9 @@ fn onboarding_invocation_and_reasoning_popups_render_inline_and_use_model_preset
         FrameRequester::test_dummy(),
         true,
     );
-    assert_eq!(
-        next_shell_command(&mut app_event_rx),
-        "provider list".to_string()
-    );
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
 
-    widget.on_provider_vendors_listed(vec![deepseek_provider_vendor()]);
+    widget.on_providers_listed(vec![deepseek_provider()]);
 
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
@@ -533,40 +595,39 @@ fn onboarding_invocation_and_reasoning_popups_render_inline_and_use_model_preset
     widget.handle_key_event(press(KeyCode::Enter));
 
     let invocation_view = rendered_rows(&widget, 160, 60).join("\n");
-    assert_eq!(invocation_view.contains("Configure provider binding"), true);
+    assert_eq!(invocation_view.contains("Configure Connection"), true);
     assert_eq!(
         invocation_view.contains("Invocation Method: OpenAI Chat Completions"),
         true
     );
-    assert_eq!(invocation_view.contains("› OpenAI Chat Completions"), true);
+    assert_eq!(invocation_view.contains("> OpenAI Chat Completions"), true);
 
     widget.handle_key_event(press(KeyCode::Enter));
 
     let reasoning_view = rendered_rows(&widget, 160, 60).join("\n");
     assert_eq!(reasoning_view.contains("Reason Effort: High"), true);
     assert_eq!(reasoning_view.contains(" Off"), true);
-    assert_eq!(reasoning_view.contains("› High"), true);
+    assert_eq!(reasoning_view.contains("> High"), true);
     assert_eq!(reasoning_view.contains(" Max"), true);
     assert_eq!(reasoning_view.contains("Medium"), false);
     assert_eq!(reasoning_view.contains("XHigh"), false);
 
     widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
 
-    let command = next_shell_command(&mut app_event_rx);
-    let payload = command
-        .strip_prefix("onboard ")
-        .expect("onboard command prefix");
-    let payload: serde_json::Value = serde_json::from_str(payload).expect("valid onboarding json");
-
+    let params = next_provider_validate(&mut app_event_rx);
     assert_eq!(
-        payload["provider_credential_id"],
-        serde_json::Value::String("deepseek_api_key".to_string())
+        params.provider.credential,
+        Some("deepseek_api_key".to_string())
     );
+    assert_eq!(params.model, "deepseek-v4-flash");
+    assert_eq!(params.api_key, None);
     assert_eq!(
-        payload["default_reasoning_effort"],
-        serde_json::Value::String("high".to_string())
+        params.provider.models["deepseek-v4-flash"].default_reasoning_selection,
+        Some("high".to_string())
     );
-    assert_eq!(payload["api_key"], serde_json::Value::Null);
 }
 
 #[test]
@@ -579,12 +640,9 @@ fn onboarding_toggle_model_reasoning_popup_shows_off_and_on() {
         FrameRequester::test_dummy(),
         true,
     );
-    assert_eq!(
-        next_shell_command(&mut app_event_rx),
-        "provider list".to_string()
-    );
+    assert_eq!(next_command(&mut app_event_rx), AppCommand::ProviderList);
 
-    widget.on_provider_vendors_listed(vec![toggle_only_provider_vendor()]);
+    widget.on_providers_listed(vec![toggle_only_provider()]);
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
     widget.handle_key_event(press(KeyCode::Enter));
@@ -594,20 +652,18 @@ fn onboarding_toggle_model_reasoning_popup_shows_off_and_on() {
     let reasoning_view = rendered_rows(&widget, 160, 60).join("\n");
     assert_eq!(reasoning_view.contains("Reason Effort: On"), true);
     assert_eq!(reasoning_view.contains(" Off"), true);
-    assert_eq!(reasoning_view.contains("› On"), true);
+    assert_eq!(reasoning_view.contains("> On"), true);
     assert_eq!(reasoning_view.contains("Medium"), false);
 
     widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
+    widget.handle_key_event(press(KeyCode::Enter));
 
-    let command = next_shell_command(&mut app_event_rx);
-    let payload = command
-        .strip_prefix("onboard ")
-        .expect("onboard command prefix");
-    let payload: serde_json::Value = serde_json::from_str(payload).expect("valid onboarding json");
-
+    let params = next_provider_validate(&mut app_event_rx);
     assert_eq!(
-        payload["default_reasoning_effort"],
-        serde_json::Value::String("enabled".to_string())
+        params.provider.models["laguna-s-2.1"].default_reasoning_selection,
+        Some("on".to_string())
     );
 }
 
@@ -626,7 +682,7 @@ fn onboarding_invocation_popup_keeps_active_section_visible_when_short() {
         "expected invocation hint in short viewport:\n{invocation_view}"
     );
     assert!(
-        invocation_view.contains("› OpenAI Chat Completions"),
+        invocation_view.contains("> OpenAI Chat Completions"),
         "expected selected invocation option in short viewport:\n{invocation_view}"
     );
 }
@@ -646,7 +702,212 @@ fn onboarding_reasoning_popup_keeps_active_section_visible_when_short_and_narrow
         "expected wrapped reasoning hint in short viewport:\n{reasoning_view}"
     );
     assert!(
-        reasoning_view.contains("› High"),
+        reasoning_view.contains("> High"),
         "expected selected reasoning effort in short viewport:\n{reasoning_view}"
     );
+}
+
+#[test]
+fn unconnected_builtin_provider_collects_api_key_without_editing_template() {
+    let models = vec![deepseek_model()];
+    let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = OnboardingWidget::new(
+        &models,
+        AppEventSender::new(app_event_tx),
+        FrameRequester::test_dummy(),
+        true,
+    );
+    let _ = app_event_rx.try_recv().expect("provider list command");
+    widget.on_providers_listed_with_status(
+        vec![deepseek_provider()],
+        vec!["deepseek".to_string()],
+        Vec::new(),
+    );
+
+    widget.handle_key_event(press(KeyCode::Enter));
+    let setup = rendered_rows(&widget, 120, 30).join("\n");
+    assert!(setup.contains("Connect to Deepseek"));
+    assert!(setup.contains("Base URL: https://api.deepseek.com"));
+    assert!(setup.contains("Fixed by the provider directory template."));
+    assert!(setup.contains("Enter once to create this Connection"));
+    type_text(&mut widget, "new-secret");
+    let entered = rendered_rows(&widget, 120, 30).join("\n");
+    assert!(entered.contains("API Key: **********|"));
+    assert!(!entered.contains("new-secret"));
+
+    widget.handle_key_event(press(KeyCode::Enter));
+    let model_selection = rendered_rows(&widget, 120, 30).join("\n");
+    assert!(model_selection.contains("Choose a model"));
+}
+
+#[test]
+fn connected_builtin_provider_goes_to_model_selection_without_editing_connection() {
+    let models = vec![deepseek_model()];
+    let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = OnboardingWidget::new(
+        &models,
+        AppEventSender::new(app_event_tx),
+        FrameRequester::test_dummy(),
+        true,
+    );
+    let _ = app_event_rx.try_recv().expect("provider list command");
+    widget.on_providers_listed_with_status(
+        vec![deepseek_provider()],
+        vec!["deepseek".to_string()],
+        vec!["deepseek".to_string()],
+    );
+
+    widget.handle_key_event(press(KeyCode::Enter));
+    let model_selection = rendered_rows(&widget, 120, 30).join("\n");
+    assert!(model_selection.contains("Models in this Connection"));
+    assert!(!model_selection.contains("Connect to Deepseek"));
+}
+
+#[test]
+fn connection_model_screen_lists_only_saved_models_and_can_remove_one() {
+    let models = vec![deepseek_model()];
+    let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = OnboardingWidget::new(
+        &models,
+        AppEventSender::new(app_event_tx),
+        FrameRequester::test_dummy(),
+        true,
+    );
+    let _ = app_event_rx.try_recv().expect("provider list command");
+    widget.on_providers_listed_with_status_and_models(
+        vec![deepseek_provider()],
+        vec!["deepseek".to_string()],
+        vec!["deepseek".to_string()],
+        BTreeMap::from([(
+            "deepseek".to_string(),
+            BTreeMap::from([
+                (
+                    "saved-model".to_string(),
+                    ProviderModelInfo {
+                        name: Some("Saved model".to_string()),
+                        ..ProviderModelInfo::default()
+                    },
+                ),
+                (
+                    "second-model".to_string(),
+                    ProviderModelInfo {
+                        name: Some("Second model".to_string()),
+                        ..ProviderModelInfo::default()
+                    },
+                ),
+            ]),
+        )]),
+    );
+
+    widget.handle_key_event(press(KeyCode::Enter));
+    let model_selection = rendered_rows(&widget, 120, 30).join("\n");
+    assert!(model_selection.contains("Models in this Connection"));
+    assert!(model_selection.contains("saved-model"));
+    assert!(model_selection.contains("second-model"));
+    assert!(model_selection.contains("Add custom model profile"));
+    assert!(!model_selection.contains("deepseek-v4-flash"));
+
+    widget.handle_key_event(press(KeyCode::Char('d')));
+    let confirmation = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(confirmation.contains("Remove Saved model from Deepseek"));
+    widget.handle_key_event(press(KeyCode::Enter));
+    assert_eq!(
+        app_event_rx.try_recv().expect("remove model command"),
+        AppEvent::Command(AppCommand::RemoveProviderModel {
+            provider_id: "deepseek".to_string(),
+            model_id: "saved-model".to_string(),
+        })
+    );
+
+    widget.on_provider_model_removed("deepseek", "saved-model");
+    assert_eq!(
+        app_event_rx.try_recv().expect("provider refresh command"),
+        AppEvent::Command(AppCommand::ProviderList)
+    );
+    let after_remove = rendered_rows(&widget, 120, 30).join("\n");
+    assert!(!after_remove.contains("saved-model"));
+    assert!(after_remove.contains("second-model"));
+    assert!(after_remove.contains("Add custom model profile"));
+
+    widget.handle_key_event(press(KeyCode::Tab));
+    widget.handle_key_event(press(KeyCode::Enter));
+    let custom_model = rendered_rows(&widget, 120, 20).join(" ");
+    assert!(custom_model.contains("Add a custom model"));
+    assert!(custom_model.contains("Provider model ID"));
+    assert!(custom_model.contains("Display name"));
+    widget.handle_key_event(press(KeyCode::Esc));
+    let back_to_models = rendered_rows(&widget, 120, 30).join(" ");
+    assert!(back_to_models.contains("Models in this Connection"));
+}
+
+#[test]
+fn connected_provider_can_be_disconnected_without_removing_the_template() {
+    let models = vec![deepseek_model()];
+    let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = OnboardingWidget::new(
+        &models,
+        AppEventSender::new(app_event_tx),
+        FrameRequester::test_dummy(),
+        true,
+    );
+    let _ = app_event_rx.try_recv().expect("provider list command");
+    widget.on_providers_listed_with_status(
+        vec![deepseek_provider()],
+        vec!["deepseek".to_string()],
+        vec!["deepseek".to_string()],
+    );
+
+    let provider_selection = rendered_rows(&widget, 120, 30).join("\n");
+    assert!(provider_selection.contains("Connections"));
+    assert!(provider_selection.contains("Provider templates"));
+    assert!(provider_selection.contains("Saved Connection · https://api.deepseek.com"));
+    assert!(provider_selection.contains("Read-only template · https://api.deepseek.com"));
+
+    widget.handle_key_event(press(KeyCode::Char('d')));
+    let confirmation = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(confirmation.contains("Disconnect Deepseek"));
+    widget.handle_key_event(press(KeyCode::Enter));
+    assert_eq!(
+        app_event_rx.try_recv().expect("disconnect command"),
+        AppEvent::Command(AppCommand::DisconnectProvider {
+            provider_id: "deepseek".to_string(),
+        })
+    );
+
+    widget.on_provider_disconnected("deepseek");
+    assert_eq!(
+        app_event_rx.try_recv().expect("provider refresh command"),
+        AppEvent::Command(AppCommand::ProviderList)
+    );
+    let disconnected = rendered_rows(&widget, 120, 20).join("\n");
+    assert!(disconnected.contains("Provider templates"));
+    assert!(disconnected.contains("Read-only template · https://api.deepseek.com"));
+    assert!(disconnected.contains("No saved Connections yet."));
+}
+
+#[test]
+fn provider_template_cannot_be_disconnected() {
+    let models = vec![deepseek_model()];
+    let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+    let mut widget = OnboardingWidget::new(
+        &models,
+        AppEventSender::new(app_event_tx),
+        FrameRequester::test_dummy(),
+        true,
+    );
+    let _ = app_event_rx.try_recv().expect("provider list command");
+    widget.on_providers_listed_with_status(
+        vec![deepseek_provider()],
+        vec!["deepseek".to_string()],
+        vec!["deepseek".to_string()],
+    );
+
+    widget.handle_key_event(press(KeyCode::Down));
+    widget.handle_key_event(press(KeyCode::Char('d')));
+
+    let view = rendered_rows(&widget, 120, 24).join("\n");
+    assert!(view.contains("Connections"));
+    assert!(view.contains("Provider templates"));
+    assert!(!view.contains("Disconnect Deepseek"));
+    assert!(app_event_rx.try_recv().is_err());
 }

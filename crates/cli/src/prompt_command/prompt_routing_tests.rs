@@ -12,11 +12,11 @@ use super::RoutedPromptProvider;
 use super::prompt_turn_config;
 use devo_core::AppConfig;
 use devo_core::Model;
-use devo_core::ModelBindingConfig;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderConfigSection;
-use devo_core::ProviderDefaultsConfig;
-use devo_core::ProviderVendorConfig;
+use devo_core::ProviderConfigEntry;
+use devo_core::ProviderConfigFile;
+use devo_core::ProviderModelConfig;
+use devo_core::ProviderModelVariantConfig;
 use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
 use devo_protocol::ProviderWireApi;
@@ -99,108 +99,72 @@ impl ProviderRouter for CapturingRouter {
 }
 
 #[test]
-fn prompt_turn_config_routes_requested_binding_to_provider_route() {
+fn prompt_turn_config_routes_requested_connection_model_to_provider_route() {
     let app_config = AppConfig {
-        provider: ProviderConfigSection {
-            defaults: ProviderDefaultsConfig {
-                model_binding: Some("main".to_string()),
-            },
+        provider_catalog: ProviderConfigFile {
             providers: BTreeMap::from([
                 (
                     "default-provider".to_string(),
-                    ProviderVendorConfig {
-                        enabled: true,
-                        wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
-                        ..ProviderVendorConfig::default()
+                    ProviderConfigEntry {
+                        wire_api: Some(ProviderWireApi::OpenAIChatCompletions),
+                        models: BTreeMap::from([(
+                            "main".to_string(),
+                            ProviderModelConfig::default(),
+                        )]),
+                        ..ProviderConfigEntry::default()
                     },
                 ),
                 (
                     "anthropic-provider".to_string(),
-                    ProviderVendorConfig {
-                        enabled: true,
-                        wire_apis: vec![ProviderWireApi::AnthropicMessages],
-                        ..ProviderVendorConfig::default()
-                    },
-                ),
-                (
-                    "other-provider".to_string(),
-                    ProviderVendorConfig {
-                        enabled: true,
-                        wire_apis: vec![ProviderWireApi::AnthropicMessages],
-                        ..ProviderVendorConfig::default()
-                    },
-                ),
-            ]),
-            model_bindings: BTreeMap::from([
-                (
-                    "main".to_string(),
-                    ModelBindingConfig {
-                        model_slug: "catalog-main".to_string(),
-                        provider: "default-provider".to_string(),
-                        request_model: "vendor/main".to_string(),
-                        invocation_method: ProviderWireApi::OpenAIChatCompletions,
-                        ..ModelBindingConfig::default()
-                    },
-                ),
-                (
-                    "alt".to_string(),
-                    ModelBindingConfig {
-                        model_slug: "catalog-alt".to_string(),
-                        provider: "anthropic-provider".to_string(),
-                        request_model: "vendor/alt".to_string(),
-                        invocation_method: ProviderWireApi::AnthropicMessages,
-                        ..ModelBindingConfig::default()
-                    },
-                ),
-                (
-                    "alt-thinking".to_string(),
-                    ModelBindingConfig {
-                        model_slug: "catalog-alt-thinking".to_string(),
-                        provider: "anthropic-provider".to_string(),
-                        request_model: "vendor/alt-thinking".to_string(),
-                        invocation_method: ProviderWireApi::AnthropicMessages,
-                        ..ModelBindingConfig::default()
-                    },
-                ),
-                (
-                    "other-thinking".to_string(),
-                    ModelBindingConfig {
-                        model_slug: "catalog-alt-thinking".to_string(),
-                        provider: "other-provider".to_string(),
-                        request_model: "other/alt-thinking".to_string(),
-                        invocation_method: ProviderWireApi::AnthropicMessages,
-                        ..ModelBindingConfig::default()
+                    ProviderConfigEntry {
+                        wire_api: Some(ProviderWireApi::AnthropicMessages),
+                        models: BTreeMap::from([(
+                            "alt".to_string(),
+                            ProviderModelConfig {
+                                variants: BTreeMap::from([(
+                                    "fast".to_string(),
+                                    ProviderModelVariantConfig::default(),
+                                )]),
+                                ..ProviderModelConfig::default()
+                            },
+                        )]),
+                        ..ProviderConfigEntry::default()
                     },
                 ),
             ]),
-            ..ProviderConfigSection::default()
+            ..ProviderConfigFile::default()
         },
         ..AppConfig::default()
     };
     let model_catalog = PresetModelCatalog::new(vec![Model {
-        slug: "catalog-alt".to_string(),
+        slug: "anthropic-provider/alt".to_string(),
         provider: ProviderWireApi::AnthropicMessages,
         ..Model::default()
     }]);
 
-    let turn_config = prompt_turn_config(&app_config, &model_catalog, Some("alt"), "catalog-main");
+    let turn_config = prompt_turn_config(
+        &app_config,
+        &model_catalog,
+        Some("anthropic-provider/alt/fast"),
+        "default-provider/main",
+    );
 
-    assert_eq!(turn_config.model.slug, "catalog-alt");
-    assert_eq!(turn_config.request_model, "vendor/alt");
-    assert_eq!(turn_config.model_binding_id, Some("alt".to_string()));
+    assert_eq!(turn_config.model.slug, "anthropic-provider/alt");
+    assert_eq!(turn_config.request_model, "alt");
+    assert_eq!(
+        turn_config.model_binding_id,
+        Some("anthropic-provider/alt".to_string())
+    );
     assert_eq!(
         turn_config.provider_route,
-        ProviderRoute::binding("anthropic-provider", ProviderWireApi::AnthropicMessages)
+        ProviderRoute::connection("anthropic-provider", ProviderWireApi::AnthropicMessages)
     );
-    assert_eq!(
-        turn_config.provider_request_model("catalog-alt-thinking"),
-        "vendor/alt-thinking"
-    );
+    assert_eq!(turn_config.variant, Some("fast".to_string()));
 }
 
 #[tokio::test]
 async fn routed_prompt_provider_forwards_configured_route() {
-    let route = ProviderRoute::binding("anthropic-provider", ProviderWireApi::AnthropicMessages);
+    let route = ProviderRoute::connection("anthropic-provider", ProviderWireApi::AnthropicMessages);
     let router = Arc::new(CapturingRouter::default());
     let provider = RoutedPromptProvider::new(router.clone(), route.clone());
 

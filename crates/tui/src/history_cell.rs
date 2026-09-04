@@ -1401,21 +1401,14 @@ impl HeaderHistoryCell {
 
         match &self.reasoning_capability {
             ReasoningCapability::Toggle => Some("reasoning"),
-            ReasoningCapability::ToggleWithLevels(levels) => self
-                .default_reasoning_effort
-                .or_else(|| levels.first().copied())
-                .map(|effort| match effort {
-                    ReasoningEffort::None => "none",
-                    ReasoningEffort::Minimal => "minimal",
-                    ReasoningEffort::Low => "low",
-                    ReasoningEffort::Medium => "medium",
-                    ReasoningEffort::High => "high",
-                    ReasoningEffort::XHigh => "xhigh",
-                    ReasoningEffort::Max => "max",
-                }),
             ReasoningCapability::Levels(levels) => self
                 .default_reasoning_effort
-                .or_else(|| levels.first().copied())
+                .or_else(|| {
+                    levels
+                        .iter()
+                        .copied()
+                        .find_map(devo_protocol::ReasoningLevelChoice::effort)
+                })
                 .map(|effort| match effort {
                     ReasoningEffort::None => "none",
                     ReasoningEffort::Minimal => "minimal",
@@ -1424,7 +1417,8 @@ impl HeaderHistoryCell {
                     ReasoningEffort::High => "high",
                     ReasoningEffort::XHigh => "xhigh",
                     ReasoningEffort::Max => "max",
-                }),
+                })
+                .or_else(|| levels.first().map(|choice| choice.selection_value())),
             ReasoningCapability::Unsupported => None,
         }
     }

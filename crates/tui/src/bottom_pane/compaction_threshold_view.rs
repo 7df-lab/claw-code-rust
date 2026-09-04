@@ -1,8 +1,9 @@
-//! Absolute-token compaction threshold picker for Settings › Compaction.
+//! Absolute-token compaction threshold picker (legacy).
 //!
-//! Lists preset limits clamped to the model context window, annotating
-//! `(recommended)` and `(current)`. Applying a row emits
-//! [`AppCommand::UpdateEffectiveContextWindow`].
+//! The Settings › Compaction UI is removed; usable context is edited per model.
+//! This module still exports [`format_token_limit`] for status/settings labels.
+
+#![allow(dead_code)]
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;

@@ -24,8 +24,6 @@ use devo_core::TurnId;
 use devo_protocol::AgentToolPolicy;
 use devo_protocol::CommandExecParams;
 use devo_protocol::CommandExecProgram;
-use devo_protocol::ProviderModelBinding;
-use devo_protocol::ProviderVendor;
 use devo_protocol::ReferenceSearchId;
 use devo_protocol::ReferenceSearchSnapshot;
 use devo_protocol::SessionHistoryMetadata;
@@ -68,6 +66,7 @@ mod history;
 mod item_dispatch;
 mod native_items;
 mod plan_items;
+
 mod session_preview;
 mod session_restore;
 mod skills;
@@ -324,23 +323,27 @@ enum OperationCommand {
         model: String,
         /// Optional provider base URL override.
         base_url: Option<String>,
-        /// Optional provider API key override.
+        /// Transient provider API key input; persistence belongs to auth.json.
         api_key: Option<String>,
     },
-    /// Validates provider settings with a temporary probe request.
+    /// Validates a provider Connection with a temporary probe request.
     ValidateProvider {
-        provider_vendor: ProviderVendor,
-        model_binding: ProviderModelBinding,
-        api_key: Option<String>,
+        params: devo_protocol::native::rpc_admin::ProviderValidateParams,
     },
-    /// Request configured provider vendors from the server.
-    ListProviderVendors,
-    /// Add or update one provider vendor through the server.
-    UpsertProviderVendor {
-        provider_vendor: ProviderVendor,
-        model_binding: Option<ProviderModelBinding>,
-        default_model_binding: Option<String>,
-        api_key: Option<String>,
+    /// Request configured provider Connections and directory templates from the server.
+    ListProviders,
+    /// Add or update one provider Connection through the server.
+    ProviderUpsert {
+        params: devo_protocol::native::rpc_admin::ProviderUpsertParams,
+    },
+    /// Disconnect one user-created provider Connection.
+    DisconnectProvider {
+        provider_id: String,
+    },
+    /// Remove one model from a user-created provider Connection.
+    RemoveProviderModel {
+        provider_id: String,
+        model_id: String,
     },
     /// Request a session list from the server.
     ListSessions,
@@ -677,19 +680,13 @@ impl QueryWorkerHandle {
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    /// Validates provider settings with a temporary probe request.
+    /// Validates a provider Connection with a temporary probe request.
     pub(crate) fn validate_provider(
         &self,
-        provider_vendor: ProviderVendor,
-        model_binding: ProviderModelBinding,
-        api_key: Option<String>,
+        params: devo_protocol::native::rpc_admin::ProviderValidateParams,
     ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::ValidateProvider {
-                provider_vendor,
-                model_binding,
-                api_key,
-            })
+            .send(OperationCommand::ValidateProvider { params })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
@@ -698,27 +695,40 @@ impl QueryWorkerHandle {
         self.provider_validation_cancel.cancel();
     }
 
-    /// Requests the current configured provider vendors from the background worker.
-    pub(crate) fn list_provider_vendors(&self) -> Result<()> {
+    /// Requests the current provider Connections and directory templates.
+    pub(crate) fn list_providers(&self) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::ListProviderVendors)
+            .send(OperationCommand::ListProviders)
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
 
-    /// Adds or updates a provider vendor through the background worker.
-    pub(crate) fn upsert_provider_vendor(
+    /// Adds or updates a provider Connection through the background worker.
+    pub(crate) fn upsert_provider(
         &self,
-        provider_vendor: ProviderVendor,
-        model_binding: Option<ProviderModelBinding>,
-        default_model_binding: Option<String>,
-        api_key: Option<String>,
+        params: devo_protocol::native::rpc_admin::ProviderUpsertParams,
     ) -> Result<()> {
         self.command_tx
-            .send(OperationCommand::UpsertProviderVendor {
-                provider_vendor,
-                model_binding,
-                default_model_binding,
-                api_key,
+            .send(OperationCommand::ProviderUpsert { params })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Disconnects one provider Connection through the server.
+    pub(crate) fn disconnect_provider(&self, provider_id: String) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::DisconnectProvider { provider_id })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
+    /// Removes one model from a provider Connection through the server.
+    pub(crate) fn remove_provider_model(
+        &self,
+        provider_id: String,
+        model_id: String,
+    ) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::RemoveProviderModel {
+                provider_id,
+                model_id,
             })
             .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
     }
@@ -1494,29 +1504,51 @@ async fn run_worker_inner(
                                 .await;
                         }
                     }
-                    Some(OperationCommand::ValidateProvider {
-                        provider_vendor,
-                        model_binding,
-                        api_key,
-                    }) => {
+                    Some(OperationCommand::ValidateProvider { params }) => {
                         let cancellation = provider_validation_cancel.start();
-                        let validation = client.provider_validate(
-                            devo_protocol::native::rpc_admin::ProviderValidateParams {
-                                provider_vendor: provider_vendor.into(),
-                                model_binding: model_binding.into(),
-                                api_key,
-                            },
-                        );
-                        tokio::pin!(validation);
-                        let validation_result = tokio::select! {
-                            result = &mut validation => Some(result),
-                            _ = cancellation.cancelled() => None,
+                        let upsert_params =
+                            devo_protocol::native::rpc_admin::ProviderUpsertParams {
+                                provider: params.provider.clone(),
+                                default_model: Some(format!("{}/{}", params.provider.id, params.model)),
+                                small_model: None,
+                                api_key: params.api_key.clone(),
+                            };
+                        let validation_result = {
+                            let validation = client.provider_validate(params);
+                            tokio::pin!(validation);
+                            tokio::select! {
+                                result = &mut validation => Some(result),
+                                _ = cancellation.cancelled() => None,
+                            }
                         };
                         match validation_result {
                             Some(Ok(result)) => {
                                 let _ = event_tx.send(WorkerEvent::ProviderValidationSucceeded {
                                     reply_preview: result.reply_preview,
                                 });
+                                match tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    client.provider_upsert(upsert_params),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(result)) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderUpserted {
+                                            provider: result.provider,
+                                            default_model: result.default_model,
+                                        });
+                                    }
+                                    Ok(Err(error)) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderUpsertFailed {
+                                            message: error.to_string(),
+                                        });
+                                    }
+                                    Err(_) => {
+                                        let _ = event_tx.send(WorkerEvent::ProviderUpsertFailed {
+                                            message: "provider upsert request timed out".to_string(),
+                                        });
+                                    }
+                                }
                             }
                             Some(Err(error)) => {
                                 let message = error.to_string();
@@ -1530,7 +1562,7 @@ async fn run_worker_inner(
                             None => {}
                         }
                     }
-                    Some(OperationCommand::ListProviderVendors) => {
+                    Some(OperationCommand::ListProviders) => {
                         match tokio::time::timeout(
                             Duration::from_secs(5),
                             client.provider_list(),
@@ -1538,12 +1570,11 @@ async fn run_worker_inner(
                         .await
                         {
                             Ok(Ok(result)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorsListed {
-                                    provider_vendors: result
-                                        .providers
-                                        .into_iter()
-                                        .map(Into::into)
-                                        .collect(),
+                                let _ = event_tx.send(WorkerEvent::ProvidersListed {
+                                    providers: result.providers,
+                                    template_provider_ids: result.template_provider_ids,
+                                    connected_provider_ids: result.connected_provider_ids,
+                                    connection_models: result.connection_models,
                                 });
                             }
                             Ok(Err(error)) => {
@@ -1574,44 +1605,93 @@ async fn run_worker_inner(
                             }
                         }
                     }
-                    Some(OperationCommand::UpsertProviderVendor {
-                        provider_vendor,
-                        model_binding,
-                        default_model_binding,
-                        api_key,
-                    }) => {
+                    Some(OperationCommand::ProviderUpsert { params }) => {
                         match tokio::time::timeout(
                             Duration::from_secs(5),
-                            client.provider_upsert(
-                                devo_protocol::native::rpc_admin::ProviderUpsertParams {
-                                    provider_vendor: provider_vendor.into(),
-                                    model_binding: model_binding.map(Into::into),
-                                    default_model_binding,
-                                    api_key,
+                            client.provider_upsert(params),
+                        )
+                        .await
+                        {
+                            Ok(Ok(result)) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderUpserted {
+                                    provider: result.provider,
+                                    default_model: result.default_model,
+                                });
+                            }
+                            Ok(Err(error)) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderUpsertFailed {
+                                    message: error.to_string(),
+                                });
+                            }
+                            Err(_) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderUpsertFailed {
+                                    message: "provider upsert request timed out".to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Some(OperationCommand::DisconnectProvider { provider_id }) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(5),
+                            client.provider_disconnect(
+                                devo_protocol::native::rpc_admin::ProviderDisconnectParams {
+                                    provider_id,
                                 },
                             ),
                         )
                         .await
                         {
                             Ok(Ok(result)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorUpserted {
-                                    provider_vendor: result.provider_vendor.into(),
-                                    model_binding: result.model_binding.map(Into::into),
+                                let _ = event_tx.send(WorkerEvent::ProviderDisconnected {
+                                    provider_id: result.provider_id,
                                 });
                             }
                             Ok(Err(error)) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorUpsertFailed {
+                                let _ = event_tx.send(WorkerEvent::ProviderDisconnectFailed {
                                     message: error.to_string(),
                                 });
                             }
                             Err(_) => {
-                                let _ = event_tx.send(WorkerEvent::ProviderVendorUpsertFailed {
-                                    message: "provider upsert request timed out".to_string(),
+                                let _ = event_tx.send(WorkerEvent::ProviderDisconnectFailed {
+                                    message: "provider disconnect request timed out".to_string(),
                                 });
                             }
                         }
                     }
-                Some(OperationCommand::ReconfigureProvider {
+                    Some(OperationCommand::RemoveProviderModel {
+                        provider_id,
+                        model_id,
+                    }) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(5),
+                            client.provider_model_remove(
+                                devo_protocol::native::rpc_admin::ProviderModelRemoveParams {
+                                    provider_id,
+                                    model_id,
+                                },
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(Ok(result)) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderModelRemoved {
+                                    provider_id: result.provider_id,
+                                    model_id: result.model_id,
+                                });
+                            }
+                            Ok(Err(error)) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderModelRemoveFailed {
+                                    message: error.to_string(),
+                                });
+                            }
+                            Err(_) => {
+                                let _ = event_tx.send(WorkerEvent::ProviderModelRemoveFailed {
+                                    message: "provider model removal request timed out".to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Some(OperationCommand::ReconfigureProvider {
                     wire_api: _,
                     model: next_model,
                     base_url: _,
@@ -2706,10 +2786,10 @@ async fn run_worker_inner(
                                     let _ = event_tx.send(WorkerEvent::InterruptFailed {
                                         message: error.to_string(),
                                     });
-                                }
                             }
                         }
                     }
+                }
                     Some(OperationCommand::RunBtwQuestion { question }) => {
                         let Some(active_session_id) = session_id else {
                             let _ = event_tx.send(WorkerEvent::BtwFailed {
@@ -5135,7 +5215,7 @@ pub(crate) fn dispatch_legacy_item_event_for_test(
 
     let item_id = payload.item.item_id;
     let session_id = payload.context.session_id;
-    let turn_id = payload.context.turn_id.unwrap_or_else(TurnId::new);
+    let turn_id = payload.context.turn_id.unwrap_or_default();
     let projected_at = Utc::now();
     let native_item =
         project_wire_item(&payload.item.item_kind, &payload.item.payload, projected_at)
@@ -6680,6 +6760,7 @@ mod tests {
             model: devo_protocol::native::model::ModelBinding {
                 provider: "test".to_string(),
                 model: "test-model".to_string(),
+                variant: None,
                 reasoning_effort: None,
             },
             collaboration_mode: Some(devo_protocol::CollaborationMode::Plan),

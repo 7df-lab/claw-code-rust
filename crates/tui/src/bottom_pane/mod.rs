@@ -53,10 +53,7 @@ pub(crate) use approval_overlay::ApprovalOverlayRequest;
 pub(crate) use chat_composer::ChatComposer;
 use chat_composer::ChatComposerConfig;
 use chat_composer::InputResult as ComposerInputResult;
-pub(crate) use compaction_threshold_view::CompactionThresholdSnapshot;
-use compaction_threshold_view::CompactionThresholdView;
 pub(crate) use compaction_threshold_view::format_token_limit;
-pub(crate) use compaction_threshold_view::recommended_compaction_token_limit;
 use context_occupancy_view::ContextOccupancyView;
 pub(crate) use context_occupancy_view::SessionTokenTotals;
 pub(crate) use context_occupancy_view::StatusPanelSnapshot;
@@ -699,14 +696,6 @@ impl BottomPane {
             SettingsHubView::new(snapshot, self.app_event_tx.clone(), self.accent_color)
                 .with_tab(tab),
         ));
-    }
-
-    pub(crate) fn open_compaction_threshold(&mut self, snapshot: CompactionThresholdSnapshot) {
-        self.push_view(Box::new(CompactionThresholdView::new(
-            snapshot,
-            self.app_event_tx.clone(),
-            self.accent_color,
-        )));
     }
 
     pub(crate) fn refresh_settings_hub(&mut self, snapshot: SettingsHubSnapshot) {

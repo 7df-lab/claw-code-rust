@@ -228,6 +228,7 @@ mod tests {
             model: devo_protocol::native::model::ModelBinding {
                 provider: "test".to_string(),
                 model: "test-model".to_string(),
+                variant: None,
                 reasoning_effort: None,
             },
             collaboration_mode: Some(devo_protocol::CollaborationMode::Plan),

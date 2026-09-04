@@ -250,11 +250,9 @@ fn edited_changes_from_history_item(
     if let Some(SessionHistoryMetadata::Edited { changes }) = &item.metadata {
         return Some(changes.clone());
     }
-    item.tool_io.as_ref().and_then(|io| {
-        io.output
-            .as_ref()
-            .and_then(|output| parse_file_changes_from_json(output))
-    })
+    item.tool_io
+        .as_ref()
+        .and_then(|io| io.output.as_ref().and_then(parse_file_changes_from_json))
 }
 
 fn parse_file_changes_from_json(

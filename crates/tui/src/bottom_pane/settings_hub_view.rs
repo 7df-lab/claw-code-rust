@@ -121,7 +121,7 @@ impl SettingsHubView {
 
     fn row_count(&self) -> usize {
         match self.tab {
-            SettingsHubTab::Session => 4,
+            SettingsHubTab::Session => 3,
             SettingsHubTab::Appearance => 2,
             SettingsHubTab::Agent => 0,
         }
@@ -146,7 +146,6 @@ impl SettingsHubView {
                 0 => self.app_event_tx.send(AppEvent::SettingsOpenModel),
                 1 => self.app_event_tx.send(AppEvent::SettingsOpenPermissions),
                 2 => self.app_event_tx.send(AppEvent::SettingsCycleMode),
-                3 => self.app_event_tx.send(AppEvent::SettingsOpenCompaction),
                 _ => {}
             },
             SettingsHubTab::Appearance => match self.selected_row {
@@ -195,14 +194,6 @@ impl SettingsHubView {
                     "Default Mode",
                     self.snapshot.mode.label(),
                     self.selected_row == 2,
-                    /*cycleable*/ false,
-                ));
-                lines.push(Line::from(""));
-                lines.push(self.setting_row(
-                    &pad,
-                    "Default Compaction Limit",
-                    &self.snapshot.compaction_threshold_label,
-                    self.selected_row == 3,
                     /*cycleable*/ false,
                 ));
             }
@@ -406,7 +397,7 @@ impl Renderable for SettingsHubView {
     fn desired_height(&self, _width: u16) -> u16 {
         // title + blank + tabs + separator + blank + content + blank + footer
         let content = match self.tab {
-            SettingsHubTab::Session => 13,
+            SettingsHubTab::Session => 11,
             SettingsHubTab::Appearance => 10,
             SettingsHubTab::Agent => 10,
         };
@@ -451,14 +442,21 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
+        let model_line = text
+            .lines()
+            .find(|line| line.contains("Default Model"))
+            .expect("session tab should render Default Model");
         assert!(
-            text.contains("Default Compaction Limit  250K")
-                || text.contains("Default Compaction Limit 250K"),
-            "label must not run into value: {text}"
+            model_line.contains("deepseek-v4-flash"),
+            "model value missing on label row: {model_line}"
         );
         assert!(
-            !text.contains("Default Compaction Limit250K"),
-            "missing gap between compaction label and value: {text}"
+            !model_line.contains("Default Modeldeepseek-v4-flash"),
+            "missing gap between model label and value: {model_line}"
+        );
+        assert!(
+            !text.contains("Default Compaction Limit"),
+            "compaction threshold row must be removed: {text}"
         );
     }
 

@@ -421,6 +421,9 @@ fn lifecycle_and_control_query_events_are_must_deliver() {
         devo_core::QueryEvent::ContextCompactionFailed {
             message: "context limit".to_string(),
         },
+        devo_core::QueryEvent::ContextEstimate {
+            breakdown: devo_core::RawContextBreakdown::default(),
+        },
         devo_core::QueryEvent::ReasoningCompleted,
         devo_core::QueryEvent::ToolUseStart {
             id: "tool-1".to_string(),

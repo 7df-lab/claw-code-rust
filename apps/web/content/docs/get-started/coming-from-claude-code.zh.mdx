@@ -7,11 +7,11 @@ description: 将熟悉的 Claude Code 用法映射到 Devo。
 
 ## 主要差异
 
-Devo 是模型中立的。它不绑定到某一个托管模型家族，而是使用 provider record 和 model binding：
+Devo 是模型中立的。它不绑定到某一个托管模型家族，而是使用 provider Connection 和 model record：
 
 - provider：端点、credential 和支持的 wire API；
-- model binding：Devo 本地模型 id 加 provider model name；
-- active model：由配置或 `/model` 选择的 binding。
+- model：provider-facing model id 加 capability metadata；
+- active model：由配置或 `/model` 选择的 `provider/model` selection。
 
 所以先配置 provider。许多用户可以从 Anthropic 兼容 provider method 接 [DeepSeek 官方 API](./connect-deepseek) 开始。
 
@@ -23,7 +23,7 @@ Devo 是模型中立的。它不绑定到某一个托管模型家族，而是使
 devo onboard
 ```
 
-Onboarding 会收集 provider 信息、保存 credentials，并创建 model bindings。配置后：
+Onboarding 会收集 provider 信息、保存 credentials，并创建 Connection 和其 model records。配置后：
 
 ```bash
 cd /path/to/project

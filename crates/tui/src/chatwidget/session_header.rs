@@ -236,14 +236,14 @@ impl ChatWidget {
     /// Context length for the status bar.
     ///
     /// `used` follows the latest query display total from `TurnUsageUpdated` so
-    /// the bar moves mid-turn. The denominator prefers the live session
-    /// effective-context override (Settings › Compaction threshold), then the
-    /// occupancy snapshot window, then the model effective window. Occupancy
-    /// `total_tokens` is only a fallback when no last-query usage has arrived
-    /// yet (for example a hydrate that set occupancy alone).
+    /// the bar moves mid-turn. The denominator prefers a session-level
+    /// effective context window override, then the occupancy snapshot window,
+    /// then the model effective window. Occupancy `total_tokens` is only a
+    /// fallback when no last-query usage has arrived yet (for example a
+    /// hydrate that set occupancy alone).
     pub(super) fn context_usage(&self) -> Option<(usize, usize, usize)> {
-        let total = if let Some(limit) = self.effective_context_window {
-            limit as usize
+        let total = if let Some(effective) = self.effective_context_window {
+            effective as usize
         } else if let Some(occupancy) = self.last_context_occupancy.as_ref() {
             occupancy.context_window_tokens as usize
         } else {
@@ -639,7 +639,7 @@ mod tests {
             slug: "test-model".to_string(),
             display_name: "Test Model".to_string(),
             context_window: 200_000,
-            effective_context_window_percent: Some(95),
+            effective_context_window_percent: Some(95.0),
             ..Model::default()
         };
         let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
@@ -676,10 +676,12 @@ mod tests {
         let model = Model {
             slug: "deepseek-v4-flash".to_string(),
             display_name: "deepseek-v4-flash".to_string(),
-            reasoning_capability: ReasoningCapability::ToggleWithLevels(vec![
-                ReasoningEffort::High,
-                ReasoningEffort::Max,
-            ]),
+            reasoning_capability: ReasoningCapability::Levels(
+                devo_protocol::levels_with_leading_off([
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max,
+                ]),
+            ),
             default_reasoning_effort: Some(ReasoningEffort::High),
             ..Model::default()
         };

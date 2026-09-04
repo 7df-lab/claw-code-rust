@@ -53,7 +53,18 @@ pub(crate) async fn execute_turn_task(
     let (event_tx, event_rx) = mpsc::channel(QUERY_EVENT_CHANNEL_CAPACITY);
     let event_tool_registry = runtime.tool_registry_for_actor_state(&working.state);
     let usage_parent_session_id = working.state.parent_session_id();
-    let usage_context_window = Some(turn_config.model.context_window as u64);
+    let global_compaction = runtime
+        .deps
+        .config_store
+        .lock()
+        .expect("app config store mutex should not be poisoned")
+        .effective_config()
+        .compaction_token_limit;
+    let usage_context_window = Some(crate::runtime::context_occupancy::occupancy_window_tokens(
+        working.state.core.config.effective_context_window_override,
+        Some(&turn_config.model),
+        global_compaction,
+    ));
     if usage_parent_session_id.is_none() {
         runtime
             .begin_parent_usage_turn_with_base(

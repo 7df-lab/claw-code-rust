@@ -11,8 +11,8 @@ import { appStore } from "./store"
 // session's components re-render.
 // ============================================================
 
-/** Throttle interval for React notifications — ~20 updates/sec */
-const FLUSH_THROTTLE_MS = 50
+/** Throttle interval for React notifications — ~12.5 updates/sec */
+const FLUSH_THROTTLE_MS = 80
 
 /** Parts keyed by sessionID + messageID -> Part object, only for actively-streaming parts */
 let buffer: Record<string, Record<string, Part>> = {}
@@ -194,10 +194,14 @@ export function hasStreamingParts(): boolean {
 }
 
 /**
- * Get the current streaming part for a given message + part ID.
+ * Get the current streaming part for a given session + message + part ID.
  */
-export function getStreamingPart(messageId: string, partId: string): Part | undefined {
-	return buffer[messageId]?.[partId]
+export function getStreamingPart(
+	sessionId: string,
+	messageId: string,
+	partId: string,
+): Part | undefined {
+	return buffer[partStorageKey(sessionId, messageId)]?.[partId]
 }
 
 /**

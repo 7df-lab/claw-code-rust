@@ -7,7 +7,6 @@ import {
 	ChevronDownIcon,
 	ChevronRightIcon,
 	ChevronUpIcon,
-	Loader2Icon,
 	MessageCircleQuestionIcon,
 	ShieldAlertIcon,
 	ZapIcon,
@@ -232,27 +231,27 @@ export const SubAgentCard = memo(function SubAgentCard({
 				if (p.type === "tool") {
 					switch (p.tool) {
 						case "task":
-							lastStatus = "Delegating..."
+							lastStatus = "Delegating"
 							break
 						case "todowrite":
 						case "todoread":
-							lastStatus = "Planning..."
+							lastStatus = "Planning next moves"
 							break
 						case "read":
-							lastStatus = "Reading files..."
+							lastStatus = "Reading files"
 							break
 						case "list":
 						case "grep":
 						case "glob":
-							lastStatus = "Searching codebase..."
+							lastStatus = "Searching the codebase"
 							break
 						case "webfetch":
-							lastStatus = "Fetching web content..."
+							lastStatus = "Fetching from the web"
 							break
 						case "edit":
 						case "write":
 						case "apply_patch":
-							lastStatus = "Making edits..."
+							lastStatus = "Editing files"
 							break
 						case "bash":
 						case "shell_command":
@@ -260,13 +259,13 @@ export const SubAgentCard = memo(function SubAgentCard({
 							lastStatus = ""
 							break
 						default:
-							lastStatus = `Running ${p.tool}...`
+							lastStatus = `Running ${p.tool}`
 							break
 					}
 				} else if (p.type === "reasoning") {
-					lastStatus = "Thinking..."
+					lastStatus = "Planning next moves"
 				} else if (p.type === "text") {
-					lastStatus = "Composing response..."
+					lastStatus = "Writing response"
 				}
 			}
 		}
@@ -274,7 +273,7 @@ export const SubAgentCard = memo(function SubAgentCard({
 		return {
 			latestToolParts: toolParts.slice(-3),
 			latestText,
-			childStatus: lastStatus ?? "Working...",
+			childStatus: lastStatus ?? "Planning next moves",
 		}
 	}, [childMessages, streamingVersion, sessionId])
 
@@ -313,7 +312,7 @@ export const SubAgentCard = memo(function SubAgentCard({
 					<ZapIcon
 						className={cn(
 							"size-3.5 shrink-0 stroke-[1.5]",
-							isRunning ? "animate-pulse text-violet-400" : "text-muted-foreground/50",
+							isRunning ? "text-foreground/55" : "text-muted-foreground/50",
 						)}
 					/>
 					<span className="min-w-0 truncate">
@@ -344,8 +343,6 @@ export const SubAgentCard = memo(function SubAgentCard({
 						{elapsedTime}
 					</span>
 				)}
-				{isRunning && !childIsWaiting && <Loader2Icon className="size-3 animate-spin text-muted-foreground/40" />}
-				{childIsWaiting && <Loader2Icon className="size-3 animate-spin text-amber-400/60" />}
 					{sessionId && (
 						<button
 							type="button"
@@ -407,7 +404,7 @@ export const SubAgentCard = memo(function SubAgentCard({
 													tpError
 														? "text-red-400"
 														: tpRunning
-															? "text-muted-foreground animate-pulse"
+															? "text-muted-foreground"
 															: "text-muted-foreground/60",
 												)}
 											/>
@@ -436,7 +433,7 @@ export const SubAgentCard = memo(function SubAgentCard({
 						<div className="py-2 pr-1">
 							<div className="max-h-96 overflow-y-auto text-xs text-muted-foreground">
 								<MessageResponse
-									animated={isRunning}
+									streaming={isRunning}
 									className="[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs [&_li]:text-xs [&_p]:text-xs [&_p]:my-1 [&_pre]:max-h-40 [&_pre]:text-[11px]"
 								>
 									{latestText}

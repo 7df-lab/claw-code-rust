@@ -15,7 +15,6 @@ use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::Model;
@@ -275,15 +274,14 @@ fn expected_retry_statuses(session_id: SessionId, turn_id: TurnId) -> Vec<serde_
             "error": {
                 "errorCode": "PROVIDER_TEMPORARY_FAILURE",
                 "message": format!(
-                    "Retrying provider request in {:.1}s",
-                    Duration::from_millis(backoff_ms).as_secs_f64()
+                    "provider server error (Some(500)): {PROVIDER_ERROR_TEXT}"
                 ),
                 "retryable": true,
                 "retryAfterMs": backoff_ms,
                 "requiresSnapshot": false
             },
             "provider": "openai",
-            "model": "default-model",
+            "model": "openai/provider-model",
             "phase": "scheduled"
         }));
         statuses.push(serde_json::json!({
@@ -294,13 +292,15 @@ fn expected_retry_statuses(session_id: SessionId, turn_id: TurnId) -> Vec<serde_
             "nextDelayMs": 0,
             "error": {
                 "errorCode": "PROVIDER_TEMPORARY_FAILURE",
-                "message": "Retrying provider request now",
+                "message": format!(
+                    "provider server error (Some(500)): {PROVIDER_ERROR_TEXT}"
+                ),
                 "retryable": true,
                 "retryAfterMs": 0,
                 "requiresSnapshot": false
             },
             "provider": "openai",
-            "model": "default-model",
+            "model": "openai/provider-model",
             "phase": "resumed"
         }));
     }
@@ -362,7 +362,6 @@ fn build_runtime(
                 display_name: "Default Model".to_string(),
                 ..Model::default()
             }])),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()

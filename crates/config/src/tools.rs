@@ -153,10 +153,10 @@ pub struct ResolvedLocalWebSearchConfig {
 pub fn resolve_web_search_config(
     global: &WebSearchConfig,
     provider_override: Option<&WebSearchConfig>,
-    binding_override: Option<&WebSearchConfig>,
+    model_override: Option<&WebSearchConfig>,
     auth: &UserAuthConfigFile,
 ) -> Result<ResolvedWebSearchConfig, ProviderConfigError> {
-    let effective = binding_override.or(provider_override).unwrap_or(global);
+    let effective = model_override.or(provider_override).unwrap_or(global);
     match effective.mode {
         WebSearchMode::Disabled => Ok(ResolvedWebSearchConfig::Disabled),
         WebSearchMode::Provider => Ok(ResolvedWebSearchConfig::Provider),
@@ -169,9 +169,9 @@ pub fn resolve_web_search_config(
 pub fn resolve_web_fetch_config(
     global: &WebFetchConfig,
     provider_override: Option<&WebFetchConfig>,
-    binding_override: Option<&WebFetchConfig>,
+    model_override: Option<&WebFetchConfig>,
 ) -> ResolvedWebFetchConfig {
-    let effective = binding_override.or(provider_override).unwrap_or(global);
+    let effective = model_override.or(provider_override).unwrap_or(global);
     match effective.mode {
         WebFetchMode::Disabled => ResolvedWebFetchConfig::Disabled,
         WebFetchMode::Provider => ResolvedWebFetchConfig::Provider,
@@ -303,13 +303,13 @@ mod tests {
     }
 
     #[test]
-    fn provider_and_binding_overrides_global() {
+    fn provider_and_model_overrides_global() {
         let global = WebSearchConfig::default();
         let provider = WebSearchConfig {
             mode: WebSearchMode::Provider,
             ..WebSearchConfig::default()
         };
-        let binding = WebSearchConfig {
+        let model = WebSearchConfig {
             mode: WebSearchMode::Disabled,
             ..WebSearchConfig::default()
         };
@@ -320,8 +320,8 @@ mod tests {
             ResolvedWebSearchConfig::Provider
         );
         assert_eq!(
-            resolve_web_search_config(&global, Some(&provider), Some(&binding), &auth())
-                .expect("binding override"),
+            resolve_web_search_config(&global, Some(&provider), Some(&model), &auth())
+                .expect("model override"),
             ResolvedWebSearchConfig::Disabled
         );
     }

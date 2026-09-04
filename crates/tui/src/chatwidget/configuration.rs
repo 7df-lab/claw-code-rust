@@ -4,7 +4,6 @@
 //! changes stay separate from transcript and input handling.
 
 use devo_protocol::Model;
-use devo_protocol::ProviderModelBinding;
 use devo_protocol::ProviderWireApi;
 use devo_protocol::ReasoningEffort;
 use ratatui::style::Color;
@@ -146,17 +145,6 @@ impl ChatWidget {
         }
         self.sync_bottom_pane_summary();
         self.frame_requester.schedule_frame();
-    }
-
-    pub(super) fn apply_session_model_binding(&mut self, binding: &ProviderModelBinding) {
-        self.apply_session_request_model(
-            binding.model_slug.clone(),
-            binding.request_model.clone(),
-            binding
-                .display_name
-                .clone()
-                .unwrap_or_else(|| binding.request_model.clone()),
-        );
     }
 
     pub(super) fn user_turn_model(&self) -> Option<String> {
@@ -544,13 +532,20 @@ impl ChatWidget {
         }
         let label = crate::bottom_pane::format_token_limit(effective_context_window);
         self.add_to_history(history_cell::new_info_event(
-            format!("Compaction threshold updated to {label}"),
+            format!("Context window updated to {label}"),
             None,
         ));
-        self.set_status_message(format!("Compaction threshold updated to {label}"));
+        self.set_status_message(format!("Context window updated to {label}"));
         self.sync_bottom_pane_summary();
         self.refresh_status_panel_if_open();
         self.refresh_settings_hub_if_open();
+    }
+
+    pub(super) fn open_compaction_threshold_picker(&mut self) {
+        self.set_status_message(
+            "Context limit is set per model (usable window). No separate compaction threshold."
+                .to_string(),
+        );
     }
 
     fn refresh_status_panel_if_open(&mut self) {
@@ -666,12 +661,6 @@ impl ChatWidget {
         self.set_status_message("Settings");
     }
 
-    pub(super) fn open_compaction_threshold_picker(&mut self) {
-        let snapshot = self.compaction_threshold_snapshot();
-        self.bottom_pane.open_compaction_threshold(snapshot);
-        self.set_status_message("Select compaction threshold");
-    }
-
     pub(super) fn refresh_settings_hub_if_open(&mut self) {
         let snapshot = self.settings_hub_snapshot();
         self.bottom_pane.refresh_settings_hub(snapshot);
@@ -690,17 +679,7 @@ impl ChatWidget {
                 self.default_collaboration_mode,
             ),
             compaction_threshold_label: crate::bottom_pane::format_token_limit(
-                self.default_compaction_token_limit
-                    .map(|limit| {
-                        let model_window = self
-                            .session
-                            .model
-                            .as_ref()
-                            .map(|model| u64::from(model.context_window.max(1)))
-                            .unwrap_or(u64::MAX);
-                        limit.min(model_window).max(1)
-                    })
-                    .unwrap_or_else(|| self.effective_compaction_threshold_tokens()),
+                self.effective_compaction_threshold_tokens(),
             ),
             theme_label: self.active_theme_name.clone(),
             reasoning_view_label: super::reasoning_view::reasoning_view_label(
@@ -710,48 +689,12 @@ impl ChatWidget {
         }
     }
 
-    fn compaction_threshold_snapshot(&self) -> crate::bottom_pane::CompactionThresholdSnapshot {
-        let model = self.session.model.as_ref();
-        let context_window_tokens = model
-            .map(|model| u64::from(model.context_window.max(1)))
-            .unwrap_or(1);
-        let model_effective = model
-            .map(|model| u64::from(model.effective_context_window()))
-            .unwrap_or(context_window_tokens);
-        let recommended_token_limit = crate::bottom_pane::recommended_compaction_token_limit(
-            context_window_tokens,
-            model_effective,
-        );
-        // Current / hub label follow the applied (model-clamped) window so they
-        // stay consistent with the status bar. The stored global preference is
-        // kept separately for picker memory when this client initiated an update.
-        let current_token_limit = self
-            .effective_context_window
-            .unwrap_or(model_effective)
-            .min(context_window_tokens)
-            .max(1);
-        crate::bottom_pane::CompactionThresholdSnapshot {
-            model_label: model
-                .map(|model| model.slug.clone())
-                .unwrap_or_else(|| "unknown".to_string()),
-            context_window_tokens,
-            recommended_token_limit,
-            current_token_limit,
-        }
-    }
-
     fn effective_compaction_threshold_tokens(&self) -> u64 {
-        let model = self.session.model.as_ref();
-        let model_window = model
-            .map(|model| u64::from(model.context_window.max(1)))
-            .unwrap_or(u64::MAX);
-        let model_effective = model
-            .map(|model| u64::from(model.effective_context_window()))
-            .unwrap_or(1);
-        self.effective_context_window
-            .unwrap_or(model_effective)
-            .min(model_window)
-            .max(1)
+        self.session
+            .model
+            .as_ref()
+            .map(|model| u64::from(model.effective_context_window().max(1)))
+            .unwrap_or(1)
     }
 
     pub(super) fn active_accent_color(&self) -> Color {

@@ -1,6 +1,6 @@
 ---
 title: Model Picker
-description: 在已配置的 model bindings 之间切换。
+description: 在已配置的 provider/model selection 之间切换。
 ---
 
 使用 `/model` 切换当前 session 的 active model。
@@ -16,23 +16,23 @@ Picker 会在底部 pane 打开，并替换 composer 输入区域：
 - `Enter` 一次应用聚焦的模型与所选推理强度
 - `Esc` 关闭且不修改模型
 
-当保存的 binding 较多时，模型列表最多显示 8 行，并滚动以保持聚焦行可见。
+当配置的 model 较多时，模型列表最多显示 8 行，并滚动以保持聚焦行可见。
 
 ## Picker 显示什么
 
-Picker 来自保存的 model bindings。每个条目显示 display name，并在可用时在右侧显示 provider hint。
+Picker 来自配置的 `provider/model` selection。每个条目显示 display name，并在可用时在右侧显示 provider hint。
 
-当前模型会在列表中标记。如果配置的 binding 有 display name，Devo 使用该 display name；否则回退到 catalog model display name 或原始 model slug。
+当前模型会在列表中标记。如果 model record 有 display name，Devo 使用它；否则回退到 catalog label 或原始 model reference。
 
 ## 直接选择
 
-也可以直接传入 model 或 binding name：
+也可以直接传入 `provider/model` reference：
 
 ```text
 /model gpt-5-codex
 ```
 
-当参数匹配已保存 model binding 时，Devo 使用该 binding，包括 provider、request model name、wire API 和 display name。当它匹配 catalog model slug 时，Devo 应用该 catalog model。如果两者都不匹配，Devo 仍会把请求的 model name 设置到 turn context。
+当参数匹配已配置 model 时，Devo 会从目录解析它的 Connection、provider-facing model id、wire API 和 display name。`provider/model/variant` 还可以同时选择指定的 variant。
 
 ## Reasoning Effort
 
@@ -46,13 +46,13 @@ Picker 来自保存的 model bindings。每个条目显示 display name，并在
 
 `/model` 修改 active session context。它不会改写 provider 配置文件。
 
-添加新的 provider 或 model binding：
+添加新的 provider Connection 或 model：
 
 ```bash
 devo onboard
 ```
 
-如果希望某个 binding 成为启动默认值，应更新 provider configuration，而不是依赖 session 内的 `/model` 切换。
+如果希望某个 model 成为启动默认值，应更新 `providers.json`，而不是依赖 session 内的 `/model` 切换。
 
 ## Devo 工作中
 

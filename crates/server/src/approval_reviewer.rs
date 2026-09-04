@@ -234,7 +234,7 @@ fn append_list_section(prompt: &mut String, heading: &str, items: &[String]) {
     if items.is_empty() {
         return;
     }
-    write!(prompt, "## {heading}\n").expect("writing to a String cannot fail");
+    writeln!(prompt, "## {heading}").expect("writing to a String cannot fail");
     for line in items {
         prompt.push_str(line);
         prompt.push('\n');

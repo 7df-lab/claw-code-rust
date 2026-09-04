@@ -7,6 +7,8 @@
 use anyhow::Result;
 use devo_core::AppConfigLoader;
 use devo_core::FileSystemAppConfigLoader;
+use devo_core::PROVIDER_CONFIG_FILE_NAME;
+use devo_core::read_provider_catalog_config;
 use devo_util_paths::find_devo_home;
 
 pub(crate) async fn run_doctor() -> Result<()> {
@@ -44,31 +46,54 @@ pub(crate) async fn run_doctor() -> Result<()> {
     }
     println!();
 
-    println!("{} Config file:", "✓".green().bold());
+    println!("{} Provider config:", "✓".green().bold());
     if let Ok(home) = find_devo_home() {
-        let config_path = home.join("config.toml");
-        if config_path.exists() {
-            println!("  {} {}", "found".green(), config_path.display());
-            let content = std::fs::read_to_string(&config_path).unwrap_or_default();
-            if has_provider_credentials(&content) {
-                println!("  {} api_key and base_url configured", "✓".green());
-            } else {
-                println!("  {} api_key or base_url missing", "!".yellow());
-                all_ok = false;
-            }
-            if let Some(line) = default_model_line(&content) {
-                println!("  default model: {}", line.trim());
-            } else {
-                println!("  {} no default model set", "!".yellow());
+        let provider_path = home.join(PROVIDER_CONFIG_FILE_NAME);
+        if provider_path.exists() {
+            println!("  {} {}", "found".green(), provider_path.display());
+            match read_provider_catalog_config(&provider_path) {
+                Ok(config) => {
+                    println!("  providers:    {}", config.providers.len());
+                    if let Some(model) = config.model {
+                        println!("  default model: {model}");
+                    } else {
+                        println!("  {} no default model set", "!".yellow());
+                    }
+                }
+                Err(error) => {
+                    println!("  {} failed to parse: {error}", "✗".red());
+                    all_ok = false;
+                }
             }
         } else {
-            println!(
-                "  {} not found at {}",
-                "missing".yellow(),
-                config_path.display()
-            );
-            println!("  Run `devo onboard` to create it.");
-            all_ok = false;
+            let config_path = home.join("config.toml");
+            if config_path.exists() {
+                println!(
+                    "  {} {} (legacy; provider writes now use providers.json)",
+                    "found".yellow(),
+                    config_path.display()
+                );
+                let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+                if has_provider_credentials(&content) {
+                    println!("  {} legacy api_key and base_url configured", "✓".green());
+                } else {
+                    println!("  {} legacy provider settings incomplete", "!".yellow());
+                    all_ok = false;
+                }
+                if let Some(line) = default_model_line(&content) {
+                    println!("  default model: {}", line.trim());
+                } else {
+                    println!("  {} no default model set", "!".yellow());
+                }
+            } else {
+                println!(
+                    "  {} not found at {}",
+                    "missing".yellow(),
+                    provider_path.display()
+                );
+                println!("  Run `devo onboard` to create it.");
+                all_ok = false;
+            }
         }
     }
     println!();
@@ -78,16 +103,31 @@ pub(crate) async fn run_doctor() -> Result<()> {
         Ok(home) => {
             let cwd = std::env::current_dir()?;
             let app_config = FileSystemAppConfigLoader::new(home.clone()).load(Some(&cwd))?;
-            match app_config.resolve_provider_settings(&home) {
-                Ok(resolved) => {
-                    println!("  provider:   {}", resolved.provider_id);
-                    println!("  model:      {}", resolved.model);
+            let provider_config = app_config.provider_catalog_config();
+            match provider_config.resolve_model(None) {
+                Ok(selection) => {
+                    let provider = provider_config
+                        .providers
+                        .get(&selection.provider_id)
+                        .expect("resolved provider should be present");
+                    let auth = devo_core::read_user_auth_config(
+                        &home.join(devo_core::AUTH_CONFIG_FILE_NAME),
+                    )?;
+                    let api_key = provider
+                        .credential
+                        .as_deref()
+                        .and_then(|credential| auth.credentials.get(credential));
+                    println!("  provider:   {}", selection.provider_id);
+                    println!(
+                        "  model:      {}/{}",
+                        selection.provider_id, selection.model_id
+                    );
                     println!(
                         "  base_url:   {}",
-                        resolved.base_url.as_deref().unwrap_or("default")
+                        provider.base_url.as_deref().unwrap_or("default")
                     );
-                    println!("  wire_api:   {:?}", resolved.wire_api);
-                    if resolved.api_key.is_some() {
+                    println!("  wire_api:   {:?}", selection.wire_api);
+                    if api_key.is_some() {
                         println!("  api_key:    {} (set)", "✓".green());
                     } else {
                         println!("  api_key:    {} (not set)", "✗".red());
@@ -108,10 +148,24 @@ pub(crate) async fn run_doctor() -> Result<()> {
     println!();
 
     println!("{} Model catalog:", "✓".green().bold());
-    match devo_core::PresetModelCatalog::load() {
+    let catalog_result: anyhow::Result<_> = find_devo_home()
+        .map_err(anyhow::Error::from)
+        .and_then(|home| {
+            FileSystemAppConfigLoader::new(home)
+                .load(None)
+                .map_err(anyhow::Error::from)
+        })
+        .and_then(|config| {
+            devo_core::PresetModelCatalog::load_from_provider_config_with_overrides(
+                &config.provider_catalog_config(),
+                &config.provider.model_overrides,
+            )
+            .map_err(anyhow::Error::from)
+        });
+    match catalog_result {
         Ok(catalog) => {
             let count = catalog.into_inner().len();
-            println!("  {} builtin models loaded", count);
+            println!("  {} provider/model entries loaded", count);
         }
         Err(e) => {
             println!("  {} failed to load: {}", "✗".red(), e);

@@ -893,6 +893,7 @@ impl ServerClientCore {
                     // provider label is response-side information.
                     provider: String::new(),
                     model: slug,
+                    variant: None,
                     reasoning_effort: None,
                 }),
                 model_binding_id,
@@ -952,11 +953,33 @@ impl ServerClientCore {
         self.request("provider/upsert", params).await
     }
 
+    pub(crate) async fn provider_disconnect(
+        &mut self,
+        params: devo_protocol::native::rpc_admin::ProviderDisconnectParams,
+    ) -> Result<devo_protocol::native::rpc_admin::ProviderDisconnectResult> {
+        self.request("provider/disconnect", params).await
+    }
+
+    pub(crate) async fn provider_model_remove(
+        &mut self,
+        params: devo_protocol::native::rpc_admin::ProviderModelRemoveParams,
+    ) -> Result<devo_protocol::native::rpc_admin::ProviderModelRemoveResult> {
+        self.request("provider/model/remove", params).await
+    }
+
     pub(crate) async fn provider_validate(
         &mut self,
         params: devo_protocol::native::rpc_admin::ProviderValidateParams,
     ) -> Result<devo_protocol::native::rpc_admin::ProviderValidateResult> {
         self.request_without_timeout("provider/validate", params)
+            .await
+    }
+
+    pub(crate) async fn provider_discover(
+        &mut self,
+        params: devo_protocol::native::rpc_admin::ProviderDiscoverParams,
+    ) -> Result<devo_protocol::native::rpc_admin::ProviderDiscoverResult> {
+        self.request_without_timeout("provider/discover", params)
             .await
     }
 

@@ -1,4 +1,6 @@
+use devo_core::ModelCatalog;
 use devo_core::ModelCatalogEntry;
+use devo_core::PresetModelCatalog;
 use devo_protocol::native::rpc_admin::ModelPreferences;
 use devo_protocol::native::rpc_admin::PreferencesOption;
 
@@ -217,7 +219,7 @@ impl ServerRuntime {
                     .expect("app config store mutex should not be poisoned");
                 store
                     .user_config_dir()
-                    .join("config.toml")
+                    .join(devo_core::PROVIDER_CONFIG_FILE_NAME)
                     .display()
                     .to_string()
             };
@@ -274,19 +276,55 @@ impl ServerRuntime {
                 format!("invalid canonical model/list params: {error}"),
             );
         }
-        let models = self
-            .deps
-            .model_catalog
-            .list_visible()
-            .into_iter()
-            .map(|model| {
-                devo_protocol::native::rpc_admin::ModelInfo::from(ModelCatalogEntry::from(model))
-            })
-            .collect();
+        let configured = {
+            let store = self
+                .deps
+                .config_store
+                .lock()
+                .expect("app config store mutex should not be poisoned");
+            let config = store.effective_config();
+            (
+                config.provider_catalog.clone(),
+                config.provider.model_overrides.clone(),
+            )
+        };
+        let models = if let Ok(catalog) =
+            PresetModelCatalog::load_from_provider_config_with_overrides(
+                &configured.0,
+                &configured.1,
+            ) {
+            catalog
+                .list_visible()
+                .into_iter()
+                .map(|model| model_info_from_catalog_model(model, &catalog))
+                .collect()
+        } else {
+            self.deps
+                .model_catalog
+                .list_visible()
+                .into_iter()
+                .map(|model| model_info_from_catalog_model(model, self.deps.model_catalog.as_ref()))
+                .collect()
+        };
         serde_json::to_value(SuccessResponse {
             id: request_id,
             result: devo_protocol::native::rpc_admin::ModelListResult { models },
         })
         .expect("serialize canonical model/list response")
     }
+}
+
+fn model_info_from_catalog_model(
+    model: &devo_protocol::Model,
+    catalog: &dyn ModelCatalog,
+) -> devo_protocol::native::rpc_admin::ModelInfo {
+    let info = devo_protocol::native::rpc_admin::ModelInfo::from(ModelCatalogEntry::from(model));
+    let Some((provider_id, model_id)) = model.slug.split_once('/') else {
+        return info;
+    };
+    let mut provider_models = catalog.list_provider_models(provider_id);
+    let Some(metadata) = provider_models.remove(model_id) else {
+        return info;
+    };
+    info.with_provider_metadata(provider_id.to_string(), model_id.to_string(), metadata)
 }

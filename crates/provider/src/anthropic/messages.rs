@@ -90,11 +90,19 @@ impl AnthropicProvider {
         format!("{}/v1/messages", self.base_url.trim_end_matches('/'))
     }
 
-    fn post_builder(&self, client: &Client, body: &Value) -> reqwest::RequestBuilder {
+    fn post_builder(
+        &self,
+        client: &Client,
+        body: &Value,
+        headers: &BTreeMap<String, String>,
+    ) -> reqwest::RequestBuilder {
         let builder = client
             .post(self.endpoint())
             .header("anthropic-version", "2023-06-01")
             .header(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let builder = self
+            .http_options
+            .apply_request_headers(self.http_options.apply_custom_headers(builder), headers);
 
         let builder = if let Some(api_key) = &self.api_key {
             builder
@@ -103,15 +111,23 @@ impl AnthropicProvider {
         } else {
             builder
         };
-        self.http_options.apply_custom_headers(builder).json(body)
+        builder.json(body)
     }
 
-    fn request_builder(&self, body: &Value) -> reqwest::RequestBuilder {
-        self.post_builder(&self.client, body)
+    fn request_builder(
+        &self,
+        body: &Value,
+        headers: &BTreeMap<String, String>,
+    ) -> reqwest::RequestBuilder {
+        self.post_builder(&self.client, body, headers)
     }
 
-    fn streaming_request_builder(&self, body: &Value) -> reqwest::RequestBuilder {
-        self.post_builder(&self.streaming_client, body)
+    fn streaming_request_builder(
+        &self,
+        body: &Value,
+        headers: &BTreeMap<String, String>,
+    ) -> reqwest::RequestBuilder {
+        self.post_builder(&self.streaming_client, body, headers)
             .header(CACHE_CONTROL, HeaderValue::from_static("no-cache"))
             .header(ACCEPT_ENCODING, HeaderValue::from_static("identity"))
     }
@@ -328,7 +344,7 @@ impl ModelProviderSDK for AnthropicProvider {
         );
 
         let response = self
-            .request_builder(&body)
+            .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
             .send()
             .await
             .context("failed to send anthropic request")?;
@@ -371,8 +387,11 @@ impl ModelProviderSDK for AnthropicProvider {
         );
 
         let dsml_healer = DsmlToolCallHealer::for_request(&request);
-        let event_source = EventSource::new(self.streaming_request_builder(&body))
-            .context("failed to create anthropic event source")?;
+        let event_source = EventSource::new(self.streaming_request_builder(
+            &body,
+            &crate::request_headers(request.extra_body.as_ref()),
+        ))
+        .context("failed to create anthropic event source")?;
         let stream = async_stream::try_stream! {
             let mut message_id = String::new();
             let mut stream_usage = AnthropicStreamUsage::default();

@@ -10,8 +10,7 @@ use devo_core::PresetModelCatalog;
 use devo_core::QueryEvent;
 use devo_core::TurnConfig;
 use devo_core::default_base_instructions;
-use devo_core::provider_request_model_map_for_binding;
-use devo_core::resolve_enabled_model_binding;
+use devo_core::provider_request_config;
 use devo_core::tools::ToolPlanConfig;
 use devo_core::tools::handlers;
 use devo_mcp::manager::RmcpMcpManager;
@@ -55,7 +54,10 @@ pub(crate) async fn run_prompt(
         .unwrap_or_else(|_| AppConfig::default());
     let resolved_provider =
         devo_server::load_server_provider(&app_config, model_override, &home_dir)?;
-    let model_catalog = PresetModelCatalog::load_from_config(&app_config.provider.model_overrides)?;
+    let model_catalog = PresetModelCatalog::load_from_provider_config_with_overrides(
+        &app_config.provider_catalog_config(),
+        &app_config.provider.model_overrides,
+    )?;
     let turn_config = prompt_turn_config(
         &app_config,
         &model_catalog,
@@ -256,30 +258,58 @@ fn prompt_turn_config(
             })
     };
 
-    if let Some(binding) = resolve_enabled_model_binding(&app_config.provider, requested_model) {
-        let provider_request_models = devo_core::ProviderRequestModelMap::new(
-            provider_request_model_map_for_binding(&app_config.provider, &binding),
+    let provider_config = app_config.provider_catalog_config();
+    let selected_model = requested_model
+        .or(provider_config.model.as_deref())
+        .or(Some(default_model));
+    if let Some(selection) = selected_model
+        .and_then(|model| provider_config.resolve_model(Some(model)).ok())
+        .or_else(|| provider_config.resolve_model(None).ok())
+    {
+        let model_reference = format!("{}/{}", selection.provider_id, selection.model_id);
+        let mut model_config = provider_config
+            .providers
+            .get(&selection.provider_id)
+            .and_then(|provider| provider.models.get(&selection.model_id))
+            .cloned();
+        if let Some(model) = model_config.as_mut() {
+            model.migrate_reasoning_implementation_into_variants();
+        }
+        let reasoning_effort_selection = provider_config.reasoning_effort.clone().or_else(|| {
+            model_config
+                .as_ref()
+                .and_then(|model| model.default_reasoning_selection.clone())
+        });
+        let variant_id = model_config.as_ref().and_then(|model| {
+            model.resolve_turn_variant_id(
+                selection.variant_id.as_deref(),
+                reasoning_effort_selection.as_deref(),
+            )
+        });
+        let (request_defaults, request_headers) = provider_request_config(
+            &provider_config,
+            &selection.provider_id,
+            &selection.model_id,
+            variant_id.as_deref(),
         );
-        let reasoning_effort_selection = app_config
-            .provider
-            .model_reasoning_effort_selection
-            .clone()
-            .or(binding.default_reasoning_effort.clone());
+        let provider_request_models = devo_core::ProviderRequestModelMap::default()
+            .with_request_config(request_defaults, request_headers);
         let mut turn_config = TurnConfig::with_provider_route(
-            catalog_model(&binding.model_slug),
-            binding.request_model.clone(),
+            catalog_model(&model_reference),
+            selection.model_id,
             provider_request_models,
-            ProviderRoute::binding(binding.provider_id.clone(), binding.invocation_method),
+            ProviderRoute::connection(selection.provider_id.clone(), selection.wire_api),
             reasoning_effort_selection,
         );
-        turn_config.model_binding_id = Some(binding.binding_id);
+        turn_config.model_binding_id = Some(model_reference);
+        turn_config.variant = variant_id;
         return turn_config;
     }
 
     let selected_model = requested_model.unwrap_or(default_model);
     TurnConfig::new(
         catalog_model(selected_model),
-        app_config.provider.model_reasoning_effort_selection.clone(),
+        provider_config.reasoning_effort.clone(),
     )
 }
 
@@ -516,6 +546,7 @@ fn write_query_event_jsonl(session_id: &str, event: &QueryEvent) -> Result<()> {
                 message,
             })
         }
+        QueryEvent::ContextEstimate { .. } => Ok(()),
         QueryEvent::UsageDelta { usage } => write_jsonl(&PromptJsonlEvent::UsageDelta {
             session_id,
             usage: PromptUsageDelta::new(usage),

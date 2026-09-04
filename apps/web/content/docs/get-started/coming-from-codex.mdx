@@ -62,8 +62,8 @@ See [Slash Commands](../reference/slash-commands) for the full command list.
 Devo separates these concepts:
 
 - a provider describes a service endpoint, credential, and wire API;
-- a model binding connects a local model id to one provider model name;
-- the active model is selected from enabled bindings.
+- a model record owns a provider-facing model id and its capability metadata;
+- the active model is selected from enabled `provider/model` entries.
 
 This makes Devo useful when you want the same coding workflow against different
 providers. You can keep a strong model as the default and add cheaper or faster
@@ -72,7 +72,7 @@ bindings for routine work.
 Read these pages next:
 
 - [Provider Setup](../configuration/provider-setup)
-- [Model Bindings](../configuration/model-bindings)
+- [Provider and Model Configuration](../configuration/model-bindings)
 - [Model Resolution](../configuration/model-resolution)
 
 ## Permissions

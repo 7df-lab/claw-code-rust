@@ -646,6 +646,12 @@ function createEventBatcher() {
 		const batchedPartSessionIds = new Set<string>()
 
 		for (const event of events) {
+			if (event.type === "session.deleted") {
+				const deletedId = event.properties.info?.id
+				if (deletedId && discoveredSessions) {
+					discoveredSessions = discoveredSessions.filter((session) => session.id !== deletedId)
+				}
+			}
 			if (event.type === "message.part.updated" && !isStreamingPartType(event.properties.part)) {
 				batchedParts.push(event.properties.part)
 				batchedPartSessionIds.add(event.properties.part.sessionID)

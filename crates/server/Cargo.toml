@@ -34,6 +34,7 @@ fs2 = { workspace = true }
 jsonrepair = { workspace = true }
 lru = { workspace = true }
 rusqlite = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

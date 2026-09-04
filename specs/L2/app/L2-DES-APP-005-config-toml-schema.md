@@ -416,13 +416,14 @@ Supported fields include `display_name`, `description`, `channel`,
 with safe defaults; invocability still requires a matching provider and model
 binding.
 
-Legacy top-level `model = "slug"` remains readable, but new configuration must
-select through `[defaults].model_binding` because `[model.<slug>]` owns the
-top-level `model` table namespace. Old user `~/.devo/models.json` and workspace
-`<workspace>/.devo/models.json` files are ignored. Migration is manual: copy
-desired metadata fields into the corresponding user or workspace
-`config.toml` `[model.<slug>]` section, then retain or add the required provider
-and binding records. Credential values remain in user-scoped `auth.json`.
+Legacy top-level `model = "slug"` remains readable by the startup migration, but
+new provider/model configuration is stored in `providers.json`. The tracked
+directory is `crates/core/providers.json`; user and workspace Connections are
+stored in the corresponding `providers.json` overlays. Old user
+`~/.devo/models.json` and workspace `<workspace>/.devo/models.json` files are
+ignored. On first startup, legacy provider, model, binding, and default records
+are migrated automatically to the JSON overlay and credential values are copied
+to user-scoped `auth.json`; the old provider-owned TOML records are then removed.
 
 ## Model Bindings
 

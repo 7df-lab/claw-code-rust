@@ -9,7 +9,6 @@ use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
 use devo_core::AppConfigStore;
-use devo_core::ProviderVendorCatalog;
 use futures::stream;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -161,7 +160,6 @@ fn build_runtime_with_registry(
             devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::default()),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 enabled: true,
                 user_roots: vec![user_skill_root],

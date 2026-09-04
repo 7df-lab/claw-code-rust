@@ -5,6 +5,7 @@
 
 use devo_protocol::Model;
 use devo_protocol::ReasoningEffort;
+use devo_protocol::normalize_reasoning_effort_literal;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ReasoningEffortListEntry {
@@ -45,7 +46,7 @@ pub(super) fn current_reasoning_effort_selection_for_model(
         .map(str::trim)
         .filter(|selection| !selection.is_empty())
         .filter(|selection| !selection.eq_ignore_ascii_case("default"))
-        .map(str::to_ascii_lowercase);
+        .map(normalize_reasoning_effort_literal);
 
     if let Some(selection) = normalized_selection.as_deref() {
         if options.iter().any(|option| option.value == selection) {
@@ -106,14 +107,16 @@ mod tests {
     }
 
     #[test]
-    fn entries_preserve_explicit_toggle_with_levels_selection() {
+    fn entries_preserve_explicit_levels_with_off_selection() {
         let model = Model {
             slug: "deepseek-v4".to_string(),
             display_name: "Deepseek V4".to_string(),
-            reasoning_capability: ReasoningCapability::ToggleWithLevels(vec![
-                ReasoningEffort::High,
-                ReasoningEffort::Max,
-            ]),
+            reasoning_capability: ReasoningCapability::Levels(
+                devo_protocol::levels_with_leading_off([
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max,
+                ]),
+            ),
             default_reasoning_effort: Some(ReasoningEffort::High),
             ..Model::default()
         };
@@ -125,7 +128,7 @@ mod tests {
                     is_current: true,
                     label: "Off".to_string(),
                     description: "Disable reasoning effort for this turn".to_string(),
-                    value: "disabled".to_string(),
+                    value: "off".to_string(),
                 },
                 ReasoningEffortListEntry {
                     is_current: false,
@@ -149,7 +152,7 @@ mod tests {
                     is_current: false,
                     label: "Off".to_string(),
                     description: "Disable reasoning effort for this turn".to_string(),
-                    value: "disabled".to_string(),
+                    value: "off".to_string(),
                 },
                 ReasoningEffortListEntry {
                     is_current: false,

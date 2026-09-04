@@ -38,7 +38,7 @@
 Devo 面向那些不想綁定單一託管模型生態、需要掌控模型選擇、執行階段行為和
 Desktop 體驗、終端機工作流以及工作區執行邊界的團隊。
 
-- **接入任意模型** - 透過 provider/model 綁定接入 OpenAI 相容 Chat
+- **接入任意模型** - 透過 provider/model Connection 接入 OpenAI 相容 Chat
   Completions、OpenAI 相容 Responses、Anthropic Messages、DeepSeek、
   Qwen、Kimi 或私有模型閘道。
 - **適合私有化和內網環境** - 以單一本地 Rust 二進位檔執行，支援離線安裝路徑，
@@ -50,7 +50,7 @@ Desktop 體驗、終端機工作流以及工作區執行邊界的團隊。
 
 ## 功能
 
-- **模型中立的 provider runtime** - 透過 provider/model 綁定接入 OpenAI 相容、
+- **模型中立的 provider runtime** - 透過 provider/model Connection 接入 OpenAI 相容、
   Anthropic 相容、DeepSeek、Qwen、Kimi、GLM、MiniMax、Xiaomi MiMo、
   OpenRouter 或本地端點。
 - **MCP 支援** - 透過
@@ -85,7 +85,7 @@ Desktop 體驗、終端機工作流以及工作區執行邊界的團隊。
 </p>
 
 Devo 的內建模型目錄包含 Qwen、Kimi、MiniMax、GLM 和 DeepSeek 的已測試模型定義。
-Provider 端點仍可透過 provider/model 綁定配置。
+Provider 端點仍可透過 provider/model Connection 配置。
 
 ## 已測試平台
 
@@ -199,16 +199,16 @@ devo resume <session-id>
 
 ## 配置
 
-`devo onboard` 是推薦的設定路徑。它會把 provider 和 model binding 寫入
-`config.toml`，並把 API key 保存在使用者級 `auth.json`。
+`devo onboard` 是推薦的設定路徑。它會把 provider Connection 和模型目錄寫入
+`providers.json`，並把 API key 保存在使用者級 `auth.json`。
 
 如需手動接入自有 API key 與自訂模型：
 
-1. 在 `config.toml` 中定義 `[model.<slug>]` 參數、`[providers.<id>]` 和
-   `[model_bindings.<id>]`。
+1. 在 `providers.json` 中定義 `provider.<id>.models.<model-id>`，並將預設模型設為
+   `provider/model`。
 2. 把密鑰寫入 `DEVO_HOME/auth.json`，並在 `[providers.<id>].credential` 中引用該
-   credential id — 不要把 API key 本身寫進 `config.toml`。
-3. 將 `invocation_method` 設為與端點協議一致：`openai_chat_completions`、
+   credential id — 不要把 API key 本身寫進 `providers.json`。
+3. 將 `wire_api` 設為與端點協議一致：`openai_chat_completions`、
    `openai_responses` 或 `anthropic_messages`。
 
 完整範例（自訂模型參數 + API key）與協議說明見
@@ -230,12 +230,12 @@ Devo 仍處於 1.0 之前並在積極開發中。它已經適合本地評估、�
 
 內建模型中繼資料目前覆蓋 Qwen、Kimi、MiniMax、GLM 和 DeepSeek 系列。
 任何支援 OpenAI 相容 Chat Completions、OpenAI 相容 Responses 或
-Anthropic Messages API 的模型端點，都可以透過 provider/model 綁定接入。
+Anthropic Messages API 的模型端點，都可以透過 provider/model Connection 接入。
 
 ### 如何接入自有 API key？
 
-使用 `devo onboard`，或在 `config.toml` 中手動定義自訂 `[model.<slug>]`、
-provider 與 binding，把 key 存入使用者級 `auth.json`，並將 `invocation_method`
+使用 `devo onboard`，或在 `providers.json` 中手動定義自訂 provider/model，
+把 key 存入使用者級 `auth.json`，並將 `wire_api`
 設為 `openai_chat_completions`、`openai_responses` 或 `anthropic_messages`。詳見
 [配置](./docs/configuration.zh-Hant.md#接入自有-api-key)。
 

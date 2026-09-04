@@ -231,15 +231,14 @@ fn evaluate_access_with_roots(
             #[cfg(windows)]
             {
                 if (path.starts_with('\\') || path.starts_with('/'))
-                    && !path.as_bytes().get(1).is_some_and(|b| *b == b':')
-                {
-                    if let Some(prefix) = cwd.components().find_map(|c| match c {
+                    && path.as_bytes().get(1).is_none_or(|b| *b != b':')
+                    && let Some(prefix) = cwd.components().find_map(|c| match c {
                         Component::Prefix(p) => Some(p.as_os_str().to_string_lossy().into_owned()),
                         _ => None,
-                    }) {
-                        let rest = path.trim_start_matches(['\\', '/']);
-                        path = format!("{prefix}\\{rest}");
-                    }
+                    })
+                {
+                    let rest = path.trim_start_matches(['\\', '/']);
+                    path = format!("{prefix}\\{rest}");
                 }
             }
             let path = Path::new(&path);

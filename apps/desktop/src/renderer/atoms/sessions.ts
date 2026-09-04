@@ -32,6 +32,20 @@ export type ProviderRetryStatus = {
 	message: string
 }
 
+/** Expandable provider/LLM failure rows for the chat process timeline. */
+export type ProviderErrorEntry = {
+	id: string
+	turnId: string
+	message: string
+	phase: "scheduled" | "failed" | string
+	attempt?: number
+	code?: string
+	/** Backoff budget when this retry was scheduled (ms). */
+	backoffMs?: number
+	/** Client clock when the scheduled retry was observed. */
+	scheduledAtMs?: number
+}
+
 /** Phases of worktree setup shown in the chat view's empty state */
 export type SessionSetupPhase = "creating-worktree" | "starting-session" | null
 
@@ -70,6 +84,8 @@ export interface SessionEntry {
 	hasUnreadCompletion?: boolean
 	/** Active provider retry status for the current turn. */
 	retryStatus?: ProviderRetryStatus
+	/** Accumulated provider retry / failure rows for expandable display. */
+	providerErrors?: ProviderErrorEntry[]
 }
 
 // ============================================================
@@ -114,6 +130,7 @@ export const upsertSessionAtom = atom(
 			setupPhase: existing?.setupPhase,
 			hasUnreadCompletion: existing?.hasUnreadCompletion,
 			retryStatus: existing?.retryStatus,
+			providerErrors: existing?.providerErrors,
 		})
 
 		// Add to index
@@ -169,11 +186,15 @@ export const setSessionStatusAtom = atom(
 			: completedTurn
 				? get(viewedSessionIdAtom) !== args.sessionId
 				: entry.hasUnreadCompletion
+		// New turn: drop prior expandable error rows so they stay scoped to one attempt.
+		const startingFreshTurn =
+			isWorking && (entry.status.type === "idle" || entry.status.type === "error")
 		set(sessionFamily(args.sessionId), {
 			...entry,
 			status: args.status,
 			hasUnreadCompletion,
 			retryStatus: args.status.type === "idle" || args.status.type === "error" ? undefined : entry.retryStatus,
+			providerErrors: startingFreshTurn ? [] : entry.providerErrors,
 		})
 	},
 )
@@ -191,7 +212,37 @@ export const setProviderRetryStatusAtom = atom(
 	) => {
 		const entry = get(sessionFamily(args.sessionId))
 		if (!entry) return
-		set(sessionFamily(args.sessionId), { ...entry, retryStatus: args.status })
+		const status = args.status
+		if (!status) {
+			set(sessionFamily(args.sessionId), { ...entry, retryStatus: undefined })
+			return
+		}
+		if (status.phase === "resumed") {
+			set(sessionFamily(args.sessionId), { ...entry, retryStatus: undefined })
+			return
+		}
+		const message = status.message.trim()
+		const nextErrors = [...(entry.providerErrors ?? [])]
+		if (message || status.phase === "scheduled") {
+			const id = `retry-${status.turnId}-${status.attempt}`
+			const nextEntry: ProviderErrorEntry = {
+				id,
+				turnId: status.turnId,
+				message: message || "Provider request failed",
+				phase: status.phase || "scheduled",
+				attempt: status.attempt,
+				backoffMs: status.backoffMs,
+				scheduledAtMs: Date.now(),
+			}
+			const existingIndex = nextErrors.findIndex((item) => item.id === id)
+			if (existingIndex >= 0) nextErrors[existingIndex] = nextEntry
+			else nextErrors.push(nextEntry)
+		}
+		set(sessionFamily(args.sessionId), {
+			...entry,
+			retryStatus: status,
+			providerErrors: nextErrors,
+		})
 	},
 )
 
@@ -213,7 +264,34 @@ export const setSessionErrorAtom = atom(
 	) => {
 		const entry = get(sessionFamily(args.sessionId))
 		if (!entry) return
-		set(sessionFamily(args.sessionId), { ...entry, error: args.error })
+		if (!args.error) {
+			set(sessionFamily(args.sessionId), { ...entry, error: undefined })
+			return
+		}
+		const message =
+			typeof args.error.data.message === "string" && args.error.data.message.trim()
+				? args.error.data.message.trim()
+				: `${args.error.name}: ${JSON.stringify(args.error.data)}`
+		const turnId =
+			entry.retryStatus?.turnId ||
+			[...(entry.providerErrors ?? [])].reverse().find((item) => item.turnId)?.turnId ||
+			""
+		const id = `failed-${turnId || "session"}-${args.error.name}-${message.slice(0, 48)}`
+		const nextErrors = [...(entry.providerErrors ?? [])]
+		if (!nextErrors.some((item) => item.message === message && item.phase === "failed")) {
+			nextErrors.push({
+				id,
+				turnId,
+				message,
+				phase: "failed",
+				code: args.error.name,
+			})
+		}
+		set(sessionFamily(args.sessionId), {
+			...entry,
+			error: args.error,
+			providerErrors: nextErrors,
+		})
 	},
 )
 
@@ -395,7 +473,8 @@ export const setSessionsAtom = atom(
 				error: existing?.error,
 				setupPhase: existing?.setupPhase,
 				hasUnreadCompletion: existing?.hasUnreadCompletion,
-			retryStatus: existing?.retryStatus,
+				retryStatus: existing?.retryStatus,
+				providerErrors: existing?.providerErrors,
 			})
 			nextIds.add(session.id)
 		}

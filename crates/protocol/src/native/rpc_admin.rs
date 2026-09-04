@@ -5,14 +5,14 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use ts_rs::TS;
-
-use std::path::PathBuf;
 
 use super::ids::SessionId;
 use super::item::ContextOccupancy;
 use super::item::ToolSource;
 use super::model::PermissionProfile;
+use std::path::PathBuf;
 
 // ── initialize ──
 
@@ -108,8 +108,8 @@ pub struct PreferencesOption {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPreferences {
-    /// Current default: the provider model binding id when configured,
-    /// otherwise the model slug.
+    /// Current default in canonical `provider/model` or
+    /// `provider/model/variant` form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Current default reasoning effort selection
@@ -164,11 +164,17 @@ pub struct ModelPreferencesWriteResult {
 #[serde(rename_all = "camelCase")]
 pub struct ModelListParams {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub slug: String,
     pub display_name: String,
+    /// Provider id and provider-facing model id when this entry came from the
+    /// canonical provider directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -181,6 +187,34 @@ pub struct ModelInfo {
     pub input_modalities: Vec<crate::InputModality>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub variants: BTreeMap<String, crate::ProviderModelVariant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_selection: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
 }
 
 impl From<crate::ModelCatalogEntry> for ModelInfo {
@@ -188,6 +222,8 @@ impl From<crate::ModelCatalogEntry> for ModelInfo {
         Self {
             slug: entry.slug,
             display_name: entry.display_name,
+            provider_id: None,
+            model_id: None,
             channel: entry.channel,
             description: entry.description,
             provider: entry.provider,
@@ -195,11 +231,72 @@ impl From<crate::ModelCatalogEntry> for ModelInfo {
             reasoning_capability: entry.reasoning_capability,
             input_modalities: entry.input_modalities,
             max_tokens: entry.max_tokens,
+            family: None,
+            release_date: None,
+            status: None,
+            capabilities: None,
+            cost: None,
+            metadata: None,
+            request: None,
+            options: None,
+            headers: BTreeMap::new(),
+            variants: BTreeMap::new(),
+            default_variant: None,
+            default_reasoning_selection: entry.default_reasoning_selection,
+            enabled: None,
+            priority: None,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+impl ModelInfo {
+    /// Adds the richer directory record while preserving stable fields used
+    /// by older Native clients.
+    pub fn with_provider_metadata(
+        mut self,
+        provider_id: String,
+        model_id: String,
+        metadata: crate::ProviderModelInfo,
+    ) -> Self {
+        self.provider_id = Some(provider_id);
+        self.model_id = Some(model_id);
+        if let Some(wire_api) = metadata.wire_api {
+            self.provider = wire_api;
+        }
+        if let Some(context_window) = metadata.context_window {
+            self.context_window = context_window;
+        }
+        if let Some(reasoning_capability) = metadata.reasoning_capability {
+            self.reasoning_capability = reasoning_capability;
+        }
+        if let Some(input_modalities) = metadata.input_modalities {
+            self.input_modalities = input_modalities;
+        }
+        if metadata.max_tokens.is_some() {
+            self.max_tokens = metadata.max_tokens;
+        }
+        if metadata.channel.is_some() {
+            self.channel = metadata.channel;
+        }
+        self.family = metadata.family;
+        self.release_date = metadata.release_date;
+        self.status = metadata.status;
+        self.capabilities = metadata.capabilities;
+        self.cost = metadata.cost;
+        self.metadata = metadata.metadata;
+        self.request = metadata.request;
+        self.options = metadata.options;
+        self.headers = metadata.headers;
+        self.variants = metadata.variants;
+        self.default_variant = metadata.default_variant;
+        self.default_reasoning_selection = metadata.default_reasoning_selection;
+        self.enabled = metadata.enabled;
+        self.priority = metadata.priority;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelListResult {
     pub models: Vec<ModelInfo>,
@@ -415,140 +512,118 @@ pub struct PermissionProfileUpdateResult {
 
 // ── provider/* (ratified #11) ──
 
-/// Native mirror of the legacy provider vendor. `credential` is a
-/// credential *id* into `auth.json`, never the secret; `api_key` on
-/// upsert/validate is write-only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderVendorInfo {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub headers: Option<String>,
-    pub wire_apis: Vec<crate::ProviderWireApi>,
-    pub enabled: bool,
-}
-
-impl From<crate::ProviderVendor> for ProviderVendorInfo {
-    fn from(vendor: crate::ProviderVendor) -> Self {
-        Self {
-            name: vendor.name,
-            base_url: vendor.base_url,
-            credential: vendor.credential,
-            headers: vendor.headers,
-            wire_apis: vendor.wire_apis,
-            enabled: vendor.enabled,
-        }
-    }
-}
-
-impl From<ProviderVendorInfo> for crate::ProviderVendor {
-    fn from(vendor: ProviderVendorInfo) -> Self {
-        Self {
-            name: vendor.name,
-            base_url: vendor.base_url,
-            credential: vendor.credential,
-            headers: vendor.headers,
-            wire_apis: vendor.wire_apis,
-            enabled: vendor.enabled,
-        }
-    }
-}
-
-/// Native mirror of the legacy provider model binding.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderModelBindingInfo {
-    pub binding_id: String,
-    pub model_slug: String,
-    pub provider: String,
-    pub request_model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    pub invocation_method: crate::ProviderWireApi,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_reasoning_effort: Option<String>,
-    pub enabled: bool,
-}
-
-impl From<crate::ProviderModelBinding> for ProviderModelBindingInfo {
-    fn from(binding: crate::ProviderModelBinding) -> Self {
-        Self {
-            binding_id: binding.binding_id,
-            model_slug: binding.model_slug,
-            provider: binding.provider,
-            request_model: binding.request_model,
-            display_name: binding.display_name,
-            invocation_method: binding.invocation_method,
-            default_reasoning_effort: binding.default_reasoning_effort,
-            enabled: binding.enabled,
-        }
-    }
-}
-
-impl From<ProviderModelBindingInfo> for crate::ProviderModelBinding {
-    fn from(binding: ProviderModelBindingInfo) -> Self {
-        Self {
-            binding_id: binding.binding_id,
-            model_slug: binding.model_slug,
-            provider: binding.provider,
-            request_model: binding.request_model,
-            display_name: binding.display_name,
-            invocation_method: binding.invocation_method,
-            default_reasoning_effort: binding.default_reasoning_effort,
-            enabled: binding.enabled,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderListParams {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderListResult {
-    pub providers: Vec<ProviderVendorInfo>,
+    pub providers: Vec<crate::ProviderInfo>,
+    #[serde(default)]
+    pub template_provider_ids: Vec<String>,
+    /// Provider ids with a user-created Connection. Directory entries that
+    /// are not in this list are read-only templates.
+    #[serde(default)]
+    pub connected_provider_ids: Vec<String>,
+    /// Models explicitly configured on each user-created Connection.
+    ///
+    /// This is intentionally separate from `providers[*].models`, which is
+    /// the effective provider directory and may include built-in templates.
+    #[serde(default)]
+    pub connection_models: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, crate::ProviderModelInfo>,
+    >,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUpsertParams {
-    pub provider_vendor: ProviderVendorInfo,
+    pub provider: crate::ProviderInfo,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_binding: Option<ProviderModelBindingInfo>,
+    pub default_model: Option<String>,
+    /// Optional lower-cost model for lightweight background work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_model_binding: Option<String>,
-    /// Write-only secret, stored in the keyring; never echoed.
+    pub small_model: Option<String>,
+    /// Write-only secret, stored in the user auth store; never echoed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUpsertResult {
-    pub provider_vendor: ProviderVendorInfo,
+    pub provider: crate::ProviderInfo,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_binding: Option<ProviderModelBindingInfo>,
+    pub default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_model: Option<String>,
 }
 
-/// Live network probe of a vendor + binding configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+/// Disconnects a user-created provider Connection without modifying the
+/// corresponding built-in provider directory entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDisconnectParams {
+    pub provider_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDisconnectResult {
+    pub provider_id: String,
+}
+
+/// Removes one model from a user-created provider Connection.
+///
+/// Built-in provider templates are not modified. The model is removed only
+/// from the user's provider catalog overlay and its provider-owned defaults
+/// are cleared when they point at that model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModelRemoveParams {
+    pub provider_id: String,
+    pub model_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModelRemoveResult {
+    pub provider_id: String,
+    pub model_id: String,
+}
+
+/// Live network probe of a provider Connection and its selected model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderValidateParams {
-    pub provider_vendor: ProviderVendorInfo,
-    pub model_binding: ProviderModelBindingInfo,
+    pub provider: crate::ProviderInfo,
+    pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderValidateResult {
     pub reply_preview: String,
+}
+
+/// Refreshes the model directory from a provider's models endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDiscoverParams {
+    pub provider_id: String,
+    #[serde(default)]
+    pub force_refresh: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDiscoverResult {
+    pub provider_id: String,
+    pub models: std::collections::BTreeMap<String, crate::ProviderModelInfo>,
 }
 
 // ── credential/* ──

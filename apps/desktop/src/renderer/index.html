@@ -172,7 +172,7 @@
       // Prevent flash of wrong color scheme before React hydrates.
       // Reads from the same localStorage keys used by Jotai atomWithStorage.
       try {
-        var scheme = JSON.parse(localStorage.getItem('devo:colorScheme') || '"dark"');
+        var scheme = JSON.parse(localStorage.getItem('devo:colorScheme') || '"light"');
         var themeId = JSON.parse(localStorage.getItem('devo:theme') || '"default"');
         var cls = scheme;
         if (scheme === 'system') {
@@ -183,7 +183,7 @@
           document.documentElement.classList.add('theme-' + themeId);
         }
       } catch (e) {
-        document.documentElement.classList.add('dark');
+        document.documentElement.classList.add('light');
       }
     </script>
     <script>

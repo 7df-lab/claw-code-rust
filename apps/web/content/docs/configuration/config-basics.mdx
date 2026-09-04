@@ -23,12 +23,14 @@ default path and does not require that directory to already exist.
 
 | File | Scope | Purpose |
 | --- | --- | --- |
-| `<DEVO_HOME>/config.toml` | User | Main user config: providers, model bindings, skills, MCP, hooks, tools, logging, updates, and remembered project settings. |
-| `<DEVO_HOME>/auth.json` | User | Secret credential values referenced by provider and tool config. |
+| `<DEVO_HOME>/config.toml` | User | Main user config for skills, MCP, hooks, tools, logging, updates, and remembered project settings. |
+| `<DEVO_HOME>/providers.json` | User | Provider connections, nested model catalog, active model, and credential references. |
+| `<DEVO_HOME>/auth.json` | User | Provider API keys and other user-scoped secrets. |
 | `<workspace>/.devo/config.toml` | Project | Workspace-level overrides checked when Devo is launched with a workspace root. |
+| `<workspace>/.devo/providers.json` | Project | Workspace provider/model overlay. |
 
-Provider API keys should be stored in `auth.json` and referenced by credential
-id from `config.toml`.
+Provider API keys should be stored in user-scoped `auth.json`. The matching
+`provider.<id>.credential` reference belongs in `providers.json`.
 
 ## Precedence
 
@@ -36,41 +38,49 @@ Devo merges config in this order:
 
 1. defaults built into Devo;
 2. user config at `<DEVO_HOME>/config.toml`;
-3. project config at `<workspace>/.devo/config.toml`;
-4. command-line overrides.
+3. user provider catalog at `<DEVO_HOME>/providers.json`;
+4. project config at `<workspace>/.devo/config.toml`;
+5. project provider catalog at `<workspace>/.devo/providers.json`;
+6. command-line overrides.
 
 Later sources override earlier sources. This means project config can override
 user defaults for one repository, and CLI overrides win over both.
 
-Provider config has its own merge behavior for provider and model binding
-tables. User config is the usual place for provider credentials and reusable
-model bindings. Project config is best for project-specific defaults.
+Provider JSON has its own field-by-field merge behavior for provider and nested
+model records. User provider JSON is the usual place for connections and
+credential references; project provider JSON is best for project-specific
+overlays.
+
+## Startup migration
+
+When Devo starts and finds legacy provider/model settings in
+`config.toml`, it migrates them automatically before resolving the active
+model. User settings move to `<DEVO_HOME>/providers.json`; workspace settings
+move to `<workspace>/.devo/providers.json`. Existing JSON values win over the
+legacy TOML values.
+
+Legacy API keys are copied to user-scoped `auth.json`, and only their
+credential references are written to `providers.json`. Provider-owned TOML
+keys are removed after the JSON and credential writes succeed; unrelated
+application settings remain in `config.toml`. The migration is idempotent.
 
 ## Credentials
 
-`auth.json` currently stores API-key credentials:
+The provider record stores a credential reference in `providers.json`:
 
 ```json
-{
-  "version": 1,
-  "credentials": {
-    "deepseek_api_key": {
-      "kind": "api_key",
-      "value": "sk-your-key"
-    }
-  }
-}
+{"provider":{"deepseek":{"credential":"deepseek_api_key"}}}
 ```
 
-Provider config references a credential by id:
+The actual key is stored in the user-scoped `auth.json`:
 
-```toml
-[providers.deepseek-anthropic]
-credential = "deepseek_api_key"
+```json
+{"version":1,"credentials":{"deepseek_api_key":{"kind":"api_key","value":"sk-your-key"}}}
 ```
 
-If a provider references a missing credential id, Devo fails provider resolution
-with an error that names `auth.json`.
+If a legacy provider references a missing credential id, Devo fails provider
+resolution with an error that names `auth.json`. Do not put `apiKey` or
+`api_key` in `providers.json`.
 
 ## Inspecting Setup
 

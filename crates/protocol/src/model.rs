@@ -20,17 +20,33 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fmt;
 use ts_rs::TS;
 
 use crate::HostedToolDefinition;
+use crate::ProviderInfo;
+use crate::ProviderModelInfo;
 use crate::ReasoningCapability;
 use crate::ReasoningEffort;
 use crate::ReasoningEffortPreset;
 use crate::ReasoningImplementation;
 use crate::ResolvedReasoningRequest;
+use crate::adapter_request_thinking_wire;
+use crate::find_effort_variant_key;
 use crate::nearest_effort;
+use crate::normalize_reasoning_effort_literal;
 use crate::truncation::TruncationPolicyConfig;
+
+/// Catalog variant metadata used when a logical effort selection maps onto a
+/// named `variants` entry (request-body / request-model encoding).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelEffortVariant {
+    /// Optional wire model id override for this effort selection.
+    pub request_model: Option<String>,
+    /// Whether this variant may be selected.
+    pub disabled: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "lowercase")]
@@ -241,15 +257,26 @@ pub struct Model {
     pub reasoning_capability: ReasoningCapability,
     /// Default reasoning effort selected for the model when no levels are exposed.
     pub default_reasoning_effort: Option<ReasoningEffort>,
+    /// Exact default reasoning selection, including toggle values such as
+    /// `on` and `off`.
+    pub default_reasoning_selection: Option<String>,
     /// How the selected reasoning effort should be applied to requests.
     #[serde(alias = "thinking_implementation")]
     pub reasoning_implementation: Option<ReasoningImplementation>,
+    /// Catalog `variants` keyed by logical effort selection (`off`/`on`/`low`…).
+    ///
+    /// When the normalized selection matches a non-disabled entry, resolution
+    /// uses CatalogVariant mode (no first-class thinking/effort fields).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub catalog_variants: BTreeMap<String, ModelEffortVariant>,
     /// Base system instructions bundled with the model.
     pub base_instructions: String,
     /// Maximum context window in tokens.
     pub context_window: u32,
     /// Percentage of the context window treated as effectively usable.
-    pub effective_context_window_percent: Option<u8>,
+    ///
+    /// May be fractional (for example `25.5`). Defaults to `95` when unset.
+    pub effective_context_window_percent: Option<f64>,
     /// Policy used when truncating content for requests.
     pub truncation_policy: TruncationPolicyConfig,
     /// Input types accepted by the model.
@@ -277,7 +304,9 @@ impl Default for Model {
             description: None,
             reasoning_capability: ReasoningCapability::Unsupported,
             default_reasoning_effort: Some(ReasoningEffort::default()),
+            default_reasoning_selection: None,
             reasoning_implementation: None,
+            catalog_variants: BTreeMap::new(),
             base_instructions: String::new(),
             context_window: 200_000,
             effective_context_window_percent: None,
@@ -309,14 +338,10 @@ impl Model {
 
     pub fn reasoning_effort_options(&self) -> Vec<ReasoningEffortPreset> {
         match &self.reasoning_capability {
-            ReasoningCapability::Levels(levels) => levels
-                .iter()
-                .copied()
-                .map(|effort| ReasoningEffortPreset::new(effort, effort.description()))
-                .collect(),
-            ReasoningCapability::ToggleWithLevels(levels) => levels
-                .iter()
-                .copied()
+            ReasoningCapability::Levels(_) => self
+                .reasoning_capability
+                .effort_levels()
+                .into_iter()
                 .map(|effort| ReasoningEffortPreset::new(effort, effort.description()))
                 .collect(),
             _ => self
@@ -342,28 +367,42 @@ impl Model {
         })
     }
 
-    pub fn effective_context_window_percent(&self) -> u8 {
-        self.effective_context_window_percent.unwrap_or(95)
+    pub fn effective_context_window_percent(&self) -> f64 {
+        self.effective_context_window_percent.unwrap_or(95.0)
     }
 
     pub fn effective_context_window(&self) -> u32 {
-        self.context_window
-            .saturating_mul(self.effective_context_window_percent() as u32)
-            / 100
+        let percent = self.effective_context_window_percent().clamp(0.0, 100.0);
+        ((f64::from(self.context_window) * percent) / 100.0).floor() as u32
     }
 
     pub fn default_reasoning_effort_selection(&self) -> Option<String> {
+        if let Some(selection) = self
+            .default_reasoning_selection
+            .as_deref()
+            .map(str::trim)
+            .filter(|selection| !selection.is_empty())
+        {
+            return Some(normalize_reasoning_effort_literal(selection));
+        }
         match &self.reasoning_capability {
             ReasoningCapability::Unsupported => None,
-            ReasoningCapability::Toggle => Some(String::from("enabled")),
-            ReasoningCapability::ToggleWithLevels(levels) => self
+            ReasoningCapability::Toggle => Some(String::from("on")),
+            ReasoningCapability::Levels(choices) => self
                 .default_reasoning_effort
-                .or_else(|| levels.first().copied())
-                .map(|effort| effort.label().to_lowercase()),
-            ReasoningCapability::Levels(levels) => self
-                .default_reasoning_effort
-                .or_else(|| levels.first().copied())
-                .map(|effort| effort.label().to_lowercase()),
+                .or_else(|| {
+                    choices
+                        .iter()
+                        .copied()
+                        .find_map(crate::ReasoningLevelChoice::effort)
+                })
+                .map(|effort| effort.label().to_lowercase())
+                .or_else(|| {
+                    choices
+                        .first()
+                        .copied()
+                        .map(|choice| choice.selection_value().to_string())
+                }),
         }
     }
 
@@ -372,19 +411,26 @@ impl Model {
             .map(str::trim)
             .filter(|selection| !selection.is_empty())
             .filter(|selection| !selection.eq_ignore_ascii_case("default"))
-            .map(|selection| selection.to_ascii_lowercase())
+            .map(normalize_reasoning_effort_literal)
             .or_else(|| self.default_reasoning_effort_selection())
     }
 
     pub fn nearest_supported_reasoning_effort(&self, target: ReasoningEffort) -> ReasoningEffort {
-        match &self.reasoning_capability {
-            ReasoningCapability::Levels(levels) | ReasoningCapability::ToggleWithLevels(levels)
-                if !levels.is_empty() =>
-            {
-                nearest_effort(target, levels)
-            }
-            _ => self.default_reasoning_effort.unwrap_or(target),
+        let levels = self.reasoning_capability.effort_levels();
+        if levels.is_empty() {
+            self.default_reasoning_effort.unwrap_or(target)
+        } else {
+            nearest_effort(target, &levels)
         }
+    }
+
+    /// Returns the catalog variant key that encodes the given logical effort
+    /// selection, when one exists and is selectable.
+    pub fn effort_catalog_variant_key(&self, selection: Option<&str>) -> Option<&str> {
+        let normalized = self.normalize_reasoning_effort_selection(selection)?;
+        let key = find_effort_variant_key(&self.catalog_variants, &normalized)?;
+        let variant = self.catalog_variants.get(key)?;
+        (!variant.disabled).then_some(key)
     }
 
     pub fn resolve_reasoning_effort_selection(
@@ -392,6 +438,28 @@ impl Model {
         selection: Option<&str>,
     ) -> ResolvedReasoningRequest {
         let normalized_selection = self.normalize_reasoning_effort_selection(selection);
+
+        if let Some(variant_key) = self.effort_catalog_variant_key(selection) {
+            let variant = &self.catalog_variants[variant_key];
+            let effective_reasoning_effort = normalized_selection
+                .as_deref()
+                .and_then(|value| match value {
+                    "off" => None,
+                    "on" => self.default_reasoning_effort,
+                    other => other.parse::<ReasoningEffort>().ok(),
+                })
+                .map(|effort| self.nearest_supported_reasoning_effort(effort));
+            return ResolvedReasoningRequest {
+                request_model: variant
+                    .request_model
+                    .clone()
+                    .unwrap_or_else(|| self.slug.clone()),
+                request_thinking: None,
+                request_reasoning_effort: None,
+                effective_reasoning_effort,
+                extra_body: None,
+            };
+        }
 
         match self.effective_reasoning_implementation() {
             ReasoningImplementation::Disabled => ResolvedReasoningRequest {
@@ -406,61 +474,66 @@ impl Model {
                     match self.effective_reasoning_capability() {
                         ReasoningCapability::Unsupported => (None, None, None),
                         ReasoningCapability::Toggle => {
-                            let request_thinking = normalized_selection
-                                .filter(|selection| {
-                                    selection == "enabled" || selection == "disabled"
-                                })
+                            let logical = normalized_selection
+                                .filter(|selection| selection == "on" || selection == "off")
                                 .or_else(|| self.default_reasoning_effort_selection());
-                            let effective_reasoning_effort = self.default_reasoning_effort;
+                            let effective_reasoning_effort = logical
+                                .as_deref()
+                                .filter(|selection| *selection == "on")
+                                .and(self.default_reasoning_effort);
+                            let request_thinking =
+                                logical.as_deref().map(adapter_request_thinking_wire);
                             (request_thinking, None, effective_reasoning_effort)
                         }
                         ReasoningCapability::Levels(_) => {
-                            let request_reasoning_effort = normalized_selection
-                                .as_deref()
-                                .and_then(|selection| selection.parse::<ReasoningEffort>().ok())
-                                .map(|effort| self.nearest_supported_reasoning_effort(effort))
-                                .or(self.default_reasoning_effort);
-                            (
-                                request_reasoning_effort
-                                    .map(|effort| effort.label().to_lowercase()),
-                                request_reasoning_effort,
-                                request_reasoning_effort,
-                            )
-                        }
-                        ReasoningCapability::ToggleWithLevels(_) => {
-                            let request_reasoning_effort = normalized_selection
-                                .as_deref()
-                                .and_then(|selection| match selection {
-                                    "enabled" => self.default_reasoning_effort,
-                                    "disabled" => None,
-                                    _ => selection.parse::<ReasoningEffort>().ok(),
-                                })
-                                .map(|effort| self.nearest_supported_reasoning_effort(effort))
-                                .or_else(|| {
-                                    normalized_selection
-                                        .as_deref()
-                                        .filter(|selection| *selection == "enabled")
-                                        .and(self.default_reasoning_effort)
-                                });
-                            let request_thinking = normalized_selection.as_deref().map_or_else(
-                                || {
+                            let allows_off = self.reasoning_capability.allows_off();
+                            if allows_off {
+                                let request_reasoning_effort = normalized_selection
+                                    .as_deref()
+                                    .and_then(|selection| match selection {
+                                        "on" => self.default_reasoning_effort,
+                                        "off" => None,
+                                        _ => selection.parse::<ReasoningEffort>().ok(),
+                                    })
+                                    .map(|effort| self.nearest_supported_reasoning_effort(effort))
+                                    .or_else(|| {
+                                        normalized_selection
+                                            .as_deref()
+                                            .filter(|selection| *selection == "on")
+                                            .and(self.default_reasoning_effort)
+                                    });
+                                let request_thinking = normalized_selection.as_deref().map_or_else(
+                                    || {
+                                        request_reasoning_effort
+                                            .map(|_| String::from("enabled"))
+                                            .or_else(|| Some(String::from("disabled")))
+                                    },
+                                    |selection| {
+                                        if selection == "off" {
+                                            Some(String::from("disabled"))
+                                        } else {
+                                            Some(String::from("enabled"))
+                                        }
+                                    },
+                                );
+                                (
+                                    request_thinking,
+                                    request_reasoning_effort,
+                                    request_reasoning_effort,
+                                )
+                            } else {
+                                let request_reasoning_effort = normalized_selection
+                                    .as_deref()
+                                    .and_then(|selection| selection.parse::<ReasoningEffort>().ok())
+                                    .map(|effort| self.nearest_supported_reasoning_effort(effort))
+                                    .or(self.default_reasoning_effort);
+                                (
                                     request_reasoning_effort
-                                        .map(|_| String::from("enabled"))
-                                        .or_else(|| Some(String::from("disabled")))
-                                },
-                                |selection| {
-                                    if selection == "disabled" {
-                                        Some(String::from("disabled"))
-                                    } else {
-                                        Some(String::from("enabled"))
-                                    }
-                                },
-                            );
-                            (
-                                request_thinking,
-                                request_reasoning_effort,
-                                request_reasoning_effort,
-                            )
+                                        .map(|effort| effort.label().to_lowercase()),
+                                    request_reasoning_effort,
+                                    request_reasoning_effort,
+                                )
+                            }
                         }
                     };
                 ResolvedReasoningRequest {
@@ -475,24 +548,25 @@ impl Model {
                 let selected_variant = normalized_selection
                     .as_deref()
                     .and_then(|selection| {
-                        config
-                            .variants
-                            .iter()
-                            .find(|variant| variant.selection_value.eq_ignore_ascii_case(selection))
+                        config.variants.iter().find(|variant| {
+                            normalize_reasoning_effort_literal(&variant.selection_value)
+                                == selection
+                        })
                     })
                     .or_else(|| {
                         self.default_reasoning_effort_selection()
                             .as_deref()
                             .and_then(|selection| {
                                 config.variants.iter().find(|variant| {
-                                    variant.selection_value.eq_ignore_ascii_case(selection)
+                                    normalize_reasoning_effort_literal(&variant.selection_value)
+                                        == selection
                                 })
                             })
                     })
                     .or_else(|| config.variants.first());
                 if let Some(variant) = selected_variant {
                     ResolvedReasoningRequest {
-                        request_model: variant.model_slug.clone(),
+                        request_model: variant.model.clone(),
                         request_thinking: None,
                         request_reasoning_effort: variant.reasoning_effort,
                         effective_reasoning_effort: variant.reasoning_effort,
@@ -516,6 +590,61 @@ impl Model {
 pub trait ModelCatalog: Send + Sync {
     /// Lists all models that are available for user-facing selection.
     fn list_visible(&self) -> Vec<&Model>;
+
+    /// Lists provider directory entries associated with this model catalog.
+    ///
+    /// Implementations that only provide models may return an empty list. A
+    /// bundled provider/model directory should return stable provider ids,
+    /// display names, endpoints, and credential references without exposing
+    /// credential values.
+    fn list_providers(&self) -> Vec<ProviderInfo> {
+        Vec::new()
+    }
+
+    /// Lists provider ids from the read-only built-in directory.
+    ///
+    /// Resolved catalog overlays may also expose user-defined providers, so
+    /// callers should use this list to distinguish templates from Connections.
+    fn list_template_provider_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Lists model metadata below one provider directory entry.
+    ///
+    /// Catalog implementations with richer source metadata should override
+    /// this method. The default projection keeps older in-memory catalogs
+    /// compatible while still exposing the canonical nested shape.
+    fn list_provider_models(&self, provider_id: &str) -> BTreeMap<String, ProviderModelInfo> {
+        self.list_visible()
+            .into_iter()
+            .filter_map(|model| {
+                let (model_provider, model_id) = model.slug.split_once('/')?;
+                if model_provider != provider_id {
+                    return None;
+                }
+                Some((
+                    model_id.to_string(),
+                    ProviderModelInfo {
+                        name: Some(model.display_name.clone()),
+                        wire_api: Some(model.provider),
+                        context_window: Some(model.context_window),
+                        effective_context_window_percent: model.effective_context_window_percent,
+                        max_tokens: model.max_tokens,
+                        temperature: model.temperature,
+                        top_p: model.top_p,
+                        top_k: model.top_k,
+                        reasoning_capability: Some(model.reasoning_capability.clone()),
+                        reasoning_implementation: model.reasoning_implementation.clone(),
+                        default_reasoning_effort: model.default_reasoning_effort,
+                        base_instructions: Some(model.base_instructions.clone()),
+                        input_modalities: Some(model.input_modalities.clone()),
+                        channel: model.channel.clone(),
+                        ..ProviderModelInfo::default()
+                    },
+                ))
+            })
+            .collect()
+    }
 
     /// Returns the model whose slug exactly matches `slug`.
     fn get(&self, slug: &str) -> Option<&Model>;
@@ -584,6 +713,7 @@ pub struct ModelCatalogEntry {
     pub reasoning_capability: ReasoningCapability,
     pub input_modalities: Vec<InputModality>,
     pub max_tokens: Option<u32>,
+    pub default_reasoning_selection: Option<String>,
 }
 
 impl From<&Model> for ModelCatalogEntry {
@@ -598,6 +728,7 @@ impl From<&Model> for ModelCatalogEntry {
             reasoning_capability: m.reasoning_capability.clone(),
             input_modalities: m.input_modalities.clone(),
             max_tokens: m.max_tokens,
+            default_reasoning_selection: m.default_reasoning_selection.clone(),
         }
     }
 }
@@ -627,7 +758,9 @@ mod tests {
             description: None,
             reasoning_capability: ReasoningCapability::Unsupported,
             default_reasoning_effort: Some(ReasoningEffort::Medium),
+            default_reasoning_selection: None,
             reasoning_implementation: None,
+            catalog_variants: Default::default(),
             base_instructions: String::new(),
             context_window: 200_000,
             effective_context_window_percent: None,
@@ -733,17 +866,16 @@ mod tests {
 
         assert_eq!(resolved.request_model, "glm-5.1");
         assert_eq!(resolved.request_thinking, Some(String::from("disabled")));
-        assert_eq!(
-            resolved.effective_reasoning_effort,
-            Some(ReasoningEffort::Medium)
-        );
+        assert_eq!(resolved.effective_reasoning_effort, None);
     }
 
     #[test]
     fn resolve_reasoning_effort_selection_snaps_effort_for_level_models() {
         let mut preset = model("o-model");
-        preset.reasoning_capability =
-            ReasoningCapability::Levels(vec![ReasoningEffort::Low, ReasoningEffort::High]);
+        preset.reasoning_capability = ReasoningCapability::Levels(vec![
+            ReasoningEffort::Low.into(),
+            ReasoningEffort::High.into(),
+        ]);
         preset.default_reasoning_effort = Some(ReasoningEffort::Low);
 
         let resolved = preset.resolve_reasoning_effort_selection(Some("medium"));
@@ -757,12 +889,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_reasoning_effort_selection_supports_toggle_with_levels() {
+    fn resolve_reasoning_effort_selection_supports_levels_with_off() {
         let mut preset = model("deepseek-v4");
-        preset.reasoning_capability = ReasoningCapability::ToggleWithLevels(vec![
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
-        ]);
+        preset.reasoning_capability =
+            ReasoningCapability::Levels(crate::levels_with_leading_off([
+                ReasoningEffort::High,
+                ReasoningEffort::Max,
+            ]));
         preset.default_reasoning_effort = Some(ReasoningEffort::High);
 
         let enabled = preset.resolve_reasoning_effort_selection(Some("enabled"));
@@ -793,18 +926,21 @@ mod tests {
         toggle.reasoning_capability = ReasoningCapability::Toggle;
 
         let mut levels = model("levels-model");
-        levels.reasoning_capability =
-            ReasoningCapability::Levels(vec![ReasoningEffort::Low, ReasoningEffort::High]);
+        levels.reasoning_capability = ReasoningCapability::Levels(vec![
+            ReasoningEffort::Low.into(),
+            ReasoningEffort::High.into(),
+        ]);
         levels.default_reasoning_effort = Some(ReasoningEffort::High);
 
-        let mut toggle_with_levels = model("toggle-levels-model");
-        toggle_with_levels.reasoning_capability = ReasoningCapability::ToggleWithLevels(vec![
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
-        ]);
-        toggle_with_levels.default_reasoning_effort = Some(ReasoningEffort::High);
+        let mut levels_with_off = model("toggle-levels-model");
+        levels_with_off.reasoning_capability =
+            ReasoningCapability::Levels(crate::levels_with_leading_off([
+                ReasoningEffort::High,
+                ReasoningEffort::Max,
+            ]));
+        levels_with_off.default_reasoning_effort = Some(ReasoningEffort::High);
 
-        for preset in [toggle, levels, toggle_with_levels] {
+        for preset in [toggle, levels, levels_with_off] {
             let absent = preset.resolve_reasoning_effort_selection(None);
 
             assert_eq!(
@@ -819,6 +955,65 @@ mod tests {
     }
 
     #[test]
+    fn model_default_reasoning_selection_preserves_toggle_off() {
+        let mut model = model("toggle-model");
+        model.reasoning_capability = ReasoningCapability::Toggle;
+        model.default_reasoning_selection = Some("disabled".to_string());
+
+        assert_eq!(
+            model.default_reasoning_effort_selection(),
+            Some("off".to_string())
+        );
+        assert_eq!(
+            model.resolve_reasoning_effort_selection(None),
+            crate::ResolvedReasoningRequest {
+                request_model: "toggle-model".to_string(),
+                request_thinking: Some("disabled".to_string()),
+                request_reasoning_effort: None,
+                effective_reasoning_effort: None,
+                extra_body: None,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_reasoning_effort_selection_uses_catalog_variants_when_present() {
+        let mut preset = model("custom/gateway-model");
+        preset.reasoning_capability = ReasoningCapability::Levels(vec![
+            ReasoningEffort::Low.into(),
+            ReasoningEffort::High.into(),
+        ]);
+        preset.catalog_variants = [
+            (
+                "low".to_string(),
+                super::ModelEffortVariant {
+                    request_model: Some("gateway-model-fast".to_string()),
+                    disabled: false,
+                },
+            ),
+            (
+                "high".to_string(),
+                super::ModelEffortVariant {
+                    request_model: Some("gateway-model-think".to_string()),
+                    disabled: false,
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let resolved = preset.resolve_reasoning_effort_selection(Some("high"));
+        assert_eq!(resolved.request_model, "gateway-model-think");
+        assert_eq!(resolved.request_thinking, None);
+        assert_eq!(resolved.request_reasoning_effort, None);
+        assert_eq!(
+            resolved.effective_reasoning_effort,
+            Some(ReasoningEffort::High)
+        );
+        assert_eq!(preset.effort_catalog_variant_key(Some("low")), Some("low"));
+    }
+
+    #[test]
     fn resolve_reasoning_effort_selection_uses_model_variants_when_configured() {
         let mut preset = model("kimi-k2.5");
         preset.reasoning_capability = ReasoningCapability::Toggle;
@@ -827,7 +1022,7 @@ mod tests {
                 variants: vec![
                     ReasoningVariant {
                         selection_value: String::from("disabled"),
-                        model_slug: String::from("kimi-k2.5"),
+                        model: String::from("kimi-k2.5"),
                         reasoning_effort: None,
                         label: String::from("Off"),
                         description: String::from("Use the standard model"),
@@ -835,7 +1030,7 @@ mod tests {
                     },
                     ReasoningVariant {
                         selection_value: String::from("enabled"),
-                        model_slug: String::from("kimi-k2.5-thinking"),
+                        model: String::from("kimi-k2.5-thinking"),
                         reasoning_effort: Some(ReasoningEffort::Medium),
                         label: String::from("On"),
                         description: String::from("Use the reasoning model"),
@@ -863,7 +1058,7 @@ mod tests {
             ReasoningVariantConfig {
                 variants: vec![ReasoningVariant {
                     selection_value: String::from("disabled"),
-                    model_slug: String::from("deepseek-chat"),
+                    model: String::from("deepseek-chat"),
                     reasoning_effort: None,
                     label: String::from("Off"),
                     description: String::from("Use the standard model"),
@@ -977,11 +1172,22 @@ mod tests {
     fn model_effective_context_window_uses_configured_percent() {
         let model = Model {
             context_window: 1_000,
-            effective_context_window_percent: Some(80),
+            effective_context_window_percent: Some(80.0),
             ..Model::default()
         };
 
         assert_eq!(model.effective_context_window(), 800);
+    }
+
+    #[test]
+    fn model_effective_context_window_keeps_fractional_percent() {
+        let model = Model {
+            context_window: 1_000_000,
+            effective_context_window_percent: Some(33.3333),
+            ..Model::default()
+        };
+
+        assert_eq!(model.effective_context_window(), 333_333);
     }
 
     #[test]

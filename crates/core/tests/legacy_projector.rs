@@ -153,10 +153,10 @@ fn item_record(n: u128, session: u128, turn: u128, seq: u64) -> ItemRecord {
 }
 
 fn item_line(record: ItemRecord) -> RolloutLine {
-    RolloutLine::Item(ItemLine {
+    RolloutLine::Item(Box::new(ItemLine {
         timestamp: record.timestamp,
         item: record,
-    })
+    }))
 }
 
 fn sample_session_context() -> SessionContext {

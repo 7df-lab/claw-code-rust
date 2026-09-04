@@ -444,6 +444,7 @@ impl LegacyProjector {
                 // Sessions that never recorded a resolved model keep an
                 // explicitly empty slug: unknown, not fabricated.
                 model: record.model.clone().unwrap_or_default(),
+                variant: None,
                 reasoning_effort: record
                     .reasoning_effort_selection
                     .as_deref()
@@ -890,6 +891,7 @@ pub fn canonical_turn_from_record(record: &TurnRecord) -> Result<Turn, LegacyPro
             } else {
                 record.request_model.clone()
             },
+            variant: None,
             reasoning_effort: record
                 .reasoning_effort_selection
                 .as_deref()
@@ -920,6 +922,7 @@ fn legacy_uuid(id: impl Display) -> Result<Uuid, LegacyProjectError> {
 /// Rebuilds a legacy approval request payload from the canonical approval
 /// parts (the inverse of [`approval_request_item`]); used when hydrating the
 /// fold map from an on-disk v2 approval envelope.
+#[allow(clippy::too_many_arguments)]
 fn approval_request_from_parts(
     approval_id: &str,
     action_summary: &str,

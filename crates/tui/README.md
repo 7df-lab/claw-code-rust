@@ -111,6 +111,17 @@ The alternate screen is a separate terminal screen buffer. Full-screen terminal 
 
 This crate uses the alternate screen both for the main TUI and for full-screen overlays such as the transcript pager.
 
+### Model onboarding
+
+First-run model setup temporarily uses the alternate screen so the onboarding
+view has the full terminal height and never competes with the composer. The
+flow is deliberately linear: choose a provider, choose a catalog or custom
+model, configure the common model fields, optionally expand advanced
+overrides, review the result, and then validate and save it. Custom provider
+and custom model actions remain visible beside the normal selections. API keys
+are handled as transient input and persisted through `auth.json`; the provider
+and model directory contains only non-secret catalog data.
+
 #### Bracketed paste
 
 Bracketed paste lets the terminal distinguish typed input from pasted input. Without it, a multi-line paste looks like a rapid sequence of key presses. With bracketed paste, the application can detect paste boundaries and handle large pasted content more safely.
@@ -462,7 +473,7 @@ Full-screen overlays rendered in the terminal alternate screen:
 | `exec_command.rs` | Shell command execution helpers. |
 | `get_git_diff.rs` | Extracts git diffs for display. |
 | `clipboard_copy.rs` / `clipboard_paste.rs` | System clipboard integration via `arboard`. |
-| `onboarding.rs` | Persists onboarding configuration (model, provider, API key) to `config.toml`. |
+| `onboarding.rs` | Persists onboarding configuration across provider/model JSON and user-scoped `auth.json`. |
 | `ui_consts.rs` | Shared UI constants (prefix columns, layout widths). |
 | `version.rs` | Version tracking and display. |
 | `test_backend.rs` | Test backend for snapshot testing. |

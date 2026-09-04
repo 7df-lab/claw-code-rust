@@ -5,7 +5,10 @@ import type {
 	Model as SdkModel,
 	Provider as SdkProvider,
 	ProviderAuthMethod as SdkProviderAuthMethod,
-	ProviderVendor as SdkProviderVendor,
+	ProviderInfo as SdkProviderInfo,
+	CatalogProviderInfo,
+	CatalogModelInfo,
+	ProviderCatalogListResult,
 } from "@devo-ai/sdk/v2/client"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useAtomValue } from "jotai"
@@ -22,7 +25,8 @@ import { getBaseClient, getProjectClient } from "../services/connection-manager"
 // ============================================================
 
 export type { SdkAgent, SdkCommand, SdkConfig, SdkModel, SdkProvider, SdkProviderAuthMethod }
-export type { SdkProviderVendor }
+export type { SdkProviderInfo }
+export type { CatalogProviderInfo, CatalogModelInfo, ProviderCatalogListResult }
 
 // ============================================================
 // Derived types for our UI layer
@@ -266,8 +270,8 @@ export const queryKeys = {
 	modelState: ["modelState"] as const,
 	allProviders: ["allProviders"] as const,
 	connectedProviders: ["connectedProviders"] as const,
-	providerVendors: ["providerVendors"] as const,
 	providerAuthMethods: ["providerAuthMethods"] as const,
+	providerCatalog: ["providerCatalog"] as const,
 }
 
 // ============================================================
@@ -538,51 +542,13 @@ export function useServerCommands(directory: string | null): SdkCommand[] {
 	return data ?? []
 }
 
-export function useProviderVendors(): {
-	data: SdkProviderVendor[] | null
-	loading: boolean
-	error: string | null
-	reload: () => void
-} {
-	const connected = useAtomValue(serverConnectedAtom)
-	const isMockMode = useAtomValue(isMockModeAtom)
-	const queryClient = useQueryClient()
-
-	const { data, isLoading, error } = useQuery({
-		queryKey: queryKeys.providerVendors,
-		queryFn: async (): Promise<SdkProviderVendor[]> => {
-			const client = getBaseClient()
-			if (!client) throw new Error("Not connected to server")
-			const result = await client.provider.list()
-			return result.data.provider_vendors ?? []
-		},
-		enabled: connected && !isMockMode,
-	})
-
-	const reload = useCallback(() => {
-		queryClient.invalidateQueries({ queryKey: queryKeys.providerVendors })
-	}, [queryClient])
-
-	return {
-		data: data ?? null,
-		loading: isLoading,
-		error: error ? (error instanceof Error ? error.message : "Failed to load providers") : null,
-		reload,
-	}
-}
-
 // ============================================================
 // Provider catalog types
 // ============================================================
 
 /** A provider from the full catalog (GET /provider/) */
-export interface CatalogProvider {
-	id: string
-	name: string
-	api?: string
-	npm?: string
+export type CatalogProvider = CatalogProviderInfo & {
 	env: string[]
-	models: Record<string, unknown>
 }
 
 /** Full provider list response */
@@ -623,16 +589,11 @@ export function useAllProviders(): {
 		queryFn: async (): Promise<AllProvidersData> => {
 			const client = getBaseClient()
 			if (!client) throw new Error("Not connected to server")
-			const result = await client.provider.list()
-			const raw = result.data as {
-				all: CatalogProvider[]
-				default: Record<string, string>
-				connected: string[]
-			}
+			const { data: result } = await client.provider.list()
 			return {
-				all: raw.all ?? [],
-				defaults: raw.default ?? {},
-				connected: raw.connected ?? [],
+				all: result.providers.map((provider: CatalogProviderInfo) => ({ ...provider, env: [] })),
+				defaults: {},
+				connected: result.connectedProviderIds,
 			}
 		},
 		enabled: connected && !isMockMode,
@@ -671,18 +632,11 @@ export function useConnectedProviders(): {
 		queryFn: async (): Promise<Map<string, ConnectedProviderInfo>> => {
 			const client = getBaseClient()
 			if (!client) throw new Error("Not connected to server")
-			const result = await client.config.providers()
-			const raw = result.data as {
-				providers: Array<{
-					id: string
-					name: string
-					source: "env" | "config" | "custom" | "api"
-					env: string[]
-				}>
-			}
+			const { data: result } = await client.provider.list()
 			const map = new Map<string, ConnectedProviderInfo>()
-			for (const p of raw.providers ?? []) {
-				map.set(p.id, { id: p.id, name: p.name, source: p.source, env: p.env })
+			for (const provider of result.providers) {
+				if (!result.connectedProviderIds.includes(provider.id)) continue
+				map.set(provider.id, { id: provider.id, name: provider.name, source: "config", env: [] })
 			}
 			return map
 		},
@@ -728,5 +682,66 @@ export function useProviderAuthMethods(): {
 		data: data ?? null,
 		loading: isLoading,
 		error: error ? (error instanceof Error ? error.message : "Failed to load auth methods") : null,
+	}
+}
+
+// ============================================================
+// Canonical provider catalog (L2-DES-MODEL-002)
+// ============================================================
+
+/** Derived shape for UI consumption of the canonical catalog. */
+export interface ProviderCatalogData {
+	/** All effective providers (templates + connections merged). */
+	providers: CatalogProviderInfo[]
+	/** Provider ids that are built-in directory templates. */
+	templateIds: Set<string>
+	/** Provider ids with a user-created Connection. */
+	connectedIds: Set<string>
+	/** Models explicitly on each Connection (separate from the effective directory). */
+	connectionModels: Record<string, Record<string, CatalogModelInfo>>
+}
+
+/**
+ * Fetches the full canonical provider catalog via `provider/list`.
+ *
+ * This is the single provider query used by settings and model management;
+ * it returns the complete `ProviderListResult`
+ * including template/connection distinction and connection-scoped models.
+ */
+export function useProviderCatalog(): {
+	data: ProviderCatalogData | null
+	loading: boolean
+	error: string | null
+	reload: () => void
+} {
+	const connected = useAtomValue(serverConnectedAtom)
+	const isMockMode = useAtomValue(isMockModeAtom)
+	const queryClient = useQueryClient()
+
+	const { data, isLoading, error } = useQuery({
+		queryKey: queryKeys.providerCatalog,
+		queryFn: async (): Promise<ProviderCatalogData> => {
+			const client = getBaseClient()
+			if (!client) throw new Error("Not connected to server")
+			const { data: result } = await client.provider.list()
+			return {
+				providers: result.providers,
+				templateIds: new Set(result.templateProviderIds),
+				connectedIds: new Set(result.connectedProviderIds),
+				connectionModels: result.connectionModels,
+			}
+		},
+		enabled: connected && !isMockMode,
+	})
+
+	const reload = useCallback(() => {
+		queryClient.invalidateQueries({ queryKey: queryKeys.providerCatalog })
+	}, [queryClient])
+
+	return {
+		data: data ?? null,
+		loading: isLoading,
+		error: error ? (error instanceof Error ? error.message : "Failed to load provider catalog") : null,
+		reload,
 	}
 }

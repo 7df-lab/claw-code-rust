@@ -30,7 +30,7 @@ impl AppConfigStore {
         let mut document = read_provider_config_document(target_config_file)?;
         let mcp_servers = mcp_servers_table_mut(&mut document)?;
         let id = record.id.0.as_str();
-        let server_value = toml::Value::try_from(&McpServerRecordToml::from(&record))
+        let server_value = toml::Value::try_from(McpServerRecordToml::from(&record))
             .map_err(|error| anyhow::anyhow!("failed to serialize mcp server: {error}"))?;
         mcp_servers.insert(id.to_string(), server_value);
 

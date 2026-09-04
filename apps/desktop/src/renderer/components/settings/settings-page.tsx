@@ -5,6 +5,7 @@ import {
 	ArrowLeftIcon,
 	BellIcon,
 	BookOpenIcon,
+	BoxIcon,
 	GitForkIcon,
 	InfoIcon,
 	PlugIcon,
@@ -25,10 +26,11 @@ import { TopActionRow, sidebarPrimaryIconClass } from "../sidebar/sidebar-top-ac
 type SettingsTab =
 	| "general"
 	| "servers"
+	| "providers"
+	| "models"
 	| "mcp"
 	| "skills"
 	| "notifications"
-	| "providers"
 	| "worktrees"
 	| "setup"
 	| "about"
@@ -36,10 +38,11 @@ type SettingsTab =
 const tabs: { id: SettingsTab; label: string; icon: typeof SettingsIcon }[] = [
 	{ id: "general", label: "General", icon: SettingsIcon },
 	{ id: "servers", label: "Servers", icon: ServerIcon },
+	{ id: "providers", label: "Providers", icon: PlugIcon },
+	{ id: "models", label: "Models", icon: BoxIcon },
 	{ id: "mcp", label: "MCP", icon: PlugIcon },
 	{ id: "skills", label: "Skills", icon: BookOpenIcon },
 	{ id: "notifications", label: "Notifications", icon: BellIcon },
-	{ id: "providers", label: "Providers", icon: PlugIcon },
 	{ id: "worktrees", label: "Worktrees", icon: GitForkIcon },
 	{ id: "setup", label: "Setup", icon: WrenchIcon },
 	{ id: "about", label: "About", icon: InfoIcon },
@@ -63,7 +66,7 @@ export function SettingsPage() {
 
 	return (
 		<div className="h-full overflow-y-auto">
-			<div className="mx-auto max-w-3xl px-10 py-14 sm:px-12">
+			<div className="mx-auto max-w-3xl px-8 py-10 sm:px-10">
 				<Outlet />
 			</div>
 		</div>

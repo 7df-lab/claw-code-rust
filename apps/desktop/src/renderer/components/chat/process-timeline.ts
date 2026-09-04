@@ -94,7 +94,9 @@ export function processTimelineRowId(item: ProcessTimelineItem, index: number): 
 			return item.part.id
 		case "tool":
 			return item.part.id
-		case "tool-group":
-			return `group-${index}-${item.tools[0]?.id ?? index}`
+		case "tool-group": {
+			const toolIds = item.tools.map((tool) => tool.id).join("+")
+			return `group-${item.category}-${toolIds || index}`
+		}
 	}
 }

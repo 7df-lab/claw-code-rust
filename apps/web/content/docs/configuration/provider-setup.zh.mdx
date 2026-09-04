@@ -3,57 +3,165 @@ title: 提供商配置
 description: 添加 provider 连接记录。
 ---
 
-Provider 记录告诉 Devo 如何连接某个模型服务。它本身不会决定当前使用哪个模型；这个决定由 model binding 完成。
+Provider 记录告诉 Devo 如何连接某个模型服务，并拥有该服务的模型目录。当前模型由顶层
+`model` 引用选择。
 
-Provider 记录位于 `config.toml` 的 `[providers.<id>]` 下。
+Provider 记录位于 `<DEVO_HOME>/providers.json` 或工作区覆盖文件
+`<workspace>/.devo/providers.json` 中。
+
+`provider` 下的键就是 provider id，也是 `provider/model` 中稳定的机器身份；
+`name` 只是界面显示名称。重命名 provider 时应保持 id 不变。
 
 ## Provider 字段
 
-```toml
-[providers.deepseek-anthropic]
-enabled = true
-name = "DeepSeek Anthropic"
-base_url = "https://api.deepseek.com/anthropic"
-credential = "deepseek_api_key"
-wire_apis = ["anthropic_messages"]
-```
-
-| 字段 | 必需 | 含义 |
-| --- | --- | --- |
-| `name` | 是 | 用户可读的 provider 名称。 |
-| `enabled` | 否 | 该 provider 是否可用。默认 `true`。 |
-| `base_url` | 通常需要 | Provider endpoint。有些内置 provider 可以提供默认值。 |
-| `credential` | 通常需要 | `<DEVO_HOME>/auth.json` 中的 credential id。 |
-| `headers` | 否 | Provider 特定 HTTP header 的原始 JSON object 字符串。 |
-| `wire_apis` | 建议设置 | 该 provider 记录支持的 wire API。 |
-| `web_search` | 否 | Provider 特定的 web search 覆盖项。 |
-| `web_fetch` | 否 | Provider 特定的 web fetch 覆盖项。 |
-
-如果 `wire_apis` 为空，Devo 在部分路径上仍可使用默认值，但显式写出 `wire_apis` 会让校验和后续维护更清楚。
-
-## 凭据
-
-API key 放在 `auth.json`，不要放在 `config.toml`：
-
 ```json
 {
-  "version": 1,
-  "credentials": {
-    "deepseek_api_key": {
-      "kind": "api_key",
-      "value": "sk-your-key"
+  "model": "deepseek/my-model",
+  "provider": {
+    "deepseek": {
+      "enabled": true,
+      "name": "DeepSeek Anthropic",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "credential": "deepseek_api_key",
+      "wire_api": "anthropic_messages",
+      "models": {"my-model": {"name": "My Model"}}
     }
   }
 }
 ```
 
-然后引用该 id：
+| 字段 | 必需 | 含义 |
+| --- | --- | --- |
+| `name` | 否 | 用户可读的 provider 名称；省略时使用 provider id。 |
+| `enabled` | 否 | 该 provider 是否可用。默认 `true`。 |
+| `base_url` | 通常需要 | Provider endpoint。有些内置 provider 可以提供默认值。 |
+| `credential` | 通常需要 | 凭据 id；实际密钥存储在用户级 `auth.json`。 |
+| `headers` | 否 | Provider 特定 HTTP header 的 JSON object。 |
+| `wire_api` | 建议设置 | 该 provider 的模型使用的 wire API。 |
+| `models` | 否 | 按 provider-facing model id 存储的模型记录。 |
+| `web_search` | 否 | Provider 特定的 web search 覆盖项。 |
+| `web_fetch` | 否 | Provider 特定的 web fetch 覆盖项。 |
 
-```toml
-credential = "deepseek_api_key"
+如果省略 `wire_api`，Devo 默认使用 OpenAI Chat Completions。provider 使用其他协议时
+应显式配置该字段。
+
+## Connection 模型管理
+
+provider 目录和用户 Connection 的模型范围不同。目录中的 `models` 是只读模板；
+选择 onboarding 中的 Connection 后，只显示明确保存在这个 Connection 下的模型。
+可以选择已有模型继续配置，使用自定义模型卡片添加模型，或选中已有模型按
+`d` / `Delete` 并确认，将模型从 Connection 中移除。删除模型不会修改 git
+跟踪的 provider 目录。
+
+自定义模型表单要求填写 provider-facing `Model ID`，并支持填写可选的 `Display name`；之后会进入
+与目录模型相同的 wire API、reasoning、基础设置和高级设置页面。
+
+## Model 字段
+
+模型由 provider 下的 map key 标识，也就是 provider-facing model id。规范 JSON
+中不再需要单独的 model slug、model name 或 description：
+
+```json
+{
+  "provider": {
+    "acme": {
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "acme-reasoner": {
+          "name": "Acme Reasoner",
+          "context_window": 200000,
+          "max_tokens": 32000,
+          "temperature": 0.2,
+          "input_modalities": ["text", "image"],
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"],
+            "interleaved": "reasoning_content"
+          },
+          "reasoning_capability": {"levels": ["low", "medium", "high"]},
+          "reasoning_implementation": "request_parameter",
+          "default_variant": "balanced",
+          "request": {"stream": true},
+          "options": {"timeout_ms": 120000},
+          "headers": {"X-Model-Mode": "reasoning"},
+          "variants": {
+            "balanced": {"label": "Balanced"},
+            "fast": {
+              "label": "Fast",
+              "options": {"reasoning_effort": "low"}
+            }
+          }
+        }
+      }
+    }
+  }
+}
 ```
 
-Onboarding 会在你输入 API key 时替你完成这一步。
+Onboarding 默认先显示常用字段。按 `Tab` 编辑这些字段，展开 `Advanced settings`
+编辑其余字段。留空表示继承 provider 目录或运行时默认值。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `name` | string | 可选的界面显示名称；map key 才是 model id。 |
+| `wire_api` | 枚举 | `openai_chat_completions`、`openai_responses` 或 `anthropic_messages`。Onboarding 中对应 invocation method。 |
+| `context_window` | integer | 最大上下文长度，单位是 token。 |
+| `max_tokens` | integer | 最大输出 token 数。 |
+| `temperature`、`top_p`、`top_k` | number | 采样默认值。 |
+| `input_modalities` | array | 当前支持 `text` 和/或 `image`。 |
+| `reasoning_capability` | 枚举/对象 | `unsupported`、`toggle` 或 `{"levels":["off","low","high"]}`。数组含 `off` 时允许关闭；不含 `off` 表示无法关闭。旧写法 `{"toggle_with_levels":[...]}` 读取时会迁移。 |
+| `reasoning_implementation` | 枚举/对象 | `disabled`、`request_parameter` 或 `{"model_variant":{"variants":[...]}}`。 |
+| `default_reasoning_effort` | 枚举 | `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`。Toggle 模型的 onboarding 默认选择使用 `enabled` / `disabled`。 |
+| `default_reasoning_selection` | string | 模型 picker 的精确默认值；toggle 模型可为 `enabled` 或 `disabled`，由 onboarding 自动写入。 |
+| `family`、`release_date`、`status`、`channel` | string | 可选的目录元数据。 |
+| `capabilities` | JSON object | 模型能力目录；可表达 `tools`、`input`、`output`、`attachment`、`interleaved` 等 provider/source 元数据。 |
+| `base_instructions` | string | 模型专用的基础 system instructions。 |
+| `effective_context_window_percent` | number | 实际可用上下文百分比，例如 `95` 或 `33.3333`。 |
+| `truncation_policy` | object | `{"mode":"tokens","limit":8000}`，也可以将 mode 改为 `bytes`。 |
+| `supports_image_detail_original`、`enabled` | boolean | 能力和可用性开关。 |
+| `priority` | integer | 选择隐式默认模型时的优先级。 |
+| `cost`、`metadata` | JSON | 可选的价格或目录元数据。 |
+| `request`、`options` | JSON object | 任意 provider request body 默认值和 adapter 选项。 |
+| `headers` | JSON object | 模型级 HTTP headers，键和值都必须是字符串。 |
+| `variants` | JSON object | 命名 variant 覆盖项，每项可包含 `label`、`disabled`、`request`、`options`、`headers`。 |
+| `default_variant` | string | 没有显式选择 variant 时使用的 variant。 |
+| `web_search`、`web_fetch` | JSON object | 可选的 provider-hosted tool 行为，例如 `{"mode":"provider"}` 或 `{"mode":"disabled"}`。 |
+
+Reasoning levels 必须使用小写值：`minimal`、`low`、`medium`、`high`、`xhigh` 或
+`max`。`model_variant` reasoning implementation 使用 JSON rule 数组，例如：
+
+```json
+[
+  {
+    "selection_value": "high",
+    "model": "acme-reasoner-high",
+    "reasoning_effort": "high",
+    "label": "High",
+    "description": "More deliberate reasoning"
+  }
+]
+```
+
+`request`、`options`、`headers` 和 `variants` 刻意保持开放结构；Devo 会保留它们，
+并在请求时合并。Onboarding 保存 Connection 前会先校验这些内容。
+
+## 凭据
+
+Provider 记录中只放 credential 引用：
+
+```json
+{"provider":{"deepseek":{"credential":"deepseek_api_key"}}}
+```
+
+实际密钥放在用户级 `auth.json`：
+
+```json
+{"version":1,"credentials":{"deepseek_api_key":{"kind":"api_key","value":"sk-your-key"}}}
+```
+
+Onboarding 会在你输入 API key 时替你写入这两个文件。不要把 `apiKey`、`api_key`
+或密钥写进 `providers.json`，也不要把 `auth.json` 提交到 git。
 
 ## Web Search 和 Web Fetch
 
@@ -62,15 +170,10 @@ Devo 的 web search 有两种来源：
 - provider-hosted web tools：当选中的 provider path 支持时使用；
 - 本地第三方 web search provider：在 `[tools.web_search]` 下配置。
 
-Provider 和 binding 覆盖项可以设置 web 行为：
+Provider 覆盖项可以设置 web 行为：
 
-```toml
-[providers.deepseek-anthropic.web_search]
-mode = "provider"
-
-[providers.deepseek-anthropic.web_fetch]
-mode = "provider"
-```
+Provider 和 model 的 web 覆盖项存储在 `providers.json`；本地第三方 search provider
+仍然使用应用级 TOML 配置。
 
 对 DeepSeek 官方 API，如果你需要 provider-hosted `web_search` 和 `web_fetch`，优先使用 Anthropic-compatible provider path。
 
@@ -98,12 +201,11 @@ max_results = 5
 
 ## 禁用 Provider
 
-设置 `enabled = false` 可以保留 provider 配置，但不让模型解析使用它：
+设置 `enabled = false` 可以保留目录项，但不让模型解析使用它：
 
-```toml
-[providers.old-provider]
-enabled = false
-name = "Old Provider"
+```json
+{"provider":{"old-provider":{"enabled":false,"name":"Old Provider"}}}
 ```
 
-如果选中的 binding 指向被禁用的 provider，Devo 会报告该 provider 已禁用。
+如果选中的 `provider/model` 指向被禁用的 provider 或模型，Devo 会报告它已禁用。旧
+`[providers.<id>]` TOML 结构在迁移期间仍可读取。

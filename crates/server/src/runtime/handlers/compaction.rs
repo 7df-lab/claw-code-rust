@@ -220,6 +220,7 @@ impl ServerRuntime {
                             CompactionTurnOutcome::Failed {
                                 message: "compaction failed: panicked".to_string(),
                             },
+                            /*compaction_item_id*/ None,
                         )
                         .await;
                     // If the panic happened after claim, finalize is a no-op — still
@@ -343,6 +344,7 @@ impl ServerRuntime {
                 CompactionTurnOutcome::Failed {
                     message: "compaction failed: session unavailable".to_string(),
                 },
+                /*compaction_item_id*/ None,
             )
             .await;
             return;
@@ -353,6 +355,16 @@ impl ServerRuntime {
                 turn_id: turn.turn_id,
                 trigger: devo_protocol::native::item::CompactionTrigger::Manual,
             },
+        ))
+        .await;
+        // Surface "Compacting context" in the Desktop transcript as soon as
+        // manual compaction begins — not only after summarization finishes.
+        let compaction_item_id = devo_core::ItemId::new();
+        self.broadcast_event(super::super::turn_exec::manual_compaction_started_event(
+            session_id,
+            turn.turn_id,
+            compaction_item_id,
+            /*item_seq*/ None,
         ))
         .await;
         self.run_session_hook(
@@ -384,6 +396,7 @@ impl ServerRuntime {
                     CompactionTurnOutcome::Failed {
                         message: "compaction failed: session unavailable".to_string(),
                     },
+                    Some(compaction_item_id),
                 )
                 .await;
                 return;
@@ -454,6 +467,7 @@ impl ServerRuntime {
                         CompactionTurnOutcome::Failed {
                             message: "compaction failed: session unavailable".to_string(),
                         },
+                        Some(compaction_item_id),
                     )
                     .await;
                     return;
@@ -504,6 +518,7 @@ impl ServerRuntime {
                     session_id,
                     turn,
                     CompactionTurnOutcome::Canceled,
+                    Some(compaction_item_id),
                 )
                 .await;
             }
@@ -515,6 +530,7 @@ impl ServerRuntime {
                         session_id,
                         turn,
                         CompactionTurnOutcome::Canceled,
+                        Some(compaction_item_id),
                     )
                     .await;
                     return;
@@ -529,6 +545,7 @@ impl ServerRuntime {
                         CompactionTurnOutcome::Failed {
                             message: "compaction failed: session unavailable".to_string(),
                         },
+                        Some(compaction_item_id),
                     )
                     .await;
                     return;
@@ -684,15 +701,10 @@ impl ServerRuntime {
                 }
 
                 let turn_id = turn.turn_id;
-                let item_id = devo_core::ItemId::new();
+                let item_id = compaction_item_id;
                 let item_seq = runtime_session.next_item_seq;
                 runtime_session.loaded_item_count += 1;
                 runtime_session.next_item_seq += 1;
-
-                self.broadcast_event(super::super::turn_exec::manual_compaction_started_event(
-                    session_id, turn_id, item_id, item_seq,
-                ))
-                .await;
 
                 self.broadcast_event(super::super::turn_exec::manual_compaction_completed_event(
                     session_id, turn_id, item_id, item_seq,
@@ -833,6 +845,7 @@ impl ServerRuntime {
                     session_id,
                     turn,
                     CompactionTurnOutcome::Skipped,
+                    Some(compaction_item_id),
                 )
                 .await;
             }
@@ -851,6 +864,7 @@ impl ServerRuntime {
                     CompactionTurnOutcome::Failed {
                         message: format!("compaction failed: {error}"),
                     },
+                    Some(compaction_item_id),
                 )
                 .await;
             }
@@ -867,6 +881,7 @@ impl ServerRuntime {
         session_id: SessionId,
         mut turn: TurnMetadata,
         outcome: CompactionTurnOutcome,
+        compaction_item_id: Option<ItemId>,
     ) {
         // Ensure interrupt abort cannot drop us between claim and event emit.
         self.detach_active_turn_abort(session_id).await;
@@ -900,6 +915,46 @@ impl ServerRuntime {
                 error = %error,
                 "failed to persist compaction turn terminal line"
             );
+        }
+
+        // Close the early-emitted started item so Desktop does not leave a
+        // dangling "Compacting context" divider when compact does not replace.
+        if let Some(item_id) = compaction_item_id {
+            match &outcome {
+                CompactionTurnOutcome::Skipped => {
+                    self.broadcast_event(
+                        super::super::turn_exec::manual_compaction_completed_event(
+                            session_id,
+                            turn.turn_id,
+                            item_id,
+                            /*item_seq*/ 0,
+                        ),
+                    )
+                    .await;
+                }
+                CompactionTurnOutcome::Failed { message } => {
+                    self.broadcast_event(
+                        super::super::turn_exec::manual_compaction_item_failed_event(
+                            session_id,
+                            turn.turn_id,
+                            item_id,
+                            message.clone(),
+                        ),
+                    )
+                    .await;
+                }
+                CompactionTurnOutcome::Canceled => {
+                    self.broadcast_event(
+                        super::super::turn_exec::manual_compaction_item_failed_event(
+                            session_id,
+                            turn.turn_id,
+                            item_id,
+                            "compaction canceled".to_string(),
+                        ),
+                    )
+                    .await;
+                }
+            }
         }
 
         match outcome {
@@ -942,7 +997,7 @@ impl ServerRuntime {
                     devo_protocol::SessionCompactionCompletedPayload {
                         session: summary,
                         turn_id: turn.turn_id,
-                        item_id: None,
+                        item_id: compaction_item_id,
                     },
                 ))
                 .await;

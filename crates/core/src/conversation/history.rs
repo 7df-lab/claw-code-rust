@@ -216,9 +216,9 @@ fn apply_settings_to_canonical_session(
         }
         SessionSettingsField::ReasoningEffortSelection => {
             // The stored value is the user's selection literal, including the
-            // toggle keywords (`enabled`/`disabled`) the `ReasoningEffort`
-            // enum cannot express — keep it as-is (normalized) instead of
-            // parsing, which silently dropped those and broke restore.
+            // toggle keywords (`on`/`off`, plus legacy `enabled`/`disabled`)
+            // the `ReasoningEffort` enum cannot express — keep it normalized
+            // instead of parsing, which silently dropped those and broke restore.
             if let Ok(Some(raw)) = serde_json::from_value::<Option<String>>(value) {
                 let normalized = devo_protocol::normalize_reasoning_effort_literal(&raw);
                 if !normalized.is_empty() {
@@ -293,14 +293,14 @@ mod tests {
         write_lines(
             &dir.path().join("rollout.jsonl"),
             &[
-                RolloutLine::Item(ItemLine {
+                RolloutLine::Item(Box::new(ItemLine {
                     timestamp: kept_item.timestamp,
                     item: kept_item,
-                }),
-                RolloutLine::Item(ItemLine {
+                })),
+                RolloutLine::Item(Box::new(ItemLine {
                     timestamp: dropped_item.timestamp,
                     item: dropped_item,
-                }),
+                })),
                 RolloutLine::SessionRollback(Box::new(SessionRollbackLine {
                     timestamp: Utc.with_ymd_and_hms(2026, 7, 1, 12, 1, 0).unwrap(),
                     session_id,
@@ -328,10 +328,10 @@ mod tests {
         let item = item_record(1, session_id, turn_id, "ok");
         let mut text = String::new();
         text.push_str(
-            &serde_json::to_string(&RolloutLine::Item(ItemLine {
+            &serde_json::to_string(&RolloutLine::Item(Box::new(ItemLine {
                 timestamp: item.timestamp,
                 item,
-            }))
+            })))
             .expect("serialize"),
         );
         text.push('\n');
@@ -350,10 +350,10 @@ mod tests {
         let item = item_record(1, session_id, turn_id, "ok");
         let mut text = String::new();
         text.push_str(
-            &serde_json::to_string(&RolloutLine::Item(ItemLine {
+            &serde_json::to_string(&RolloutLine::Item(Box::new(ItemLine {
                 timestamp: item.timestamp,
                 item,
-            }))
+            })))
             .expect("serialize"),
         );
         text.push('\n');
@@ -524,8 +524,8 @@ mod tests {
             history.session.expect("session").settings.reasoning_effort
         };
 
-        assert_eq!(fold_one("enabled").as_deref(), Some("enabled"));
-        assert_eq!(fold_one("disabled").as_deref(), Some("disabled"));
+        assert_eq!(fold_one("enabled").as_deref(), Some("on"));
+        assert_eq!(fold_one("disabled").as_deref(), Some("off"));
         assert_eq!(fold_one(" High ").as_deref(), Some("high"));
     }
 }

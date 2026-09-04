@@ -9,13 +9,24 @@ import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom"
 
 export { useStickToBottomContext }
 
-export type ConversationProps = ComponentProps<typeof StickToBottom>
+export type ConversationProps = ComponentProps<typeof StickToBottom> & {
+	/**
+	 * While true, use spring resize so continuous stream height growth
+	 * coalesces instead of fighting `instant` scroll every layout tick.
+	 */
+	streaming?: boolean
+}
 
-export const Conversation = ({ className, ...props }: ConversationProps) => (
+export const Conversation = ({
+	className,
+	streaming = false,
+	resize,
+	...props
+}: ConversationProps) => (
 	<StickToBottom
 		className={cn("relative min-w-0 flex-1 overflow-hidden", className)}
 		initial="instant"
-		resize="instant"
+		resize={resize ?? (streaming ? "smooth" : "instant")}
 		role="log"
 		{...props}
 	/>

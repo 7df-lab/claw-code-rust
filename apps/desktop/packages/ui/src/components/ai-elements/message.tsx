@@ -270,9 +270,17 @@ export const MessageBranchPage = ({ className, ...props }: MessageBranchPageProp
 	)
 }
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown>
+export type MessageResponseProps = Omit<ComponentProps<typeof Streamdown>, "plugins"> & {
+	plugins?: ComponentProps<typeof Streamdown>["plugins"]
+	/**
+	 * Live streaming surface: skip Streamdown enter animation and heavy plugins
+	 * (math / mermaid) until the turn is idle.
+	 */
+	streaming?: boolean
+}
 
 const streamdownPlugins = { cjk, code, math, mermaid }
+const streamdownPluginsStreaming = { cjk, code }
 
 // Product requirement: regular transcript Markdown tables should keep copy and
 // download controls, but not show a fullscreen control. Code blocks keep copy
@@ -325,20 +333,24 @@ const transcriptMarkdownComponents: NonNullable<MessageResponseProps["components
 }
 
 export const MessageResponse = memo(
-	({ className, ...props }: MessageResponseProps) => (
+	({ className, streaming = false, animated, plugins, ...props }: MessageResponseProps) => (
 		<Streamdown
 			className={cn(
 				"devo-message-response size-full font-sans [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+				streaming && "devo-message-response--streaming",
 				className,
 			)}
+			animated={streaming ? false : animated}
 			components={transcriptMarkdownComponents}
 			controls={transcriptMarkdownControls}
-			plugins={streamdownPlugins}
+			plugins={plugins ?? (streaming ? streamdownPluginsStreaming : streamdownPlugins)}
 			{...props}
 		/>
 	),
 	(prevProps, nextProps) =>
-		prevProps.children === nextProps.children && prevProps.animated === nextProps.animated,
+		prevProps.children === nextProps.children &&
+		prevProps.animated === nextProps.animated &&
+		prevProps.streaming === nextProps.streaming,
 )
 
 MessageResponse.displayName = "MessageResponse"

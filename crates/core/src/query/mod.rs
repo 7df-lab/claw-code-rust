@@ -588,6 +588,16 @@ pub async fn query(
         let catalog_request_model = request_model.clone();
         let provider_request_model =
             active_turn_config.provider_request_model(&catalog_request_model);
+        let extra_body = crate::merge_model_request_body(
+            active_turn_config
+                .provider_request_models
+                .request_defaults(),
+            extra_body,
+        );
+        let extra_body = crate::add_model_request_headers(
+            extra_body,
+            active_turn_config.provider_request_models.request_headers(),
+        );
 
         let prompt_source_message_count = session.prompt_source_messages().len();
         let history_items = session
@@ -651,6 +661,7 @@ pub async fn query(
         let breakdown = estimate_request_context_breakdown(&request);
         session.prompt_token_estimate = breakdown.total().try_into().unwrap_or(usize::MAX);
         session.raw_context_breakdown = Some(breakdown);
+        emit_query_event(&on_event, QueryEvent::ContextEstimate { breakdown }).await;
         debug!(
             prompt_source_messages = prompt_source_message_count,
             prompt_source_items = prompt_source_item_count,
@@ -749,6 +760,7 @@ pub async fn query(
                             &turn_config.model.slug,
                             retry_count,
                             backoff,
+                            &retry_error.to_string(),
                         )
                         .await?;
                         session.turn_count -= 1;

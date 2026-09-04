@@ -9,6 +9,7 @@ use reqwest::header::HeaderMap;
 use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use tracing::warn;
@@ -126,6 +127,31 @@ impl ProviderHttpOptions {
             builder
         } else {
             builder.headers(self.custom_headers.clone())
+        }
+    }
+
+    /// Applies model/variant headers after provider defaults.
+    pub(crate) fn apply_request_headers(
+        &self,
+        builder: RequestBuilder,
+        headers: &BTreeMap<String, String>,
+    ) -> RequestBuilder {
+        let mut request_headers = HeaderMap::new();
+        for (name, value) in headers {
+            let Ok(name) = HeaderName::try_from(name) else {
+                warn!(header = %name, "ignoring invalid model request header name");
+                continue;
+            };
+            let Ok(value) = HeaderValue::try_from(value) else {
+                warn!(header = %name, "ignoring invalid model request header value");
+                continue;
+            };
+            request_headers.insert(name, value);
+        }
+        if request_headers.is_empty() {
+            builder
+        } else {
+            builder.headers(request_headers)
         }
     }
 }

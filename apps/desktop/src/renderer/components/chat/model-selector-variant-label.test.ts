@@ -13,7 +13,10 @@ describe("model selector variant labels", () => {
 
 	test("formats disabled as off for user-facing reasoning strength labels", () => {
 		expect(getVariantTriggerLabel("disabled")).toBe("off")
+		expect(getVariantTriggerLabel("off")).toBe("off")
+		expect(getVariantTriggerLabel("enabled")).toBe("on")
 		expect(getVariantMenuLabel("disabled")).toBe("Off")
+		expect(getVariantMenuLabel("on")).toBe("On")
 	})
 
 	test("keeps unknown variants stable", () => {

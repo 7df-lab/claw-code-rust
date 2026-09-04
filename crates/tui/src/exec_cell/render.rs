@@ -570,7 +570,7 @@ impl ExecCell {
         let command_text = call
             .tool_input
             .as_ref()
-            .and_then(|input| shell_command_from_input(input))
+            .and_then(shell_command_from_input)
             .unwrap_or_else(|| strip_bash_lc_and_escape(&call.command));
         if !command_text.is_empty() {
             let command_line = Line::from(Span::styled(command_text, Style::default().dim()));

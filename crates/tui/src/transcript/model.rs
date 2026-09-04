@@ -200,6 +200,7 @@ pub(crate) struct LiveTextCellModel {
 
 /// One committed transcript entry produced by the projector.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum CommittedCellModel {
     Tool(ToolCellModel),
     Text(TextCellModel),

@@ -3,57 +3,58 @@ title: Other Providers
 description: Add OpenRouter, Anthropic, OpenAI-compatible, or local providers.
 ---
 
-Use the same provider and model-binding model for any compatible provider.
+Use the same nested `providers.json` provider/model catalog for any compatible
+provider. The TOML snippets below are legacy equivalents kept for migration;
+new configuration should use the JSON shape from [Provider Setup](./provider-setup).
 
 The exact base URL and model names come from the provider you choose. Devo
-needs the provider endpoint, credential id, supported wire API, and a binding
-that maps a Devo model slug to the provider model name.
+needs the provider endpoint, a credential reference when authentication is
+required, the supported wire API, and a nested model record keyed by the
+provider model name.
 
 ## Anthropic
 
-```toml
-[defaults]
-model_binding = "claude-sonnet-anthropic"
-
-[providers.anthropic]
-enabled = true
-name = "Anthropic"
-base_url = "https://api.anthropic.com"
-credential = "anthropic_api_key"
-wire_apis = ["anthropic_messages"]
-
-[model_bindings.claude-sonnet-anthropic]
-enabled = true
-model_slug = "claude-sonnet"
-provider = "anthropic"
-request_model = "claude-sonnet-provider-name"
-display_name = "Claude Sonnet"
-invocation_method = "anthropic_messages"
+```json
+{
+  "model": "anthropic/claude-sonnet",
+  "provider": {
+    "anthropic": {
+      "name": "Anthropic",
+      "base_url": "https://api.anthropic.com",
+      "credential": "anthropic_api_key",
+      "wire_api": "anthropic_messages",
+      "models": {
+        "claude-sonnet": {
+          "name": "Claude Sonnet",
+          "context_window": 200000,
+          "input_modalities": ["text", "image"]
+        }
+      }
+    }
+  }
+}
 ```
 
-Replace `model_slug` and `request_model` with the model profile and provider model
-name you actually use.
+The nested model key is the provider-facing model id; there is no separate
+binding to create.
 
 ## OpenAI Responses-Compatible
 
-```toml
-[defaults]
-model_binding = "gpt-openai"
-
-[providers.openai]
-enabled = true
-name = "OpenAI"
-base_url = "https://api.openai.com"
-credential = "openai_api_key"
-wire_apis = ["openai_responses"]
-
-[model_bindings.gpt-openai]
-enabled = true
-model_slug = "gpt-5"
-provider = "openai"
-request_model = "gpt-5"
-display_name = "GPT-5"
-invocation_method = "openai_responses"
+```json
+{
+  "model": "openai/gpt-5",
+  "provider": {
+    "openai": {
+      "name": "OpenAI",
+      "base_url": "https://api.openai.com",
+      "credential": "openai_api_key",
+      "wire_api": "openai_responses",
+      "models": {
+        "gpt-5": {"name": "GPT-5"}
+      }
+    }
+  }
+}
 ```
 
 Use the Responses wire API when the provider endpoint supports it and the model
@@ -61,24 +62,26 @@ behavior you need depends on Responses features.
 
 ## OpenAI Chat Completions-Compatible
 
-```toml
-[defaults]
-model_binding = "gateway-main"
-
-[providers.gateway]
-enabled = true
-name = "OpenAI-Compatible Gateway"
-base_url = "https://gateway.example.com"
-credential = "gateway_api_key"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.gateway-main]
-enabled = true
-model_slug = "custom-main"
-provider = "gateway"
-request_model = "provider/model-name"
-display_name = "Gateway Main"
-invocation_method = "openai_chat_completions"
+```json
+{
+  "model": "gateway/custom-main",
+  "provider": {
+    "gateway": {
+      "name": "OpenAI-compatible Gateway",
+      "base_url": "https://gateway.example.com/v1",
+      "credential": "gateway_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "custom-main": {
+          "name": "Gateway Main",
+          "options": {"enable_reasoning": true},
+          "request": {"vendor_parameter": "value"},
+          "headers": {"X-Workspace": "team-a"}
+        }
+      }
+    }
+  }
+}
 ```
 
 This pattern covers many gateways and local proxies.
@@ -87,48 +90,52 @@ This pattern covers many gateways and local proxies.
 
 OpenRouter-like providers often use provider-qualified model names:
 
-```toml
-[providers.openrouter]
-enabled = true
-name = "OpenRouter"
-base_url = "https://openrouter.ai/api/v1"
-credential = "openrouter_api_key"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.kimi-openrouter]
-enabled = true
-model_slug = "kimi-k3"
-provider = "openrouter"
-request_model = "moonshotai/kimi-k3"
-display_name = "Kimi K3"
-invocation_method = "openai_chat_completions"
+```json
+{
+  "model": "openrouter/moonshotai/kimi-k3",
+  "provider": {
+    "openrouter": {
+      "name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "credential": "openrouter_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "moonshotai/kimi-k3": {"name": "Kimi K3"}
+      }
+    }
+  }
+}
 ```
 
-The `model_slug` can stay Devo-local while `request_model` follows the gateway's
-required naming convention.
+Keep the complete provider-facing id as the nested model key.
 
 ## Local Provider Or Proxy
 
 For a local OpenAI-compatible server:
 
-```toml
-[providers.local]
-enabled = true
-name = "Local Provider"
-base_url = "http://127.0.0.1:11434/v1"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.local-main]
-enabled = true
-model_slug = "local-main"
-provider = "local"
-request_model = "local-main"
-display_name = "Local Main"
-invocation_method = "openai_chat_completions"
+```json
+{
+  "model": "local/local-main",
+  "provider": {
+    "local": {
+      "name": "Local Provider",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "local-main": {"name": "Local Main"}
+      }
+    }
+  }
+}
 ```
 
-If the local provider does not require an API key, omit `credential`. If it
-does, store the key in `auth.json` and reference it as usual.
+If the local provider does not require an API key, omit `credential`. If it does,
+set `credential` to an id in the user-scoped `auth.json`; never put the key in
+`providers.json`.
+
+For a provider that exposes a `/models` endpoint, use Native
+`provider/discover` to populate and refresh its model directory; custom model
+entries remain the fallback when discovery is unavailable.
 
 ## Choosing A Wire API
 

@@ -57,15 +57,23 @@ export function startNotificationWatcher(transport: DevoNativeTransport): void {
 
 	const client = createDevoClient({ transport })
 	setPermissionResponder(async ({ sessionId, permissionId, response }) => {
-		await client.permission.respond({
-			sessionID: sessionId,
-			permissionID: permissionId,
-			response,
-		})
+		try {
+			await client.permission.respond({
+				sessionID: sessionId,
+				permissionID: permissionId,
+				response,
+			})
+		} catch (err) {
+			log.error("Permission reply failed", { sessionId, permissionId, response }, err)
+		}
 	})
 
 	log.info("Starting notification watcher")
-	connectWithRetry(client, abortController.signal)
+	void connectWithRetry(client, abortController.signal).catch((err) => {
+		if (!abortController?.signal.aborted) {
+			log.error("Notification watcher stopped unexpectedly", {}, err)
+		}
+	})
 }
 
 /**

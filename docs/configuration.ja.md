@@ -2,337 +2,124 @@
 
 [English](./configuration.md) | [简体中文](./configuration.zh-Hans.md) | [繁體中文](./configuration.zh-Hant.md) | [日本語](./configuration.ja.md) | [Русский](./configuration.ru.md)
 
-`devo onboard` が推奨されるセットアップ方法です。手動で設定する場合、Devo は次の順序で設定をマージします:
+`devo onboard` が推奨されるセットアップ方法です。provider と model は独立した
+`providers.json` に保存し、API key はユーザースコープの `auth.json` にだけ保存します。
+旧版 `config.toml` の provider/model 設定は起動時に自動移行され、成功後に旧フィールドが削除されます。
 
-1. 組み込みデフォルト
-2. `DEVO_HOME/config.toml` - ユーザーレベル設定。デフォルトでは macOS/Linux で
-   `~/.devo/config.toml`、Windows で `C:\Users\yourname\.devo\config.toml`
-3. `<workspace>/.devo/config.toml` - プロジェクトレベル設定
-4. CLI flags
+## ファイルと優先順位
 
-認証情報は `DEVO_HOME/auth.json` に分離して保存されます。
-`config.toml` には API key を直接保存せず、credential id を参照させてください。
+設定は組み込みデフォルト、`DEVO_HOME/config.toml`、`DEVO_HOME/providers.json`、
+ワークスペースの `.devo/config.toml`、`.devo/providers.json`、CLI flags の順で
+マージされます。git で管理される組み込みディレクトリは
+`crates/core/providers.json`、ユーザーと workspace のファイルは overlay です。
 
-最小構成（組み込みモデル + provider バインディング）:
-
-```toml
-[defaults]
-model_binding = "deepseek-v4-flash-api-deepseek-com"
-
-[providers."api.deepseek.com"]
-enabled = true
-name = "api.deepseek.com"
-base_url = "https://api.deepseek.com"
-credential = "api_deepseek_com_api_key"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.deepseek-v4-flash-api-deepseek-com]
-enabled = true
-model_slug = "deepseek-v4-flash"
-provider = "api.deepseek.com"
-request_model = "deepseek-v4-flash"
-display_name = "DeepSeek V4 Flash"
-invocation_method = "openai_chat_completions"
-default_reasoning_effort = "high"
-```
-
-重要な分離は次のとおりです:
-
-- `model_slug` は slug で Devo のローカルモデルメタデータを選択します。
-- binding の `provider` は `[providers.<id>]` 接続レコードを選択します。
-- `request_model` はプロバイダーへ送信されるモデル id です。
-- `invocation_method` は実際に使うプロバイダープロトコルを選択します。詳細は
-  [呼び出し方式（Invocation methods）](#呼び出し方式invocation-methods) を参照してください。
-
-モデルメタデータにも `provider` フィールドがあり、モデルが期待する wire API を
-表します。binding の `invocation_method` は実行時の接続方法を選ぶため、両者を一致
-させてください。API key は引き続き `auth.json` に保存し、provider の `credential`
-参照で接続します。
-
-既存の `model_name` 設定は引き続き読み取れます。次回その binding を保存すると、
-Devo は `request_model` として書き出します。
-
-## 自分の API key を使う
-
-Devo は API key を `config.toml` に保存しません。自分の key を使う場合:
-
-1. シークレットをユーザースコープの `DEVO_HOME/auth.json` に保存します。
-2. `config.toml` の `[providers.<id>].credential` からその credential id を参照します。
-
-`devo onboard` と Desktop/TUI の provider フローが両ファイルを書き込みます。
-
-### エンドツーエンド例: カスタムモデルパラメータ + 自分の API key
-
-次の例は、カスタム DeepSeek モデル（Anthropic Messages）、provider
-エンドポイント、および `auth.json` のみに置く credential を組み合わせます。
-
-`~/.devo/config.toml`（Windows では `C:\Users\yourname\.devo\config.toml`）:
-
-```toml
-[defaults]
-model_binding = "deepseek-example"
-
-[model.my-deepseek]
-display_name = "DeepSeek V4 Flash"
-description = "Custom Anthropic Messages coding model for DeepSeek."
-channel = "Custom"
-# このモデルが期待する wire API。binding の invocation_method と一致させる。
-provider = "anthropic_messages"
-context_window = 200000
-effective_context_window_percent = 95
-max_tokens = 8192
-temperature = 0.2
-reasoning_capability = { togglewithlevels = ["high", "max"] }
-reasoning_implementation = "request_parameter"
-base_instructions = "(optional) You are Devo, a coding agent."
-input_modalities = ["text", "image"]
-
-[providers.deepseek]
-enabled = true
-name = "DeepSeek Anthropic Compatible"
-base_url = "https://api.deepseek.com/anthropic"
-# credential id のみ — シークレットは auth.json に置く。
-credential = "deepseek_compatible_api_key"
-wire_apis = ["anthropic_messages"]
-
-[model_bindings.deepseek-example]
-enabled = true
-model_slug = "my-deepseek"
-provider = "deepseek"
-request_model = "deepseek-v4-flash"
-display_name = "DeepSeek V4 Flash"
-invocation_method = "anthropic_messages"
-```
-
-対応する `~/.devo/auth.json`（Windows では `C:\Users\yourname\.devo\auth.json`）:
+基本形は次のとおりです。
 
 ```json
 {
-  "version": 1,
-  "credentials": {
-    "deepseek_compatible_api_key": {
-      "kind": "api_key",
-      "value": "sk-deepseek-your-api-key"
+  "model": "my-provider/my-model",
+  "provider": {
+    "my-provider": {
+      "name": "My Provider",
+      "base_url": "https://api.example.com/v1",
+      "credential": "my_provider_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "my-model": { "name": "My Model", "context_window": 131072 }
+      }
     }
   }
 }
 ```
 
-ルール:
+provider id と model id はそれぞれ map key です。安定したモデル識別子は
+`provider/model` だけで、binding id、local slug、request model、model description
+を別に持つ必要はありません。
 
-- 現時点でサポートされるのは `api_key` 認証情報のみです。
-- credential id は `[providers.<id>].credential` と完全に一致する必要があります。
-- `auth.json` は `DEVO_HOME` 配下に置き、プロジェクトリポジトリへコミットしないでください。
-- ワークスペース `<workspace>/.devo/config.toml` は credential id を参照できますが、
-  シークレット値はユーザースコープの `auth.json` にのみ置きます。
-- key だけ更新する場合は `auth.json` を編集します。credential id が同じなら
-  `config.toml` は変更不要です。
+`model` は通常の turn 用の主モデルです。`small_model` はセッションタイトルなど
+軽量なバックグラウンド処理用の低コストモデルです。省略時は同じ provider の
+flash、mini、small、nano などを探し、最後に主モデルへ戻ります。無効な値も同じように
+フォールバックします。
 
-## 呼び出し方式（Invocation methods）
+## auth.json
 
-binding の `invocation_method` と provider の `wire_apis` が、Devo が使う HTTP API
-を決めます。モデルメタデータの `provider` も同じ値にして、カタログ能力と実行時接続を
-揃えてください。
+`providers.json` には credential id だけを書き、実際の秘密値はユーザーの
+`DEVO_HOME/auth.json` に置きます。git にコミットしないでください。
 
-| 値 | プロトコル | 典型的なエンドポイント |
-| --- | --- | --- |
-| `openai_chat_completions` | [OpenAI Chat Completions](https://developers.openai.com/api/reference/chat-completions/overview) | 多くの OpenAI 互換ゲートウェイ（DeepSeek、Qwen、Kimi、OpenRouter、ローカルプロキシなど） |
-| `openai_responses` | [OpenAI Responses](https://developers.openai.com/api/reference/responses/overview) | Responses API を提供するサービス |
-| `anthropic_messages` | [Anthropic Messages](https://platform.claude.com/docs/en/api/messages) | Anthropic 互換 Messages エンドポイント |
-
-## モデルメタデータとカスタムモデル
-
-ユーザーまたは workspace の `config.toml` の `[model.<slug>]` で設定します。
-組み込み slug は部分上書きで、省略したフィールドは組み込み値を保持します。新しい
-slug は安全なデフォルトを持つカスタムモデルを作成し、
-[エンドツーエンド例](#エンドツーエンド例-カスタムモデルパラメータ--自分の-api-key)
-のように `[providers.<id>]` と `[model_bindings.<id>]` で接続します。
-
-組み込みモデルの部分上書き例:
-
-```toml
-[model.qwen3-coder-next]
-context_window = 262144
-effective_context_window_percent = 90
+```json
+{
+  "version": 1,
+  "credentials": {
+    "my_provider_api_key": { "kind": "api_key", "value": "sk-your-key" }
+  }
+}
 ```
 
-有効なコンテキストウィンドウの正確な式は
-`context_window * effective_context_window_percent / 100` です。その結果がモデルで
-利用可能なコンテキストであり、自動 compaction の境界でもあります。
+現在の credential kind は `api_key` のみです。`credential` は
+`credentials.<id>` と完全一致させます。`providers.json` に `apiKey`、`api_key`、
+または秘密値を書かないでください。
 
-設定可能なメタデータには、ピッカー向けの `display_name`、説明文の `description`、
-グループ用の `channel` があります。`context_window` と
-`effective_context_window_percent` が有効コンテキストを決め、`max_tokens` は既定の
-出力上限です。サンプリング既定値は `temperature`（乱数性）、`top_p`（核サンプリング）、
-`top_k`（候補トークン上限）です。`provider` wire API は
-`openai_chat_completions`、`openai_responses`、`anthropic_messages` のいずれかです。
-推論メタデータは型付きで、`reasoning_capability` は `unsupported`、`toggle`、
-`{ levels = [...] }`、`{ togglewithlevels = [...] }`、
-`reasoning_implementation` は `disabled`、`request_parameter`、または型付き
-`model_variant` テーブルです。`model_variant` は論理的な推論選択を別の
-provider 向けモデル id、任意の有効 effort、任意の追加リクエスト本文へ写像します。
-`default_reasoning_effort` は既定の effort を選びます。`input_modalities` は
-`text` と `image` を受け付け、`truncation_policy` は大きすぎるツール結果の
-バイト/トークン上限を選び、`supports_image_detail_original` は元解像度の画像詳細を
-有効にします。
+## Provider template と Connection
 
-`base_instructions` を省略すると、組み込みモデルは組み込み指示を、カスタムモデルは
-Devo の既定指示を使います。明示的な空文字（`base_instructions = ""`）は指示なしを
-意味します。
+組み込み provider は git 管理される読み取り専用テンプレートで、ログイン済みとは
+限りません。テンプレートを確認すると、ユーザーの `providers.json` に Connection
+が作成されます。組み込み template の名前、Base URL、wire API はこの画面から変更
+できません。key や endpoint を変えるときは Connection を切断して再接続します。
+カスタム provider の名前、endpoint、protocol、model はユーザー所有なので編集できます。
+接続済み provider では保存済み model を管理でき、`d` または Delete で Connection を
+切断できます。これは組み込みテンプレートを削除しません。
 
-レガシーのスカラー `model = "slug"` は引き続き読み取れます。`[model.<slug>]` が
-トップレベル `model` テーブル名前空間を占有するため、新しい設定では
-`[defaults].model_binding` でアクティブ接続を選んでください。
+provider map に新しい key を追加すればカスタム provider、`models` map に新しい key を
+追加すればカスタム model になります。
 
-### TUI 設定
+## フィールドリファレンス
 
-`DEVO_HOME/config.toml` のトップレベルには UI 設定も保存されます:
+Provider の主なフィールドは `name`、`base_url`、`credential`、`wire_api`、`enabled`、
+`headers`、`options`、`request`、`models` です。`headers` は文字列から文字列への
+JSON object で、API key はここに置きません。
 
-```toml
-theme = "aurora"
-collapse_reasoning = true
+Model の map key が provider に送る model id です。`name`、`wire_api`、
+`context_window`、`effective_context_window_percent`、`max_tokens`、`temperature`、
+`top_p`、`top_k`、`input_modalities`（`text`/`image`）、`base_instructions`、
+`enabled`、`priority`、`family`、`release_date`、`status`、`cost`、`metadata`、
+`headers`、`options`、`request` を指定できます。
+
+`reasoning_capability` は `unsupported`、`toggle`、
+`{"levels":["off","low","high"]}` のいずれかです（`off` を含めると無効化可能、
+含めないと常時オン）。旧形式 `{"toggle_with_levels":[...]}` は読み取り時に
+先頭 `off` 付きの `levels` へ移行します。effort は `none`、
+`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。`reasoning_implementation` は
+旧 TOML の移行用で、新しい JSON では named variants を推奨します。
+
+Variant は model 内の named mode です。
+
+```json
+{
+  "models": {
+    "reasoning-model": {
+      "variants": {
+        "fast": {
+          "label": "Fast",
+          "options": { "thinking": { "budget": 1024 } },
+          "request": { "speed": "fast" },
+          "headers": { "X-Mode": "fast" }
+        }
+      },
+      "default_variant": "fast"
+    }
+  }
+}
 ```
 
-- `theme` は TUI の配色テーマを選びます（`/theme` でも設定可）。
-- `collapse_reasoning` は推論表示を制御します（`/show-reasoning` でも設定可）:
-  - `true`（既定）: ストリーミング中は最新 3 行のみ。完了後は短い推論を全文表示し、
-    長い推論は 1 行の `Thought · …` 要約に折りたたみます（全文は Ctrl+T で確認可）。
-  - `false`: ストリーミング中も完了後も全文を表示します。
+`wire_api` は `openai_chat_completions`、`openai_responses`、`anthropic_messages` の
+3 種類です。model の値は provider の値を上書きし、省略時は
+`openai_chat_completions` になります。DeepSeek の組み込み template は公式の
+Anthropic 互換 endpoint を使用します。
 
-### `models.json` からの移行
+## 動的モデル発見
 
-古い `~/.devo/models.json` と `<workspace>/.devo/models.json` は無視されます。
-必要なフィールドをユーザーまたは workspace の `config.toml` の
-`[model.<slug>]` へ手動でコピーし、対応する provider と model binding を追加または
-保持してください。API key は `auth.json` に置き、`[providers.<id>].credential`
-から参照します。
+接続済み Connection に Native `provider/discover` を実行すると、`auth.json` の key で
+`/models` または `/v1/models` を試し、検出結果を Connection の model map に保存します。
+`{"forceRefresh":true}` で短期キャッシュを無視できます。
 
-## MCP サーバー
-
-Devo は、ユーザーまたは workspace の `config.toml` の `[mcp]` で設定した
-[Model Context Protocol](https://modelcontextprotocol.io/) サーバーに接続します。
-各サーバーは `servers` 配列の 1 エントリで、`transport` テーブルが接続方式を
-決めます。対応トランスポートは `stdio`、`streamable_http`、非推奨の `sse` です。
-
-`config.toml` の編集、または CLI（`devo mcp …`）で設定できます。日常の追加 /
-有効化 / 無効化 / 削除は CLI を優先し、transport・env・header の細かい調整は
-TOML を編集してください。
-
-### 同梱の `code_search`（既定では無効）
-
-Devo は `devo` の隣にオプションのセマンティック検索 MCP バイナリを同梱します。
-設定エントリは欠落時に自動注入され、明示的に有効化するまで **disabled** のままです:
-
-```toml
-[[mcp.servers]]
-id = "code_search"
-display_name = "Code Search"
-enabled = false
-startup_policy = "lazy"
-
-[mcp.servers.transport]
-kind = "stdio"
-command = ["devo-code-search-mcp"]
-```
-
-```bash
-devo mcp enable code_search
-# または対話セッションで: /mcps → Code Search → Enable
-```
-
-有効化後のモデル向けツール名は `mcp__code_search__code_search` です。
-
-### CLI 管理
-
-ユーザー級 MCP サーバー（`~/.devo/config.toml`）は `devo mcp` で管理します:
-
-```bash
-devo mcp list
-devo mcp add time -- docker run -i --rm mcp/time
-devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
-devo mcp add --transport http hello-mcp http://localhost:8080/mcp
-devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
-devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
-devo mcp enable time
-devo mcp disable time
-devo mcp remove time
-```
-
-CLI の `enable|disable` はユーザー `config.toml` に書き込みます。実行中の対話
-セッションは TUI `/mcps`（`mcp/set_enabled`）でライブ適用されます。
-
-### TOML の例
-
-stdio の例:
-
-```toml
-[mcp]
-auto_start = true
-
-[[mcp.servers]]
-id = "filesystem"
-display_name = "Filesystem"
-enabled = true
-startup_policy = "lazy" # eager | lazy | manual
-trust_policy = "user" # user | workspace | untrusted
-allowed_capabilities = ["tools", "resources", "prompts"]
-roots_policy = "workspace" # none | workspace | custom
-
-[mcp.servers.transport]
-kind = "stdio"
-command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
-# cwd = "/path/to/workdir"
-# env = { MY_VAR = "value" }
-# env_vars = ["HOME", "PATH"]
-```
-
-bearer token を使う Streamable HTTP:
-
-```toml
-[[mcp.servers]]
-id = "github"
-display_name = "GitHub"
-startup_policy = "lazy"
-
-[mcp.servers.transport]
-kind = "streamable_http"
-url = "https://api.githubcopilot.com/mcp/"
-auth = { kind = "bearer_token", token = "replace-me" }
-http_headers = { "X-Custom" = "static-value" }
-env_http_headers = { "Authorization" = "GITHUB_TOKEN" }
-```
-
-レガシー SSE トランスポート:
-
-```toml
-[mcp.servers.transport]
-kind = "sse"
-url = "https://example.com/mcp/sse"
-```
-
-フィールドの説明:
-
-- `auto_start` は既定で `true` です。実行中セッションでの MCP 有効化/無効化は `mcp/set_enabled`（TUI `/mcps`）で即時反映されます。
-- `startup_policy` は有効なサーバーの起動タイミングを制御します: `eager` は
-  ブートストラップ時、`lazy` は初回利用時、`manual` は明示的な要求のみです。
-- stdio では `env` がリテラル値を渡し、`env_vars` がローカル環境から継承する
-  変数名のリストです。stdio では `{ name = "X", source = "remote" }` は
-  サポートされません。
-- HTTP トランスポートでは、`http_headers` がリテラルヘッダーを渡し、
-  `env_http_headers` はヘッダー名を、値を供給する環境変数名に対応付けます。
-- `allowed_capabilities` が空の場合は制限なしです。現時点のランタイムは主に
-  `tools` を扱い、リソース読み取りはまだ接続されていません。
-- `output_limits` は `max_tool_output_bytes`（既定 1 MiB）と
-  `max_resource_bytes`（既定 10 MiB）を設定します。
-- トップレベルの `mcp_oauth_credentials_store` は `auto`（既定）、`file`、
-  `keyring` のいずれかで、OAuth 認証情報の保存先を選びます。
-- token を `config.toml` に直接書くより、環境変数からヘッダーや値を注入する
-  ことを推奨します。`auth_ref` は各サーバーレコードに存在しますが、ランタイム
-  にはまだ接続されていません。
-
-マージ動作: `[mcp]` は他のテーブルと同じくフィールド単位でマージされますが、
-`servers` は配列です。したがって、workspace の `[[mcp.servers]]` リストは
-ユーザーレベルのリストを `id` 単位でマージせず置き換えます。
-
-TUI の `/mcps`（一覧 → 詳細 → ツール）で確認できます。クライアントは
-`mcp/list` / `mcp/tools` / `mcp/set_enabled` RPC も利用できます。
+全フィールドの表、web search/fetch、移行の詳細は[英語の設定リファレンス](./configuration.md)を参照してください。

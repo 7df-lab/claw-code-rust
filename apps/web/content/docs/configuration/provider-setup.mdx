@@ -3,59 +3,175 @@ title: Provider Setup
 description: Add provider connection records.
 ---
 
-A provider record tells Devo how to reach one model service. It does not decide
-which model is active by itself; a model binding does that.
+A provider record tells Devo how to reach one model service and owns the model
+directory exposed by that service. The active model is selected with the
+top-level `model` reference.
 
-Provider records live under `[providers.<id>]` in `config.toml`.
+Provider records live in `<DEVO_HOME>/providers.json` or the workspace overlay
+`<workspace>/.devo/providers.json`.
+
+The provider id is the key under `provider` and is the stable machine identity
+used in `provider/model`. `name` is only the human-readable label shown in the
+UI. Keep the id stable when renaming a provider.
 
 ## Provider Fields
 
-```toml
-[providers.deepseek-anthropic]
-enabled = true
-name = "DeepSeek Anthropic"
-base_url = "https://api.deepseek.com/anthropic"
-credential = "deepseek_api_key"
-wire_apis = ["anthropic_messages"]
-```
-
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `name` | Yes | Human-readable provider name. |
-| `enabled` | No | Whether this provider can be used. Defaults to `true`. |
-| `base_url` | Usually | Provider endpoint. Some built-in providers can supply defaults. |
-| `credential` | Usually | Credential id in `<DEVO_HOME>/auth.json`. |
-| `headers` | No | Raw JSON object string for provider-specific HTTP headers. |
-| `wire_apis` | Recommended | Wire APIs this provider entry supports. |
-| `web_search` | No | Provider-specific web search override. |
-| `web_fetch` | No | Provider-specific web fetch override. |
-
-If `wire_apis` is empty, Devo can still default some paths, but explicit
-`wire_apis` makes validation and future maintenance clearer.
-
-## Credentials
-
-Store API keys in `auth.json`, not in `config.toml`:
-
 ```json
 {
-  "version": 1,
-  "credentials": {
-    "deepseek_api_key": {
-      "kind": "api_key",
-      "value": "sk-your-key"
+  "model": "deepseek/my-model",
+  "provider": {
+    "deepseek": {
+      "enabled": true,
+      "name": "DeepSeek Anthropic",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "credential": "deepseek_api_key",
+      "wire_api": "anthropic_messages",
+      "models": {
+        "my-model": {"name": "My Model"}
+      }
     }
   }
 }
 ```
 
-Then reference the id:
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | No | Human-readable provider name; the provider id is the fallback. |
+| `enabled` | No | Whether this provider can be used. Defaults to `true`. |
+| `base_url` | Usually | Provider endpoint. Some built-in providers can supply defaults. |
+| `credential` | Usually | Credential id whose secret is stored in the user-scoped `auth.json`. |
+| `headers` | No | JSON object of provider-specific HTTP headers. |
+| `wire_api` | Recommended | Wire API used by this provider's models. |
+| `models` | No | Model records keyed by provider-facing model id. |
+| `web_search` | No | Provider-specific web search override. |
+| `web_fetch` | No | Provider-specific web fetch override. |
 
-```toml
-credential = "deepseek_api_key"
+If `wire_api` is omitted, Devo defaults to OpenAI Chat Completions. Set it
+explicitly when the provider uses another protocol.
+
+## Connection Model Management
+
+The provider directory and a user Connection have different model scopes. The
+directory's `models` are read-only templates. The models explicitly saved
+under a user Connection are shown when you select that Connection in
+onboarding. Select a saved model to configure it, use the custom model card
+to add a model, or press `d` / `Delete` on a saved model and confirm to
+remove it from the Connection. The custom model form requires a provider-facing `Model ID`
+and accepts an optional `Display name`; it then continues through the same
+wire API, reasoning, basic settings, and advanced settings screens as a
+directory model. Removing a model does not edit the tracked provider
+directory.
+
+## Model Fields
+
+Models are keyed by the provider-facing model id. There is no separate model
+slug, model name, or description field in the canonical JSON format:
+
+```json
+{
+  "provider": {
+    "acme": {
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "acme-reasoner": {
+          "name": "Acme Reasoner",
+          "context_window": 200000,
+          "max_tokens": 32000,
+          "temperature": 0.2,
+          "input_modalities": ["text", "image"],
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"],
+            "interleaved": "reasoning_content"
+          },
+          "reasoning_capability": {"levels": ["low", "medium", "high"]},
+          "reasoning_implementation": "request_parameter",
+          "default_variant": "balanced",
+          "request": {"stream": true},
+          "options": {"timeout_ms": 120000},
+          "headers": {"X-Model-Mode": "reasoning"},
+          "variants": {
+            "balanced": {"label": "Balanced"},
+            "fast": {
+              "label": "Fast",
+              "options": {"reasoning_effort": "low"}
+            }
+          }
+        }
+      }
+    }
+  }
+}
 ```
 
-Onboarding does this for you when you enter an API key.
+The onboarding form shows the common fields first. Use `Tab` to edit them and
+expand `Advanced settings` for the rest. Leave a field blank to inherit the
+provider directory or runtime default.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `name` | string | Optional display label. The map key is the model id. |
+| `wire_api` | enum | `openai_chat_completions`, `openai_responses`, or `anthropic_messages`. In onboarding this is selected as the invocation method. |
+| `context_window` | integer | Maximum context size in tokens. |
+| `max_tokens` | integer | Maximum output tokens. |
+| `temperature`, `top_p`, `top_k` | number | Sampling defaults. |
+| `input_modalities` | array | Currently `text` and/or `image`. |
+| `reasoning_capability` | enum/object | `unsupported`, `toggle`, or `{"levels":["off","low","high"]}`. Include `off` to allow disabling; omit `off` when reasoning cannot be turned off. Legacy `{"toggle_with_levels":[...]}` migrates on read. |
+| `reasoning_implementation` | enum/object | `disabled`, `request_parameter`, or `{"model_variant":{"variants":[...]}}`. |
+| `default_reasoning_effort` | enum | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Toggle models use the onboarding default selection `enabled` or `disabled`. |
+| `default_reasoning_selection` | string | Exact default picker value for a model, including `enabled` or `disabled` on toggle models. The onboarding form writes this automatically. |
+| `family`, `release_date`, `status`, `channel` | string | Optional catalog metadata. |
+| `capabilities` | JSON object | Model capability directory; can express `tools`, `input`, `output`, `attachment`, `interleaved`, and other source metadata. |
+| `base_instructions` | string | Model-specific base system instructions. |
+| `effective_context_window_percent` | number | Usable context percentage, for example `95` or `33.3333`. |
+| `truncation_policy` | object | `{"mode":"tokens","limit":8000}` or the same with `bytes`. |
+| `supports_image_detail_original`, `enabled` | boolean | Capability and availability switches. |
+| `priority` | integer | Preference when choosing an implicit model. |
+| `cost`, `metadata` | JSON | Optional pricing or directory metadata. |
+| `request`, `options` | JSON object | Arbitrary provider request-body defaults and adapter options. |
+| `headers` | JSON object | Model-specific HTTP headers, with string keys and values. |
+| `variants` | JSON object | Named variant overrides; each value can contain `label`, `disabled`, `request`, `options`, and `headers`. |
+| `default_variant` | string | Variant used when no explicit variant is selected. |
+| `web_search`, `web_fetch` | JSON object | Optional provider-hosted tool behavior, for example `{"mode":"provider"}` or `{"mode":"disabled"}`. |
+
+Reasoning levels must use the lowercase values `minimal`, `low`, `medium`,
+`high`, `xhigh`, or `max`. A `model_variant` reasoning implementation uses a
+JSON array of rules such as:
+
+```json
+[
+  {
+    "selection_value": "high",
+    "model": "acme-reasoner-high",
+    "reasoning_effort": "high",
+    "label": "High",
+    "description": "More deliberate reasoning"
+  }
+]
+```
+
+`request`, `options`, `headers`, and `variants` are intentionally open-ended;
+Devo preserves them and merges them at request time. They are validated before
+onboarding saves the Connection.
+
+## Credentials
+
+Store the credential reference in the provider record:
+
+```json
+{"provider":{"deepseek":{"credential":"deepseek_api_key"}}}
+```
+
+Store the actual key in the user-scoped `auth.json`:
+
+```json
+{"version":1,"credentials":{"deepseek_api_key":{"kind":"api_key","value":"sk-your-key"}}}
+```
+
+Onboarding writes both files for you. Do not put `apiKey`, `api_key`, or a
+secret in `providers.json`; these are not canonical provider fields. Do not
+commit `auth.json`.
 
 ## Web Search And Web Fetch
 
@@ -64,15 +180,10 @@ Devo has two web capability layers:
 - provider-hosted web tools, when the selected provider path supports them;
 - local third-party web search providers configured under `[tools.web_search]`.
 
-Provider and binding overrides can set web behavior:
+Provider overrides can set web behavior:
 
-```toml
-[providers.deepseek-anthropic.web_search]
-mode = "provider"
-
-[providers.deepseek-anthropic.web_fetch]
-mode = "provider"
-```
+Provider and model web overrides are stored in `providers.json`; local
+third-party search providers remain app-level TOML settings.
 
 For DeepSeek's official API, prefer the Anthropic-compatible provider path when
 you want provider-hosted `web_search` and `web_fetch`.
@@ -101,14 +212,13 @@ Supported local search provider kinds are:
 
 ## Disabling A Provider
 
-Set `enabled = false` to keep a provider in config without letting model
+Set `enabled = false` to keep a provider in the directory without letting model
 resolution use it:
 
-```toml
-[providers.old-provider]
-enabled = false
-name = "Old Provider"
+```json
+{"provider":{"old-provider":{"enabled":false,"name":"Old Provider"}}}
 ```
 
-If a selected binding points to a disabled provider, Devo reports that the
-provider is disabled.
+If the selected `provider/model` points to a disabled provider or model, Devo
+reports that it is disabled. The previous `[providers.<id>]` TOML shape remains
+readable during migration.

@@ -420,6 +420,7 @@ pub fn native_turn_from_metadata(metadata: &crate::TurnMetadata) -> crate::nativ
             } else {
                 metadata.request_model.clone()
             },
+            variant: None,
             reasoning_effort: metadata
                 .reasoning_effort_selection
                 .as_deref()

@@ -639,7 +639,7 @@ pub enum RolloutLine {
     /// Turn metadata line.
     Turn(Box<TurnLine>),
     /// Item record line.
-    Item(ItemLine),
+    Item(Box<ItemLine>),
     /// Session-title update line.
     SessionTitleUpdated(SessionTitleUpdatedLine),
     /// Locked session-context update line.
@@ -1032,10 +1032,10 @@ mod tests {
                 timestamp: Utc::now(),
                 turn: turn.clone(),
             })),
-            RolloutLine::Item(ItemLine {
+            RolloutLine::Item(Box::new(ItemLine {
                 timestamp: Utc::now(),
                 item: item.clone(),
-            }),
+            })),
             RolloutLine::SessionTitleUpdated(SessionTitleUpdatedLine {
                 timestamp: Utc::now(),
                 session_id: session.id,

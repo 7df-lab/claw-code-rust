@@ -193,6 +193,12 @@ function fireNotification(request: NotificationRequest): void {
 				permissionId,
 				response,
 				directory: request.directory,
+			}).catch((err) => {
+				log.error(
+					"Permission notification action failed",
+					{ sessionId: request.sessionId, permissionId, response },
+					err,
+				)
 			})
 		})
 	}

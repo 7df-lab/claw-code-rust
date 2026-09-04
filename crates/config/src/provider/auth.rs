@@ -1,8 +1,6 @@
 use std::fs;
 use std::path::Path;
 
-use devo_util_paths::current_user_config_file;
-
 use crate::ProviderConfigError;
 
 use super::persistence::write_atomic;
@@ -12,6 +10,28 @@ use super::schema::AuthCredentialKind;
 use super::schema::UserAuthConfigFile;
 
 pub const AUTH_CONFIG_FILE_NAME: &str = "auth.json";
+
+/// Returns the stable credential id generated when onboarding receives an API
+/// key without an explicit credential id.
+pub fn default_provider_credential_id(provider_id: &str) -> String {
+    let normalized = provider_id
+        .trim()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let normalized = normalized.trim_matches('_');
+    if normalized.is_empty() {
+        "provider_api_key".to_string()
+    } else {
+        format!("{normalized}_api_key")
+    }
+}
 
 /// Upserts one API key credential into user-scoped `auth.json`.
 pub fn upsert_user_auth_api_key(
@@ -31,17 +51,21 @@ pub fn upsert_user_auth_api_key(
     write_user_auth_config(&auth_file, &auth)
 }
 
-pub(crate) fn current_user_auth_config() -> Result<UserAuthConfigFile, ProviderConfigError> {
-    let config_file =
-        current_user_config_file().map_err(|error| ProviderConfigError::ConfigPath {
-            message: format!("could not determine user config path: {error}"),
-        })?;
-    let config_dir = config_file
-        .parent()
-        .ok_or_else(|| ProviderConfigError::ConfigPath {
-            message: "user config path has no parent directory".to_string(),
-        })?;
-    read_user_auth_config(&config_dir.join(AUTH_CONFIG_FILE_NAME))
+/// Removes a user-scoped credential from auth.json.
+///
+/// Returning Ok(false) means the credential id was not present. The file is
+/// still written when a credential was removed so the operation is durable.
+pub fn remove_user_auth_credential(
+    user_config_dir: &Path,
+    credential_id: &str,
+) -> Result<bool, ProviderConfigError> {
+    let auth_file = user_config_dir.join(AUTH_CONFIG_FILE_NAME);
+    let mut auth = read_user_auth_config(&auth_file)?;
+    let removed = auth.credentials.remove(credential_id).is_some();
+    if removed {
+        write_user_auth_config(&auth_file, &auth)?;
+    }
+    Ok(removed)
 }
 
 pub fn read_user_auth_config(auth_file: &Path) -> Result<UserAuthConfigFile, ProviderConfigError> {

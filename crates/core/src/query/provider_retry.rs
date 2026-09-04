@@ -267,8 +267,15 @@ pub(crate) async fn wait_for_provider_retry(
     model: &str,
     attempt: usize,
     backoff: Duration,
+    reason: &str,
 ) -> Result<(), AgentError> {
     let backoff_ms = backoff.as_millis().min(u128::from(u64::MAX)) as u64;
+    let reason = reason.trim();
+    let reason = if reason.is_empty() {
+        "Provider request failed"
+    } else {
+        reason
+    };
     emit_query_event(
         on_event,
         QueryEvent::ProviderRetryStatus(ProviderRetryStatus {
@@ -278,7 +285,8 @@ pub(crate) async fn wait_for_provider_retry(
             max_attempts: MAX_RETRIES,
             backoff_ms,
             phase: QueryProviderRetryPhase::Scheduled,
-            message: format!("Retrying provider request in {:.1}s", backoff.as_secs_f64()),
+            // Failure cause for UI disclosure; countdown is carried by backoff_ms.
+            message: reason.to_string(),
         }),
     )
     .await;
@@ -302,7 +310,7 @@ pub(crate) async fn wait_for_provider_retry(
             max_attempts: MAX_RETRIES,
             backoff_ms: 0,
             phase: QueryProviderRetryPhase::Resumed,
-            message: "Retrying provider request now".to_string(),
+            message: reason.to_string(),
         }),
     )
     .await;

@@ -33,6 +33,14 @@ pub enum QueryEvent {
         /// Human-readable reason the compaction did not complete.
         message: String,
     },
+    /// Assembled request context estimate (before / between model legs).
+    ///
+    /// Emitted after each prompt build so UIs can refresh context occupancy
+    /// when tools finish and the next request is assembled — not only at
+    /// turn end.
+    ContextEstimate {
+        breakdown: crate::RawContextBreakdown,
+    },
     /// Incremental text from the assistant.
     TextDelta(String),
     /// Incremental reasoning text from the assistant.

@@ -23,7 +23,7 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
 }
 
 export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
-	colorScheme: "dark",
+	colorScheme: "light",
 	themeId: "default",
 	displayMode: "default",
 	hideThinkingWhileWorking: true,

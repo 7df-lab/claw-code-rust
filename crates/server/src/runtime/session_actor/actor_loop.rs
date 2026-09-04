@@ -443,14 +443,14 @@ pub(super) async fn run_session_actor(
                 let _ = reply.send(());
             }
             SessionCommand::ApplyEffectiveContextWindow { limit, reply } => {
-                state.core.config.effective_context_window_override = Some(limit);
+                // Applied value is the model usable window; do not keep a
+                // sticky session override that could diverge from the model.
+                state.core.config.effective_context_window_override = None;
                 state.core.config.token_budget.context_window = limit;
                 state.core.config.token_budget.auto_compact_token_limit = Some(limit);
-                state.config.effective_context_window_override = Some(limit);
+                state.config.effective_context_window_override = None;
                 state.config.token_budget.context_window = limit;
                 state.config.token_budget.auto_compact_token_limit = Some(limit);
-                // Applied window is session-local runtime state derived from the
-                // global config preference; do not persist as a session override.
                 state.summary.effective_context_window = Some(limit as u64);
                 let _ = reply.send(Ok(()));
             }
@@ -584,8 +584,20 @@ fn apply_turn_config_to_session_summary(
     summary: &mut crate::session::SessionMetadata,
     turn_config: &TurnConfig,
 ) {
-    summary.model = Some(turn_config.model.slug.clone());
-    summary.model_binding_id = turn_config.model_binding_id.clone();
+    let model = match &turn_config.provider_route {
+        devo_provider::ProviderRoute::Connection { provider_id, .. } => {
+            format!("{provider_id}/{}", turn_config.request_model)
+        }
+        devo_provider::ProviderRoute::Default => turn_config.model.slug.clone(),
+    };
+    summary.model = Some(
+        turn_config
+            .variant
+            .as_deref()
+            .map(|variant| format!("{model}/{variant}"))
+            .unwrap_or(model),
+    );
+    summary.model_binding_id = None;
     summary.reasoning_effort_selection = turn_config.reasoning_effort_selection.clone();
 }
 

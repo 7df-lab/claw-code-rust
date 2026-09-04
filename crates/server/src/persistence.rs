@@ -163,6 +163,7 @@ impl RolloutStore {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_session_record_with_fork(
         &self,
         id: SessionId,
@@ -278,10 +279,10 @@ impl RolloutStore {
     pub(crate) fn append_item(&self, record: &SessionRecord, item: ItemRecord) -> Result<()> {
         self.append_line(
             &record.rollout_path,
-            &RolloutLine::Item(ItemLine {
+            &RolloutLine::Item(Box::new(ItemLine {
                 timestamp: Utc::now(),
                 item,
-            }),
+            })),
         )
     }
 
@@ -2693,6 +2694,7 @@ fn turn_metadata_from_record(turn: &TurnRecord) -> TurnMetadata {
 }
 
 /// Creates one canonical persisted item record from a normalized turn item payload.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_item_record(
     session_id: SessionId,
     turn_id: TurnId,
@@ -2783,7 +2785,7 @@ mod tests {
         let mut replay = ReplayState::default();
 
         replay
-            .apply_line(RolloutLine::Item(ItemLine {
+            .apply_line(RolloutLine::Item(Box::new(ItemLine {
                 timestamp: earlier,
                 item: ItemRecord {
                     id: ItemId::new(),
@@ -2805,10 +2807,10 @@ mod tests {
                     error: None,
                     schema_version: 1,
                 },
-            }))
+            })))
             .expect("replay later-seq line");
         replay
-            .apply_line(RolloutLine::Item(ItemLine {
+            .apply_line(RolloutLine::Item(Box::new(ItemLine {
                 timestamp: later,
                 item: ItemRecord {
                     id: ItemId::new(),
@@ -2828,7 +2830,7 @@ mod tests {
                     error: None,
                     schema_version: 1,
                 },
-            }))
+            })))
             .expect("replay earlier-seq line");
 
         let mut items = replay.pending_items;
@@ -3142,7 +3144,7 @@ mod tests {
             })))
             .expect("apply original turn");
         replay
-            .apply_line(RolloutLine::Item(ItemLine {
+            .apply_line(RolloutLine::Item(Box::new(ItemLine {
                 timestamp: now,
                 item: ItemRecord {
                     id: original_item_id,
@@ -3162,7 +3164,7 @@ mod tests {
                     error: None,
                     schema_version: 1,
                 },
-            }))
+            })))
             .expect("apply original item");
         replay
             .apply_line(RolloutLine::MessageEditRecorded(Box::new(
@@ -3232,7 +3234,7 @@ mod tests {
             })))
             .expect("apply replacement turn");
         replay
-            .apply_line(RolloutLine::Item(ItemLine {
+            .apply_line(RolloutLine::Item(Box::new(ItemLine {
                 timestamp: now,
                 item: ItemRecord {
                     id: replacement_item_id,
@@ -3252,7 +3254,7 @@ mod tests {
                     error: None,
                     schema_version: 1,
                 },
-            }))
+            })))
             .expect("apply replacement item");
 
         let projected_items = replay
@@ -4285,7 +4287,6 @@ mod tests {
             crate::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(devo_core::PresetModelCatalog::default()),
-            Arc::new(devo_core::ProviderVendorCatalog::default()),
             Box::new(devo_core::FileSystemSkillCatalog::new(
                 devo_core::SkillsConfig {
                     bundled: Some(devo_core::BundledSkillsConfig { enabled: false }),
@@ -4781,7 +4782,7 @@ mod tests {
                 timestamp: Utc::now(),
                 turn: super::build_turn_record(&metadata, None, None, None, None),
             })),
-            RolloutLine::Item(ItemLine {
+            RolloutLine::Item(Box::new(ItemLine {
                 timestamp: Utc::now(),
                 item: super::build_item_record(
                     record.id,
@@ -4795,7 +4796,7 @@ mod tests {
                     None,
                     None,
                 ),
-            }),
+            })),
         ];
         write_raw_lines(
             &record.rollout_path,

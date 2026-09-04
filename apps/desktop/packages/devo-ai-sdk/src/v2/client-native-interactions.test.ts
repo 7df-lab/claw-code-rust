@@ -1139,6 +1139,83 @@ describe("Native desktop SDK interactions", () => {
 		expect((await client.session.status()).data["session-1"]).toEqual({ type: "idle" })
 	})
 
+	test("turn/completed with turn.error emits session.error for Desktop UI", async () => {
+		const transport = new FakeNativeTransport()
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+		await client.session.create()
+
+		await client.session.promptAsync({
+			sessionID: "session-1",
+			parts: [{ type: "text", text: "hello" }],
+		})
+
+		transport.emit({
+			type: "notification",
+			method: "item/assistantMessage/delta",
+			params: {
+				sessionId: nativeSession.id,
+				itemId: "item-assistant-1",
+				delta: "partial",
+			},
+		})
+		await nextPayloadOfType(stream, "message.part.updated")
+
+		transport.emit({
+			type: "notification",
+			method: "turn/completed",
+			params: {
+				turn: {
+					...nativeTurnInProgress,
+					status: "failed",
+					completedAt: "2026-08-24T00:00:08Z",
+					error: {
+						errorCode: "PROVIDER_TEMPORARY_FAILURE",
+						message: "HTTP 429: rate limit exceeded",
+						retryable: true,
+					},
+				},
+			},
+		})
+
+		const errorEvent = await nextPayloadOfType(stream, "session.error")
+		expect(errorEvent.properties).toEqual({
+			sessionID: nativeSession.id,
+			error: {
+				name: "PROVIDER_TEMPORARY_FAILURE",
+				data: {
+					message: "HTTP 429: rate limit exceeded",
+					code: "PROVIDER_TEMPORARY_FAILURE",
+				},
+			},
+		})
+
+		const updated = await nextPayloadOfType(stream, "message.updated")
+		expect(updated.properties.info.role).toBe("assistant")
+		expect(updated.properties.info.error).toEqual({
+			name: "PROVIDER_TEMPORARY_FAILURE",
+			data: {
+				message: "HTTP 429: rate limit exceeded",
+				code: "PROVIDER_TEMPORARY_FAILURE",
+			},
+		})
+		expect(updated.properties.info.time?.completed).toEqual(expect.any(Number))
+
+		// Follow-up completed projection without error must not wipe the failure.
+		transport.emit({
+			type: "notification",
+			method: "turn/completed",
+			params: {
+				turn: {
+					...nativeTurnInProgress,
+					status: "failed",
+					completedAt: "2026-08-24T00:00:08Z",
+				},
+			},
+		})
+		expect((await client.session.status()).data["session-1"]).toEqual({ type: "idle" })
+	})
+
 	test("queues follow-up input without forcing idle when a turn is already active", async () => {
 		const transport = new FakeNativeTransport()
 		const client = createDevoClient({ directory: "/repo", transport })
@@ -1244,6 +1321,41 @@ describe("Native desktop SDK interactions", () => {
 			properties: {
 				sessionID: nativeSession.id,
 				occupancy: nativeOccupancy,
+			},
+		})
+	})
+
+	test("projects last-query display total from turn/usage/updated", async () => {
+		const transport = new FakeNativeTransport()
+		const client = createDevoClient({ directory: "/repo", transport })
+		const stream = (await client.global.event()).stream[Symbol.asyncIterator]()
+
+		transport.emit({
+			type: "notification",
+			method: "turn/usage/updated",
+			params: {
+				sessionId: nativeSession.id,
+				turnId: "turn-1",
+				usage: {
+					query: {
+						totalTokens: 48_000,
+						inputTokens: 40_000,
+						outputTokens: 8_000,
+					},
+					overhead: { totalTokens: 0 },
+				},
+				lastQueryInputTokens: 40_000,
+				contextWindow: 190_000,
+			},
+		})
+
+		expect(await nextPayloadOfType(stream, "session.usage.updated")).toEqual({
+			type: "session.usage.updated",
+			properties: {
+				sessionID: nativeSession.id,
+				used: 48_000,
+				size: 190_000,
+				cost: 0,
 			},
 		})
 	})

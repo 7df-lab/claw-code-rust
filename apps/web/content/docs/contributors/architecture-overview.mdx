@@ -68,16 +68,16 @@ When a user runs `devo`:
 1. `crates/cli/src/main.rs` parses the command.
 2. The default command calls `run_agent` in `crates/cli/src/agent_command.rs`.
 3. `run_agent` resolves the current working directory and `DEVO_HOME`, loads the
-   workspace-effective app config, then constructs the model catalog from its
-   model metadata overrides before resolving the permission preset, provider
-   settings, and saved model entries.
+   workspace-effective app config, then constructs the model catalog from the
+   tracked directory and `providers.json` overlay before resolving the
+   permission preset, provider Connection, and saved model entries.
 4. `run_agent` calls `devo_tui::run_interactive_tui`.
 5. The TUI starts with an `InitialTuiSession` containing the current session id,
-   model, model binding id, provider wire API, reasoning effort selection, permission
-   preset, and working directory.
+   canonical model reference, provider wire API, reasoning effort selection,
+   permission preset, and working directory.
 
 `devo onboard` follows the same setup path, forces provider onboarding mode,
-and exits after the provider/model binding is saved. The CLI then prompts the
+and exits after the provider Connection/model selection is saved. The CLI then prompts the
 user to run `devo` so the next process starts from the freshly written config.
 
 `devo resume <session_id>` follows the same path with an initial session id.
@@ -133,11 +133,11 @@ server applies those decisions to the active turn.
 
 ## Provider Flow
 
-Provider configuration starts as user config, then resolves into a provider and
-model binding:
+Provider configuration starts with the tracked template directory, then merges
+user Connections and model records:
 
-1. `devo-config` defines the serialized provider and model binding fields.
-2. `devo-core` resolves effective provider settings for the current workspace.
+1. `devo-config` defines the canonical provider/model JSON and auth references.
+2. `devo-core` resolves the effective provider Connection and model for the current workspace.
 3. `devo-server` builds the provider router during bootstrap.
 4. `devo-provider` sends requests through the selected wire API.
 

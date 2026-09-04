@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
+use devo_core::ModelCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::ModelRequest;
@@ -112,6 +112,12 @@ async fn restore_seeds_sqlite_metadata_before_initial_stats() -> Result<()> {
         "source.db",
         Arc::clone(&provider),
         Arc::new(SingleProviderRouter::new(Arc::clone(&provider))),
+        Arc::new(PresetModelCatalog::load()?),
+        "kimi/kimi-k3".to_string(),
+        Arc::new(Mutex::new(AppConfigStore::load(
+            data_root.path().to_path_buf(),
+            None,
+        )?)),
     )?
     .0;
     let (connection_id, _notifications_rx) = initialize_connection(&source_runtime).await?;
@@ -142,6 +148,12 @@ async fn restore_seeds_sqlite_metadata_before_initial_stats() -> Result<()> {
         "restored.db",
         Arc::clone(&provider),
         Arc::new(SingleProviderRouter::new(Arc::clone(&provider))),
+        Arc::new(PresetModelCatalog::load()?),
+        "kimi/kimi-k3".to_string(),
+        Arc::new(Mutex::new(AppConfigStore::load(
+            data_root.path().to_path_buf(),
+            None,
+        )?)),
     )?;
     restored_runtime.load_persisted_sessions().await?;
 
@@ -162,21 +174,55 @@ async fn restore_seeds_sqlite_metadata_before_initial_stats() -> Result<()> {
 #[tokio::test]
 async fn title_generation_uses_resolved_provider_request_model() -> Result<()> {
     let data_root = TempDir::new()?;
-    std::fs::create_dir_all(data_root.path().join(".devo"))?;
+    let user_config_dir = data_root.path().join(".devo");
+    std::fs::create_dir_all(&user_config_dir)?;
     std::fs::write(
-        data_root.path().join(".devo").join("config.toml"),
-        r#"
-[model.kimi-k3]
-display_name = "Catalog Title Model"
-provider = "openai_chat_completions"
-reasoning_capability = "toggle"
-reasoning_implementation = { model_variant = { variants = [
-  { selection_value = "disabled", model_slug = "kimi-k3", label = "Off", description = "Disable reasoning effort" },
-  { selection_value = "enabled", model_slug = "vendor/title-model", reasoning_effort = "medium", label = "On", description = "Enable reasoning effort" },
-] } }
-base_instructions = "Test title model"
-"#,
+        user_config_dir.join("providers.json"),
+        r#"{
+  "model": "kimi/kimi-k3",
+  "providers": {
+    "kimi": {
+      "name": "Kimi",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "kimi-k3": {
+          "name": "Catalog Title Model",
+          "reasoning_capability": "toggle",
+          "reasoning_implementation": {
+            "model_variant": {
+              "variants": [
+                {
+                  "selection_value": "disabled",
+                  "model": "kimi-k3",
+                  "label": "Off",
+                  "description": "Disable reasoning effort"
+                },
+                {
+                  "selection_value": "enabled",
+                  "model": "vendor/title-model",
+                  "reasoning_effort": "medium",
+                  "label": "On",
+                  "description": "Enable reasoning effort"
+                }
+              ]
+            }
+          },
+          "base_instructions": "Test title model"
+        }
+      }
+    }
+  }
+}"#,
     )?;
+
+    let config_store = AppConfigStore::load(user_config_dir.clone(), Some(data_root.path()))?;
+    let model_catalog = Arc::new(PresetModelCatalog::load_from_provider_config(
+        &config_store.effective_config().provider_catalog_config(),
+    )?);
+    let default_model = model_catalog
+        .resolve_for_turn(Some("kimi/kimi-k3"))?
+        .slug
+        .clone();
 
     let provider: Arc<dyn ModelProviderSDK> = Arc::new(TestProvider);
     let recording_router = Arc::new(RecordingRouter::default());
@@ -185,6 +231,9 @@ base_instructions = "Test title model"
         "title.db",
         provider,
         Arc::clone(&recording_router) as Arc<dyn ProviderRouter>,
+        model_catalog,
+        default_model,
+        Arc::new(Mutex::new(config_store)),
     )?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
 
@@ -243,6 +292,9 @@ fn build_runtime(
     db_name: &str,
     provider: Arc<dyn ModelProviderSDK>,
     provider_router: Arc<dyn ProviderRouter>,
+    model_catalog: Arc<PresetModelCatalog>,
+    default_model: String,
+    config_store: Arc<Mutex<AppConfigStore>>,
 ) -> Result<(
     Arc<devo_server::ServerRuntime>,
     Arc<devo_server::db::Database>,
@@ -255,19 +307,15 @@ fn build_runtime(
             provider_router,
             Arc::new(ToolRegistry::new()),
             devo_server::empty_mcp_manager(),
-            "test-model".to_string(),
-            Arc::new(PresetModelCatalog::default()),
-            Arc::new(ProviderVendorCatalog::default()),
+            default_model,
+            model_catalog,
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
             })),
             devo_core::AgentsMdConfig::default(),
             Arc::clone(&db),
-            Arc::new(Mutex::new(AppConfigStore::load(
-                data_root.to_path_buf(),
-                None,
-            )?)),
+            config_store,
         ),
     );
     Ok((runtime, db))

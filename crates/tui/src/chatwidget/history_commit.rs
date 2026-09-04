@@ -93,13 +93,14 @@ impl ChatWidget {
         let history_cell = crate::transcript::render::committed_cell_to_history(
             &CommittedCellModel::Tool(tool),
             &self.session.cwd,
-            |title| Self::ran_tool_line(title),
+            Self::ran_tool_line,
             dot_prefix,
             Self::tool_text_style(),
         );
         self.add_history_entry_without_redraw(history_cell);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn commit_exploration_tool_from_history_item(
         &mut self,
         tool_use_id: String,
@@ -348,23 +349,22 @@ impl ChatWidget {
             .as_mut()
             .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
             && cell.set_tool_io_input(tool_use_id, tool_name.clone(), input.clone())
+            && let Some(output) = tool_output_for_commit(tool)
         {
-            if let Some(output) = tool_output_for_commit(tool) {
-                let display_content = tool.tool_display_content.clone();
-                let output_text = display_content
-                    .clone()
-                    .unwrap_or_else(|| value_text(&output));
-                cell.complete_tool_io(tool_use_id, output, display_content.clone());
-                cell.complete_call(
-                    tool_use_id,
-                    CommandOutput {
-                        exit_code: if tool.is_error { 1 } else { 0 },
-                        aggregated_output: output_text.clone(),
-                        formatted_output: output_text.clone(),
-                    },
-                    Duration::from_millis(0),
-                );
-            }
+            let display_content = tool.tool_display_content.clone();
+            let output_text = display_content
+                .clone()
+                .unwrap_or_else(|| value_text(&output));
+            cell.complete_tool_io(tool_use_id, output, display_content.clone());
+            cell.complete_call(
+                tool_use_id,
+                CommandOutput {
+                    exit_code: if tool.is_error { 1 } else { 0 },
+                    aggregated_output: output_text.clone(),
+                    formatted_output: output_text.clone(),
+                },
+                Duration::from_millis(0),
+            );
         }
     }
 

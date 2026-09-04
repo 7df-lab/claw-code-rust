@@ -1,108 +1,71 @@
 ---
 title: 连接 DeepSeek
-description: 将 DeepSeek 官方 API 配置为第一个模型提供商。
+description: 将 DeepSeek 官方 API 配置为 provider Connection。
 ---
 
-第一次配置 Devo provider 时，优先选 DeepSeek 官方 API 的 Anthropic 兼容路径。它使用 DeepSeek 的 Anthropic API 格式，并允许 Devo 通过模型提供商路由 provider-hosted `web_search` 和 `web_fetch`，不必先配置单独的第三方搜索服务。
+DeepSeek 官方 API 是 Devo 很适合的第一个 Connection。建议优先使用 Anthropic 兼容路径，
+这样 Devo 可以使用 provider-hosted web 能力。
 
-只有在明确需要 OpenAI Chat Completions 兼容性时，才使用 OpenAI 兼容路径。该路径可能需要另外配置本地或第三方 web search。
+官方参考：
 
-DeepSeek 在官方文档中发布当前 base URL 和模型名称：
-
-- [Your First API Call](https://api-docs.deepseek.com/)
+- [DeepSeek API docs](https://api-docs.deepseek.com/)
 - [Anthropic API](https://api-docs.deepseek.com/guides/anthropic_api)
-- [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing)
+- [Models and Pricing](https://api-docs.deepseek.com/quick_start/pricing)
 
-最后一次核对 DeepSeek 官方文档：2026-06-14。
+## 创建 Connection
 
-## 开始前
-
-在 [DeepSeek Platform](https://platform.deepseek.com/api_keys) 创建 DeepSeek API key。
-
-模型名称应使用 DeepSeek 官方文档中的当前名称。截至上面的核对时间，主要 API 模型名称是：
-
-| 模型名称 | 适用场景 |
-| --- | --- |
-| `deepseek-v4-pro` | 更复杂的编程、推理和 Agent 任务。 |
-| `deepseek-v4-flash` | 需要更低成本的常规或高频工作。 |
-
-新配置不要使用 `deepseek-chat` 或 `deepseek-reasoner` 等旧名称。DeepSeek 将这些名称标记为兼容别名，并计划在 2026-07-24 废弃。
-
-## 推荐：Anthropic 兼容 DeepSeek
-
-在希望使用 Devo 的仓库中运行 onboarding：
+先在 [DeepSeek Platform](https://platform.deepseek.com/api_keys) 创建 API key，然后运行：
 
 ```bash
 cd /path/to/your/repo
 devo onboard
 ```
 
-onboarding 询问提供商信息时，选择 Anthropic 兼容提供商方法：
+选择 DeepSeek provider template，确认只读 endpoint，输入 API key，选择 model 并确认。
+推荐值如下：
 
-| 提示 | 值 |
+| 设置 | 值 |
 | --- | --- |
-| Invocation method | `Anthropic Messages` |
 | Base URL | `https://api.deepseek.com/anthropic` |
-| API key | 你的 DeepSeek API key |
-| Model name | 当前 DeepSeek 模型名称，例如 `deepseek-v4-pro` 或 `deepseek-v4-flash` |
+| Wire API | `anthropic_messages` |
+| Model | DeepSeek 当前支持的 model id |
 
-如果 onboarding 提供验证，保持启用。验证会确认 Devo 能用所选 base URL、API key 和模型名称访问提供商。
+API key 会保存到用户级 `auth.json`。`providers.json` 只保存 credential 引用和 Connection 的
+model record。
 
-onboarding 完成后，在同一个仓库启动 Devo：
+## 手动配置
 
-```bash
-devo
+用户 Connection 使用 `<DEVO_HOME>/providers.json`，工作区覆盖项使用
+`<workspace>/.devo/providers.json`：
+
+```json
+{
+  "model": "deepseek/deepseek-v4-flash",
+  "small_model": "deepseek/deepseek-v4-flash",
+  "provider": {
+    "deepseek": {
+      "name": "DeepSeek Anthropic",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "credential": "deepseek_api_key",
+      "wire_api": "anthropic_messages",
+      "web_search": {"mode": "provider"},
+      "web_fetch": {"mode": "provider"},
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro",
+          "default_reasoning_effort": "high"
+        },
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash",
+          "default_reasoning_effort": "high"
+        }
+      }
+    }
+  }
+}
 ```
 
-## 手动 Anthropic 兼容配置
-
-多数情况下用 `devo onboard`。手动配置用于机器预置，或用于审查 Devo 会保存什么。
-
-把提供商和模型绑定配置写入：
-
-```text
-<DEVO_HOME>/config.toml
-```
-
-如果未设置 `DEVO_HOME`，Devo 使用默认用户配置目录：
-
-| 平台 | 默认 `DEVO_HOME` |
-| --- | --- |
-| macOS/Linux | `~/.devo` |
-| Windows | `C:/Users/your-username/.devo` |
-
-```toml
-[defaults]
-model_binding = "deepseek-v4-pro-deepseek-anthropic"
-
-[providers.deepseek-anthropic]
-enabled = true
-name = "DeepSeek Anthropic"
-base_url = "https://api.deepseek.com/anthropic"
-credential = "deepseek_api_key"
-wire_apis = ["anthropic_messages"]
-
-[providers.deepseek-anthropic.web_search]
-mode = "provider"
-
-[providers.deepseek-anthropic.web_fetch]
-mode = "provider"
-
-[model_bindings.deepseek-v4-pro-deepseek-anthropic]
-enabled = true
-model_slug = "deepseek-v4-pro"
-provider = "deepseek-anthropic"
-request_model = "deepseek-v4-pro"
-display_name = "DeepSeek V4 Pro"
-invocation_method = "anthropic_messages"
-default_reasoning_effort = "high"
-```
-
-把 API key 存入：
-
-```text
-<DEVO_HOME>/auth.json
-```
+密钥单独保存到 `<DEVO_HOME>/auth.json`：
 
 ```json
 {
@@ -116,79 +79,39 @@ default_reasoning_effort = "high"
 }
 ```
 
-字段：
+Provider map key（`deepseek`）和嵌套 model map key 组成稳定的 `provider/model` identity。
+不再需要单独的 binding、slug、request-model 或 description 字段。
 
-| 字段 | 含义 |
-| --- | --- |
-| `base_url` | DeepSeek Anthropic 格式端点。 |
-| `credential` | `auth.json` 中 API key 的 id。 |
-| `wire_apis` | 该 provider entry 支持的协议。 |
-| `model_slug` | Devo 本地模型元数据 id。 |
-| `request_model` | 发给 DeepSeek 的模型字符串。 |
-| `invocation_method` | 此 binding 使用的协议。 |
+## OpenAI 兼容替代路径
 
-## OpenAI 兼容 DeepSeek
+如果明确需要 DeepSeek 的 OpenAI Chat Completions 格式，可以创建单独的 Connection：
 
-当你想通过 OpenAI Chat Completions wire format 使用 DeepSeek 时，使用此路径。
-
-onboarding 值：
-
-| 提示 | 值 |
-| --- | --- |
-| Invocation method | `OpenAI Chat Completions` |
-| Base URL | `https://api.deepseek.com` |
-| API key | 你的 DeepSeek API key |
-| Model name | 当前 DeepSeek 模型名称，例如 `deepseek-v4-pro` 或 `deepseek-v4-flash` |
-
-手动配置：
-
-```toml
-[defaults]
-model_binding = "deepseek-v4-pro-deepseek-openai"
-
-[providers.deepseek-openai]
-enabled = true
-name = "DeepSeek OpenAI Compatible"
-base_url = "https://api.deepseek.com"
-credential = "deepseek_api_key"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.deepseek-v4-pro-deepseek-openai]
-enabled = true
-model_slug = "deepseek-v4-pro"
-provider = "deepseek-openai"
-request_model = "deepseek-v4-pro"
-display_name = "DeepSeek V4 Pro"
-invocation_method = "openai_chat_completions"
-default_reasoning_effort = "high"
+```json
+{
+  "model": "deepseek-openai/deepseek-v4-flash",
+  "provider": {
+    "deepseek-openai": {
+      "name": "DeepSeek OpenAI Compatible",
+      "base_url": "https://api.deepseek.com",
+      "credential": "deepseek_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "deepseek-v4-flash": {"name": "DeepSeek V4 Flash"}
+      }
+    }
+  }
+}
 ```
 
-这条路径能让 Devo 调用 DeepSeek，但不提供 provider-hosted search。若 OpenAI 兼容 DeepSeek 也需要 web search，应配置 Devo 的本地或第三方 `web_search` 路径。
-
-## 检查配置
+## 验证
 
 运行：
 
 ```bash
 devo doctor
-```
-
-然后启动交互会话：
-
-```bash
 devo
 ```
 
-发送第一条只读 prompt，同时检查仓库上下文和 provider 访问：
-
-```text
-Explain this repository's main runtime path. Do not edit files yet.
-```
-
-如果请求失败，检查：
-
-- API key 是否存在于 `auth.json`。
-- `config.toml` 中的 `credential` 是否匹配 `auth.json` 中的 credential id。
-- `base_url` 是否匹配所选 invocation method。
-- `request_model` 是否是当前支持的 DeepSeek 模型名称。
-- `invocation_method` 是否列在 provider 的 `wire_apis` 中。
+如果失败，检查 credential id 是否匹配 `auth.json`、base URL 是否匹配 wire API，以及嵌套的
+model id 是否仍受 DeepSeek 支持。需要更换 endpoint 或 credential 时，从 `devo onboard` 断开
+并重新连接该 Connection。

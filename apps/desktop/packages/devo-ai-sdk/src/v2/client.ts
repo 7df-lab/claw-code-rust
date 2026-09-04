@@ -17,11 +17,21 @@ import {
 	toolPartFromUpdate,
 } from "./native-client-support"
 import type {
+	ProviderDisconnectParams,
+	ProviderDisconnectResult,
+	ProviderDiscoverParams,
+	ProviderDiscoverResult,
+	ProviderInfo,
+	ProviderListResult,
+	ProviderModelInfo,
+	ProviderModelRemoveParams,
+	ProviderModelRemoveResult,
+	ProviderModelVariant,
+	ProviderUpsertParams,
+	ProviderUpsertResult,
 	ProviderValidateParams,
 	ProviderValidateResult,
-	ProviderVendorListResult,
-	ProviderVendorUpsertParams,
-	ProviderVendorUpsertResult,
+	InputModality,
 	InputItem,
 	TurnStartResult,
 	WorkspaceChangeCoverage,
@@ -163,14 +173,25 @@ export type ToolStateCompleted = any
 export type UserMessage = any
 export type Worktree = any
 export type {
-	ProviderModelBinding,
+	ProviderDisconnectParams,
+	ProviderDisconnectResult,
+	ProviderDiscoverParams,
+	ProviderDiscoverResult,
+	ProviderInfo,
+	ProviderListResult,
+	ProviderModelInfo,
+	ProviderModelRemoveParams,
+	ProviderModelRemoveResult,
+	ProviderModelVariant,
+	ProviderUpsertParams,
+	ProviderUpsertResult,
 	ProviderValidateParams,
 	ProviderValidateResult,
-	ProviderVendor,
-	ProviderVendorListResult,
-	ProviderVendorUpsertParams,
-	ProviderVendorUpsertResult,
 	ProviderWireApi,
+	InputModality,
+	ReasoningCapability,
+	ReasoningEffort,
+	ReasoningLevelChoice,
 	WorkspaceChangeAttribution,
 	WorkspaceChangeBase,
 	WorkspaceChangeCoverage,
@@ -187,6 +208,24 @@ export type {
 	WorkspaceDiffDetail,
 } from "./generated/native"
 
+// ── Canonical provider/model catalog types (L2-DES-MODEL-002) ──
+
+/** Canonical provider/model types generated from the Native protocol schema. */
+export type CatalogWireApi = ProviderWireApi
+export type CatalogModelVariant = ProviderModelVariant
+export type CatalogModelInfo = ProviderModelInfo
+export type CatalogProviderInfo = ProviderInfo
+export type ProviderCatalogListResult = ProviderListResult
+export type CatalogProviderUpsertParams = ProviderUpsertParams
+export type CatalogProviderUpsertResult = ProviderUpsertResult
+export type CatalogProviderDisconnectParams = ProviderDisconnectParams
+export type CatalogProviderDisconnectResult = ProviderDisconnectResult
+export type CatalogProviderModelRemoveParams = ProviderModelRemoveParams
+export type CatalogProviderModelRemoveResult = ProviderModelRemoveResult
+export type CatalogProviderValidateParams = ProviderValidateParams
+export type CatalogProviderValidateResult = ProviderValidateResult
+export type CatalogProviderDiscoverParams = ProviderDiscoverParams
+export type CatalogProviderDiscoverResult = ProviderDiscoverResult
 export type WorkspaceChangesReadOptions = {
 	sessionID: string
 	cwd?: string
@@ -579,58 +618,6 @@ function workspaceChangeStats(value: unknown): WorkspaceChangeStats {
 	}
 }
 
-// ── Canonical provider conversions (ratified #11) ──
-
-function canonicalProviderVendorWire(vendor: ProviderVendor): Record<string, unknown> {
-	return {
-		name: vendor.name,
-		...(vendor.base_url != null ? { baseUrl: vendor.base_url } : {}),
-		...(vendor.credential != null ? { credential: vendor.credential } : {}),
-		...(vendor.headers != null ? { headers: vendor.headers } : {}),
-		wireApis: vendor.wire_apis,
-		enabled: vendor.enabled,
-	}
-}
-
-function canonicalModelBindingWire(binding: ProviderModelBinding): Record<string, unknown> {
-	return {
-		bindingId: binding.binding_id,
-		modelSlug: binding.model_slug,
-		provider: binding.provider,
-		requestModel: binding.request_model,
-		...(binding.display_name != null ? { displayName: binding.display_name } : {}),
-		invocationMethod: binding.invocation_method,
-		...(binding.default_reasoning_effort != null
-			? { defaultReasoningEffort: binding.default_reasoning_effort }
-			: {}),
-		enabled: binding.enabled,
-	}
-}
-
-function legacyProviderVendorFromCanonical(vendor: Record<string, unknown>): ProviderVendor {
-	return {
-		name: String(vendor.name ?? ""),
-		base_url: (vendor.baseUrl as string | null) ?? null,
-		credential: (vendor.credential as string | null) ?? null,
-		headers: (vendor.headers as string | null) ?? null,
-		wire_apis: (vendor.wireApis ?? []) as ProviderVendor["wire_apis"],
-		enabled: Boolean(vendor.enabled),
-	}
-}
-
-function legacyModelBindingFromCanonical(binding: Record<string, unknown>): ProviderModelBinding {
-	return {
-		binding_id: String(binding.bindingId ?? ""),
-		model_slug: String(binding.modelSlug ?? ""),
-		provider: String(binding.provider ?? ""),
-		request_model: String(binding.requestModel ?? ""),
-		display_name: (binding.displayName as string | null) ?? null,
-		invocation_method: binding.invocationMethod as ProviderModelBinding["invocation_method"],
-		default_reasoning_effort: (binding.defaultReasoningEffort as string | null) ?? null,
-		enabled: Boolean(binding.enabled),
-	}
-}
-
 /** Canonical `model/preferences` wire shape (ratified #12). */
 type PreferencesOptionWire = {
 	value: string
@@ -942,6 +929,39 @@ function errorRecord(error: unknown): Record<string, unknown> | undefined {
 	}
 }
 
+/** Map a native turn failure onto the Desktop session/assistant error shape. */
+function assistantErrorFromTurnFailure(
+	turnStatus: string,
+	turnError: Record<string, unknown> | undefined,
+): { name: string; data: Record<string, unknown> } | undefined {
+	const message =
+		typeof turnError?.message === "string" && turnError.message.trim()
+			? turnError.message.trim()
+			: undefined
+	if (!message) {
+		// Follow-up `turn/completed` after TurnFailed has status failed but no
+		// error payload — do not invent a generic message that would clobber UI.
+		return undefined
+	}
+	const code =
+		typeof turnError?.errorCode === "string"
+			? turnError.errorCode
+			: typeof turnError?.error_code === "string"
+				? turnError.error_code
+				: turnStatus === "failed"
+					? "TurnFailed"
+					: "Error"
+	const details = objectRecord(turnError?.details)
+	return {
+		name: code,
+		data: {
+			message,
+			...(code !== "Error" ? { code } : {}),
+			...(details ?? {}),
+		},
+	}
+}
+
 function settingsErrorCode(error: unknown): string | undefined {
 	const record = errorRecord(error)
 	if (typeof record?.code === "string") return record.code
@@ -954,6 +974,24 @@ function settingsErrorCode(error: unknown): string | undefined {
 		}
 	}
 	return undefined
+}
+
+/** True when the Native server reports the session is gone / never existed. */
+export function isSessionNotFoundError(error: unknown): boolean {
+	const code = settingsErrorCode(error)
+	const normalizedCode = code?.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()
+	if (normalizedCode === "session_not_found") return true
+	const record = errorRecord(error)
+	if (typeof record?.code === "string") {
+		const recordCode = record.code.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()
+		if (recordCode === "session_not_found") return true
+	}
+	const message = error instanceof Error ? error.message : String(error)
+	return (
+		/session does not exist/i.test(message) ||
+		/^session .+ not found$/i.test(message) ||
+		/session id is not addressable by this server/i.test(message)
+	)
 }
 
 function isTransientSessionSettingsError(error: unknown): boolean {
@@ -1111,6 +1149,8 @@ class NativeClient {
 	private sessionSettingsQueues = new Map<string, SessionSettingsQueue>()
 	private lastEventTime = 0
 	private referenceSearchSession: ReferenceSearchSession | null = null
+	/** >0 while applying subscription create replay — must not bump sidebar sort keys. */
+	private subscriptionReplayDepth = 0
 
 	constructor(private readonly options: CreateDevoClientOptions) {}
 	project = {
@@ -1169,13 +1209,24 @@ class NativeClient {
 		},
 		queue: {
 			list: async (params: { sessionID: string }) => {
-				await this.ensureSessionSubscription(params.sessionID)
-				const result = (await this.requestCanonical("session/queue/list", {
-					sessionId: params.sessionID,
-				})) as { entries?: unknown }
-				const entries = parseQueueWireEntries(result.entries)
-				this.emitQueueSnapshot(params.sessionID, entries, "sync")
-				return { data: { entries } }
+				// Historical sessions show up in session/list but are not
+				// addressable until session/resume. Composer refresh races
+				// message load on open, so wait for load before queue/list.
+				try {
+					await this.loadSession(params.sessionID)
+					const result = (await this.requestCanonical("session/queue/list", {
+						sessionId: params.sessionID,
+					})) as { entries?: unknown }
+					const entries = parseQueueWireEntries(result.entries)
+					this.emitQueueSnapshot(params.sessionID, entries, "sync")
+					return { data: { entries } }
+				} catch (error) {
+					if (isSessionNotFoundError(error)) {
+						this.emitQueueSnapshot(params.sessionID, [], "sync")
+						return { data: { entries: [] } }
+					}
+					throw error
+				}
 			},
 			push: async (params: {
 				sessionID: string
@@ -1312,17 +1363,25 @@ class NativeClient {
 			data: await this.getSessionById(params.sessionID),
 		}),
 		diff: async (params: { sessionID: string }) => {
-			const result = (await this.requestCanonical("workspace/changes/read", {
-				sessionId: params.sessionID,
-				scopes: ["uncommitted"],
-				diffDetail: "full",
-				maxDiffBytes: 2_000_000,
-			})) as { views?: Array<Record<string, unknown>> }
-			return {
-				data: (result.views ?? [])
-					.map((view) => view.unifiedDiff)
-					.filter((diff): diff is string => typeof diff === "string" && diff.length > 0)
-					.map((diff) => ({ diff })),
+			try {
+				const result = (await this.requestCanonical("workspace/changes/read", {
+					sessionId: params.sessionID,
+					scopes: ["uncommitted"],
+					diffDetail: "full",
+					maxDiffBytes: 2_000_000,
+				})) as { views?: Array<Record<string, unknown>> }
+				return {
+					data: (result.views ?? [])
+						.map((view) => view.unifiedDiff)
+						.filter((diff): diff is string => typeof diff === "string" && diff.length > 0)
+						.map((diff) => ({ diff })),
+				}
+			} catch (error) {
+				if (isSessionNotFoundError(error)) {
+					this.dropMissingSession(params.sessionID)
+					return { data: [] }
+				}
+				throw error
 			}
 		},
 		revert: async (params: { sessionID: string }) => ({
@@ -1498,7 +1557,13 @@ class NativeClient {
 				const canonical = (await this.requestCanonical(
 					"workspace/changes/read",
 					wireParams,
-				)) as { views?: Array<Record<string, unknown>> }
+				).catch((error) => {
+					if (isSessionNotFoundError(error)) {
+						this.dropMissingSession(params.sessionID)
+						return { views: [] }
+					}
+					throw error
+				})) as { views?: Array<Record<string, unknown>> }
 				const data: WorkspaceChangesReadResult = {
 					views: (canonical.views ?? []).map(legacyWorkspaceChangeViewFromCanonical),
 				}
@@ -1527,10 +1592,18 @@ class NativeClient {
 
 	goal = {
 		status: async (params: { sessionID: string }) => {
-			const result = (await this.requestCanonical("session/goal/read", {
-				sessionId: params.sessionID,
-			})) as { goal?: unknown }
-			return { data: result.goal }
+			try {
+				const result = (await this.requestCanonical("session/goal/read", {
+					sessionId: params.sessionID,
+				})) as { goal?: unknown }
+				return { data: result.goal }
+			} catch (error) {
+				if (isSessionNotFoundError(error)) {
+					this.dropMissingSession(params.sessionID)
+					return { data: null }
+				}
+				throw error
+			}
 		},
 		pause: async (params: { sessionID: string }) => {
 			const result = (await this.canonicalGoalTransition(
@@ -1649,51 +1722,34 @@ class NativeClient {
 
 	provider = {
 		list: async () => {
-			// Canonical provider/list (ratified #11): camelCase wire; vendors
-			// convert back to the generated snake shape for callers.
-			const result = (await this.requestCanonical("provider/list", {})) as {
-				providers?: Array<Record<string, unknown>>
-			}
-			const data: ProviderVendorListResult = {
-				provider_vendors: (result.providers ?? []).map(legacyProviderVendorFromCanonical),
-			}
+			const data = (await this.requestCanonical("provider/list", {})) as ProviderListResult
 			return { data }
 		},
 		validate: async (params: ProviderValidateParams) => {
-			const result = (await this.requestCanonical("provider/validate", {
-				providerVendor: canonicalProviderVendorWire(params.provider_vendor),
-				modelBinding: canonicalModelBindingWire(params.model_binding),
-				...(params.api_key !== undefined && params.api_key !== null
-					? { apiKey: params.api_key }
-					: {}),
-			})) as { replyPreview?: string }
-			const data: ProviderValidateResult = { reply_preview: result.replyPreview ?? "" }
+			const data = (await this.requestCanonical("provider/validate", params)) as ProviderValidateResult
 			return { data }
 		},
-		upsert: async (params: ProviderVendorUpsertParams) => {
-			const result = (await this.requestCanonical("provider/upsert", {
-				providerVendor: canonicalProviderVendorWire(params.provider_vendor),
-				...(params.model_binding
-					? { modelBinding: canonicalModelBindingWire(params.model_binding) }
-					: {}),
-				...(params.default_model_binding !== undefined && params.default_model_binding !== null
-					? { defaultModelBinding: params.default_model_binding }
-					: {}),
-				...(params.api_key !== undefined && params.api_key !== null
-					? { apiKey: params.api_key }
-					: {}),
-			})) as {
-				providerVendor?: Record<string, unknown>
-				modelBinding?: Record<string, unknown>
-			}
-			const data: ProviderVendorUpsertResult = {
-				provider_vendor: legacyProviderVendorFromCanonical(result.providerVendor ?? {}),
-				...(result.modelBinding
-					? { model_binding: legacyModelBindingFromCanonical(result.modelBinding) }
-					: {}),
-			} as ProviderVendorUpsertResult
+		upsert: async (params: ProviderUpsertParams) => {
+			const data = (await this.requestCanonical("provider/upsert", params)) as ProviderUpsertResult
 			this.invalidateConfigOptionCaches()
 			return { data }
+		},
+		disconnect: async (params: ProviderDisconnectParams): Promise<ProviderDisconnectResult> => {
+			const result = (await this.requestCanonical("provider/disconnect", params)) as ProviderDisconnectResult
+			this.invalidateConfigOptionCaches()
+			return result
+		},
+		modelRemove: async (params: ProviderModelRemoveParams): Promise<ProviderModelRemoveResult> => {
+			const result = (await this.requestCanonical("provider/model/remove", params)) as ProviderModelRemoveResult
+			this.invalidateConfigOptionCaches()
+			return result
+		},
+		discover: async (params: ProviderDiscoverParams): Promise<ProviderDiscoverResult> => {
+			const result = (await this.requestCanonical("provider/discover", params)) as ProviderDiscoverResult
+			// Discover mutates the connection model directory; composer selectors
+			// read model/preferences which must not keep a pre-discover snapshot.
+			this.invalidateConfigOptionCaches()
+			return result
 		},
 		auth: async () => ({ data: [] }),
 		oauth: {
@@ -1701,16 +1757,6 @@ class NativeClient {
 			callback: async (_params: unknown) => ({ data: null }),
 		},
 	}
-
-	auth = {
-		set: async (_params: unknown) => ({ data: null }),
-		remove: async (_params: unknown) => ({ data: null }),
-	}
-
-	part = {
-		delete: async (_params: unknown) => ({ data: null }),
-	}
-
 	private async listProjects(): Promise<Project[]> {
 		const sessions = await this.listSessions()
 		const byDirectory = new Map<string, Project>()
@@ -1790,7 +1836,12 @@ class NativeClient {
 		return session
 		}
 	private async sessionMessages(sessionId: string, limit?: number): Promise<Array<{ info: Message; parts: Part[] }>> {
-		await this.loadSession(sessionId, limit)
+		try {
+			await this.loadSession(sessionId, limit)
+		} catch (error) {
+			if (isSessionNotFoundError(error)) return []
+			throw error
+		}
 		const messages = recentMessages(this.messages.get(sessionId) ?? [], limit)
 		return messages.map((info) => ({
 			info,
@@ -1811,46 +1862,61 @@ class NativeClient {
 		}
 	}
 
+	private dropMissingSession(sessionId: string): void {
+		const { directory } = this.forgetSession(sessionId)
+		this.subscriptions.delete(sessionId)
+		this.sessionSettingsQueues.delete(sessionId)
+		this.emitSessionDeleted(sessionId, directory)
+	}
+
 	private async loadSessionOnce(sessionId: string, limit?: number): Promise<void> {
 		await this.ensureInitialized()
-		const session = await this.getSessionById(sessionId)
-		const cwd = session?.directory ?? this.sessionDirectories.get(sessionId)
-		if (!cwd) throw new Error(`session ${sessionId} not found`)
-		const resumed = (await this.requestCanonical("session/resume", {
-			sessionId,
-		})) as { session: Record<string, unknown>; lastContextOccupancy?: unknown; last_context_occupancy?: unknown }
-		const enriched = this.rememberNativeSession(resumed.session)
-		// The resume response carries the authoritative persisted model /
-		// settings for the session; cold `session/list` snapshots may lack
-		// them. Surface the enrichment so renderer session stores re-seed the
-		// composer — without this, the enriched snapshot stays buried in this
-		// client's internal cache and restored sessions fall back to defaults.
-		this.emit(enriched.directory ?? cwd, {
-			type: "session.updated",
-			properties: { info: enriched, session: enriched },
-		})
-		this.emitContextUsage(
-			sessionId,
-			resumed.lastContextOccupancy ?? resumed.last_context_occupancy,
-		)
-		let cursor: string | undefined
-		do {
-			const page = (await this.requestCanonical("session/items/list", {
+		try {
+			const session = await this.getSessionById(sessionId)
+			const cwd = session?.directory ?? this.sessionDirectories.get(sessionId)
+			if (!cwd) throw new Error(`session ${sessionId} not found`)
+			const resumed = (await this.requestCanonical("session/resume", {
 				sessionId,
-				...(cursor ? { cursor } : {}),
-				limit: 500,
-			})) as { data?: Array<Record<string, unknown>>; nextCursor?: string | null }
-			for (const item of page.data ?? []) {
-				this.handleNativeItemEnvelope(item, nativeItemNotificationMethod(item))
+			})) as { session: Record<string, unknown>; lastContextOccupancy?: unknown; last_context_occupancy?: unknown }
+			const enriched = this.rememberNativeSession(resumed.session)
+			// The resume response carries the authoritative persisted model /
+			// settings for the session; cold `session/list` snapshots may lack
+			// them. Surface the enrichment so renderer session stores re-seed the
+			// composer — without this, the enriched snapshot stays buried in this
+			// client's internal cache and restored sessions fall back to defaults.
+			this.emit(enriched.directory ?? cwd, {
+				type: "session.updated",
+				properties: { info: enriched, session: enriched },
+			})
+			this.emitContextUsage(
+				sessionId,
+				resumed.lastContextOccupancy ?? resumed.last_context_occupancy,
+			)
+			let cursor: string | undefined
+			do {
+				const page = (await this.requestCanonical("session/items/list", {
+					sessionId,
+					...(cursor ? { cursor } : {}),
+					limit: 500,
+				})) as { data?: Array<Record<string, unknown>>; nextCursor?: string | null }
+				for (const item of page.data ?? []) {
+					this.handleNativeItemEnvelope(item, nativeItemNotificationMethod(item))
+				}
+				cursor = page.nextCursor ?? undefined
+			} while (cursor)
+			const queueResult = (await this.requestCanonical("session/queue/list", {
+				sessionId,
+			})) as { entries?: unknown }
+			this.emitQueueSnapshot(sessionId, parseQueueWireEntries(queueResult.entries), "sync")
+			await this.ensureSessionSubscription(sessionId)
+			this.loadedSessionLimits.set(sessionId, null)
+		} catch (error) {
+			if (isSessionNotFoundError(error)) {
+				this.dropMissingSession(sessionId)
+				throw error
 			}
-			cursor = page.nextCursor ?? undefined
-		} while (cursor)
-		const queueResult = (await this.requestCanonical("session/queue/list", {
-			sessionId,
-		})) as { entries?: unknown }
-		this.emitQueueSnapshot(sessionId, parseQueueWireEntries(queueResult.entries), "sync")
-		await this.ensureSessionSubscription(sessionId)
-		this.loadedSessionLimits.set(sessionId, null)
+			throw error
+		}
 	}
 
 	private async getSessionById(sessionId: string): Promise<Session | undefined> {
@@ -1878,7 +1944,16 @@ class NativeClient {
 		const usage = objectRecord(info.usage)
 		const total = objectRecord(usage?.total)
 		const created = parseTimestampMs(info.createdAt) ?? existing?.time.created ?? Date.now()
-		const updated = parseTimestampMs(info.lastActivityAt) ?? existing?.time.updated ?? created
+		const wireActivity = parseTimestampMs(info.lastActivityAt)
+		const existingActivity = Math.max(existing?.time.lastActivity ?? 0, existing?.time.updated ?? 0)
+		// Never let resume/snapshot lower a known activity timestamp — that alone
+		// can reshuffle the sidebar. Prefer the newer of wire vs in-memory.
+		const updated =
+			wireActivity != null
+				? Math.max(wireActivity, existingActivity)
+				: existingActivity > 0
+					? existingActivity
+					: created
 		const parent = objectRecord(info.parent)
 		const forkFromId =
 			typeof info.forkFromId === "string"
@@ -1966,8 +2041,12 @@ class NativeClient {
 	 * (agentsAtom / sidebar) recompute without a session/list refresh.
 	 * Native turn/item traffic does not carry session/metadataUpdated for
 	 * activity-only bumps — only title updates do — so the client owns live sync.
+	 *
+	 * Skipped during subscription replay: historical turn/item envelopes must
+	 * not reshuffle the sidebar when the user merely opens a session.
 	 */
 	private touchNativeSessionActivity(sessionId: string, at = Date.now()): void {
+		if (this.subscriptionReplayDepth > 0) return
 		const session = this.sessions.get(sessionId)
 		if (!session) return
 		const previous = Math.max(session.time.lastActivity ?? 0, session.time.updated ?? 0)
@@ -2259,7 +2338,18 @@ class NativeClient {
 				})
 				const startedAt = this.promptStartedAtBySession.get(sessionId) ?? 0
 				this.promptStartedAtBySession.delete(sessionId)
-				this.completeOpenAssistantMessages(sessionId, directory, startedAt)
+				// Native `TurnFailed` projects as `turn/completed` with `turn.error`
+				// (often followed by a completed notification without error). Surface
+				// the payload so Desktop can render session/assistant failure UI.
+				const turnError = objectRecord(turn?.error)
+				const assistantError = assistantErrorFromTurnFailure(turnStatus, turnError)
+				if (assistantError) {
+					this.emit(directory, {
+						type: "session.error",
+						properties: { sessionID: sessionId, error: assistantError },
+					})
+				}
+				this.completeOpenAssistantMessages(sessionId, directory, startedAt, assistantError)
 				this.pendingQuestions.forEach((pending, requestId) => {
 					if (pending.sessionId === sessionId) this.pendingQuestions.delete(requestId)
 				})
@@ -2284,6 +2374,36 @@ class NativeClient {
 						this.touchNativeSessionActivity(sessionId, activityAt)
 					}
 				}
+			}
+			return true
+		}
+		if (
+			method === "context/compactionStarted" ||
+			method === "context/compactionCompleted" ||
+			method === "context/compactionFailed"
+		) {
+			const sessionId = String(value.sessionId ?? "")
+			if (!sessionId) return true
+			const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
+			const status =
+				method === "context/compactionFailed"
+					? "failed"
+					: method === "context/compactionCompleted"
+						? "completed"
+						: "started"
+			this.emit(directory, {
+				type: `session.compaction.${status}`,
+				properties: { sessionID: sessionId },
+			})
+			// Prefer item/started|completed for durable transcript markers.
+			// context/compactionStarted has no itemId — only update session atom.
+			const itemId = String(value.itemId ?? "")
+			if (itemId && status !== "failed") {
+				this.upsertCompaction(sessionId, directory, {
+					itemId,
+					status,
+					turnId: String(value.turnId ?? ""),
+				})
 			}
 			return true
 		}
@@ -2354,14 +2474,20 @@ class NativeClient {
 		if (method === "turn/usage/updated" || method === "session/usage/updated") {
 			const sessionId = String(value.sessionId ?? "")
 			const usage = objectRecord(value.usage) ?? {}
-			const total = objectRecord(usage.total) ?? usage
+			// Native wire shape matches TUI: usage.query.totalTokens is the
+			// last-query display total. Fall back to older/flat shapes.
+			const query = objectRecord(usage.query) ?? objectRecord(usage.total) ?? usage
+			const used = Number(
+				query.totalTokens ?? query.total_tokens ?? value.lastQueryTotalTokens ?? 0,
+			)
+			const size = Number(value.contextWindow ?? value.context_window ?? 0)
 			if (sessionId) {
 				this.emit(this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd(), {
 					type: "session.usage.updated",
 					properties: {
 						sessionID: sessionId,
-						used: Number(total.totalTokens ?? value.lastQueryInputTokens ?? 0),
-						size: Number(value.contextWindow ?? 0),
+						used,
+						size,
 						cost: 0,
 					},
 				})
@@ -2677,16 +2803,25 @@ class NativeClient {
 	private async ensureSessionSubscription(sessionId: string): Promise<void> {
 		if (this.subscriptions.has(sessionId)) return
 		const after = this.subscriptionCursors.get(sessionId) ?? []
-		const result = (await this.requestCanonical("subscription/create", {
-			selectors: [{ kind: "session", sessionId }],
-			includeSnapshot: true,
-			after,
-		})) as {
+		let result: {
 			subscriptionId: string
 			snapshots?: Array<Record<string, unknown>>
 			replay?: Array<Record<string, unknown>>
 			cursors?: Array<{ streamId: string; seq: number }>
 			pendingControlRequests?: Array<Record<string, unknown>>
+		}
+		try {
+			result = (await this.requestCanonical("subscription/create", {
+				selectors: [{ kind: "session", sessionId }],
+				includeSnapshot: true,
+				after,
+			})) as typeof result
+		} catch (error) {
+			if (isSessionNotFoundError(error)) {
+				this.dropMissingSession(sessionId)
+				return
+			}
+			throw error
 		}
 		const cursors = result.cursors ?? []
 		this.subscriptions.set(sessionId, { subscriptionId: result.subscriptionId, cursors })
@@ -2694,15 +2829,20 @@ class NativeClient {
 		for (const snapshot of result.snapshots ?? []) {
 			this.applySubscriptionSessionSnapshot(snapshot)
 		}
-		for (const envelope of result.replay ?? []) {
-			const notification = objectRecord(envelope.notification)
-			if (notification && typeof notification.method === "string") {
-				this.handleNativeNotification(notification.method, notification.params)
+		this.subscriptionReplayDepth += 1
+		try {
+			for (const envelope of result.replay ?? []) {
+				const notification = objectRecord(envelope.notification)
+				if (notification && typeof notification.method === "string") {
+					this.handleNativeNotification(notification.method, notification.params)
+				}
 			}
-		}
-		for (const pending of result.pendingControlRequests ?? []) {
-			const item = objectRecord(pending.item)
-			if (item) this.handleNativeItemEnvelope(item, "item/started")
+			for (const pending of result.pendingControlRequests ?? []) {
+				const item = objectRecord(pending.item)
+				if (item) this.handleNativeItemEnvelope(item, "item/started")
+			}
+		} finally {
+			this.subscriptionReplayDepth -= 1
 		}
 		if (cursors.length > 0) {
 			await this.requestCanonical("subscription/ack", { subscriptionId: result.subscriptionId, cursors })
@@ -2711,7 +2851,14 @@ class NativeClient {
 
 	private async ensureKnownSessionSubscriptions(): Promise<void> {
 		const sessions = await this.listSessions()
-		for (const session of sessions) await this.ensureSessionSubscription(session.id)
+		for (const session of sessions) {
+			try {
+				await this.ensureSessionSubscription(session.id)
+			} catch (error) {
+				if (isSessionNotFoundError(error)) continue
+				throw error
+			}
+		}
 	}
 
 	private emitPermissionAsked(
@@ -3042,15 +3189,30 @@ class NativeClient {
 		},
 	): void {
 		if (update.status === "failed") return
-		const messageId = `compaction-${update.itemId}`
+		const metaBase = {
+			[DEVO_ITEM_KIND_META]: "context_compaction",
+			...(update.turnId ? { [DEVO_TURN_ID_META]: update.turnId } : {}),
+		}
+		// Keep started and completed as distinct transcript markers so both
+		// remain visible after the lifecycle finishes.
+		if (update.status === "completed") {
+			this.replaceText(sessionId, directory, "assistant", {
+				messageId: `compaction-${update.itemId}-started`,
+				content: { text: COMPACTION_STARTED_LABEL },
+				_meta: {
+					...metaBase,
+					[DEVO_COMPACTION_STATUS_META]: "started",
+				},
+			})
+		}
+		const messageId = `compaction-${update.itemId}-${update.status}`
 		const label = update.status === "completed" ? COMPACTION_COMPLETED_LABEL : COMPACTION_STARTED_LABEL
 		this.replaceText(sessionId, directory, "assistant", {
 			messageId,
 			content: { text: label },
 			_meta: {
-				[DEVO_ITEM_KIND_META]: "context_compaction",
+				...metaBase,
 				[DEVO_COMPACTION_STATUS_META]: update.status,
-				...(update.turnId ? { [DEVO_TURN_ID_META]: update.turnId } : {}),
 			},
 		})
 	}
@@ -3283,22 +3445,29 @@ class NativeClient {
 		sessionId: string,
 		directory: string,
 		promptStartedAt: number,
+		error?: { name: string; data: Record<string, unknown> },
 	): void {
 		const messages = this.messages.get(sessionId)
 		if (!messages) return
 		let completedAt: number | null = null
 		for (let index = 0; index < messages.length; index++) {
 			const message = messages[index]
-			if (message.role !== "assistant" || message.time.completed != null) continue
+			if (message.role !== "assistant") continue
 			if (message.time.created < promptStartedAt) continue
-			completedAt ??= this.nextEventTime()
+			const needsComplete = message.time.completed == null
+			const needsError = error != null && message.error == null
+			if (!needsComplete && !needsError) continue
+			completedAt ??= message.time.completed ?? this.nextEventTime()
 			const updated = {
 				...message,
 				time: { ...message.time, completed: completedAt },
+				...(needsError ? { error } : {}),
 			} as Message
 			messages[index] = updated
 			this.emit(directory, { type: "message.updated", properties: { info: updated, message: updated } })
-			this.completeInFlightToolParts(sessionId, directory, updated.id, completedAt)
+			if (needsComplete) {
+				this.completeInFlightToolParts(sessionId, directory, updated.id, completedAt)
+			}
 		}
 	}
 
@@ -3553,6 +3722,10 @@ class NativeClient {
 				if (!result.session) throw new Error("session/metadata/update returned no session")
 				return this.rememberNativeSession(result.session)
 			} catch (error) {
+				if (isSessionNotFoundError(error)) {
+					this.dropMissingSession(sessionId)
+					throw error
+				}
 				const delay = SESSION_SETTINGS_RETRY_DELAYS_MS[retry]
 				if (delay === undefined || !isTransientSessionSettingsError(error)) throw error
 				await waitForSessionSettingsRetry(delay)

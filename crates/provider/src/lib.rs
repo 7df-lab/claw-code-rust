@@ -23,5 +23,5 @@ pub use recovery_hint::{
     AUTH_HINT, MODEL_NOT_FOUND_HINT, NETWORK_PROXY_HINT, recovery_hint_for_anyhow,
     recovery_hint_for_message,
 };
-pub(crate) use request::merge_extra_body;
+pub(crate) use request::{merge_extra_body, request_headers};
 pub use router::*;

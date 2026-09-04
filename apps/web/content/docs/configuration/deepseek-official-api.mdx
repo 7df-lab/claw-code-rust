@@ -30,42 +30,28 @@ Official references:
 Use this provider when you want DeepSeek through the Anthropic Messages wire
 API:
 
-```toml
-[defaults]
-model_binding = "deepseek-v4-pro-deepseek-anthropic"
-
-[providers.deepseek-anthropic]
-enabled = true
-name = "DeepSeek Anthropic"
-base_url = "https://api.deepseek.com/anthropic"
-credential = "deepseek_api_key"
-wire_apis = ["anthropic_messages"]
-
-[providers.deepseek-anthropic.web_search]
-mode = "provider"
-
-[providers.deepseek-anthropic.web_fetch]
-mode = "provider"
-
-[model_bindings.deepseek-v4-pro-deepseek-anthropic]
-enabled = true
-model_slug = "deepseek-v4-pro"
-provider = "deepseek-anthropic"
-request_model = "deepseek-v4-pro"
-display_name = "DeepSeek V4 Pro"
-invocation_method = "anthropic_messages"
-default_reasoning_effort = "high"
-```
-
-Store the API key in `<DEVO_HOME>/auth.json`:
-
 ```json
 {
-  "version": 1,
-  "credentials": {
-    "deepseek_api_key": {
-      "kind": "api_key",
-      "value": "sk-your-deepseek-api-key"
+  "model": "deepseek-anthropic/deepseek-v4-pro",
+  "provider": {
+    "deepseek-anthropic": {
+      "enabled": true,
+      "name": "DeepSeek Anthropic",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "credential": "deepseek_api_key",
+      "wire_api": "anthropic_messages",
+      "web_search": {"mode": "provider"},
+      "web_fetch": {"mode": "provider"},
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro",
+          "default_reasoning_effort": "high"
+        },
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash",
+          "default_reasoning_effort": "high"
+        }
+      }
     }
   }
 }
@@ -73,21 +59,11 @@ Store the API key in `<DEVO_HOME>/auth.json`:
 
 ## Flash Binding
 
-Add a second binding if you want both DeepSeek V4 Pro and DeepSeek V4 Flash in
-the `/model` picker:
+Add the second nested model (as shown above) if you want both DeepSeek V4 Pro
+and DeepSeek V4 Flash in the `/model` picker. Select the default with the
+top-level `model` field.
 
-```toml
-[model_bindings.deepseek-v4-flash-deepseek-anthropic]
-enabled = true
-model_slug = "deepseek-v4-flash"
-provider = "deepseek-anthropic"
-request_model = "deepseek-v4-flash"
-display_name = "DeepSeek V4 Flash"
-invocation_method = "anthropic_messages"
-default_reasoning_effort = "high"
-```
-
-Keep `[defaults].model_binding` pointed at whichever binding should start by
+Keep the top-level `model` pointed at whichever nested model should start by
 default.
 
 ## Why Anthropic-Compatible First
@@ -103,25 +79,24 @@ needs separate local or third-party configuration.
 Use this only when you specifically want the OpenAI Chat Completions-compatible
 DeepSeek path:
 
-```toml
-[defaults]
-model_binding = "deepseek-v4-pro-deepseek-openai"
-
-[providers.deepseek-openai]
-enabled = true
-name = "DeepSeek OpenAI Compatible"
-base_url = "https://api.deepseek.com"
-credential = "deepseek_api_key"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.deepseek-v4-pro-deepseek-openai]
-enabled = true
-model_slug = "deepseek-v4-pro"
-provider = "deepseek-openai"
-request_model = "deepseek-v4-pro"
-display_name = "DeepSeek V4 Pro"
-invocation_method = "openai_chat_completions"
-default_reasoning_effort = "high"
+```json
+{
+  "model": "deepseek-openai/deepseek-v4-pro",
+  "provider": {
+    "deepseek-openai": {
+      "name": "DeepSeek OpenAI Compatible",
+      "base_url": "https://api.deepseek.com",
+      "credential": "deepseek_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro",
+          "default_reasoning_effort": "high"
+        }
+      }
+    }
+  }
+}
 ```
 
 If you need search with this path, configure a local provider:
@@ -155,8 +130,8 @@ Explain the project structure. Do not edit files yet.
 
 If setup fails, check:
 
-- `credential` matches an id in `auth.json`;
+- `provider.<id>.credential` points to the API key in the user-scoped `auth.json`;
 - `base_url` matches the selected wire API;
-- `wire_apis` includes the binding `invocation_method`;
-- `request_model` is listed in current DeepSeek docs;
+- `wire_api` matches the endpoint protocol;
+- the nested model id is listed in current DeepSeek docs;
 - the API key has access to the selected model.

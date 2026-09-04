@@ -415,58 +415,58 @@ impl ServerRuntime {
         request_id: serde_json::Value,
         plan: &StoredRestorePlan,
         action: CommitAction,
-    ) -> Result<SessionRollbackCommitResult, CommitAttemptFailure> {
+    ) -> Result<SessionRollbackCommitResult, Box<CommitAttemptFailure>> {
         let retry_status = status_for_retry(&action);
         if self.runtime_active_turn_id(plan.session_id).await.is_some() {
-            return Err(CommitAttemptFailure {
+            return Err(Box::new(CommitAttemptFailure {
                 response: self.error_response(
                     request_id,
                     ProtocolErrorCode::TurnAlreadyRunning,
                     "cannot commit rollback while a turn is active",
                 ),
                 next_status: retry_status.clone(),
-            });
+            }));
         }
         let Some(session_handle) = self.session(plan.session_id).await else {
-            return Err(CommitAttemptFailure {
+            return Err(Box::new(CommitAttemptFailure {
                 response: self.error_response(
                     request_id,
                     ProtocolErrorCode::SessionNotFound,
                     "session does not exist",
                 ),
                 next_status: retry_status,
-            });
+            }));
         };
         let _state_change_guard = session_handle.lock_state_change().await;
         if self.runtime_active_turn_id(plan.session_id).await.is_some() {
-            return Err(CommitAttemptFailure {
+            return Err(Box::new(CommitAttemptFailure {
                 response: self.error_response(
                     request_id,
                     ProtocolErrorCode::TurnAlreadyRunning,
                     "cannot commit rollback while a turn is active",
                 ),
                 next_status: retry_status,
-            });
+            }));
         }
         let Some(source) = session_handle.export_runtime_session().await else {
-            return Err(CommitAttemptFailure {
+            return Err(Box::new(CommitAttemptFailure {
                 response: self.error_response(
                     request_id,
                     ProtocolErrorCode::SessionNotFound,
                     "session does not exist",
                 ),
                 next_status: retry_status,
-            });
+            }));
         };
         if history_fingerprint(&source.persisted_turn_items) != plan.history_fingerprint {
-            return Err(CommitAttemptFailure {
+            return Err(Box::new(CommitAttemptFailure {
                 response: self.error_response(
                     request_id,
                     ProtocolErrorCode::WorkspaceVersionConflict,
                     "session history changed after rollback preview",
                 ),
                 next_status: retry_status,
-            });
+            }));
         }
         if matches!(action, CommitAction::Full)
             && let Some(checkpoint) = plan.checkpoint.as_ref()
@@ -485,24 +485,24 @@ impl ServerRuntime {
             match workspace_matches {
                 Ok(true) => {}
                 Ok(false) => {
-                    return Err(CommitAttemptFailure {
+                    return Err(Box::new(CommitAttemptFailure {
                         response: self.error_response(
                             request_id,
                             ProtocolErrorCode::WorkspaceVersionConflict,
                             "workspace changed after rollback preview",
                         ),
                         next_status: RestorePlanStatus::Ready,
-                    });
+                    }));
                 }
                 Err(error) => {
-                    return Err(CommitAttemptFailure {
+                    return Err(Box::new(CommitAttemptFailure {
                         response: self.error_response(
                             request_id,
                             ProtocolErrorCode::InternalError,
                             format!("failed to validate workspace version: {error}"),
                         ),
                         next_status: RestorePlanStatus::Ready,
-                    });
+                    }));
                 }
             }
         }
@@ -525,24 +525,24 @@ impl ServerRuntime {
             {
                 Ok(true) => {}
                 Ok(false) => {
-                    return Err(CommitAttemptFailure {
+                    return Err(Box::new(CommitAttemptFailure {
                         response: self.error_response(
                             request_id,
                             ProtocolErrorCode::WorkspaceVersionConflict,
                             "workspace changed after the failed restore attempt",
                         ),
                         next_status: retry_status,
-                    });
+                    }));
                 }
                 Err(error) => {
-                    return Err(CommitAttemptFailure {
+                    return Err(Box::new(CommitAttemptFailure {
                         response: self.error_response(
                             request_id,
                             ProtocolErrorCode::InternalError,
                             format!("failed to validate recovery workspace version: {error}"),
                         ),
                         next_status: retry_status,
-                    });
+                    }));
                 }
             }
         }
@@ -559,13 +559,15 @@ impl ServerRuntime {
                 },
             )
             .await
-            .map_err(|message| CommitAttemptFailure {
-                response: self.error_response(
-                    request_id.clone(),
-                    ProtocolErrorCode::InvalidParams,
-                    message,
-                ),
-                next_status: retry_status.clone(),
+            .map_err(|message| {
+                Box::new(CommitAttemptFailure {
+                    response: self.error_response(
+                        request_id.clone(),
+                        ProtocolErrorCode::InvalidParams,
+                        message,
+                    ),
+                    next_status: retry_status.clone(),
+                })
             })?;
         let record = source.record.clone();
         let restored_file_count = match action {
@@ -588,12 +590,14 @@ impl ServerRuntime {
                     record.as_ref(),
                 )
                 .await
-                .map_err(|response| CommitAttemptFailure {
-                    response,
-                    next_status: RestorePlanStatus::WorkspaceCompletionPending {
-                        completed,
-                        restored_file_count,
-                    },
+                .map_err(|response| {
+                    Box::new(CommitAttemptFailure {
+                        response,
+                        next_status: RestorePlanStatus::WorkspaceCompletionPending {
+                            completed,
+                            restored_file_count,
+                        },
+                    })
                 })?;
                 restored_file_count
             }
@@ -607,24 +611,26 @@ impl ServerRuntime {
                         record.as_ref(),
                     )
                     .await
-                    .map_err(|failure| CommitAttemptFailure {
-                        response: failure.response,
-                        next_status: if let Some((completed, restored_file_count)) =
-                            failure.completion_pending
-                        {
-                            RestorePlanStatus::WorkspaceCompletionPending {
-                                completed,
-                                restored_file_count,
-                            }
-                        } else if let Some(expected_workspace_version) =
-                            failure.retry_workspace_version
-                        {
-                            RestorePlanStatus::WorkspaceRestoreRetry {
-                                expected_workspace_version,
-                            }
-                        } else {
-                            retry_status
-                        },
+                    .map_err(|failure| {
+                        Box::new(CommitAttemptFailure {
+                            response: failure.response,
+                            next_status: if let Some((completed, restored_file_count)) =
+                                failure.completion_pending
+                            {
+                                RestorePlanStatus::WorkspaceCompletionPending {
+                                    completed,
+                                    restored_file_count,
+                                }
+                            } else if let Some(expected_workspace_version) =
+                                failure.retry_workspace_version
+                            {
+                                RestorePlanStatus::WorkspaceRestoreRetry {
+                                    expected_workspace_version,
+                                }
+                            } else {
+                                retry_status
+                            },
+                        })
                     })?
                 } else {
                     0
@@ -641,7 +647,7 @@ impl ServerRuntime {
                 latest_turn_id,
             )
         {
-            return Err(CommitAttemptFailure {
+            return Err(Box::new(CommitAttemptFailure {
                 response: self.error_response(
                     request_id,
                     ProtocolErrorCode::InternalError,
@@ -650,7 +656,7 @@ impl ServerRuntime {
                 next_status: RestorePlanStatus::HistoryPending {
                     restored_file_count,
                 },
-            });
+            }));
         }
         rebuilt.record = record;
         session_handle

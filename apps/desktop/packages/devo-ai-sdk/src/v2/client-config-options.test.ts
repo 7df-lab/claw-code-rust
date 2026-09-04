@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test"
 import { createDevoClient, type DevoNativeTransport, type DevoNativeTransportEvent } from "./client"
 import type { SessionConfigOption } from "./native-client-support"
 import type {
+	ProviderInfo,
+	ProviderModelInfo,
+	ProviderUpsertParams,
 	ProviderValidateParams,
-	ProviderVendor,
-	ProviderVendorUpsertParams,
 } from "./generated/native"
 
 class FakeTransport implements DevoNativeTransport {
@@ -90,52 +91,31 @@ const configOptions = [
 	},
 ] satisfies SessionConfigOption[]
 
-const providerVendor = {
-	name: "openai",
-	base_url: "https://api.openai.com/v1",
-	credential: "openai_api_key",
-	headers: null,
-	wire_apis: ["openai_chat_completions"],
-	enabled: true,
-} satisfies ProviderVendor
-
-const canonicalProviderVendor = {
+const provider = {
+	id: "openai",
 	name: "openai",
 	baseUrl: "https://api.openai.com/v1",
 	credential: "openai_api_key",
 	wireApis: ["openai_chat_completions"],
+	models: {
+		"gpt-4o": {
+			name: "GPT-4o",
+			wireApi: "openai_chat_completions",
+		} satisfies ProviderModelInfo,
+	},
 	enabled: true,
-}
-
-const canonicalModelBinding = {
-	bindingId: "openai-gpt-4o",
-	modelSlug: "gpt-4o",
-	provider: "openai",
-	requestModel: "gpt-4o",
-	displayName: "GPT-4o",
-	invocationMethod: "openai_chat_completions",
-	enabled: true,
-}
+} satisfies ProviderInfo
 
 const providerValidateParams = {
-	provider_vendor: providerVendor,
-	model_binding: {
-		binding_id: "openai-gpt-4o",
-		model_slug: "gpt-4o",
-		provider: "openai",
-		request_model: "gpt-4o",
-		display_name: "GPT-4o",
-		invocation_method: "openai_chat_completions",
-		default_reasoning_effort: null,
-		enabled: true,
-	},
-	api_key: "secret",
+	provider,
+	model: "gpt-4o",
+	apiKey: "secret",
 } satisfies ProviderValidateParams
 
 const providerUpsertParams = {
 	...providerValidateParams,
-	default_model_binding: "openai-gpt-4o",
-} satisfies ProviderVendorUpsertParams
+	defaultModel: "openai/gpt-4o",
+} satisfies ProviderUpsertParams
 
 describe("Native desktop SDK config option cache", () => {
 	test("loads cold-start config options from model/preferences/read when no session cache exists", async () => {
@@ -195,11 +175,17 @@ describe("Native desktop SDK config option cache", () => {
 		])
 	})
 
-	test("lists provider vendors through the server provider API", async () => {
+	test("lists provider Connections and templates through the server provider API", async () => {
 		const transport = new FakeTransport((method, params) => {
+			if (method === "initialize") return initializeResult
 			if (method === "provider/list") {
 				expect(params).toEqual({})
-				return { providers: [canonicalProviderVendor] }
+				return {
+					providers: [provider],
+					templateProviderIds: [],
+					connectedProviderIds: ["openai"],
+					connectionModels: { openai: { "gpt-4o": provider.models["gpt-4o"] } },
+				}
 			}
 			throw new Error(`unexpected request ${method}`)
 		})
@@ -207,18 +193,20 @@ describe("Native desktop SDK config option cache", () => {
 
 		const result = await client.provider.list()
 
-		expect(result.data).toEqual({ provider_vendors: [providerVendor] })
-		expect(transport.requests.map((request) => request.method)).toEqual(["provider/list"])
+		expect(result.data).toEqual({
+			providers: [provider],
+			templateProviderIds: [],
+			connectedProviderIds: ["openai"],
+			connectionModels: { openai: { "gpt-4o": provider.models["gpt-4o"] } },
+		})
+		expect(transport.requests.map((request) => request.method)).toEqual(["initialize", "provider/list"])
 	})
 
 	test("validates provider candidates through the server provider API", async () => {
 		const transport = new FakeTransport((method, params) => {
+			if (method === "initialize") return initializeResult
 			if (method === "provider/validate") {
-				expect(params).toEqual({
-					providerVendor: canonicalProviderVendor,
-					modelBinding: canonicalModelBinding,
-					apiKey: "secret",
-				})
+				expect(params).toEqual(providerValidateParams)
 				return { replyPreview: "OK" }
 			}
 			throw new Error(`unexpected request ${method}`)
@@ -227,11 +215,11 @@ describe("Native desktop SDK config option cache", () => {
 
 		const result = await client.provider.validate(providerValidateParams)
 
-		expect(result.data).toEqual({ reply_preview: "OK" })
-		expect(transport.requests.map((request) => request.method)).toEqual(["provider/validate"])
+		expect(result.data).toEqual({ replyPreview: "OK" })
+		expect(transport.requests.map((request) => request.method)).toEqual(["initialize", "provider/validate"])
 	})
 
-	test("upserts provider vendors and clears cached model config", async () => {
+	test("upserts a provider Connection and clears cached model config", async () => {
 		let modelPreferencesReadCalls = 0
 		const updatedPreferences = {
 			model: "openai-gpt-4o",
@@ -250,15 +238,10 @@ describe("Native desktop SDK config option cache", () => {
 				}
 			}
 			if (method === "provider/upsert") {
-				expect(params).toEqual({
-					providerVendor: canonicalProviderVendor,
-					modelBinding: canonicalModelBinding,
-					defaultModelBinding: "openai-gpt-4o",
-					apiKey: "secret",
-				})
+				expect(params).toEqual(providerUpsertParams)
 				return {
-					providerVendor: canonicalProviderVendor,
-					modelBinding: canonicalModelBinding,
+					provider,
+					defaultModel: "openai/gpt-4o",
 				}
 			}
 			throw new Error(`unexpected request ${method}`)

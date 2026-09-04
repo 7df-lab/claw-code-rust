@@ -1,0 +1,336 @@
+{
+  "provider": {
+    "kimi": {
+      "name": "Kimi",
+      "description": "Moonshot AI models",
+      "base_url": "https://api.moonshot.ai/v1",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "kimi-k3": {
+          "name": "Kimi K3",
+          "channel": "Kimi",
+          "reasoning_capability": { "levels": ["high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 100
+        },
+        "kimi-k2.7-code": {
+          "name": "Kimi K2.7 Code",
+          "channel": "Kimi",
+          "reasoning_capability": { "levels": ["high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 256000,
+          "input_modalities": ["text"],
+          "priority": 98
+        },
+        "kimi-k2.6": {
+          "name": "Kimi K2.6",
+          "channel": "Kimi",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "medium",
+          "context_window": 256000,
+          "input_modalities": ["text", "image"],
+          "priority": 96
+        }
+      }
+    },
+    "poolside": {
+      "name": "Poolside",
+      "description": "Enterprise coding models",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "laguna-s-2.1": {
+          "name": "Laguna S 2.1",
+          "channel": "Poolside",
+          "reasoning_capability": "toggle",
+          "context_window": 1048576,
+          "input_modalities": ["text"],
+          "priority": 90
+        }
+      }
+    },
+    "zai": {
+      "name": "Z.ai",
+      "description": "International GLM API",
+      "base_url": "https://api.z.ai/api/paas/v4",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "glm-5.3": {
+          "name": "GLM 5.3",
+          "channel": "GLM",
+          "reasoning_capability": { "levels": ["low", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 88
+        },
+        "glm-5.3-flash": {
+          "name": "GLM 5.3 Flash",
+          "channel": "GLM",
+          "reasoning_capability": { "levels": ["low", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text", "image"],
+          "priority": 86
+        }
+      }
+    },
+    "deepseek": {
+      "name": "DeepSeek",
+      "description": "DeepSeek official API",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "wire_api": "anthropic_messages",
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro",
+          "channel": "DeepSeek",
+          "reasoning_capability": { "levels": ["off", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 70
+        },
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash",
+          "channel": "DeepSeek",
+          "reasoning_capability": { "levels": ["off", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 68
+        },
+        "deepseek-v4-flash-vision-exp": {
+          "name": "DeepSeek V4 Flash Vision",
+          "channel": "DeepSeek",
+          "reasoning_capability": { "levels": ["off", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text", "image"],
+          "priority": 66
+        }
+      }
+    },
+    "zhipu": {
+      "name": "Zhipu AI",
+      "description": "China BigModel GLM API",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "glm-5.3": {
+          "name": "GLM 5.3",
+          "channel": "智谱 GLM",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 73
+        },
+        "glm-5.3-flash": {
+          "name": "GLM 5.3 Flash",
+          "channel": "智谱 GLM",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 71
+        }
+      }
+    },
+    "qwen": {
+      "name": "Alibaba Cloud",
+      "description": "DashScope Qwen models",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "qwen3.8-max": {
+          "name": "Qwen3.8 Max",
+          "channel": "Qwen",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text", "image"],
+          "priority": 64
+        },
+        "qwen3.8-flash": {
+          "name": "Qwen3.8 Flash",
+          "channel": "Qwen",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "medium",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 62
+        },
+        "qwen3.7-plus": {
+          "name": "Qwen3.7 Plus",
+          "channel": "Qwen",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text", "image"],
+          "priority": 60
+        },
+        "qwen3.7-flash": {
+          "name": "Qwen3.7 Flash",
+          "channel": "Qwen",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "medium",
+          "context_window": 1000000,
+          "input_modalities": ["text", "image"],
+          "priority": 58
+        },
+        "qwen3-coder-plus": {
+          "name": "Qwen3 Coder Plus",
+          "channel": "Qwen",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 56
+        },
+        "qwen3-coder-next": {
+          "name": "Qwen3 Coder Next",
+          "channel": "Qwen",
+          "reasoning_capability": { "levels": ["high"] },
+          "context_window": 256000,
+          "input_modalities": ["text"],
+          "priority": 54
+        },
+        "qwen3-32b": {
+          "name": "Qwen3 32B",
+          "channel": "Qwen",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 256000,
+          "input_modalities": ["text"],
+          "priority": 52
+        },
+        "qwen3-8b": {
+          "name": "Qwen3 8B",
+          "channel": "Qwen",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 128000,
+          "input_modalities": ["text"],
+          "priority": 50
+        }
+      }
+    },
+    "minimax": {
+      "name": "MiniMax",
+      "description": "MiniMax coding models",
+      "base_url": "https://api.minimaxi.com/v1",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "MiniMax-M3": {
+          "name": "MiniMax M3",
+          "channel": "MiniMax",
+          "reasoning_capability": "toggle",
+          "default_reasoning_effort": "medium",
+          "context_window": 192000,
+          "input_modalities": ["text"],
+          "priority": 48
+        },
+        "MiniMax-M2.7": {
+          "name": "MiniMax M2.7",
+          "channel": "MiniMax",
+          "reasoning_capability": { "levels": ["high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 256000,
+          "input_modalities": ["text"],
+          "priority": 46
+        },
+        "MiniMax-M2.5": {
+          "name": "MiniMax M2.5",
+          "channel": "MiniMax",
+          "reasoning_capability": { "levels": ["high", "max"] },
+          "default_reasoning_effort": "high",
+          "context_window": 196608,
+          "input_modalities": ["text"],
+          "priority": 44
+        }
+      }
+    },
+    "xiaomi": {
+      "name": "Xiaomi MiMo",
+      "description": "Xiaomi MiMo models",
+      "base_url": "https://api.xiaomimimo.com/v1",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "mimo-v2.5-pro": {
+          "name": "MiMo V2.5 Pro",
+          "channel": "Xiaomi MiMo",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "medium",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 42
+        },
+        "mimo-v2.5": {
+          "name": "MiMo V2.5",
+          "channel": "Xiaomi MiMo",
+          "reasoning_capability": { "levels": ["off", "low", "medium", "high", "max"] },
+          "default_reasoning_effort": "medium",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 40
+        }
+      }
+    },
+    "tencent": {
+      "name": "Tencent Hunyuan",
+      "description": "Tencent Hunyuan models",
+      "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "hunyuan-a13b": {
+          "name": "Hunyuan A13B",
+          "channel": "Tencent Hunyuan",
+          "context_window": 224000,
+          "input_modalities": ["text"],
+          "priority": 38
+        },
+        "Hunyuan3": {
+          "name": "Hunyuan3",
+          "channel": "Tencent Hunyuan",
+          "reasoning_capability": { "levels": ["off", "low", "high"] },
+          "default_reasoning_effort": "low",
+          "context_window": 256000,
+          "max_tokens": 8192,
+          "input_modalities": ["text"],
+          "priority": 37
+        },
+        "hunyuan-vision-1.5-instruct": {
+          "name": "Hunyuan Vision 1.5 Instruct",
+          "channel": "Tencent Hunyuan",
+          "context_window": 24000,
+          "input_modalities": ["text", "image"],
+          "priority": 36
+        }
+      }
+    },
+    "ollama": {
+      "name": "Ollama (Local)",
+      "description": "Run models locally",
+      "base_url": "http://localhost:11434/v1",
+      "wire_api": "openai_chat_completions",
+      "models": {}
+    },
+    "openai": {
+      "name": "OpenAI",
+      "description": "OpenAI API models",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "gpt-5.5": {
+          "name": "GPT 5.5",
+          "channel": "OpenAI",
+          "reasoning_capability": { "levels": ["off", "none", "low", "medium", "high", "xhigh"] },
+          "default_reasoning_effort": "medium",
+          "context_window": 1000000,
+          "input_modalities": ["text"],
+          "priority": 16
+        }
+      }
+    }
+  }
+}

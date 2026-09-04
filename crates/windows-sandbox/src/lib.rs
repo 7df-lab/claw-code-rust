@@ -76,7 +76,7 @@ pub fn prepare_windows_sandbox_launch(
 ) -> anyhow::Result<Option<WindowsSandboxLaunch>> {
     #[cfg(windows)]
     {
-        return Ok(Some(launch::prepare_launch(req)?));
+        Ok(Some(launch::prepare_launch(req)?))
     }
     #[cfg(not(windows))]
     {

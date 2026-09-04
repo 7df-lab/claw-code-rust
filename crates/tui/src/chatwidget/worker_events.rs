@@ -265,19 +265,18 @@ impl ChatWidget {
         };
         let duration = std::time::Duration::from_millis(0);
 
-        if let (Some(tool_name), Some(input)) = (&tool.tool_name, &tool.input) {
-            if let Some(cell) = self
+        if let (Some(tool_name), Some(input)) = (&tool.tool_name, &tool.input)
+            && let Some(cell) = self
                 .active_cell
                 .as_mut()
                 .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
-            {
-                cell.set_tool_io_input(tool_use_id, tool_name.clone(), input.clone());
-                cell.complete_tool_io(
-                    tool_use_id,
-                    output.clone(),
-                    tool.tool_display_content.clone(),
-                );
-            }
+        {
+            cell.set_tool_io_input(tool_use_id, tool_name.clone(), input.clone());
+            cell.complete_tool_io(
+                tool_use_id,
+                output.clone(),
+                tool.tool_display_content.clone(),
+            );
         }
 
         if let Some(cell) = self
@@ -915,23 +914,30 @@ impl ChatWidget {
                 ));
                 self.set_status_message("Provider validation failed");
             }
-            WorkerEvent::ProviderVendorsListed { provider_vendors } => {
+            WorkerEvent::ProvidersListed {
+                providers,
+                template_provider_ids,
+                connected_provider_ids,
+                connection_models,
+            } => {
                 if let Some(onboarding) = self.onboarding.as_mut() {
-                    onboarding.on_provider_vendors_listed(provider_vendors);
+                    onboarding.on_providers_listed_with_status_and_models(
+                        providers,
+                        template_provider_ids,
+                        connected_provider_ids,
+                        connection_models,
+                    );
                 }
                 self.drain_onboarding_transcript_events();
             }
-            WorkerEvent::ProviderVendorUpserted {
-                provider_vendor,
-                model_binding,
+            WorkerEvent::ProviderUpserted {
+                provider,
+                default_model,
             } => {
                 let onboarding_was_active = self.onboarding.is_some();
-                if let Some(binding) = model_binding.as_ref() {
-                    self.apply_session_model_binding(binding);
-                }
                 if self.onboarding.is_some() {
                     if let Some(onboarding) = self.onboarding.as_mut() {
-                        onboarding.on_provider_saved(model_binding.as_ref());
+                        onboarding.on_provider_upserted(&provider, default_model.as_deref());
                     }
                     self.drain_onboarding_transcript_events();
                     if let Some(result) = self
@@ -944,12 +950,12 @@ impl ChatWidget {
                 }
                 if !onboarding_was_active {
                     self.add_to_history(history_cell::new_info_event(
-                        format!("Provider saved: {}", provider_vendor.name),
+                        format!("Provider saved: {}", provider.name),
                         Some("provider upserted".to_string()),
                     ));
                 }
             }
-            WorkerEvent::ProviderVendorUpsertFailed { message } => {
+            WorkerEvent::ProviderUpsertFailed { message } => {
                 if let Some(onboarding) = self.onboarding.as_mut() {
                     onboarding.on_provider_save_failed(message.clone());
                 }
@@ -960,6 +966,49 @@ impl ChatWidget {
                     Some("provider upsert failed".to_string()),
                 ));
                 self.set_status_message("Provider save failed");
+            }
+            WorkerEvent::ProviderDisconnected { provider_id } => {
+                if let Some(onboarding) = self.onboarding.as_mut() {
+                    onboarding.on_provider_disconnected(&provider_id);
+                }
+                self.drain_onboarding_transcript_events();
+                self.busy = false;
+                self.set_status_message("Provider disconnected");
+            }
+            WorkerEvent::ProviderDisconnectFailed { message } => {
+                if let Some(onboarding) = self.onboarding.as_mut() {
+                    onboarding.on_provider_disconnect_failed();
+                }
+                self.drain_onboarding_transcript_events();
+                self.busy = false;
+                self.add_to_history(history_cell::new_error_event_with_hint(
+                    message,
+                    Some("provider disconnect failed".to_string()),
+                ));
+                self.set_status_message("Provider disconnect failed");
+            }
+            WorkerEvent::ProviderModelRemoved {
+                provider_id,
+                model_id,
+            } => {
+                if let Some(onboarding) = self.onboarding.as_mut() {
+                    onboarding.on_provider_model_removed(&provider_id, &model_id);
+                }
+                self.drain_onboarding_transcript_events();
+                self.busy = false;
+                self.set_status_message("Model removed");
+            }
+            WorkerEvent::ProviderModelRemoveFailed { message } => {
+                if let Some(onboarding) = self.onboarding.as_mut() {
+                    onboarding.on_provider_model_remove_failed();
+                }
+                self.drain_onboarding_transcript_events();
+                self.busy = false;
+                self.add_to_history(history_cell::new_error_event_with_hint(
+                    message,
+                    Some("provider model removal failed".to_string()),
+                ));
+                self.set_status_message("Model removal failed");
             }
             WorkerEvent::SessionsListed { sessions } => {
                 self.bottom_pane.update_resume_sessions(sessions);

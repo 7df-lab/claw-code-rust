@@ -5,6 +5,12 @@
  * conversation surface so it matches the transcript column width and sits
  * flush with the top of the chat area, using the same popover chrome as
  * the rest of the desktop UI.
+ *
+ * Fill amount matches TUI status-bar semantics: prefer live
+ * `session.usage.updated` (TurnUsageUpdated / last-query display total) so
+ * the ring moves mid-turn; occupancy.totalTokens is only a fallback when no
+ * usage has arrived yet. Occupancy still supplies the window size and the
+ * category breakdown.
  */
 import { cn } from "@devo/ui/lib/utils"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
@@ -39,8 +45,19 @@ export function ContextUsageButton({ sessionId }: ContextUsageButtonProps) {
 	const [open, setOpen] = useAtom(contextUsageOpenAtom)
 	const native = useAtomValue(sessionNativeFamily(sessionId))
 	const occupancy = native.occupancy
-	const used = occupancy?.totalTokens ?? Number(native.usage?.used ?? 0)
-	const windowTokens = occupancy?.contextWindowTokens ?? Number(native.usage?.size ?? 0)
+	const usageUsed = Number(native.usage?.used ?? 0)
+	const usageWindow = Number(native.usage?.size ?? 0)
+	// TUI: last_query_total_tokens > 0 wins over occupancy.total_tokens.
+	const used = usageUsed > 0 ? usageUsed : (occupancy?.totalTokens ?? 0)
+	// Prefer occupancy's effective window (same basis as finalize / TUI). Fall
+	// back to usage.size only when occupancy has not arrived yet. Both stay in
+	// sync via context.usage.updated / session.usage.updated.
+	const windowTokens =
+		occupancy?.contextWindowTokens && occupancy.contextWindowTokens > 0
+			? occupancy.contextWindowTokens
+			: usageWindow > 0
+				? usageWindow
+				: 0
 	const percent = windowFillPercent(used, windowTokens)
 	const rows = useMemo(() => occupancyCategoryRows(occupancy), [occupancy])
 

@@ -12,9 +12,8 @@ use devo_protocol::AcpAvailableCommand;
 use devo_protocol::AcpCost;
 use devo_protocol::AcpSessionConfigOption;
 use devo_protocol::CollaborationMode;
-use devo_protocol::ProviderModelBinding;
+use devo_protocol::ProviderInfo;
 use devo_protocol::ProviderRetryPhase;
-use devo_protocol::ProviderVendor;
 use devo_protocol::ProviderWireApi;
 use devo_protocol::ReasoningEffort;
 use devo_protocol::ReferenceSearchSnapshot;
@@ -360,21 +359,40 @@ pub(crate) enum WorkerEvent {
         /// Optional user-facing next step for recovering from this failure.
         hint: Option<String>,
     },
-    /// Current provider vendors were listed from the server.
-    ProviderVendorsListed {
-        /// Structured provider vendors returned by `provider/list`.
-        provider_vendors: Vec<ProviderVendor>,
+    /// Current provider Connections and directory templates from the canonical Native RPC.
+    ProvidersListed {
+        providers: Vec<ProviderInfo>,
+        template_provider_ids: Vec<String>,
+        connected_provider_ids: Vec<String>,
+        connection_models: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, devo_protocol::ProviderModelInfo>,
+        >,
     },
-    /// A provider vendor was upserted through the server.
-    ProviderVendorUpserted {
-        /// The provider vendor returned by `provider/upsert`.
-        provider_vendor: ProviderVendor,
-        /// Optional model binding returned by `provider/upsert`.
-        model_binding: Option<ProviderModelBinding>,
+    /// A provider Connection was persisted through the canonical Native RPC.
+    ProviderUpserted {
+        provider: ProviderInfo,
+        default_model: Option<String>,
     },
-    /// Provider vendor upsert failed during onboarding or provider updates.
-    ProviderVendorUpsertFailed {
-        /// Human-readable failure reason from `provider/upsert`.
+    /// Canonical provider upsert failure during onboarding or provider updates.
+    ProviderUpsertFailed {
+        message: String,
+    },
+    /// A provider Connection was disconnected.
+    ProviderDisconnected {
+        provider_id: String,
+    },
+    /// Disconnecting a provider Connection failed.
+    ProviderDisconnectFailed {
+        message: String,
+    },
+    /// A model was removed from a provider Connection.
+    ProviderModelRemoved {
+        provider_id: String,
+        model_id: String,
+    },
+    /// Removing a provider Connection model failed.
+    ProviderModelRemoveFailed {
         message: String,
     },
     /// Current known sessions were listed from the server.

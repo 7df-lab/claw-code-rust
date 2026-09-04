@@ -27,7 +27,6 @@ use super::McpServerRecord;
 use super::McpStartupPolicy;
 use super::McpTransportConfig;
 use super::McpTrustPolicy;
-use super::ModelBindingConfig;
 use super::ModelOverrideConfig;
 use super::OAuthCredentialsStoreMode;
 use super::PatternMode;
@@ -35,10 +34,9 @@ use super::PermissionConfig;
 use super::PermissionRule;
 use super::ProjectConfig;
 use super::PromptPolicy;
+use super::ProviderConfigFile;
 use super::ProviderConfigSection;
-use super::ProviderDefaultsConfig;
 use super::ProviderHttpConfig;
-use super::ProviderVendorConfig;
 use super::RuleAction;
 use super::SummaryModelSelection;
 use super::ToolFilter;
@@ -46,10 +44,12 @@ use super::ToolsConfig;
 use super::UpdatesConfig;
 use crate::BundledSkillsConfig;
 use crate::SkillsConfig;
-use devo_protocol::ProviderModelBinding;
-use devo_protocol::ProviderVendor;
+use devo_protocol::ProviderInfo;
+use devo_protocol::ProviderModelInfo;
 use devo_protocol::ProviderWireApi;
+use devo_protocol::ReasoningCapability;
 use devo_protocol::ReasoningEffort;
+use devo_protocol::ReasoningLevelChoice;
 use devo_protocol::TruncationPolicyConfig;
 
 fn unique_temp_dir(name: &str) -> PathBuf {
@@ -151,6 +151,7 @@ check_interval_hours = 48
             hooks: HooksConfig::default(),
             permission: PermissionConfig::default(),
             provider: ProviderConfigSection::default(),
+            provider_catalog: ProviderConfigFile::default(),
             provider_http: super::ProviderHttpConfig::default(),
             updates: UpdatesConfig {
                 enabled: false,
@@ -791,36 +792,30 @@ invocation_method = "openai_responses"
         }
     );
     assert_eq!(
-        config.provider,
-        ProviderConfigSection {
-            defaults: ProviderDefaultsConfig {
-                model_binding: Some("main".to_string()),
-            },
-            providers: BTreeMap::from([(
-                "main".to_string(),
-                ProviderVendorConfig {
-                    name: "Project Provider".to_string(),
-                    base_url: Some("https://user.example/v1".to_string()),
-                    credential: Some("user_api_key".to_string()),
-                    headers: Some(r#"{"X-User":"yes"}"#.to_string()),
-                    wire_apis: vec![ProviderWireApi::OpenAIResponses],
-                    web_search: None,
-                    web_fetch: None,
-                    enabled: true,
-                },
-            )]),
-            model_bindings: BTreeMap::from([(
-                "main".to_string(),
-                ModelBindingConfig {
-                    model_slug: "project-model".to_string(),
-                    provider: "main".to_string(),
-                    request_model: "project/model".to_string(),
-                    invocation_method: ProviderWireApi::OpenAIResponses,
-                    ..ModelBindingConfig::default()
-                },
-            )]),
-            ..ProviderConfigSection::default()
-        }
+        config.provider_http.proxy_url.as_deref(),
+        Some("http://workspace-proxy.example:8080")
+    );
+    assert_eq!(
+        config.provider_catalog.providers["main"].name.as_deref(),
+        Some("Project Provider")
+    );
+    assert_eq!(
+        config.provider_catalog.providers["main"]
+            .base_url
+            .as_deref(),
+        Some("https://user.example/v1")
+    );
+    assert_eq!(
+        config.provider_catalog.providers["main"].headers,
+        Some(BTreeMap::from([("X-User".to_string(), "yes".to_string())]))
+    );
+    assert_eq!(
+        config.provider_catalog.providers["main"].models["user/model"].wire_api,
+        Some(ProviderWireApi::OpenAIResponses)
+    );
+    assert_eq!(
+        config.provider_catalog.providers["main"].models["project/model"].wire_api,
+        Some(ProviderWireApi::OpenAIResponses)
     );
 
     let _ = std::fs::remove_dir_all(root);
@@ -877,38 +872,96 @@ request_model = "project/model"
     let config = loader.load(Some(&workspace)).expect("load config");
 
     assert_eq!(
-        config.provider,
-        ProviderConfigSection {
-            defaults: ProviderDefaultsConfig {
-                model_binding: Some("main".to_string()),
-            },
-            providers: BTreeMap::from([(
-                "main".to_string(),
-                ProviderVendorConfig {
-                    name: "Project Provider".to_string(),
-                    base_url: Some("https://user.example/v1".to_string()),
-                    credential: Some("user_api_key".to_string()),
-                    headers: Some(r#"{"X-User":"yes"}"#.to_string()),
-                    wire_apis: vec![ProviderWireApi::OpenAIResponses],
-                    web_search: None,
-                    web_fetch: None,
-                    enabled: false,
-                },
-            )]),
-            model_bindings: BTreeMap::from([(
-                "main".to_string(),
-                ModelBindingConfig {
-                    model_slug: "project-model".to_string(),
-                    provider: "main".to_string(),
-                    request_model: "project/model".to_string(),
-                    invocation_method: ProviderWireApi::OpenAIResponses,
-                    enabled: false,
-                    ..ModelBindingConfig::default()
-                },
-            )]),
-            ..ProviderConfigSection::default()
-        }
+        config.provider_catalog.providers["main"].enabled,
+        Some(false)
     );
+    assert_eq!(
+        config.provider_catalog.providers["main"].models["user/model"].enabled,
+        Some(false)
+    );
+    assert_eq!(
+        config.provider_catalog.providers["main"].models["project/model"].enabled,
+        None
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn loader_applies_workspace_model_overrides_onto_provider_catalog() {
+    let root = unique_temp_dir("config-workspace-model-override-catalog");
+    let home = root.join("home").join(".devo");
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&home).expect("home config dir");
+    std::fs::create_dir_all(workspace.join(".devo")).expect("workspace config dir");
+
+    std::fs::write(
+        home.join("config.toml"),
+        r#"
+[defaults]
+model_binding = "test-openai"
+
+[providers.openai]
+enabled = true
+name = "OpenAI"
+wire_apis = ["openai_chat_completions"]
+
+[model_bindings.test-openai]
+enabled = true
+model_slug = "test-model"
+provider = "openai"
+model_name = "test-model"
+invocation_method = "openai_chat_completions"
+
+[model_bindings.alt-openai]
+enabled = true
+model_slug = "alt-model"
+provider = "openai"
+model_name = "alt-model"
+invocation_method = "openai_chat_completions"
+"#,
+    )
+    .expect("write user config");
+    std::fs::write(
+        workspace.join(".devo").join("config.toml"),
+        r#"
+[model.test-model]
+display_name = "Test Model"
+reasoning_capability = { levels = ["low", "medium", "high"] }
+default_reasoning_effort = "medium"
+base_instructions = "Test model instructions"
+
+[model.alt-model]
+display_name = "Alt Model"
+base_instructions = "Alt model instructions"
+"#,
+    )
+    .expect("write workspace config");
+
+    let loader = FileSystemAppConfigLoader::new(home.clone());
+    // Simulate server bootstrap (migrates home bindings) then a later
+    // workspace-scoped session load.
+    let _ = loader
+        .load(/*workspace_root*/ None)
+        .expect("bootstrap load");
+    let config = loader.load(Some(&workspace)).expect("session load");
+    let test_model = &config.provider_catalog.providers["openai"].models["test-model"];
+    assert_eq!(test_model.name.as_deref(), Some("Test Model"));
+    assert_eq!(
+        test_model.reasoning_capability,
+        Some(ReasoningCapability::Levels(vec![
+            ReasoningLevelChoice::Effort(ReasoningEffort::Low),
+            ReasoningLevelChoice::Effort(ReasoningEffort::Medium),
+            ReasoningLevelChoice::Effort(ReasoningEffort::High),
+        ]))
+    );
+    assert_eq!(
+        test_model.default_reasoning_effort,
+        Some(ReasoningEffort::Medium)
+    );
+    let alt_model = &config.provider_catalog.providers["openai"].models["alt-model"];
+    assert_eq!(alt_model.name.as_deref(), Some("Alt Model"));
+    assert_eq!(alt_model.reasoning_capability, None);
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1038,37 +1091,20 @@ enabled = false
     let config = loader.load(None).expect("load config");
 
     assert_eq!(
-        config.provider,
-        ProviderConfigSection {
-            defaults: ProviderDefaultsConfig {
-                model_binding: Some("main".to_string()),
-            },
-            providers: BTreeMap::from([(
-                "main".to_string(),
-                ProviderVendorConfig {
-                    name: "CLI Provider".to_string(),
-                    base_url: Some("https://user.example/v1".to_string()),
-                    credential: Some("user_api_key".to_string()),
-                    headers: None,
-                    wire_apis: vec![ProviderWireApi::OpenAIResponses],
-                    web_search: None,
-                    web_fetch: None,
-                    enabled: false,
-                },
-            )]),
-            model_bindings: BTreeMap::from([(
-                "main".to_string(),
-                ModelBindingConfig {
-                    model_slug: "cli-model".to_string(),
-                    provider: "main".to_string(),
-                    request_model: "cli/model".to_string(),
-                    invocation_method: ProviderWireApi::OpenAIResponses,
-                    enabled: false,
-                    ..ModelBindingConfig::default()
-                },
-            )]),
-            ..ProviderConfigSection::default()
-        }
+        config.provider_catalog.providers["main"].name.as_deref(),
+        Some("CLI Provider")
+    );
+    assert_eq!(
+        config.provider_catalog.providers["main"].enabled,
+        Some(false)
+    );
+    assert_eq!(
+        config.provider_catalog.providers["main"].models["user/model"].enabled,
+        None
+    );
+    assert_eq!(
+        config.provider_catalog.providers["main"].models["cli/model"].enabled,
+        Some(false)
     );
 
     let _ = std::fs::remove_dir_all(root);
@@ -1086,52 +1122,76 @@ fn provider_upsert_writes_user_config_when_workspace_is_active() {
 
     let mut store = AppConfigStore::load(home.clone(), Some(&workspace)).expect("load store");
     let written_provider = store
-        .upsert_provider_vendor(
-            "openrouter".to_string(),
-            ProviderVendor {
+        .upsert_provider_connection(
+            ProviderInfo {
+                id: "openrouter".to_string(),
                 name: "openrouter".to_string(),
+                description: None,
                 base_url: Some("https://openrouter.ai/api/v1".to_string()),
                 credential: None,
-                headers: Some(r#"{"X-Devo":"yes"}"#.to_string()),
+                headers: BTreeMap::from([("X-Devo".to_string(), "yes".to_string())]),
+                options: None,
+                request: None,
                 wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
+                models: BTreeMap::from([(
+                    "qwen/qwen3".to_string(),
+                    ProviderModelInfo {
+                        name: Some("Qwen".to_string()),
+                        wire_api: Some(ProviderWireApi::OpenAIChatCompletions),
+                        default_reasoning_effort: Some(ReasoningEffort::Medium),
+                        ..ProviderModelInfo::default()
+                    },
+                )]),
                 enabled: true,
             },
-            Some(ProviderModelBinding {
-                binding_id: "qwen-openrouter".to_string(),
-                model_slug: "qwen".to_string(),
-                provider: "openrouter".to_string(),
-                request_model: "qwen/qwen3".to_string(),
-                display_name: Some("Qwen".to_string()),
-                invocation_method: ProviderWireApi::OpenAIChatCompletions,
-                default_reasoning_effort: Some("medium".to_string()),
-                enabled: true,
-            }),
-            Some("qwen-openrouter".to_string()),
+            Some("openrouter/qwen/qwen3".to_string()),
+            None,
             Some("sk-test".to_string()),
         )
         .expect("upsert provider");
 
-    let user_config = std::fs::read_to_string(home.join("config.toml")).expect("user config");
+    let user_config =
+        std::fs::read_to_string(home.join("providers.json")).expect("provider config");
     let workspace_config = workspace.join(".devo").join("config.toml");
-    let document: toml::Value = toml::from_str(&user_config).expect("parse user config");
+    let document: serde_json::Value =
+        serde_json::from_str(&user_config).expect("parse provider config");
 
-    assert!(user_config.contains("[providers.openrouter]"));
-    assert!(user_config.contains("[model_bindings.qwen-openrouter]"));
-    assert!(user_config.contains("model_binding = \"qwen-openrouter\""));
-    assert!(document.get("model").is_none());
+    assert!(user_config.contains("\"openrouter\""));
+    assert!(user_config.contains("\"qwen/qwen3\""));
+    assert_eq!(document["model"].as_str(), Some("openrouter/qwen/qwen3"));
     assert_eq!(
-        document["providers"]["openrouter"]["headers"].as_str(),
-        Some(r#"{"X-Devo":"yes"}"#)
+        document["provider"]["openrouter"]["headers"]["X-Devo"].as_str(),
+        Some("yes")
+    );
+    assert_eq!(
+        document["provider"]["openrouter"]["credential"].as_str(),
+        Some("openrouter_api_key")
+    );
+    assert!(document["provider"]["openrouter"].get("options").is_none());
+    assert_eq!(
+        written_provider.credential.as_deref(),
+        Some("openrouter_api_key")
     );
     assert_eq!(
         written_provider.headers,
-        Some(r#"{"X-Devo":"yes"}"#.to_string())
+        BTreeMap::from([("X-Devo".to_string(), "yes".to_string())])
     );
     assert_eq!(
-        store.provider_vendors()[0].headers,
-        Some(r#"{"X-Devo":"yes"}"#.to_string())
+        store.provider_connections().expect("list connections")[0].headers,
+        BTreeMap::from([("X-Devo".to_string(), "yes".to_string())])
     );
     assert!(!workspace_config.exists());
+    let auth_config = std::fs::read_to_string(home.join("auth.json")).expect("auth config");
+    let auth_document: serde_json::Value =
+        serde_json::from_str(&auth_config).expect("parse auth config");
+    assert_eq!(
+        auth_document["credentials"]["openrouter_api_key"]["kind"].as_str(),
+        Some("api_key")
+    );
+    assert_eq!(
+        auth_document["credentials"]["openrouter_api_key"]["value"].as_str(),
+        Some("sk-test")
+    );
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1169,40 +1229,54 @@ provider = "Deepseek"
     let mut store =
         AppConfigStore::load(home.clone(), /*workspace_root*/ None).expect("load store");
     store
-        .upsert_provider_vendor(
-            "Deepseek".to_string(),
-            ProviderVendor {
+        .upsert_provider_connection(
+            ProviderInfo {
+                id: "Deepseek".to_string(),
                 name: "Deepseek".to_string(),
+                description: None,
                 base_url: Some("https://api.deepseek.com".to_string()),
                 credential: Some("deepseek_api_key".to_string()),
-                headers: None,
+                headers: BTreeMap::new(),
+                options: None,
+                request: None,
                 wire_apis: vec![ProviderWireApi::OpenAIChatCompletions],
+                models: BTreeMap::from([(
+                    "DeepSeek-V4-Flash".to_string(),
+                    ProviderModelInfo {
+                        name: Some("DeepSeek-V4-Flash".to_string()),
+                        wire_api: Some(ProviderWireApi::OpenAIChatCompletions),
+                        ..ProviderModelInfo::default()
+                    },
+                )]),
                 enabled: true,
             },
-            Some(ProviderModelBinding {
-                binding_id: "deepseek-v4-flash-deepseek".to_string(),
-                model_slug: "deepseek-v4-flash".to_string(),
-                provider: "Deepseek".to_string(),
-                request_model: "DeepSeek-V4-Flash".to_string(),
-                display_name: Some("DeepSeek-V4-Flash".to_string()),
-                invocation_method: ProviderWireApi::OpenAIChatCompletions,
-                default_reasoning_effort: None,
-                enabled: true,
-            }),
-            Some("deepseek-v4-flash-deepseek".to_string()),
+            Some("Deepseek/DeepSeek-V4-Flash".to_string()),
+            None,
             /*api_key*/ None,
         )
         .expect("upsert provider");
 
-    let user_config = std::fs::read_to_string(home.join("config.toml")).expect("user config");
-    let document: toml::Value = toml::from_str(&user_config).expect("parse user config");
-    let binding = &document["model_bindings"]["deepseek-v4-flash-deepseek"];
+    let user_config =
+        std::fs::read_to_string(home.join("providers.json")).expect("provider config");
+    let document: serde_json::Value =
+        serde_json::from_str(&user_config).expect("parse provider config");
+    let provider = &document["provider"]["Deepseek"];
+    let model = &provider["models"]["DeepSeek-V4-Flash"];
 
-    assert_eq!(binding["model_slug"].as_str(), Some("deepseek-v4-flash"));
-    assert_eq!(binding["request_model"].as_str(), Some("DeepSeek-V4-Flash"));
-    assert_eq!(binding.get("model_name"), None);
-    assert_eq!(binding["custom_binding_key"].as_str(), Some("preserved"));
-    assert_eq!(binding["display_name"].as_str(), Some("DeepSeek-V4-Flash"));
+    assert_eq!(
+        provider["base_url"].as_str(),
+        Some("https://api.deepseek.com")
+    );
+    assert_eq!(model["name"].as_str(), Some("DeepSeek-V4-Flash"));
+    assert_eq!(model["wire_api"].as_str(), Some("openai_chat_completions"));
+    assert_eq!(
+        document["model"].as_str(),
+        Some("Deepseek/DeepSeek-V4-Flash")
+    );
+    let legacy_config = std::fs::read_to_string(home.join("config.toml")).expect("legacy config");
+    let legacy_document: toml::Value = toml::from_str(&legacy_config).expect("parse legacy config");
+    assert!(legacy_document.get("providers").is_none());
+    assert!(legacy_document.get("model_bindings").is_none());
 
     let _ = std::fs::remove_dir_all(root);
 }

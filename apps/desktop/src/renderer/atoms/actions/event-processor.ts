@@ -20,7 +20,7 @@ import {
 import { setSessionActiveTurnAtom, setSessionQueueAtom } from "../queue"
 import { sessionNativeFamily } from "../session-native"
 import { appStore } from "../store"
-import { isStreamingField, streamingVersionFamily } from "../streaming"
+import { isStreamingField, getStreamingPart, streamingVersionFamily } from "../streaming"
 import { todosFamily } from "../todos"
 import { setSessionDiffAtom } from "../ui"
 import { applyWorkspaceChangesUpdatedAtom } from "../workspace-changes"
@@ -181,7 +181,9 @@ export function processEvent(event: Event): void {
 		case "session/compaction/completed": {
 			const sessionID = event.properties.sessionID ?? event.properties.session_id
 			if (sessionID) {
-				set(compactionStatusFamily(sessionID), "completed")
+				// Transcript markers carry the durable "completed" row; clear the
+				// live atom so a later compaction can show "started" again.
+				set(compactionStatusFamily(sessionID), null)
 			}
 			break
 		}
@@ -245,11 +247,15 @@ export function processEvent(event: Event): void {
 			const part = event.properties.part
 			set(upsertPartAtom, part)
 			// useSessionChat reads partsFamily imperatively through appStore.get,
-			// so every visible part update must bump the per-session version.
-			// Streaming text/reasoning parts may also be present in the streaming
-			// overlay, but the main-store write still needs to invalidate renders
-			// when it is the event that reaches the UI after a tool call.
-			set(streamingVersionFamily(part.sessionID), (v) => v + 1)
+			// so visible part updates must bump the per-session version — except
+			// when the streaming buffer already owns this text/reasoning part and
+			// has scheduled a throttled notify (avoids ~RAF double bumps).
+			const bufferedStreaming =
+				(part.type === "text" || part.type === "reasoning") &&
+				Boolean(getStreamingPart(part.sessionID, part.messageID, part.id))
+			if (!bufferedStreaming) {
+				set(streamingVersionFamily(part.sessionID), (v) => v + 1)
+			}
 			break
 		}
 
@@ -314,11 +320,24 @@ export function processEvent(event: Event): void {
 			const sessionID = event.properties.sessionID
 			if (!sessionID) break
 			const current = appStore.get(sessionNativeFamily(sessionID))
+			const nextUsed = Number(event.properties.used ?? 0)
+			const nextSize = Number(event.properties.size ?? 0)
+			const previousSize = Number(current.usage?.size ?? 0)
+			const occupancyWindow = Number(current.occupancy?.contextWindowTokens ?? 0)
+			// Server size is already the model effective window. Keep the
+			// denominator in sync with live turn updates (including increases
+			// after the user raises usable context).
+			const stableSize = nextSize > 0 ? nextSize : occupancyWindow > 0 ? occupancyWindow : previousSize
+			const nextOccupancy =
+				current.occupancy && stableSize > 0 && current.occupancy.contextWindowTokens !== stableSize
+					? { ...current.occupancy, contextWindowTokens: stableSize }
+					: current.occupancy
 			set(sessionNativeFamily(sessionID), {
 				...current,
+				occupancy: nextOccupancy,
 				usage: {
-					used: event.properties.used,
-					size: event.properties.size,
+					used: nextUsed,
+					size: stableSize,
 					cost: event.properties.cost,
 				},
 			})
@@ -328,10 +347,30 @@ export function processEvent(event: Event): void {
 		case "context.usage.updated": {
 			const sessionID = event.properties.sessionID
 			if (!sessionID) break
+			const occupancy = event.properties.occupancy as
+				| {
+						totalTokens?: number
+						contextWindowTokens?: number
+						categories?: unknown
+				  }
+				| undefined
 			const current = appStore.get(sessionNativeFamily(sessionID))
+			const occupancyTotal = Number(occupancy?.totalTokens ?? 0)
+			const occupancyWindow = Number(occupancy?.contextWindowTokens ?? 0)
+			const previousUsed = Number(current.usage?.used ?? 0)
+			const previousOccupancyWindow = Number(current.occupancy?.contextWindowTokens ?? 0)
+			// Trust the server window (model effective). Shrinks and increases
+			// both apply immediately so the Context usage popover denominator
+			// stays current.
+			const nextWindow = occupancyWindow > 0 ? occupancyWindow : previousOccupancyWindow
 			set(sessionNativeFamily(sessionID), {
 				...current,
-				occupancy: event.properties.occupancy,
+				occupancy: occupancy,
+				usage: {
+					used: occupancyTotal > 0 ? occupancyTotal : previousUsed,
+					size: nextWindow > 0 ? nextWindow : Number(current.usage?.size ?? 0),
+					cost: current.usage?.cost,
+				},
 			})
 			break
 		}

@@ -3,13 +3,12 @@ title: Provider Wire APIs
 description: Reference Devo provider protocol options.
 ---
 
-Provider wire APIs describe the HTTP request format Devo uses for a model
-binding.
+Provider wire APIs describe the HTTP request format Devo uses for a model.
 
-They are configured in two places:
+They are configured in two places in `providers.json`:
 
-- provider `wire_apis`, the set of protocols a provider record supports;
-- binding `invocation_method`, the protocol used by one model binding.
+- provider `wire_api`, the default protocol for its models;
+- model `wire_api`, an optional per-model override.
 
 ## Values
 
@@ -19,39 +18,27 @@ They are configured in two places:
 | `openai_responses` | OpenAI-compatible Responses | The endpoint accepts Responses API requests. |
 | `anthropic_messages` | Anthropic-compatible Messages | The endpoint accepts Anthropic Messages-style requests. |
 
-## Provider And Binding Must Match
+## Provider And Model Must Match
 
 This is valid:
 
-```toml
-[providers.deepseek-anthropic]
-wire_apis = ["anthropic_messages"]
-
-[model_bindings.main]
-provider = "deepseek-anthropic"
-invocation_method = "anthropic_messages"
+```json
+{"provider":{"deepseek-anthropic":{"wire_api":"anthropic_messages","models":{"main":{"wire_api":"anthropic_messages"}}}}}
 ```
 
 This is invalid:
 
-```toml
-[providers.deepseek-anthropic]
-wire_apis = ["anthropic_messages"]
-
-[model_bindings.main]
-provider = "deepseek-anthropic"
-invocation_method = "openai_chat_completions"
+```json
+{"provider":{"deepseek-anthropic":{"wire_api":"anthropic_messages","models":{"main":{"wire_api":"openai_chat_completions"}}}}}
 ```
 
-When a provider lists `wire_apis`, Devo validates that the selected binding uses
-one of them.
+Devo validates that the model and provider use a supported wire API.
 
 ## Default Behavior
 
-`ModelBindingConfig` defaults `invocation_method` to
-`openai_chat_completions` when the field is omitted. Do not rely on that for
-new config. Set the value explicitly so future readers know which protocol the
-binding uses.
+`ProviderConfigEntry` and `ProviderModelConfig` default `wire_api` to
+`openai_chat_completions` when the field is omitted. Set it explicitly so future
+readers know which protocol the provider uses.
 
 ## Choosing Correctly
 

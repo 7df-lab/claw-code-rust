@@ -370,7 +370,14 @@ impl ServerRuntime {
             "workspace/changes/read" => Some(self.handle_workspace_changes_read(id?, params).await),
             "provider/list" => Some(self.handle_native_provider_list(id?).await),
             "provider/validate" => Some(self.handle_native_provider_validate(id?, params).await),
+            "provider/discover" => Some(self.handle_native_provider_discover(id?, params).await),
             "provider/upsert" => Some(self.handle_native_provider_upsert(id?, params).await),
+            "provider/disconnect" => {
+                Some(self.handle_native_provider_disconnect(id?, params).await)
+            }
+            "provider/model/remove" => {
+                Some(self.handle_native_provider_model_remove(id?, params).await)
+            }
             // Paged history reads of the new Native API (native types).
             "session/turns/list" => Some(self.handle_session_turns_list(id?, params).await),
             "session/items/list" => Some(self.handle_session_items_list(id?, params).await),
@@ -1388,7 +1395,6 @@ mod tests {
     use devo_core::BundledSkillsConfig;
     use devo_core::FileSystemSkillCatalog;
     use devo_core::PresetModelCatalog;
-    use devo_core::ProviderVendorCatalog;
     use devo_core::SkillsConfig;
     use devo_core::tools::ToolRegistry;
     use devo_protocol::DEVO_ACTIVITY_AT_META;
@@ -1472,7 +1478,6 @@ mod tests {
                 crate::empty_mcp_manager(),
                 "test-model".to_string(),
                 model_catalog,
-                Arc::new(ProviderVendorCatalog::default()),
                 Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                     bundled: Some(BundledSkillsConfig { enabled: false }),
                     ..SkillsConfig::default()
@@ -1609,7 +1614,6 @@ mod tests {
                 mcp_manager,
                 "test-model".to_string(),
                 Arc::new(PresetModelCatalog::default()),
-                Arc::new(ProviderVendorCatalog::default()),
                 Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                     bundled: Some(BundledSkillsConfig { enabled: false }),
                     ..SkillsConfig::default()
@@ -7347,8 +7351,8 @@ mod tests {
     }
 
     /// Trace: L2-DES-APP-008
-    /// Verifies: native provider/list answers with camelCase vendor
-    /// entries and native provider/upsert (dual-shape via providerVendor)
+    /// Verifies: native provider/list answers with camelCase provider
+    /// entries and native provider/upsert
     /// writes through the legacy store path (ratified #11).
     #[tokio::test]
     async fn native_provider_list_and_upsert_round_trip() -> Result<()> {
@@ -7367,6 +7371,23 @@ mod tests {
         let listed: devo_protocol::native::rpc_admin::ProviderListResult =
             serde_json::from_value(listed["result"].clone()).expect("native provider/list result");
         assert!(listed.providers.is_empty());
+        assert!(listed.template_provider_ids.is_empty());
+        assert!(listed.connected_provider_ids.is_empty());
+        let rejected = history_request(
+            &runtime,
+            connection_id,
+            6,
+            "provider/model/remove",
+            serde_json::json!({
+                "providerId": "test-provider",
+                "modelId": "test-model",
+            }),
+        )
+        .await;
+        assert!(
+            rejected.get("error").is_some(),
+            "provider templates and unconnected providers cannot remove models: {rejected}"
+        );
 
         let upserted = history_request(
             &runtime,
@@ -7374,12 +7395,18 @@ mod tests {
             8,
             "provider/upsert",
             serde_json::json!({
-                "providerVendor": {
+                "provider": {
                     "name": "test-provider",
                     "baseUrl": "https://example.com/v1",
                     "wireApis": ["openai_chat_completions"],
                     "enabled": true,
+                    "models": {
+                        "test-model": {
+                            "name": "Test model"
+                        }
+                    }
                 },
+                "defaultModel": "test-provider/test-model",
             }),
         )
         .await;
@@ -7405,6 +7432,118 @@ mod tests {
             Some("https://example.com/v1"),
             "native vendors must use camelCase keys: {listed}"
         );
+        assert_eq!(
+            listed["result"]["connectedProviderIds"],
+            serde_json::json!(["test-provider"])
+        );
+        assert_eq!(
+            listed["result"]["connectionModels"]["test-provider"]["test-model"]["name"],
+            serde_json::json!("Test model")
+        );
+
+        let removed = history_request(
+            &runtime,
+            connection_id,
+            10,
+            "provider/model/remove",
+            serde_json::json!({
+                "providerId": "test-provider",
+                "modelId": "test-model",
+            }),
+        )
+        .await;
+        assert!(
+            removed.get("error").is_none(),
+            "native provider/model/remove failed: {removed}"
+        );
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            11,
+            "provider/list",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(
+            listed["result"]["connectionModels"]["test-provider"],
+            serde_json::json!({})
+        );
+
+        let disconnected = history_request(
+            &runtime,
+            connection_id,
+            12,
+            "provider/disconnect",
+            serde_json::json!({ "providerId": "test-provider" }),
+        )
+        .await;
+        assert!(
+            disconnected.get("error").is_none(),
+            "native provider/disconnect failed: {disconnected}"
+        );
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            13,
+            "provider/list",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(
+            listed["result"]["connectedProviderIds"],
+            serde_json::json!([])
+        );
+        assert!(
+            listed["result"]["providers"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
+        Ok(())
+    }
+
+    /// Trace: L2-DES-MODEL-002
+    /// Verifies: native provider/list exposes the embedded provider directory
+    /// used by onboarding before any user provider has been configured.
+    #[tokio::test]
+    async fn native_provider_list_includes_embedded_provider_directory() -> Result<()> {
+        let data_root = TempDir::new()?;
+        let catalog = Arc::new(PresetModelCatalog::load_from_provider_config(
+            &devo_core::ProviderConfigFile::default(),
+        )?);
+        let runtime = build_runtime_with_provider_and_catalog(
+            data_root.path(),
+            Arc::new(NoopProvider),
+            catalog,
+        );
+        let connection_id = initialized_native_connection(&runtime).await;
+
+        let listed = history_request(
+            &runtime,
+            connection_id,
+            7,
+            "provider/list",
+            serde_json::json!({}),
+        )
+        .await;
+        let listed: devo_protocol::native::rpc_admin::ProviderListResult =
+            serde_json::from_value(listed["result"].clone()).expect("native provider/list result");
+
+        assert!(listed.providers.iter().any(|provider| {
+            provider.id == "deepseek"
+                && provider.name == "DeepSeek"
+                && provider.wire_apis == vec![devo_core::ProviderWireApi::AnthropicMessages]
+        }));
+        assert!(listed.providers.iter().any(|provider| {
+            provider.id == "zhipu"
+                && provider.base_url.as_deref() == Some("https://open.bigmodel.cn/api/paas/v4")
+        }));
+        assert!(
+            listed
+                .template_provider_ids
+                .contains(&"deepseek".to_string())
+        );
+        assert!(listed.template_provider_ids.contains(&"zhipu".to_string()));
+        assert!(listed.connected_provider_ids.is_empty());
         Ok(())
     }
 

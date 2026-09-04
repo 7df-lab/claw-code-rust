@@ -7,6 +7,7 @@ import type {
 	OpenCodeProviderSettings,
 	OpenCodeScanResult,
 } from "@devo/configconv"
+import type { CanonicalProviderUpsertParams } from "./canonical-provider-migration"
 
 interface MigrationFilePreview {
 	path: string
@@ -84,15 +85,13 @@ export async function executeOpenCodeProviderMigration(
 	const errors: string[] = [...diagnostics.errors]
 
 	for (const params of buildProviderUpsertParams(settings)) {
-		const providerName = params.model_binding.provider
-		const requestModel = params.model_binding.request_model
-		const bindingId = params.model_binding.binding_id
+		const providerName = params.provider.id
 		try {
 			await requestProviderUpsert("provider/upsert", params)
-			filesWritten.push(`provider/upsert:${providerName}/${bindingId}`)
+			filesWritten.push(`provider/upsert:${providerName}`)
 		} catch (error) {
 			errors.push(
-				`OpenCode provider migration failed for ${providerName}/${requestModel}: ${error instanceof Error ? error.message : String(error)}`,
+				`OpenCode provider migration failed for ${providerName}: ${error instanceof Error ? error.message : String(error)}`,
 			)
 		}
 	}
@@ -105,59 +104,28 @@ export async function executeOpenCodeProviderMigration(
 	}
 }
 
-function buildProviderUpsertParams(settings: OpenCodeProviderSettings): Array<{
-	provider_vendor: {
-		name: string
-		base_url: string | null
-		credential: null
-		headers: null
-		wire_apis: string[]
-		enabled: true
-	}
-	model_binding: {
-		binding_id: string
-		model_slug: string
-		provider: string
-		request_model: string
-		display_name: string
-		invocation_method: string
-		default_reasoning_effort: null
-		enabled: true
-	}
-	default_model_binding?: string
-	api_key?: string
-}> {
-	const params = []
-
-	for (const provider of settings.providers) {
-		for (const model of provider.models) {
-			const bindingId = `${slugComponent(model.modelId)}-${slugComponent(provider.providerId)}`
-			params.push({
-				provider_vendor: {
-					name: provider.providerId,
-					base_url: provider.baseUrl ?? null,
-					credential: null,
-					headers: null,
-					wire_apis: [provider.wireApi],
-					enabled: true as const,
-				},
-				model_binding: {
-					binding_id: bindingId,
-					model_slug: model.modelId,
-					provider: provider.providerId,
-					request_model: model.modelId,
-					display_name: model.displayName,
-					invocation_method: provider.wireApi,
-					default_reasoning_effort: null,
-					enabled: true as const,
-				},
-				default_model_binding: model.isDefault ? bindingId : undefined,
-				api_key: provider.apiKey,
-			})
+function buildProviderUpsertParams(
+	settings: OpenCodeProviderSettings,
+): CanonicalProviderUpsertParams[] {
+	return settings.providers.map((provider) => {
+		const defaultModel = provider.models.find((model) => model.isDefault)?.modelId
+		const smallModel = provider.models.find((model) => model.isSmall)?.modelId
+		return {
+			provider: {
+				id: provider.providerId,
+				name: provider.displayName,
+				...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
+				wireApis: [provider.wireApi],
+				models: Object.fromEntries(
+					provider.models.map((model) => [model.modelId, { name: model.displayName }]),
+				),
+				enabled: true,
+			},
+			...(defaultModel ? { defaultModel: `${provider.providerId}/${defaultModel}` } : {}),
+			...(smallModel ? { smallModel: `${provider.providerId}/${smallModel}` } : {}),
+			...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
 		}
-	}
-
-	return params
+	})
 }
 
 function diagnosticsFor(settings: OpenCodeProviderSettings): {
@@ -186,7 +154,7 @@ function diagnosticsFor(settings: OpenCodeProviderSettings): {
 
 	if (settings.providers.reduce((sum, provider) => sum + provider.models.length, 0) === 0) {
 		warnings.push(
-			"OpenCode settings did not include any importable OpenAI-compatible provider models; no provider model bindings were imported.",
+			"OpenCode settings did not include any importable OpenAI-compatible provider models; no provider Connections were imported.",
 		)
 	}
 
@@ -205,7 +173,7 @@ function pushProviderDiagnostics(
 	}
 	if (provider.models.length === 0) {
 		warnings.push(
-			`OpenCode provider ${provider.providerId} did not include model definitions; no model bindings were imported for this provider.`,
+			`OpenCode provider ${provider.providerId} did not include model definitions; no models were imported for this provider.`,
 		)
 	}
 	if (!provider.apiKey) {
@@ -232,19 +200,6 @@ function readOpenCodeScanResult(scanResult: unknown): OpenCodeScanResult | undef
 				: [],
 		},
 	}
-}
-
-function slugComponent(value: string): string {
-	let out = ""
-	for (const ch of value) {
-		if (/[a-zA-Z0-9]/.test(ch)) {
-			out += ch.toLowerCase()
-		} else if (!out.endsWith("-")) {
-			out += "-"
-		}
-	}
-	const slug = out.replace(/^-+|-+$/g, "")
-	return slug || "model"
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -12,7 +12,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
-use devo_core::ProviderVendorCatalog;
 use futures::stream::Stream;
 use futures::stream::{self};
 use pretty_assertions::assert_eq;
@@ -25,6 +24,7 @@ use tokio::time::timeout;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::ItemLine;
 use devo_core::ItemRecord;
+use devo_core::ModelCatalog;
 use devo_core::PresetModelCatalog;
 use devo_core::RolloutLine;
 use devo_core::SessionMetaLine;
@@ -36,11 +36,8 @@ use devo_core::TurnItem;
 use devo_core::TurnLine;
 use devo_core::TurnRecord;
 use devo_core::tools::ToolRegistry;
-use devo_protocol::Model;
 use devo_protocol::ModelRequest;
 use devo_protocol::ModelResponse;
-use devo_protocol::ReasoningCapability;
-use devo_protocol::ReasoningEffort;
 use devo_protocol::ResponseContent;
 use devo_protocol::ResponseMetadata;
 use devo_protocol::ServerEvent;
@@ -1104,7 +1101,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
             timestamp: now,
             turn: failed_running,
         })),
-        RolloutLine::Item(ItemLine {
+        RolloutLine::Item(Box::new(ItemLine {
             timestamp: now,
             item: item_record(
                 failed_turn_id,
@@ -1114,8 +1111,8 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
                     text: "failing prompt".into(),
                 }),
             ),
-        }),
-        RolloutLine::Item(ItemLine {
+        })),
+        RolloutLine::Item(Box::new(ItemLine {
             timestamp: now + chrono::Duration::seconds(1),
             item: item_record(
                 failed_turn_id,
@@ -1125,7 +1122,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
                     text: "partial response".into(),
                 }),
             ),
-        }),
+        })),
         RolloutLine::Turn(Box::new(TurnLine {
             timestamp: now + chrono::Duration::seconds(2),
             turn: failed_terminal,
@@ -1134,7 +1131,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
             timestamp: now + chrono::Duration::seconds(3),
             turn: completed_running,
         })),
-        RolloutLine::Item(ItemLine {
+        RolloutLine::Item(Box::new(ItemLine {
             timestamp: now + chrono::Duration::seconds(3),
             item: item_record(
                 completed_turn_id,
@@ -1144,8 +1141,8 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
                     text: "next prompt".into(),
                 }),
             ),
-        }),
-        RolloutLine::Item(ItemLine {
+        })),
+        RolloutLine::Item(Box::new(ItemLine {
             timestamp: now + chrono::Duration::seconds(4),
             item: item_record(
                 completed_turn_id,
@@ -1155,7 +1152,7 @@ async fn failed_turn_resume_restores_terminal_history_without_prompt_contaminati
                     text: "next response".into(),
                 }),
             ),
-        }),
+        })),
         RolloutLine::Turn(Box::new(TurnLine {
             timestamp: now + chrono::Duration::seconds(5),
             turn: completed_terminal,
@@ -1677,7 +1674,7 @@ impl ModelProviderSDK for AutoCompactTestProvider {
 async fn auto_compaction_persists_snapshot_and_survives_resume() -> Result<()> {
     let data_root = TempDir::new()?;
     let provider = Arc::new(AutoCompactTestProvider::new(
-        /*input_tokens*/ 80_000, /*output_tokens*/ 1_000,
+        /*input_tokens*/ 96_000, /*output_tokens*/ 1_000,
     ));
     let runtime = build_runtime_with_provider(data_root.path(), provider.clone())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
@@ -1814,21 +1811,6 @@ async fn auto_compaction_persists_snapshot_and_survives_resume() -> Result<()> {
 #[tokio::test]
 async fn configured_request_model_is_used_for_turn_metadata_and_provider_request() -> Result<()> {
     let data_root = TempDir::new()?;
-    std::fs::create_dir_all(data_root.path().join(".devo"))?;
-    std::fs::write(
-        data_root.path().join(".devo").join("config.toml"),
-        r#"
-[model.test-model]
-display_name = "test-model"
-provider = "openai_chat_completions"
-reasoning_capability = "toggle"
-reasoning_implementation = { model_variant = { variants = [
-  { selection_value = "disabled", model_slug = "test-model", label = "Off", description = "Disable reasoning effort" },
-  { selection_value = "enabled", model_slug = "vendor/test-model", reasoning_effort = "medium", label = "On", description = "Enable reasoning effort" },
-] } }
-base_instructions = "Test model"
-"#,
-    )?;
     let provider = Arc::new(CapturingProvider::default());
     let runtime = build_runtime_with_provider(data_root.path(), provider.clone())?;
     let (connection_id, mut notifications_rx) = initialize_connection(&runtime).await?;
@@ -1840,7 +1822,7 @@ base_instructions = "Test model"
         data_root.path(),
         "persistence-request-model-session",
         Some("Request model session"),
-        Some("test-model"),
+        Some("test/test-model"),
     )
     .await?;
     let session_id = session.id;
@@ -1854,7 +1836,7 @@ base_instructions = "Test model"
                 "params": {
                     "sessionId": session_id,
                     "expectedVersion": 0,
-                    "settings": { "reasoningEffort": "medium" }
+                    "settings": { "reasoningEffort": "on" }
                 }
             }),
         )
@@ -1890,9 +1872,8 @@ base_instructions = "Test model"
     assert_eq!(
         turn_started["params"]["turn"]["model"],
         serde_json::json!({
-            "provider": "unknown",
+            "provider": "test/test-model",
             "model": "vendor/test-model",
-            "reasoningEffort": "medium"
         })
     );
     let requests = provider.requests.lock().expect("lock requests");
@@ -1964,10 +1945,77 @@ fn build_runtime(data_root: &std::path::Path) -> Result<Arc<ServerRuntime>> {
     build_runtime_with_provider(data_root, Arc::new(SingleReplyProvider))
 }
 
+fn ensure_test_provider_catalog(data_root: &std::path::Path) -> Result<()> {
+    let providers_path = data_root.join("providers.json");
+    if providers_path.exists() {
+        return Ok(());
+    }
+    std::fs::write(
+        providers_path,
+        r#"{
+  "model": "test/test-model",
+  "providers": {
+    "test": {
+      "name": "Test",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "test-model": {
+          "name": "test-model",
+          "context_window": 100000,
+          "effective_context_window_percent": 95.0,
+          "reasoning_capability": "toggle",
+          "reasoning_implementation": {
+            "model_variant": {
+              "variants": [
+                {
+                  "selection_value": "disabled",
+                  "model": "test-model",
+                  "label": "Off",
+                  "description": "Disable reasoning effort"
+                },
+                {
+                  "selection_value": "enabled",
+                  "model": "vendor/test-model",
+                  "reasoning_effort": "medium",
+                  "label": "On",
+                  "description": "Enable reasoning effort"
+                }
+              ]
+            }
+          },
+          "base_instructions": "Test model"
+        },
+        "deepseek-v4-flash": {
+          "name": "deepseek-v4-flash",
+          "context_window": 100000,
+          "reasoning_capability": { "levels": ["off", "high", "max"] },
+          "default_reasoning_effort": "high",
+          "base_instructions": "Flash model"
+        }
+      }
+    }
+  }
+}"#,
+    )?;
+    Ok(())
+}
+
 fn build_runtime_with_provider(
     data_root: &std::path::Path,
     provider: Arc<dyn ModelProviderSDK>,
 ) -> Result<Arc<ServerRuntime>> {
+    ensure_test_provider_catalog(data_root)?;
+    let config_store = AppConfigStore::load(data_root.to_path_buf(), None)?;
+    let model_catalog = Arc::new(
+        PresetModelCatalog::load_from_provider_config_with_overrides(
+            &config_store.effective_config().provider_catalog_config(),
+            &config_store.effective_config().provider.model_overrides,
+        )?,
+    );
+    let default_model = model_catalog
+        .resolve_for_turn(Some("test/test-model"))
+        .map(|model| model.slug.clone())
+        .unwrap_or_else(|_| "test/test-model".to_string());
     let db_path = data_root.join("test_persistence.db");
     let db = Arc::new(devo_server::db::Database::open(db_path).expect("open test database"));
     Ok(ServerRuntime::new(
@@ -1977,34 +2025,15 @@ fn build_runtime_with_provider(
             Arc::new(SingleProviderRouter::new(provider)),
             Arc::new(ToolRegistry::new()),
             devo_server::empty_mcp_manager(),
-            "test-model".to_string(),
-            Arc::new(PresetModelCatalog::new(vec![
-                Model {
-                    slug: "test-model".to_string(),
-                    display_name: "test-model".to_string(),
-                    ..Model::default()
-                },
-                Model {
-                    slug: "deepseek-v4-flash".to_string(),
-                    display_name: "deepseek-v4-flash".to_string(),
-                    reasoning_capability: ReasoningCapability::ToggleWithLevels(vec![
-                        ReasoningEffort::High,
-                        ReasoningEffort::Max,
-                    ]),
-                    default_reasoning_effort: Some(ReasoningEffort::High),
-                    ..Model::default()
-                },
-            ])),
-            Arc::new(ProviderVendorCatalog::default()),
+            default_model,
+            model_catalog,
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
             })),
             devo_core::AgentsMdConfig::default(),
             db,
-            Arc::new(std::sync::Mutex::new(
-                AppConfigStore::load(data_root.to_path_buf(), None).expect("load app config store"),
-            )),
+            Arc::new(std::sync::Mutex::new(config_store)),
         ),
     ))
 }

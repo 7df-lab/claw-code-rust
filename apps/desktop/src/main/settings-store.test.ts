@@ -28,7 +28,7 @@ function expectedSettings() {
 		},
 		opaqueWindows: false,
 		appearance: {
-			colorScheme: "dark",
+			colorScheme: "light",
 			themeId: "default",
 			displayMode: "default",
 			hideThinkingWhileWorking: true,

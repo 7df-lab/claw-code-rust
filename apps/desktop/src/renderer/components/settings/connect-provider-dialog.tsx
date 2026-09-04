@@ -1083,10 +1083,11 @@ function ZenSetupView({
 	const [apiKey, setApiKey] = useState("")
 	const isLoading = state.status === "loading"
 
-	const freeModelCount = Object.values(provider.models).filter(
+	const models = provider.models ?? {}
+	const freeModelCount = Object.values(models).filter(
 		(m) => (m as { cost?: { input?: number } }).cost?.input === 0,
 	).length
-	const totalModelCount = Object.keys(provider.models).length
+	const totalModelCount = Object.keys(models).length
 
 	const handleSubmit = useCallback(
 		(e: React.FormEvent) => {

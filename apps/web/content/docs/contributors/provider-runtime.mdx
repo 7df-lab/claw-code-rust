@@ -1,60 +1,55 @@
 ---
 title: Provider Runtime
-description: Understand provider routing and request adapters.
+description: Understand provider Connections, routing, and request adapters.
 ---
 
-This page explains how Devo turns config into provider requests.
+This page explains how Devo turns the canonical provider/model catalog into
+provider requests.
 
-## Config Inputs
+## Config inputs
 
-Provider runtime starts from effective app config:
+Runtime reads the effective `providers.json` catalog:
 
-- `[providers.<id>]` describes endpoint, credential, headers, enabled state,
-  wire APIs, and web tool behavior.
-- `[model_bindings.<id>]` describes the local model slug, provider id, provider
-  model name, invocation method, display name, reasoning defaults, and optional
-  web tool overrides.
-- `[defaults].model_binding` selects the default binding.
-- `auth.json` stores credentials by id.
+- `crates/core/providers.json` supplies git-tracked provider templates and model
+  metadata;
+- user/workspace `providers.json` files add or override Connection and model
+  records;
+- `provider.<id>.credential` points to a user-scoped `auth.json` credential;
+- the selected nested model key is the provider-facing request model id.
 
-The serialized schema lives in `crates/config/src/provider/schema.rs`.
+The serialized schema is defined in `crates/config/src/provider/catalog.rs`.
+The old TOML provider fields are parsed only by the startup migration and are
+not a runtime input.
 
 ## Resolution
 
-Interactive startup and server bootstrap both resolve provider settings from
-effective config.
+The canonical selection is `provider/model` or `provider/model/variant`. Runtime
+validation checks that:
 
-Resolution validates that:
+- the provider Connection exists and is enabled;
+- the model is enabled;
+- the selected wire API is supported;
+- the credential reference resolves in `auth.json`;
+- arbitrary request/options/headers are valid JSON and can be merged.
 
-- the requested binding exists and is enabled;
-- the referenced provider exists and is enabled;
-- the binding invocation method is supported by the provider's `wire_apis`;
-- required credentials exist in `auth.json`;
-- local web search config points to a known local provider and credential.
-
-If a CLI or runtime model override is present, Devo first tries to match it as a
-binding id, then a model slug, then a provider model name.
+If no explicit model is supplied, the top-level `model` is used, followed by the
+first enabled model in the merged catalog.
 
 ## Router
 
-`crates/server/src/provider_config.rs` builds the provider runtime view.
-
-The provider crate exposes a `ProviderRouter` trait. The server depends on that
-trait instead of individual provider implementations.
-
-Two router shapes are used:
+`crates/server/src/provider_config.rs` builds the provider runtime view. The
+provider crate exposes a `ProviderRouter` trait, so server code does not depend
+on individual provider implementations.
 
 | Router | Use |
 | --- | --- |
-| `SingleProviderRouter` | One configured provider path. |
-| `MultiProviderRouter` | Multiple enabled model bindings routed by model or binding metadata. |
+| `SingleProviderRouter` | One selected provider route. |
+| `MultiProviderRouter` | Multiple enabled provider/model routes, keyed by the canonical model reference. |
 
-The selected route is passed into turn execution so one session can keep using
-the intended binding even when several providers are configured.
+The selected route is attached to the turn. This keeps one session on its
+intended Connection even when several Connections exist.
 
 ## Wire APIs
-
-The supported wire API strings are defined in protocol model code:
 
 | Config value | Provider adapter |
 | --- | --- |
@@ -62,62 +57,50 @@ The supported wire API strings are defined in protocol model code:
 | `openai_chat_completions` | OpenAI-compatible Chat Completions API. |
 | `openai_responses` | OpenAI Responses-compatible API. |
 
-Provider-specific HTTP streaming behavior belongs in `devo-provider`, not in
-the TUI or server runtime.
+Provider-specific HTTP and streaming behavior belongs in `devo-provider`, not
+the TUI or server UI layer.
 
-## Request Model
+## Request defaults and variants
 
-Model binding separates local identity from provider request name:
+Provider, model, and variant records may contain arbitrary `request`, `options`,
+and `headers` objects. They are merged from broad to specific:
 
-```toml
-[model_bindings.deepseek-v4-pro-deepseek-anthropic]
-model_slug = "deepseek-v4-pro"
-provider = "deepseek-anthropic"
-request_model = "deepseek-v4-pro"
-invocation_method = "anthropic_messages"
-```
+1. provider;
+2. model;
+3. selected variant.
 
-If `request_model` differs from `model_slug`, Devo can show the local slug in UI
-while sending the provider-specific model string to the API.
+`provider/model/variant` selects a named variant without creating another model
+identity. Model metadata also carries context limits, capabilities, cost,
+release status, reasoning support, and input modalities.
 
-## Web Search And Fetch
+## Dynamic discovery
 
-Web search and fetch are resolved from global, provider-level, and binding-level
-config.
+Native `provider/discover` probes the selected Connection's `/models` or
+compatible `/v1/models` endpoint. It normalizes common model metadata and stores
+the raw directory entry in the user Connection overlay. The git-tracked
+provider template is never modified.
 
-Precedence:
+## Web capabilities
 
-1. binding override;
-2. provider override;
-3. global `tools` config.
-
-Search modes:
-
-| Mode | Meaning |
-| --- | --- |
-| `provider` | Expose provider-hosted web search when the provider path supports it. |
-| `local` | Use a configured local third-party search provider. |
-| `disabled` | Do not expose web search. |
-
-Fetch modes are `provider`, `local`, and `disabled`.
+Web search and fetch are resolved from model override, provider override, and
+global `tools` config, in that order. Modes are `provider`, `local`, and
+`disabled`. Local search credentials remain in `auth.json`.
 
 ## Validation API
 
-Onboarding and provider editing can validate a provider before saving it. The
-TUI sends provider validation through the worker, the server creates a
-short-lived provider route, and the runtime attempts a small probe request.
+Onboarding and provider editing validate a Connection through Native
+`provider/validate` before saving it. The server creates a short-lived route and
+attempts a small probe request, catching endpoint, protocol, credential, and
+model errors early.
 
-Use validation when changing provider schema, auth handling, or onboarding
-behavior. It catches many config errors before a user starts a real task.
-
-## Where To Change Code
+## Where to change code
 
 | Change | Start here |
 | --- | --- |
-| Config field shape | `crates/config/src/provider/schema.rs` |
-| Config loading or validation | `crates/config/src/provider` |
+| Canonical provider/model shape | `crates/config/src/provider/catalog.rs` |
+| Startup migration | `crates/config/src/provider/migration.rs` |
 | Server provider bootstrap | `crates/server/src/provider_config.rs` |
 | Provider routing behavior | `crates/provider/src/router.rs` |
 | Anthropic-compatible requests | `crates/provider/src/anthropic` |
 | OpenAI-compatible requests | `crates/provider/src/openai` |
-| Provider validation API | `crates/server/src/runtime/provider_vendor_api.rs` |
+| Native provider RPCs | `crates/server/src/runtime/provider_api.rs` |

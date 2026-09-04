@@ -39,7 +39,7 @@ Devo は、単一のホスト型モデルエコシステムに縛られず、モ
 Desktop 体験、terminal workflow、ランタイムの動作、ワークスペースでの
 実行境界を自分たちで制御したいチームのための coding agent です。
 
-- **任意のモデルを接続** - provider/model binding により、OpenAI 互換 Chat
+- **任意のモデルを接続** - provider/model Connection により、OpenAI 互換 Chat
   Completions、OpenAI 互換 Responses、Anthropic Messages、DeepSeek、
   Qwen、Kimi、またはプライベートモデルゲートウェイを接続できます。
 - **プライベート環境やイントラネット環境に対応** - 単一のローカル Rust
@@ -54,7 +54,7 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
 
 ## 機能
 
-- **Model-neutral provider runtime** - provider/model binding により、OpenAI 互換、
+- **Model-neutral provider runtime** - provider/model Connection により、OpenAI 互換、
   Anthropic 互換、DeepSeek、Qwen、Kimi、GLM、MiniMax、Xiaomi MiMo、
   OpenRouter、またはローカルエンドポイントを利用できます。
 - **MCP サポート** - [Model Context Protocol](https://modelcontextprotocol.io/)
@@ -91,7 +91,7 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
 </p>
 
 Devo の組み込みモデルカタログには、Qwen、Kimi、MiniMax、GLM、DeepSeek の検証済みモデル定義が含まれています。
-プロバイダーのエンドポイントは provider/model binding で引き続き設定できます。
+プロバイダーのエンドポイントは provider/model Connection で引き続き設定できます。
 
 ## 検証済みプラットフォーム
 
@@ -208,17 +208,17 @@ devo resume <session-id>
 
 ## 設定
 
-`devo onboard` が推奨されるセットアップ方法です。provider/model binding を
-`config.toml` に書き、API key をユーザースコープの `auth.json` に保存します。
+`devo onboard` が推奨されるセットアップ方法です。provider Connection と model
+directory を `providers.json` に書き、API key をユーザースコープの `auth.json` に保存します。
 
 自分の API key とカスタムモデルを手動で設定する場合:
 
-1. `config.toml` で `[model.<slug>]` パラメータ、`[providers.<id>]`、
-   `[model_bindings.<id>]` を定義します。
+1. `providers.json` で `provider.<id>.models.<model-id>` を定義し、既定 model を
+   `provider/model` に設定します。
 2. シークレットを `DEVO_HOME/auth.json` に置き、`[providers.<id>].credential`
-   からその credential id を参照します — API key 自体を `config.toml` に
+   からその credential id を参照します — API key 自体を `providers.json` に
    書かないでください。
-3. エンドポイントのプロトコルに合わせて `invocation_method` を
+3. エンドポイントのプロトコルに合わせて `wire_api` を
    `openai_chat_completions`、`openai_responses`、`anthropic_messages` の
    いずれかに設定します。
 
@@ -241,12 +241,12 @@ Devo は pre-1.0 で、活発に開発されています。ローカル評価、
 
 組み込みモデルメタデータは現在、Qwen、Kimi、MiniMax、GLM、DeepSeek ファミリーをカバーしています。
 OpenAI 互換 Chat Completions、OpenAI 互換 Responses、または Anthropic Messages API をサポートするモデルエンドポイントであれば、
-provider/model binding を通じて接続できます。
+provider/model Connection を通じて接続できます。
 
 ### 自分の API key を使うには?
 
 `devo onboard` を使うか、ユーザースコープの `auth.json` を編集し、
-`config.toml` の `[providers.<id>].credential` からその credential id を参照します。
+`providers.json` の `provider.<id>.credential` からその credential id を参照します。
 詳細は [設定](./docs/configuration.ja.md#自分の-api-key-を使う) を参照してください。
 
 ### Desktop app と TUI/CLI のどちらを使うべきですか?

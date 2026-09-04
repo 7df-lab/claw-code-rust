@@ -70,24 +70,40 @@ impl OpenAIResponsesProvider {
         format!("{}/responses", self.base_url.trim_end_matches('/'))
     }
 
-    fn post_builder(&self, client: &Client, body: &Value) -> reqwest::RequestBuilder {
+    fn post_builder(
+        &self,
+        client: &Client,
+        body: &Value,
+        headers: &std::collections::BTreeMap<String, String>,
+    ) -> reqwest::RequestBuilder {
         let builder = client
             .post(self.endpoint())
             .header(CONTENT_TYPE, "application/json");
+        let builder = self
+            .http_options
+            .apply_request_headers(self.http_options.apply_custom_headers(builder), headers);
         let builder = if let Some(api_key) = &self.api_key {
             builder.header(AUTHORIZATION, format!("Bearer {api_key}"))
         } else {
             builder
         };
-        self.http_options.apply_custom_headers(builder).json(body)
+        builder.json(body)
     }
 
-    fn request_builder(&self, body: &Value) -> reqwest::RequestBuilder {
-        self.post_builder(&self.client, body)
+    fn request_builder(
+        &self,
+        body: &Value,
+        headers: &std::collections::BTreeMap<String, String>,
+    ) -> reqwest::RequestBuilder {
+        self.post_builder(&self.client, body, headers)
     }
 
-    fn streaming_request_builder(&self, body: &Value) -> reqwest::RequestBuilder {
-        self.post_builder(&self.streaming_client, body)
+    fn streaming_request_builder(
+        &self,
+        body: &Value,
+        headers: &std::collections::BTreeMap<String, String>,
+    ) -> reqwest::RequestBuilder {
+        self.post_builder(&self.streaming_client, body, headers)
     }
 }
 
@@ -498,7 +514,7 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
         );
 
         let response = self
-            .request_builder(&body)
+            .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
             .send()
             .await
             .context("failed to send openai responses request")?;
@@ -540,8 +556,11 @@ impl ModelProviderSDK for OpenAIResponsesProvider {
             "sending openai responses streaming request"
         );
 
-        let event_source = EventSource::new(self.streaming_request_builder(&body))
-            .context("failed to create openai responses event source")?;
+        let event_source = EventSource::new(self.streaming_request_builder(
+            &body,
+            &crate::request_headers(request.extra_body.as_ref()),
+        ))
+        .context("failed to create openai responses event source")?;
         let stream = async_stream::try_stream! {
             let mut text_buf = String::new();
             let mut reasoning_buf = String::new();

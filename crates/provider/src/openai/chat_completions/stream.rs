@@ -82,8 +82,11 @@ pub(super) async fn completion_stream(
         "sending openai streaming request"
     );
 
-    let event_source = EventSource::new(provider.streaming_request_builder(&body))
-        .context("failed to create openai event source")?;
+    let event_source = EventSource::new(
+        provider
+            .streaming_request_builder(&body, &crate::request_headers(request.extra_body.as_ref())),
+    )
+    .context("failed to create openai event source")?;
     let stream = async_stream::try_stream! {
         let mut state = ChatCompletionStreamState::for_request(&request);
 

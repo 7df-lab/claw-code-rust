@@ -14,16 +14,16 @@ use crate::provider::ModelProviderSDK;
 pub enum ProviderRoute {
     /// Use the default provider selected during server bootstrap.
     Default,
-    /// Use a provider selected through a model-provider binding.
-    Binding {
+    /// Use a provider selected through a configured Connection.
+    Connection {
         provider_id: String,
         wire_api: ProviderWireApi,
     },
 }
 
 impl ProviderRoute {
-    pub fn binding(provider_id: impl Into<String>, wire_api: ProviderWireApi) -> Self {
-        Self::Binding {
+    pub fn connection(provider_id: impl Into<String>, wire_api: ProviderWireApi) -> Self {
+        Self::Connection {
             provider_id: provider_id.into(),
             wire_api,
         }
@@ -132,7 +132,7 @@ impl MultiProviderRouter {
         // selected adapter instead of cloning an Arc for each request.
         match route {
             ProviderRoute::Default => Ok(self.default_provider.as_ref()),
-            ProviderRoute::Binding { provider_id, wire_api } => self
+            ProviderRoute::Connection { provider_id, wire_api } => self
                 .providers
                 .get(route)
                 .map(Arc::as_ref)
@@ -271,13 +271,13 @@ mod tests {
         let selected = Arc::new(CapturingProvider::default());
         let mut router = MultiProviderRouter::new(default.clone());
         router.insert_route(
-            ProviderRoute::binding("openrouter", ProviderWireApi::OpenAIChatCompletions),
+            ProviderRoute::connection("openrouter", ProviderWireApi::OpenAIChatCompletions),
             selected.clone(),
         );
 
         router
             .complete(
-                ProviderRoute::binding("openrouter", ProviderWireApi::OpenAIChatCompletions),
+                ProviderRoute::connection("openrouter", ProviderWireApi::OpenAIChatCompletions),
                 request("vendor/model"),
             )
             .await
@@ -294,7 +294,7 @@ mod tests {
 
         let error = router
             .complete(
-                ProviderRoute::binding("missing", ProviderWireApi::AnthropicMessages),
+                ProviderRoute::connection("missing", ProviderWireApi::AnthropicMessages),
                 request("claude"),
             )
             .await
@@ -313,7 +313,7 @@ mod tests {
 
         router
             .complete(
-                ProviderRoute::binding("other", ProviderWireApi::OpenAIResponses),
+                ProviderRoute::connection("other", ProviderWireApi::OpenAIResponses),
                 request("any-model"),
             )
             .await

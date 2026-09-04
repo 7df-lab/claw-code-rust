@@ -84,24 +84,40 @@ impl OpenAIProvider {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
     }
 
-    fn post_builder(&self, client: &Client, body: &Value) -> reqwest::RequestBuilder {
+    fn post_builder(
+        &self,
+        client: &Client,
+        body: &Value,
+        headers: &std::collections::BTreeMap<String, String>,
+    ) -> reqwest::RequestBuilder {
         let builder = client
             .post(self.endpoint())
             .header(CONTENT_TYPE, "application/json");
+        let builder = self
+            .http_options
+            .apply_request_headers(self.http_options.apply_custom_headers(builder), headers);
         let builder = if let Some(api_key) = &self.api_key {
             builder.header(AUTHORIZATION, format!("Bearer {api_key}"))
         } else {
             builder
         };
-        self.http_options.apply_custom_headers(builder).json(body)
+        builder.json(body)
     }
 
-    fn request_builder(&self, body: &Value) -> reqwest::RequestBuilder {
-        self.post_builder(&self.client, body)
+    fn request_builder(
+        &self,
+        body: &Value,
+        headers: &std::collections::BTreeMap<String, String>,
+    ) -> reqwest::RequestBuilder {
+        self.post_builder(&self.client, body, headers)
     }
 
-    pub(super) fn streaming_request_builder(&self, body: &Value) -> reqwest::RequestBuilder {
-        self.post_builder(&self.streaming_client, body)
+    pub(super) fn streaming_request_builder(
+        &self,
+        body: &Value,
+        headers: &std::collections::BTreeMap<String, String>,
+    ) -> reqwest::RequestBuilder {
+        self.post_builder(&self.streaming_client, body, headers)
     }
 }
 
@@ -1102,7 +1118,7 @@ impl ModelProviderSDK for OpenAIProvider {
         );
 
         let response = self
-            .request_builder(&body)
+            .request_builder(&body, &crate::request_headers(request.extra_body.as_ref()))
             .send()
             .await
             .context("failed to send openai request")?;

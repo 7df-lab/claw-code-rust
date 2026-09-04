@@ -200,7 +200,7 @@ impl Normalizer {
 }
 
 fn item_line(id: ItemId, original: &ItemRecord, seq: u64, payload: TurnItem) -> RolloutLine {
-    RolloutLine::Item(ItemLine {
+    RolloutLine::Item(Box::new(ItemLine {
         timestamp: original.timestamp,
         item: ItemRecord {
             id,
@@ -218,7 +218,7 @@ fn item_line(id: ItemId, original: &ItemRecord, seq: u64, payload: TurnItem) -> 
             error: None,
             schema_version: 1,
         },
-    })
+    }))
 }
 
 fn normalize_payload(payload: &TurnItem) -> TurnItem {
@@ -392,7 +392,7 @@ fn live_write_lines() -> Vec<RolloutLine> {
     let session_id = devo_core::SessionId::new();
     let turn_id = devo_core::TurnId::new();
     let item = |seq: u64, payload: TurnItem| {
-        RolloutLine::Item(ItemLine {
+        RolloutLine::Item(Box::new(ItemLine {
             timestamp: ts(10 + seq as u32),
             item: ItemRecord {
                 id: ItemId::new(),
@@ -410,7 +410,7 @@ fn live_write_lines() -> Vec<RolloutLine> {
                 error: None,
                 schema_version: 1,
             },
-        })
+        }))
     };
     vec![
         RolloutLine::SessionMeta(Box::new(devo_core::SessionMetaLine {
@@ -587,6 +587,7 @@ fn inverse_rejects_prefixed_canonical_ids() {
             model: devo_protocol::native::model::ModelBinding {
                 provider: "openai".into(),
                 model: "gpt-5.2".into(),
+                variant: None,
                 reasoning_effort: None,
             },
             settings: devo_protocol::native::session::SessionSettings {

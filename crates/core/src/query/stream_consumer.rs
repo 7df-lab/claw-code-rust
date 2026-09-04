@@ -552,17 +552,8 @@ async fn assemble_model_turn(
         } else {
             final_tool_inputs.get(&id).cloned().unwrap_or(initial_input)
         };
-        if emitted_early_tool_use_starts.contains(&id) {
-            emit_query_event(
-                on_event,
-                QueryEvent::ToolUseStart {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                },
-            )
-            .await;
-        } else if emitted_tool_use_starts.insert(id.clone()) {
+        if emitted_early_tool_use_starts.contains(&id) || emitted_tool_use_starts.insert(id.clone())
+        {
             emit_query_event(
                 on_event,
                 QueryEvent::ToolUseStart {

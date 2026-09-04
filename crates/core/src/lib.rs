@@ -1,7 +1,5 @@
 mod approval_review_prompt;
 mod collaboration_mode_prompts;
-#[allow(dead_code)]
-mod config_resolution;
 mod context;
 mod context_pipeline;
 mod conversation;
@@ -19,16 +17,16 @@ mod logging;
 pub mod mcp;
 pub mod memory;
 mod message_edit;
-mod model_binding;
 mod model_catalog;
-mod model_preset;
 mod permission;
+mod provider_request;
 mod query;
 mod replay;
 mod response_item;
 mod session;
 mod session_store;
 mod skills;
+mod small_model;
 mod state;
 pub mod tools;
 mod update_check;
@@ -79,10 +77,9 @@ pub use mcp::*;
 pub use memory::*;
 pub use message_edit::*;
 #[allow(ambiguous_glob_reexports)]
-pub use model_binding::*;
 pub use model_catalog::*;
-pub use model_preset::ModelPreset;
 pub use permission::*;
+pub use provider_request::{add_model_request_headers, merge_model_request_body};
 pub use query::*;
 #[allow(ambiguous_glob_reexports)]
 pub use replay::*;
@@ -99,4 +96,5 @@ pub use skills::{
     collect_explicit_skill_mentions, default_skill_metadata_budget, normalize_native_path,
     render_available_skills_body,
 };
+pub use small_model::resolve_small_model;
 pub use update_check::*;

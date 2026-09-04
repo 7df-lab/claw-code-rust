@@ -1275,6 +1275,7 @@ fn recorded_compaction_events(events: &[QueryEvent]) -> Vec<RecordedCompactionEv
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)
             | QueryEvent::ReasoningCompleted
+            | QueryEvent::ContextEstimate { .. }
             | QueryEvent::UsageDelta { .. }
             | QueryEvent::ToolUseStart { .. }
             | QueryEvent::ToolUseInputDelta { .. }
@@ -1499,6 +1500,7 @@ async fn query_retries_transient_stream_event_errors_before_content() {
             QueryEvent::ContextCompactionStarted
             | QueryEvent::ContextCompactionCompleted { .. }
             | QueryEvent::ContextCompactionFailed { .. }
+            | QueryEvent::ContextEstimate { .. }
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)
             | QueryEvent::ReasoningCompleted
@@ -1522,7 +1524,7 @@ async fn query_retries_transient_stream_event_errors_before_content() {
                 max_attempts: 5,
                 backoff_ms: 250,
                 phase: QueryProviderRetryPhase::Scheduled,
-                message: "Retrying provider request in 0.2s".to_string(),
+                message: "500 internal server error".to_string(),
             },
             ProviderRetryStatus {
                 provider: "transient-stream-event-provider".to_string(),
@@ -1531,7 +1533,7 @@ async fn query_retries_transient_stream_event_errors_before_content() {
                 max_attempts: 5,
                 backoff_ms: 0,
                 phase: QueryProviderRetryPhase::Resumed,
-                message: "Retrying provider request now".to_string(),
+                message: "500 internal server error".to_string(),
             },
         ]
     );
@@ -1592,6 +1594,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
             QueryEvent::ContextCompactionStarted
             | QueryEvent::ContextCompactionCompleted { .. }
             | QueryEvent::ContextCompactionFailed { .. }
+            | QueryEvent::ContextEstimate { .. }
             | QueryEvent::TextDelta(_)
             | QueryEvent::ReasoningDelta(_)
             | QueryEvent::ReasoningCompleted
@@ -1615,7 +1618,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
                 max_attempts: 5,
                 backoff_ms: 60_000,
                 phase: QueryProviderRetryPhase::Scheduled,
-                message: "Retrying provider request in 60.0s".to_string(),
+                message: "429 rate limit exceeded".to_string(),
             },
             ProviderRetryStatus {
                 provider: "rate-limited-stream-create-provider".to_string(),
@@ -1624,7 +1627,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
                 max_attempts: 5,
                 backoff_ms: 0,
                 phase: QueryProviderRetryPhase::Resumed,
-                message: "Retrying provider request now".to_string(),
+                message: "429 rate limit exceeded".to_string(),
             },
             ProviderRetryStatus {
                 provider: "rate-limited-stream-create-provider".to_string(),
@@ -1633,7 +1636,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
                 max_attempts: 5,
                 backoff_ms: 60_000,
                 phase: QueryProviderRetryPhase::Scheduled,
-                message: "Retrying provider request in 60.0s".to_string(),
+                message: "429 rate limit exceeded".to_string(),
             },
             ProviderRetryStatus {
                 provider: "rate-limited-stream-create-provider".to_string(),
@@ -1642,7 +1645,7 @@ async fn query_waits_sixty_seconds_for_each_rate_limit_retry() {
                 max_attempts: 5,
                 backoff_ms: 0,
                 phase: QueryProviderRetryPhase::Resumed,
-                message: "Retrying provider request now".to_string(),
+                message: "429 rate limit exceeded".to_string(),
             },
         ]
     );
@@ -2536,12 +2539,13 @@ async fn query_resolves_reasoning_model_variant_before_building_request() {
         description: None,
         reasoning_capability: ReasoningCapability::Toggle,
         default_reasoning_effort: Some(ReasoningEffort::Medium),
+        default_reasoning_selection: None,
         reasoning_implementation: Some(ReasoningImplementation::ModelVariant(
             ReasoningVariantConfig {
                 variants: vec![
                     ReasoningVariant {
                         selection_value: "disabled".into(),
-                        model_slug: "kimi-k2.5".into(),
+                        model: "kimi-k2.5".into(),
                         reasoning_effort: None,
                         label: "Off".into(),
                         description: "Use the standard model".into(),
@@ -2549,7 +2553,7 @@ async fn query_resolves_reasoning_model_variant_before_building_request() {
                     },
                     ReasoningVariant {
                         selection_value: "enabled".into(),
-                        model_slug: "kimi-k2.5-thinking".into(),
+                        model: "kimi-k2.5-thinking".into(),
                         reasoning_effort: Some(ReasoningEffort::Medium),
                         label: "On".into(),
                         description: "Use the reasoning model".into(),
@@ -2558,6 +2562,7 @@ async fn query_resolves_reasoning_model_variant_before_building_request() {
                 ],
             },
         )),
+        catalog_variants: Default::default(),
         base_instructions: String::new(),
         context_window: 200_000,
         effective_context_window_percent: None,

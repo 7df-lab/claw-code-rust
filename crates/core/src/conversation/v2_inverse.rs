@@ -528,7 +528,7 @@ impl V2InverseProjector {
                                 .then_some(decision.decision_source),
                         }),
                     )?;
-                    return Ok(Some(RolloutLine::Item(record)));
+                    return Ok(Some(RolloutLine::Item(Box::new(record))));
                 }
                 let (path, host, target) =
                     target.as_ref().map_or((None, None, None), |t| match t {
@@ -560,7 +560,7 @@ impl V2InverseProjector {
         };
 
         let record = self.item_record(legacy_item_id(&envelope.id)?, envelope, payload)?;
-        Ok(Some(RolloutLine::Item(record)))
+        Ok(Some(RolloutLine::Item(Box::new(record))))
     }
 
     /// Builds one legacy `ItemRecord` mirroring the live write path
@@ -625,7 +625,7 @@ impl V2InverseProjector {
                 // Identity and position travel on the line (exact); only the
                 // record id is synthesized, since internal entries have no
                 // item id of their own (replay only needs uniqueness).
-                Ok(vec![RolloutLine::Item(ItemLine {
+                Ok(vec![RolloutLine::Item(Box::new(ItemLine {
                     timestamp,
                     item: ItemRecord {
                         id: ItemId::new(),
@@ -643,7 +643,7 @@ impl V2InverseProjector {
                         error: None,
                         schema_version: CURRENT_ITEM_SCHEMA_VERSION,
                     },
-                })])
+                }))])
             }
             InternalRecordV2::SessionContext(context) => {
                 Ok(vec![RolloutLine::SessionContextUpdated(Box::new(

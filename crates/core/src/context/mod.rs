@@ -447,7 +447,7 @@ mod tests {
     fn token_budget_for_model_uses_effective_context_as_auto_compact_limit() {
         let model = Model {
             context_window: 1_000_000,
-            effective_context_window_percent: Some(95),
+            effective_context_window_percent: Some(95.0),
             max_tokens: Some(384_000),
             ..Model::default()
         };
@@ -467,7 +467,7 @@ mod tests {
     fn model_token_budget_does_not_compact_before_effective_context_limit() {
         let model = Model {
             context_window: 1_000_000,
-            effective_context_window_percent: Some(95),
+            effective_context_window_percent: Some(95.0),
             max_tokens: Some(384_000),
             ..Model::default()
         };
@@ -478,23 +478,23 @@ mod tests {
     }
 
     #[test]
-    fn session_override_sets_effective_context_window_and_auto_compact() {
+    fn token_budget_for_session_ignores_override() {
         let model = Model {
             context_window: 200_000,
-            effective_context_window_percent: Some(95),
+            effective_context_window_percent: Some(95.0),
             max_tokens: Some(8_192),
             ..Model::default()
         };
         let turn = crate::TurnConfig::new(model, None);
         let budget = turn.token_budget_for_session(Some(100_000));
-        assert_eq!(budget.context_window, 100_000);
-        assert_eq!(budget.auto_compact_token_limit, Some(100_000));
-        assert!(!budget.should_compact(100_000));
-        assert!(budget.should_compact(100_001));
+        assert_eq!(budget.context_window, 190_000);
+        assert_eq!(budget.auto_compact_token_limit, Some(190_000));
+        assert!(!budget.should_compact(190_000));
+        assert!(budget.should_compact(190_001));
 
-        let clamped = turn.token_budget_for_session(Some(500_000));
-        assert_eq!(clamped.context_window, 200_000);
-        assert_eq!(clamped.auto_compact_token_limit, Some(200_000));
+        let ignored_clamp = turn.token_budget_for_session(Some(500_000));
+        assert_eq!(ignored_clamp.context_window, 190_000);
+        assert_eq!(ignored_clamp.auto_compact_token_limit, Some(190_000));
     }
 
     #[test]

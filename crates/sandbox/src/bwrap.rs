@@ -40,7 +40,7 @@ fn is_inside_bwrap_with_marker(marker: Option<&std::ffi::OsStr>) -> bool {
     {
         // A bwrap re-exec always creates a new mount namespace. Reject the
         // marker unless procfs affirmatively proves that isolation boundary.
-        return has_bwrap_marker_and_mount_namespace(marker, bwrap_mount_namespace_isolation());
+        has_bwrap_marker_and_mount_namespace(marker, bwrap_mount_namespace_isolation())
     }
 
     #[cfg(not(target_os = "linux"))]

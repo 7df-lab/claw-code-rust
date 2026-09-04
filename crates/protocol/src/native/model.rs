@@ -15,6 +15,9 @@ use crate::ReasoningEffort;
 pub struct ModelBinding {
     pub provider: String,
     pub model: String,
+    /// Optional named variant from the provider model directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
 }

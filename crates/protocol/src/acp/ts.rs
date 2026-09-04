@@ -194,6 +194,7 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<FileChange>(&cfg, &mut output);
 
     push_decl::<ReasoningEffort>(&cfg, &mut output);
+    push_decl::<crate::ReasoningLevelChoice>(&cfg, &mut output);
     push_decl::<ReasoningCapability>(&cfg, &mut output);
     push_decl::<ReasoningImplementation>(&cfg, &mut output);
     push_decl::<ReasoningVariantConfig>(&cfg, &mut output);
@@ -212,6 +213,21 @@ pub fn generate_protocol_typescript() -> String {
     push_decl::<SessionHistoryToolIo>(&cfg, &mut output);
     push_decl::<SessionHistoryItem>(&cfg, &mut output);
     push_decl::<native::rpc_session::SessionForkCut>(&cfg, &mut output);
+    push_decl::<native::model::ModelBinding>(&cfg, &mut output);
+    push_decl::<native::model::PermissionProfile>(&cfg, &mut output);
+    push_decl::<native::session::SessionParent>(&cfg, &mut output);
+    push_decl::<native::session::SessionStatus>(&cfg, &mut output);
+    push_decl::<native::session::SessionFlag>(&cfg, &mut output);
+    push_decl::<native::session::SessionSettings>(&cfg, &mut output);
+    push_decl::<native::session::GitInfo>(&cfg, &mut output);
+    push_decl::<native::usage::UsagePurpose>(&cfg, &mut output);
+    push_decl::<native::usage::UsageCallOutcome>(&cfg, &mut output);
+    push_decl::<native::usage::TokenUsage>(&cfg, &mut output);
+    push_decl::<native::usage::Money>(&cfg, &mut output);
+    push_decl::<native::usage::UsageTotals>(&cfg, &mut output);
+    push_decl::<native::usage::PurposeUsage>(&cfg, &mut output);
+    push_decl::<native::usage::SessionUsage>(&cfg, &mut output);
+    push_decl::<native::session::Session>(&cfg, &mut output);
     push_decl::<native::rpc_session::SessionForkParams>(&cfg, &mut output);
     push_decl::<native::rpc_session::SessionForkResult>(&cfg, &mut output);
     // Keep the Native subscription event graph opaque in this compatibility
@@ -292,15 +308,22 @@ export type SubscriptionUnsubscribeParams = { subscriptionId: SubscriptionId, };
 
     push_decl::<ProviderWireApi>(&cfg, &mut output);
     push_decl::<InputModality>(&cfg, &mut output);
+    push_decl::<ProviderModelVariant>(&cfg, &mut output);
+    push_decl::<ProviderModelInfo>(&cfg, &mut output);
+    push_decl::<ProviderInfo>(&cfg, &mut output);
     push_decl::<ModelCatalogEntry>(&cfg, &mut output);
-    push_decl::<ProviderVendor>(&cfg, &mut output);
-    push_decl::<ProviderModelBinding>(&cfg, &mut output);
-    push_decl::<ProviderVendorListParams>(&cfg, &mut output);
-    push_decl::<ProviderVendorListResult>(&cfg, &mut output);
-    push_decl::<ProviderVendorUpsertParams>(&cfg, &mut output);
-    push_decl::<ProviderVendorUpsertResult>(&cfg, &mut output);
-    push_decl::<ProviderValidateParams>(&cfg, &mut output);
-    push_decl::<ProviderValidateResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderListParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderListResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderUpsertParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderUpsertResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderDisconnectParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderDisconnectResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderModelRemoveParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderModelRemoveResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderValidateParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderValidateResult>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderDiscoverParams>(&cfg, &mut output);
+    push_decl::<native::rpc_admin::ProviderDiscoverResult>(&cfg, &mut output);
 
     push_decl::<CommandExecTerminalSize>(&cfg, &mut output);
     push_decl::<CommandExecProgram>(&cfg, &mut output);
@@ -912,20 +935,19 @@ fn register_devo_protocol_schemas(
     schema::<CancelTaskResult>(schemas);
     schema::<CloseAgentParams>(schemas);
     schema::<CloseAgentResult>(schemas);
-    schema::<ProviderVendorListParams>(schemas);
-    schema::<ProviderVendorListResult>(schemas);
-    schema::<ProviderValidateParams>(schemas);
-    schema::<ProviderValidateResult>(schemas);
-    schema::<ProviderVendorUpsertParams>(schemas);
-    schema::<ProviderVendorUpsertResult>(schemas);
-    schema::<native::rpc_admin::ProviderVendorInfo>(schemas);
-    schema::<native::rpc_admin::ProviderModelBindingInfo>(schemas);
+
     schema::<native::rpc_admin::ProviderListParams>(schemas);
     schema::<native::rpc_admin::ProviderListResult>(schemas);
     schema::<native::rpc_admin::ProviderUpsertParams>(schemas);
     schema::<native::rpc_admin::ProviderUpsertResult>(schemas);
+    schema::<native::rpc_admin::ProviderDisconnectParams>(schemas);
+    schema::<native::rpc_admin::ProviderDisconnectResult>(schemas);
+    schema::<native::rpc_admin::ProviderModelRemoveParams>(schemas);
+    schema::<native::rpc_admin::ProviderModelRemoveResult>(schemas);
     schema::<native::rpc_admin::ProviderValidateParams>(schemas);
     schema::<native::rpc_admin::ProviderValidateResult>(schemas);
+    schema::<native::rpc_admin::ProviderDiscoverParams>(schemas);
+    schema::<native::rpc_admin::ProviderDiscoverResult>(schemas);
 
     method(
         methods,
@@ -1003,6 +1025,14 @@ fn register_devo_protocol_schemas(
         methods,
         "provider/upsert",
     );
+    native_method::<
+        native::rpc_admin::ProviderDisconnectParams,
+        native::rpc_admin::ProviderDisconnectResult,
+    >(methods, "provider/disconnect");
+    native_method::<
+        native::rpc_admin::ProviderModelRemoveParams,
+        native::rpc_admin::ProviderModelRemoveResult,
+    >(methods, "provider/model/remove");
 }
 
 fn method(

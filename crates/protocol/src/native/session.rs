@@ -139,7 +139,7 @@ pub enum SessionParent {
 pub struct SessionSettings {
     pub permission_profile: PermissionProfile,
     /// User's reasoning-effort selection as persisted, including the toggle
-    /// keywords `enabled`/`disabled` used by toggle/variant-style models —
+    /// keywords `on`/`off` used by toggle/variant-style models —
     /// the typed `ReasoningEffort` enum cannot express those, so the snapshot
     /// carries the raw selection string (same contract as
     /// `SessionSettingsPatch.reasoning_effort`).
@@ -186,7 +186,7 @@ mod tests {
     /// "wide write" (patch) always reads back equal from the "snapshot" side.
     #[test]
     fn session_settings_reasoning_effort_round_trips_raw_selection() {
-        for literal in ["enabled", "disabled", "high", "xhigh"] {
+        for literal in ["on", "off", "enabled", "disabled", "high", "xhigh"] {
             let settings = SessionSettings {
                 permission_profile: PermissionProfile::Default,
                 reasoning_effort: Some(literal.to_string()),

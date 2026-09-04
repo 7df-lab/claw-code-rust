@@ -16,7 +16,8 @@
 //! two-step design:
 //!
 //! 1. The user or session stores a logical reasoning-effort selection such as
-//!    `disabled`, `enabled`, or `medium`.
+//!    `off`, `on`, or `medium` (legacy `disabled`/`enabled` normalize to
+//!    `off`/`on` on read).
 //! 2. The runtime resolves that logical selection into concrete provider
 //!    request fields:
 //!    - the final request model slug
@@ -76,10 +77,14 @@ pub struct ReasoningVariantConfig {
 /// Maps one logical reasoning-effort selection to a concrete request model and defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ReasoningVariant {
-    /// Logical reasoning-effort selection value, such as `enabled` or `disabled`.
+    /// Logical reasoning-effort selection value, such as `on` or `off`.
     pub selection_value: String,
-    /// Concrete wire-model slug to send to the provider for this selection.
-    pub model_slug: String,
+    /// Concrete provider model id to send for this selection.
+    ///
+    /// `model_slug` remains a read-only serde alias for older configuration
+    /// during startup migration; new JSON uses `model`.
+    #[serde(alias = "model_slug")]
+    pub model: String,
     /// Effective reasoning effort implied by this variant, when one exists.
     pub reasoning_effort: Option<ReasoningEffort>,
     /// User-facing label shown for this selection in pickers.
@@ -158,12 +163,53 @@ impl FromStr for ReasoningEffort {
 /// Normalizes a persisted reasoning-effort selection literal for storage and
 /// comparison: trimmed and ASCII-lowercased. Unlike
 /// [`Model::normalize_reasoning_effort_selection`](crate::Model::normalize_reasoning_effort_selection)
-/// this is model-agnostic — it keeps toggle keywords (`enabled`/`disabled`) and
-/// the `"default"` marker untouched, and never falls back to a model default.
+/// this is model-agnostic — it maps legacy toggle keywords (`enabled`/`disabled`)
+/// to canonical `on`/`off`, keeps the `"default"` marker untouched, and never
+/// falls back to a model default.
 /// Read and write paths share it so a stored selection compares equal to the
 /// same selection arriving in a patch.
 pub fn normalize_reasoning_effort_literal(raw: &str) -> String {
-    raw.trim().to_ascii_lowercase()
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "disabled" => String::from("off"),
+        "enabled" => String::from("on"),
+        other => other.to_string(),
+    }
+}
+
+/// Maps a canonical logical toggle/effort selection onto the wire value expected
+/// by built-in adapters that still speak `disabled`/`enabled` for thinking.
+pub fn adapter_request_thinking_wire(selection: &str) -> String {
+    match selection {
+        "off" => String::from("disabled"),
+        "on" => String::from("enabled"),
+        other => other.to_string(),
+    }
+}
+
+/// Candidate catalog-variant keys for a normalized logical selection.
+///
+/// Canonical keys come first; legacy toggle aliases follow so old overlays keep
+/// matching during the migration window.
+pub fn effort_variant_lookup_keys(selection: &str) -> Vec<String> {
+    let normalized = normalize_reasoning_effort_literal(selection);
+    match normalized.as_str() {
+        "off" => vec![String::from("off"), String::from("disabled")],
+        "on" => vec![String::from("on"), String::from("enabled")],
+        _ => vec![normalized],
+    }
+}
+
+/// Finds the first catalog variant key that matches a logical effort selection.
+pub fn find_effort_variant_key<'a, V>(
+    variants: &'a std::collections::BTreeMap<String, V>,
+    selection: &str,
+) -> Option<&'a str> {
+    for key in effort_variant_lookup_keys(selection) {
+        if let Some(matched) = variants.keys().find(|candidate| candidate.as_str() == key) {
+            return Some(matched.as_str());
+        }
+    }
+    None
 }
 
 impl ReasoningEffort {
@@ -204,64 +250,102 @@ fn reasoning_effort_wire_value(effort: ReasoningEffort) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use pretty_assertions::assert_eq;
+/// One entry in a [`ReasoningCapability::Levels`] list.
+///
+/// Logical `off` disables reasoning; effort variants are the selectable depths.
+/// Legacy `disabled` deserializes as [`Self::Off`].
+///
+/// On the wire this is a plain string (`"off"` or an effort label), not a tagged
+/// object — keep the TypeScript alias aligned with that shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, TS)]
+#[ts(type = "\"off\" | ReasoningEffort")]
+pub enum ReasoningLevelChoice {
+    Off,
+    Effort(ReasoningEffort),
+}
 
-    use super::ReasoningCapability;
-    use super::ReasoningEffort;
-    use super::ReasoningEffortOption;
-
-    #[test]
-    fn reasoning_effort_from_str_accepts_wire_values() {
-        assert_eq!("none".parse::<ReasoningEffort>(), Ok(ReasoningEffort::None));
-        assert_eq!(
-            "minimal".parse::<ReasoningEffort>(),
-            Ok(ReasoningEffort::Minimal)
-        );
-        assert_eq!("low".parse::<ReasoningEffort>(), Ok(ReasoningEffort::Low));
-        assert_eq!(
-            "medium".parse::<ReasoningEffort>(),
-            Ok(ReasoningEffort::Medium)
-        );
-        assert_eq!("high".parse::<ReasoningEffort>(), Ok(ReasoningEffort::High));
-        assert_eq!(
-            "xhigh".parse::<ReasoningEffort>(),
-            Ok(ReasoningEffort::XHigh)
-        );
-        assert_eq!("max".parse::<ReasoningEffort>(), Ok(ReasoningEffort::Max));
+impl ReasoningLevelChoice {
+    pub fn selection_value(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Effort(effort) => reasoning_effort_wire_value(effort),
+        }
     }
 
-    #[test]
-    fn reasoning_effort_from_str_preserves_serde_strictness() {
-        assert_eq!(
-            "High".parse::<ReasoningEffort>(),
-            Err("invalid reasoning_effort: High".to_string())
-        );
-        assert_eq!(
-            " high ".parse::<ReasoningEffort>(),
-            Err("invalid reasoning_effort:  high ".to_string())
-        );
+    pub fn effort(self) -> Option<ReasoningEffort> {
+        match self {
+            Self::Off => None,
+            Self::Effort(effort) => Some(effort),
+        }
     }
 
-    #[test]
-    fn reasoning_options_use_reasoning_effort_wire_values() {
-        assert_eq!(
-            ReasoningCapability::ToggleWithLevels(vec![ReasoningEffort::XHigh]).options(),
-            vec![
-                ReasoningEffortOption {
-                    label: "Off".to_string(),
-                    description: "Disable reasoning effort for this turn".to_string(),
-                    value: "disabled".to_string(),
-                },
-                ReasoningEffortOption {
-                    label: "XHigh".to_string(),
-                    description: "Most deliberate, highest effort".to_string(),
-                    value: "xhigh".to_string(),
-                },
-            ]
-        );
+    pub fn option(self) -> ReasoningEffortOption {
+        match self {
+            Self::Off => ReasoningEffortOption {
+                label: "Off".to_string(),
+                description: "Disable reasoning effort for this turn".to_string(),
+                value: "off".to_string(),
+            },
+            Self::Effort(effort) => reasoning_effort_option_for_effort(effort),
+        }
     }
+}
+
+impl From<ReasoningEffort> for ReasoningLevelChoice {
+    fn from(effort: ReasoningEffort) -> Self {
+        Self::Effort(effort)
+    }
+}
+
+impl Serialize for ReasoningLevelChoice {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.selection_value())
+    }
+}
+
+impl<'de> Deserialize<'de> for ReasoningLevelChoice {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        let normalized = normalize_reasoning_effort_literal(&raw);
+        match normalized.as_str() {
+            "off" => Ok(Self::Off),
+            other => other
+                .parse::<ReasoningEffort>()
+                .map(Self::Effort)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+impl JsonSchema for ReasoningLevelChoice {
+    fn schema_name() -> String {
+        "ReasoningLevelChoice".to_string()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::schema::Schema {
+        String::json_schema(generator)
+    }
+}
+
+/// Prepends [`ReasoningLevelChoice::Off`] when migrating legacy
+/// `toggle_with_levels` arrays that listed only effort depths.
+pub fn levels_with_leading_off(
+    efforts: impl IntoIterator<Item = ReasoningEffort>,
+) -> Vec<ReasoningLevelChoice> {
+    let mut choices = vec![ReasoningLevelChoice::Off];
+    for effort in efforts {
+        let choice = ReasoningLevelChoice::Effort(effort);
+        if !choices.contains(&choice) {
+            choices.push(choice);
+        }
+    }
+    choices
 }
 
 /// Maps reasoning efforts onto a stable numeric scale for comparison.
@@ -314,20 +398,78 @@ pub struct ReasoningEffortOption {
     pub value: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningCapability {
     /// Model reasoning effort cannot be controlled.
     Unsupported,
     /// Model reasoning effort can be toggled on and off.
     Toggle,
-    /// Multiple reasoning effort levels can be selected.
-    Levels(Vec<ReasoningEffort>),
-    /// Reasoning effort can be turned off, or enabled with one of several effort levels.
-    ToggleWithLevels(Vec<ReasoningEffort>),
+    /// Selectable reasoning chips in array order. Include [`ReasoningLevelChoice::Off`]
+    /// when the model can disable reasoning; omit it when reasoning is always on.
+    Levels(Vec<ReasoningLevelChoice>),
+}
+
+impl<'de> Deserialize<'de> for ReasoningCapability {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        match value {
+            Value::String(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "unsupported" => Ok(Self::Unsupported),
+                "toggle" => Ok(Self::Toggle),
+                other => Err(serde::de::Error::custom(format!(
+                    "invalid reasoning_capability string '{other}'; expected unsupported or toggle"
+                ))),
+            },
+            Value::Object(map) => {
+                if let Some(levels) = map.get("levels") {
+                    let choices: Vec<ReasoningLevelChoice> =
+                        serde_json::from_value(levels.clone()).map_err(serde::de::Error::custom)?;
+                    return Ok(Self::Levels(choices));
+                }
+                let legacy_levels = map
+                    .get("toggle_with_levels")
+                    .or_else(|| map.get("togglewithlevels"));
+                if let Some(levels) = legacy_levels {
+                    let efforts: Vec<ReasoningEffort> =
+                        serde_json::from_value(levels.clone()).map_err(serde::de::Error::custom)?;
+                    return Ok(Self::Levels(levels_with_leading_off(efforts)));
+                }
+                Err(serde::de::Error::custom(
+                    "invalid reasoning_capability object; expected levels or legacy toggle_with_levels",
+                ))
+            }
+            _ => Err(serde::de::Error::custom(
+                "invalid reasoning_capability; expected string or object",
+            )),
+        }
+    }
 }
 
 impl ReasoningCapability {
+    /// Effort depths listed in a [`Self::Levels`] capability (excludes `off`).
+    pub fn effort_levels(&self) -> Vec<ReasoningEffort> {
+        match self {
+            Self::Levels(choices) => choices
+                .iter()
+                .copied()
+                .filter_map(ReasoningLevelChoice::effort)
+                .collect(),
+            Self::Unsupported | Self::Toggle => Vec::new(),
+        }
+    }
+
+    /// True when [`Self::Levels`] includes logical `off` (hybrid / disableable).
+    pub fn allows_off(&self) -> bool {
+        matches!(
+            self,
+            Self::Levels(choices) if choices.iter().any(|choice| matches!(choice, ReasoningLevelChoice::Off))
+        )
+    }
+
     pub fn options(&self) -> Vec<ReasoningEffortOption> {
         match self {
             ReasoningCapability::Unsupported => Vec::new(),
@@ -335,39 +477,19 @@ impl ReasoningCapability {
                 ReasoningEffortOption {
                     label: "Off".to_string(),
                     description: "Disable reasoning effort for this turn".to_string(),
-                    value: "disabled".to_string(),
+                    value: "off".to_string(),
                 },
                 ReasoningEffortOption {
                     label: "On".to_string(),
                     description: "Enable model reasoning effort".to_string(),
-                    value: "enabled".to_string(),
+                    value: "on".to_string(),
                 },
             ],
-            ReasoningCapability::Levels(levels) => {
-                let mut presets = Vec::with_capacity(levels.len());
-                presets.extend(
-                    levels
-                        .iter()
-                        .copied()
-                        .map(reasoning_effort_option_for_effort),
-                );
-                presets
-            }
-            ReasoningCapability::ToggleWithLevels(levels) => {
-                let mut presets = Vec::with_capacity(levels.len() + 1);
-                presets.push(ReasoningEffortOption {
-                    label: "Off".to_string(),
-                    description: "Disable reasoning effort for this turn".to_string(),
-                    value: "disabled".to_string(),
-                });
-                presets.extend(
-                    levels
-                        .iter()
-                        .copied()
-                        .map(reasoning_effort_option_for_effort),
-                );
-                presets
-            }
+            ReasoningCapability::Levels(levels) => levels
+                .iter()
+                .copied()
+                .map(ReasoningLevelChoice::option)
+                .collect(),
         }
     }
 }
@@ -377,5 +499,124 @@ fn reasoning_effort_option_for_effort(effort: ReasoningEffort) -> ReasoningEffor
         label: effort.label().to_string(),
         description: effort.description().to_string(),
         value: reasoning_effort_wire_value(effort).to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::ReasoningCapability;
+    use super::ReasoningEffort;
+    use super::ReasoningEffortOption;
+    use super::ReasoningLevelChoice;
+    use super::levels_with_leading_off;
+
+    #[test]
+    fn reasoning_effort_from_str_accepts_wire_values() {
+        assert_eq!("none".parse::<ReasoningEffort>(), Ok(ReasoningEffort::None));
+        assert_eq!(
+            "minimal".parse::<ReasoningEffort>(),
+            Ok(ReasoningEffort::Minimal)
+        );
+        assert_eq!("low".parse::<ReasoningEffort>(), Ok(ReasoningEffort::Low));
+        assert_eq!(
+            "medium".parse::<ReasoningEffort>(),
+            Ok(ReasoningEffort::Medium)
+        );
+        assert_eq!("high".parse::<ReasoningEffort>(), Ok(ReasoningEffort::High));
+        assert_eq!(
+            "xhigh".parse::<ReasoningEffort>(),
+            Ok(ReasoningEffort::XHigh)
+        );
+        assert_eq!("max".parse::<ReasoningEffort>(), Ok(ReasoningEffort::Max));
+    }
+
+    #[test]
+    fn reasoning_effort_from_str_preserves_serde_strictness() {
+        assert_eq!(
+            "High".parse::<ReasoningEffort>(),
+            Err("invalid reasoning_effort: High".to_string())
+        );
+        assert_eq!(
+            " high ".parse::<ReasoningEffort>(),
+            Err("invalid reasoning_effort:  high ".to_string())
+        );
+    }
+
+    #[test]
+    fn reasoning_options_use_reasoning_effort_wire_values() {
+        assert_eq!(
+            ReasoningCapability::Levels(levels_with_leading_off([ReasoningEffort::XHigh]))
+                .options(),
+            vec![
+                ReasoningEffortOption {
+                    label: "Off".to_string(),
+                    description: "Disable reasoning effort for this turn".to_string(),
+                    value: "off".to_string(),
+                },
+                ReasoningEffortOption {
+                    label: "XHigh".to_string(),
+                    description: "Most deliberate, highest effort".to_string(),
+                    value: "xhigh".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_reasoning_effort_literal_maps_legacy_toggle_aliases() {
+        assert_eq!(super::normalize_reasoning_effort_literal("disabled"), "off");
+        assert_eq!(super::normalize_reasoning_effort_literal("ENABLED"), "on");
+        assert_eq!(
+            super::normalize_reasoning_effort_literal(" medium "),
+            "medium"
+        );
+    }
+
+    #[test]
+    fn toggle_with_levels_migrates_to_levels_with_leading_off() {
+        let canonical =
+            serde_json::from_str::<ReasoningCapability>(r#"{"toggle_with_levels":["low","high"]}"#)
+                .expect("canonical reasoning capability should deserialize");
+        let legacy =
+            serde_json::from_str::<ReasoningCapability>(r#"{"togglewithlevels":["low","high"]}"#)
+                .expect("legacy reasoning capability should remain readable");
+
+        assert_eq!(canonical, legacy);
+        assert_eq!(
+            canonical,
+            ReasoningCapability::Levels(vec![
+                ReasoningLevelChoice::Off,
+                ReasoningLevelChoice::Effort(ReasoningEffort::Low),
+                ReasoningLevelChoice::Effort(ReasoningEffort::High),
+            ])
+        );
+        assert_eq!(
+            serde_json::to_value(canonical).expect("reasoning capability should serialize"),
+            serde_json::json!({
+                "levels": ["off", "low", "high"]
+            })
+        );
+    }
+
+    #[test]
+    fn levels_accepts_off_in_array() {
+        let capability =
+            serde_json::from_str::<ReasoningCapability>(r#"{"levels":["off","low","high"]}"#)
+                .expect("levels with off should deserialize");
+        assert_eq!(
+            capability,
+            ReasoningCapability::Levels(vec![
+                ReasoningLevelChoice::Off,
+                ReasoningLevelChoice::Effort(ReasoningEffort::Low),
+                ReasoningLevelChoice::Effort(ReasoningEffort::High),
+            ])
+        );
+        assert!(capability.allows_off());
+        assert_eq!(
+            capability.effort_levels(),
+            vec![ReasoningEffort::Low, ReasoningEffort::High]
+        );
     }
 }

@@ -78,11 +78,7 @@ impl EmbeddingMatrix {
 
     /// Returns the number of complete rows.
     pub fn row_count(&self) -> usize {
-        if self.dimensions == 0 {
-            0
-        } else {
-            self.rows.len() / self.dimensions
-        }
+        self.rows.len().checked_div(self.dimensions).unwrap_or(0)
     }
 
     /// Returns a row slice without allocating.

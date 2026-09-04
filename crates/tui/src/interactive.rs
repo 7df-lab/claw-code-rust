@@ -240,13 +240,7 @@ pub async fn run_interactive_tui(config: InteractiveTuiConfig) -> Result<AppExit
     let request_model = initial_session
         .request_model
         .clone()
-        .and_then(|request_model| {
-            if request_model == model.slug {
-                None
-            } else {
-                Some(request_model)
-            }
-        });
+        .filter(|request_model| request_model != &model.slug);
     let initial_provider = model.provider_wire_api();
     let initial_reasoning_effort = model
         .resolve_reasoning_effort_selection(initial_session.reasoning_effort_selection.as_deref())

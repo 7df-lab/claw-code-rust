@@ -42,11 +42,9 @@ pub(crate) struct SessionTokenTotals {
 
 impl SessionTokenTotals {
     fn cache_hit_percent(self) -> usize {
-        if self.input == 0 {
-            0
-        } else {
-            (self.cache_read.saturating_mul(100) + self.input / 2) / self.input
-        }
+        (self.cache_read.saturating_mul(100) + self.input / 2)
+            .checked_div(self.input)
+            .unwrap_or(0)
     }
 }
 

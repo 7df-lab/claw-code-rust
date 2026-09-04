@@ -26,7 +26,7 @@ impl ServerRuntime {
         checkpoint: &TurnWorkspaceCheckpointRecordedRecord,
         affected_files: &[PathBuf],
         record: Option<&devo_core::SessionRecord>,
-    ) -> Result<u32, WorkspaceRestoreFailure> {
+    ) -> Result<u32, Box<WorkspaceRestoreFailure>> {
         let workspace_root = PathBuf::from(
             checkpoint
                 .workspace_root
@@ -51,7 +51,7 @@ impl ServerRuntime {
                 .rollout_store
                 .append_workspace_restore_started(record, started.clone())
         {
-            return Err(WorkspaceRestoreFailure {
+            return Err(Box::new(WorkspaceRestoreFailure {
                 response: self.error_response(
                     request_id.clone(),
                     ProtocolErrorCode::WorkspaceRestoreFailedToStart,
@@ -59,7 +59,7 @@ impl ServerRuntime {
                 ),
                 retry_workspace_version: None,
                 completion_pending: None,
-            });
+            }));
         }
         self.broadcast_event(ServerEvent::WorkspaceRestoreStarted(
             super::message_edit_restore::restore_started_payload(&started, restore_plan_id),
@@ -95,7 +95,7 @@ impl ServerRuntime {
                 crate::workspace_changes::current_git_workspace_version(workspace_root)
                     .await
                     .ok();
-            return Err(WorkspaceRestoreFailure {
+            return Err(Box::new(WorkspaceRestoreFailure {
                 response: self.error_response(
                     request_id.clone(),
                     ProtocolErrorCode::InternalError,
@@ -103,7 +103,7 @@ impl ServerRuntime {
                 ),
                 retry_workspace_version,
                 completion_pending: None,
-            });
+            }));
         }
         let remaining = match crate::workspace_changes::preview_git_rollback(
             workspace_root,
@@ -133,7 +133,7 @@ impl ServerRuntime {
                     ),
                 ))
                 .await;
-                return Err(WorkspaceRestoreFailure {
+                return Err(Box::new(WorkspaceRestoreFailure {
                     response: self.error_response(
                         request_id.clone(),
                         ProtocolErrorCode::InternalError,
@@ -149,7 +149,7 @@ impl ServerRuntime {
                         .await
                         .ok(),
                     completion_pending: None,
-                });
+                }));
             }
         };
         let completed = restore_completed_record(
@@ -174,7 +174,7 @@ impl ServerRuntime {
                 ))
                 .await
                 .ok();
-            return Err(WorkspaceRestoreFailure {
+            return Err(Box::new(WorkspaceRestoreFailure {
                 response: self.error_response(
                     request_id.clone(),
                     ProtocolErrorCode::InternalError,
@@ -182,7 +182,7 @@ impl ServerRuntime {
                 ),
                 retry_workspace_version,
                 completion_pending: Some((completed, restored_file_count)),
-            });
+            }));
         }
         self.broadcast_event(ServerEvent::WorkspaceRestoreCompleted(
             super::message_edit_restore::restore_completed_payload(

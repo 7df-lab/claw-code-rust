@@ -1,6 +1,6 @@
 ---
 title: Model Picker
-description: Switch between configured model bindings.
+description: Switch between configured provider/model selections.
 ---
 
 Use `/model` to switch the active model for the current session.
@@ -17,30 +17,29 @@ The picker opens in the bottom pane and replaces the composer input area:
 - `Enter` applies the focused model and selected effort together
 - `Esc` closes without changing the model
 
-When there are many saved bindings, the model list shows at most eight rows and
+When there are many saved models, the model list shows at most eight rows and
 scrolls so the focused row stays visible.
 
 ## What The Picker Shows
 
-The picker is built from saved model bindings. Each entry shows the display
-name and, when available, a provider hint on the right.
+The picker is built from configured `provider/model` selections. Each entry
+shows the display name and, when available, a provider hint on the right.
 
-The current model is marked in the list. If the configured binding has a
-display name, Devo uses that display name. Otherwise it falls back to the
-catalog model display name or the raw model slug.
+The current model is marked in the list. If the model record has a display
+name, Devo uses it. Otherwise it falls back to the catalog label or the raw
+model reference.
 
 ## Direct Selection
 
-You can also pass a model or binding name directly:
+You can also pass a `provider/model` reference directly:
 
 ```text
 /model gpt-5-codex
 ```
 
-When the argument matches a saved model binding, Devo uses that binding,
-including its provider, request model name, wire API, and display name. When it
-matches a catalog model slug, Devo applies that catalog model. If it does not
-match either, Devo still sets the requested model name for the turn context.
+When the argument matches a configured model, Devo resolves its Connection,
+provider-facing model id, wire API, and display name from the catalog. A
+`provider/model/variant` reference also selects the named variant.
 
 ## Reasoning Effort
 
@@ -60,14 +59,14 @@ effort selection to the runtime as turn context.
 `/model` changes the active session context. It does not rewrite your provider
 configuration file.
 
-To add a new provider or model binding, use:
+To add a new provider Connection or model, use:
 
 ```bash
 devo onboard
 ```
 
-To make a binding the default at startup, update the provider configuration
-instead of relying on an in-session `/model` change.
+To make a model the default at startup, update `providers.json` instead of
+relying on an in-session `/model` change.
 
 ## While Devo Is Working
 

@@ -32,11 +32,11 @@ Interactive startup 实现在 `crates/cli/src/agent_command.rs`。
 1. 解析当前工作目录。
 2. 解析 `DEVO_HOME`。
 3. 加载当前工作区的 effective app config。
-4. 使用 effective config 中的模型元数据覆盖构建 preset model catalog。
+4. 从 git 跟踪目录和生效的 `providers.json` 覆盖项构建 model catalog。
 5. 解析 project permission preset。
 6. 决定是否显示 onboarding。
-7. 解析 provider settings，或使用 onboarding fallback model。
-8. 将存储的 model bindings 转换成 TUI `SavedModelEntry` values。
+7. 解析选中的 provider Connection 和 model，或使用 onboarding fallback model。
+8. 将存储的 `provider/model` selection 转换成 TUI `SavedModelEntry` values。
 9. 调用 `devo_tui::run_interactive_tui`。
 
 TUI 接收 `InitialTuiSession`：
@@ -44,9 +44,9 @@ TUI 接收 `InitialTuiSession`：
 | Field | Meaning |
 | --- | --- |
 | `session_id` | 可选的待恢复 session。 |
-| `model` | 新 turn 使用的 local model slug。 |
-| `request_model` | 当 provider model name 与 `model` 不同时使用。 |
-| `model_binding_id` | 当模型来自 binding 时的 stable binding id。 |
+| `model` | 新 turn 使用的规范 `provider/model` 引用。 |
+| `request_model` | 解析后的内部 provider-facing model id。 |
+| `model_binding_id` | 用于持久化规范 model reference 的内部 session 字段。 |
 | `provider` | 选中的 provider wire API。 |
 | `reasoning_effort_selection` | 新 turn 的可选 reasoning effort selection。 |
 | `permission_preset` | 初始 tool approval preset。 |
@@ -62,7 +62,7 @@ Worker 拥有 server client loop，并接受内部 `OperationCommand` messages�
 - 执行或继续 shell command；
 - 设置 model 或 reasoning effort；
 - validate 或 upsert provider config；
-- 列出 sessions、skills 和 provider vendors；
+- 列出 sessions、skills、provider templates 和 Connections；
 - 运行 reference search；
 - compact 当前 session；
 - show、set、pause、resume 或 clear goal；

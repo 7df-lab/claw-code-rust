@@ -34,11 +34,11 @@ The path:
 1. Resolve current working directory.
 2. Resolve `DEVO_HOME`.
 3. Load effective app config for the current workspace.
-4. Construct the preset model catalog from the effective config's model metadata overrides.
+4. Construct the model catalog from the tracked directory and effective `providers.json` overlay.
 5. Resolve project permission preset.
 6. Decide whether onboarding should be shown.
-7. Resolve provider settings or use an onboarding fallback model.
-8. Convert stored model bindings into TUI `SavedModelEntry` values.
+7. Resolve the selected provider Connection and model, or use an onboarding fallback model.
+8. Convert stored `provider/model` selections into TUI `SavedModelEntry` values.
 9. Call `devo_tui::run_interactive_tui`.
 
 The TUI receives an `InitialTuiSession` with:
@@ -46,9 +46,9 @@ The TUI receives an `InitialTuiSession` with:
 | Field | Meaning |
 | --- | --- |
 | `session_id` | Optional session to resume. |
-| `model` | Local model slug used for new turns. |
-| `request_model` | Provider model name when it differs from `model`. |
-| `model_binding_id` | Stable binding id, when the model came from a binding. |
+| `model` | Canonical `provider/model` reference used for new turns. |
+| `request_model` | Internal provider-facing model id after resolution. |
+| `model_binding_id` | Internal session field carrying the canonical model reference for persistence. |
 | `provider` | Selected provider wire API. |
 | `reasoning_effort_selection` | Optional reasoning effort selection for new turns. |
 | `permission_preset` | Initial tool approval preset. |
@@ -66,7 +66,7 @@ messages, including:
 - execute or continue a shell command;
 - set model or reasoning effort;
 - validate or upsert provider config;
-- list sessions, skills, and provider vendors;
+- list sessions, skills, provider templates, and Connections;
 - run reference search;
 - compact the active session;
 - show, set, pause, resume, or clear a goal;

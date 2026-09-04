@@ -1,53 +1,48 @@
 ---
 title: Provider Runtime
-description: 理解 provider routing 和 request adapters。
+description: 理解 provider Connection、路由和请求适配器。
 ---
 
-本页说明 Devo 如何把配置转换成 provider requests。
+本页说明 Devo 如何把规范的 provider/model 目录转换为 provider request。
 
-## Config Inputs
+## 配置输入
 
-Provider runtime 从 effective app config 开始：
+Runtime 读取生效后的 `providers.json` 目录：
 
-- `[providers.<id>]` 描述 endpoint、credential、headers、enabled state、wire APIs 和 web tool behavior。
-- `[model_bindings.<id>]` 描述 local model slug、provider id、provider model name、invocation method、display name、reasoning defaults，以及可选 web tool overrides。
-- `[defaults].model_binding` 选择默认 binding。
-- `auth.json` 按 id 存储 credentials。
+- `crates/core/providers.json` 提供 git 跟踪的 provider template 和模型元数据；
+- 用户/工作区 `providers.json` 添加或覆盖 Connection 和 model record；
+- `provider.<id>.credential` 指向用户级 `auth.json` credential；
+- 嵌套 model map key 就是发送给 provider 的 model id。
 
-序列化 schema 位于 `crates/config/src/provider/schema.rs`。
+序列化 schema 定义在 `crates/config/src/provider/catalog.rs`。旧 TOML provider 字段只由
+启动迁移解析，不是 runtime 输入。
 
-## Resolution
+## 解析
 
-Interactive startup 和 server bootstrap 都会从 effective config 解析 provider settings。
+规范选择格式是 `provider/model` 或 `provider/model/variant`。Runtime 会校验：
 
-Resolution 会校验：
+- provider Connection 存在且已启用；
+- model 已启用；
+- 选中的 wire API 受支持；
+- credential 引用能在 `auth.json` 中解析；
+- 任意 request/options/headers 是有效 JSON 并且可以合并。
 
-- 请求的 binding 是否存在并启用；
-- 引用的 provider 是否存在并启用；
-- binding invocation method 是否被 provider 的 `wire_apis` 支持；
-- required credentials 是否存在于 `auth.json`；
-- local web search config 是否指向已知 local provider 和 credential。
-
-如果存在 CLI 或 runtime model override，Devo 会先按 binding id 匹配，然后按 model slug 匹配，最后按 provider model name 匹配。
+没有明确模型时，先使用顶层 `model`，再回退到合并目录中的第一个 enabled model。
 
 ## Router
 
-`crates/server/src/provider_config.rs` 构建 provider runtime view。
+`crates/server/src/provider_config.rs` 构建 provider runtime view。Provider crate 暴露
+`ProviderRouter` trait，因此 server code 不依赖具体 provider implementation。
 
-Provider crate 暴露 `ProviderRouter` trait。Server 依赖该 trait，而不是依赖各个 provider implementation。
-
-使用两种 router 形态：
-
-| Router | Use |
+| Router | 用途 |
 | --- | --- |
-| `SingleProviderRouter` | 单个已配置 provider path。 |
-| `MultiProviderRouter` | 多个 enabled model bindings，按 model 或 binding metadata 路由。 |
+| `SingleProviderRouter` | 单个选中的 provider route。 |
+| `MultiProviderRouter` | 多个 enabled provider/model route，按规范 model reference 索引。 |
 
-选中的 route 会传入 turn execution，因此即使配置了多个 providers，一个 session 也可以继续使用预期 binding。
+选中的 route 会附加到 turn，因此即使存在多个 Connection，一个 session 仍会使用预期的
+Connection。
 
 ## Wire APIs
-
-支持的 wire API string 在 protocol model code 中定义：
 
 | Config value | Provider adapter |
 | --- | --- |
@@ -55,56 +50,45 @@ Provider crate 暴露 `ProviderRouter` trait。Server 依赖该 trait，而不�
 | `openai_chat_completions` | OpenAI-compatible Chat Completions API。 |
 | `openai_responses` | OpenAI Responses-compatible API。 |
 
-Provider-specific HTTP streaming behavior 属于 `devo-provider`，不属于 TUI 或 server runtime。
+Provider-specific HTTP 和 streaming 行为属于 `devo-provider`，不属于 TUI 或 server UI 层。
 
-## Request Model
+## Request 默认值和 Variants
 
-Model binding 将本地身份和 provider request name 分开：
+Provider、model 和 variant record 都可以有任意 `request`、`options` 和 `headers` 对象，合并
+顺序从宽到窄：
 
-```toml
-[model_bindings.deepseek-v4-pro-deepseek-anthropic]
-model_slug = "deepseek-v4-pro"
-provider = "deepseek-anthropic"
-request_model = "deepseek-v4-pro"
-invocation_method = "anthropic_messages"
-```
+1. provider；
+2. model；
+3. 选中的 variant。
 
-如果 `request_model` 与 `model_slug` 不同，Devo 可以在 UI 中显示 local slug，同时向 API 发送 provider-specific model string。
+`provider/model/variant` 选择命名 variant，但不会创建另一个 model identity。Model metadata
+还包括上下文上限、能力、价格、发布状态、reasoning 支持和输入模态。
 
-## Web Search 和 Fetch
+## 动态发现
 
-Web search 和 fetch 从 global、provider-level 和 binding-level config 解析。
+Native `provider/discover` 会探测 Connection 的 `/models` 或兼容的 `/v1/models` endpoint，
+规范化常见 model metadata，并将原始目录条目保存到用户 Connection 覆盖层。git 跟踪的
+provider template 永远不会被修改。
 
-优先级：
+## Web 能力
 
-1. binding override；
-2. provider override；
-3. global `tools` config。
-
-Search modes：
-
-| Mode | Meaning |
-| --- | --- |
-| `provider` | 当 provider path 支持时，暴露 provider-hosted web search。 |
-| `local` | 使用已配置的本地第三方 search provider。 |
-| `disabled` | 不暴露 web search。 |
-
-Fetch modes 是 `provider`、`local` 和 `disabled`。
+Web search 和 fetch 按 model override、provider override、全局 `tools` 配置的顺序解析。
+可用 mode 是 `provider`、`local` 和 `disabled`。本地 search credential 仍保存在 `auth.json`。
 
 ## Validation API
 
-Onboarding 和 provider editing 可以在保存前验证 provider。TUI 通过 worker 发送 provider validation，server 创建一个短生命周期 provider route，runtime 尝试一次小的 probe request。
+Onboarding 和 provider editing 会在保存 Connection 前通过 Native `provider/validate` 进行校验。
+Server 创建短生命周期 route 并尝试小型 probe request，可提前发现 endpoint、协议、credential
+和 model 错误。
 
-修改 provider schema、auth handling 或 onboarding behavior 时应使用 validation。它能在用户开始真实任务前捕获许多配置错误。
+## 从哪里修改代码
 
-## 从哪里改代码
-
-| Change | Start here |
+| 修改内容 | 从这里开始 |
 | --- | --- |
-| Config field shape | `crates/config/src/provider/schema.rs` |
-| Config loading or validation | `crates/config/src/provider` |
+| Provider/model 规范结构 | `crates/config/src/provider/catalog.rs` |
+| 启动迁移 | `crates/config/src/provider/migration.rs` |
 | Server provider bootstrap | `crates/server/src/provider_config.rs` |
-| Provider routing behavior | `crates/provider/src/router.rs` |
+| Provider routing 行为 | `crates/provider/src/router.rs` |
 | Anthropic-compatible requests | `crates/provider/src/anthropic` |
 | OpenAI-compatible requests | `crates/provider/src/openai` |
-| Provider validation API | `crates/server/src/runtime/provider_vendor_api.rs` |
+| Native provider RPCs | `crates/server/src/runtime/provider_api.rs` |

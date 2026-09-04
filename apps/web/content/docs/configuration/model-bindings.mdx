@@ -1,97 +1,293 @@
 ---
-title: Model Bindings
-description: Bind a supported model to a configured provider.
+title: Provider and Model Configuration
+description: Configure built-in and custom providers and models in providers.json.
 ---
 
-A model binding connects Devo's local model identity to the provider model name
-that should be sent over the wire.
+Devo stores provider connections and model metadata in `providers.json`. API
+keys live separately in the user-scoped `auth.json`. A model is owned by its
+provider, so the only user-facing model identity is `provider/model`.
 
-Bindings live under `[model_bindings.<id>]`.
+The canonical provider map is `provider.<provider-id>`. A nested model map key
+is the provider-facing model id:
 
-## Example
-
-```toml
-[model_bindings.deepseek-v4-pro-deepseek-anthropic]
-enabled = true
-model_slug = "deepseek-v4-pro"
-provider = "deepseek-anthropic"
-request_model = "deepseek-v4-pro"
-display_name = "DeepSeek V4 Pro"
-invocation_method = "anthropic_messages"
-default_reasoning_effort = "high"
+```json
+{
+  "model": "my-provider/my-model",
+  "provider": {
+    "my-provider": {
+      "models": {
+        "my-model": {}
+      }
+    }
+  }
+}
 ```
 
-| Field | Required | Meaning |
+The git-tracked built-in directory is `crates/core/providers.json`. User and
+workspace files are overlays, not a closed allowlist, so adding a new map key
+creates a custom provider or model automatically.
+
+## Root fields
+
+All root fields are optional:
+
+| Field | JSON type | Default | Meaning |
+| --- | --- | --- | --- |
+| `model` | string | first enabled model | Active primary model in `provider/model` form. |
+| `small_model` | string | automatic same-provider model, then `model` | Optional lower-cost model for lightweight background work, such as session titles. Invalid values use the same fallback. |
+| `reasoning_effort` | string | model default | Global selection: `default`, `disabled`, `enabled`, or a supported effort value. |
+| `provider` | object | `{}` | Provider id to provider record map. `providers` is accepted only as a read compatibility alias. |
+
+## Provider fields
+
+Provider fields are written under `provider.<provider-id>`:
+
+The `<provider-id>` map key is the stable provider identity used in
+`provider/model`; `name` is only its display label. Renaming a provider should
+not change its id.
+
+| Field | JSON type | Default | Meaning |
+| --- | --- | --- | --- |
+| `name` | string | provider id | Display name. |
+| `base_url` | string | none | API endpoint base URL. |
+| `credential` | string | none | Credential id looked up in the user-scoped `auth.json`; the secret is not stored here. |
+| `headers` | object of string-to-string | none | Literal HTTP headers sent to the provider. Do not put API keys here. |
+| `options` | object | none | Arbitrary provider/SDK options merged into adapter request defaults. |
+| `request` | object | none | Arbitrary provider-level request-body defaults. |
+| `wire_api` | enum | `openai_chat_completions` | Default request protocol for the provider's models. |
+| `enabled` | boolean | `true` | Whether this provider can be selected. |
+| `env` | array of strings | `[]` | Environment variable names integrations may use for credentials. |
+| `web_search` | object | none | Provider-level hosted or local web-search behavior. |
+| `web_fetch` | object | none | Provider-level hosted or local URL-fetch behavior. |
+| `models` | object | `{}` | Model id to model record map. |
+
+Provider credentials use a reference in `providers.json`:
+
+```json
+{
+  "provider": {
+    "my-provider": {
+      "base_url": "https://api.example.com/v1",
+      "credential": "example_api_key"
+    }
+  }
+}
+```
+
+The secret is stored in the user-scoped `auth.json`:
+
+```json
+{
+  "version": 1,
+  "credentials": {
+    "example_api_key": {
+      "kind": "api_key",
+      "value": "sk-example"
+    }
+  }
+}
+```
+
+Keep real credentials out of git-tracked files. Do not put `apiKey` or
+`api_key` in `providers.json`; they are not canonical provider fields. `headers`
+is a JSON object with string keys and values, for example
+`{"X-Organization":"my-team"}`.
+
+If onboarding receives an API key without an explicit credential id, Devo
+generates a stable id from the provider id, such as `deepseek_api_key`.
+`env` records names for integrations; the normal provider resolver does not
+automatically read those names as API keys.
+
+Inside a provider record, web capability objects use these forms:
+
+```json
+{
+  "web_search": {
+    "mode": "local",
+    "local_provider": "exa",
+    "local_providers": {
+      "exa": {
+        "kind": "exa",
+        "credential": "exa_api_key",
+        "base_url": "https://api.exa.ai/search",
+        "max_results": 5
+      }
+    }
+  },
+  "web_fetch": {
+    "mode": "provider"
+  }
+}
+```
+
+`web_search.mode` is `disabled`, `provider`, or `local`. Its optional
+`local_provider` selects a named local service; `local_providers` maps names to
+records whose `kind` is `exa` or `tavily`, whose `credential` is an `auth.json`
+credential id, and whose optional `base_url` and `max_results` override the
+service defaults. `web_fetch.mode` is `disabled`, `provider`, or `local`.
+Search defaults to `provider`; fetch defaults to `local`.
+
+## Model fields
+
+Models are written under `provider.<provider-id>.models.<model-id>`. All model
+fields are optional. There is intentionally no `model_slug`, `model_name`,
+`model_id`, or `description` field in the canonical model record.
+
+| Field | JSON type | Default | Meaning |
+| --- | --- | --- | --- |
+| `name` | string | model id | Model-picker label. |
+| `wire_api` | enum | provider `wire_api` | Per-model request protocol override. |
+| `context_window` | integer | runtime default | Maximum context window in tokens. |
+| `effective_context_window_percent` | number | runtime default | Usable percentage of the context window (may be fractional). |
+| `max_tokens` | integer | runtime default | Default response-output limit. |
+| `temperature` | number | none | Sampling randomness. |
+| `top_p` | number | none | Nucleus-sampling probability mass. |
+| `top_k` | number | none | Candidate-token cap. |
+| `reasoning_capability` | enum or object | `unsupported` | Reasoning choices shown to users. |
+| `reasoning_implementation` | enum or object | request-parameter behavior | How reasoning changes the request. |
+| `default_reasoning_effort` | enum | none | Initial reasoning effort. |
+| `base_instructions` | string | built-in/default instructions | Model base instructions; `""` explicitly disables them. |
+| `input_modalities` | array | `["text"]` | Input types: `text` and/or `image`. |
+| `channel` | string | none | Optional grouping label. |
+| `truncation_policy` | object | `{"mode":"bytes","limit":8000}` | Tool-result content limit. |
+| `supports_image_detail_original` | boolean | `false` | Whether original-resolution image detail is supported. |
+| `enabled` | boolean | `true` | Whether the model can be selected. |
+| `priority` | integer | `0` | Higher values are preferred when no model is explicitly selected. |
+| `family` | string | none | Model family used for grouping and capability metadata. |
+| `release_date` | string | none | Provider-reported release date. |
+| `status` | string | none | Provider-reported state such as `active`, `preview`, or `deprecated`. |
+| `cost` | object | none | Open-ended pricing metadata preserved from the provider directory. |
+| `metadata` | object | none | Open-ended metadata; dynamic discovery keeps the raw directory entry here. |
+| `options` | object | none | Arbitrary provider/SDK options merged into adapter request defaults. |
+| `request` | object | none | Arbitrary request-body fields, with model specificity over provider defaults. |
+| `headers` | object of string-to-string | none | Per-model HTTP headers layered over provider headers. |
+| `variants` | object | `{}` | Named model variants with independent request/options/headers. |
+| `default_variant` | string | none | Variant selected when a turn does not specify one. |
+
+The effective context is
+`context_window * effective_context_window_percent / 100`. That applied window
+drives occupancy and auto-compact. In Desktop / TUI model settings, the
+**Context window** field is an absolute token count; on save it is stored as
+percent of the hard `context_window` (default percent 95 when unset). A legacy
+`compaction_token_limit` in `config.toml` is ignored.
+
+## Wire API values
+
+`wire_api` can be set on either a provider or a model. A model value overrides
+the provider value. Devo supports exactly these three values:
+
+| Value | Request family | Use when |
 | --- | --- | --- |
-| `model_slug` | Yes | Devo's local model metadata id. |
-| `provider` | Yes | Provider id from `[providers.<id>]`. |
-| `request_model` | Yes | Model string sent to the provider. |
-| `display_name` | No | Label shown in the TUI model picker and header. |
-| `invocation_method` | Yes | Wire API used for this binding. |
-| `default_reasoning_effort` | No | Default reasoning effort for capable models. |
-| `web_search` | No | Binding-specific web search override. |
-| `web_fetch` | No | Binding-specific web fetch override. |
-| `enabled` | No | Whether this binding can be selected. Defaults to `true`. |
+| `openai_chat_completions` | OpenAI-compatible Chat Completions | The endpoint accepts chat-completions requests. |
+| `openai_responses` | OpenAI-compatible Responses | The endpoint accepts Responses API requests. |
+| `anthropic_messages` | Anthropic-compatible Messages | The endpoint accepts Anthropic Messages requests. |
 
-## Slug Versus Request Model
+If omitted, the value is `openai_chat_completions`. Select the value from the
+provider's API documentation; a URL does not determine the protocol.
 
-`model_slug` is the Devo-side identity. It maps to local model metadata such as
-context window, reasoning support, and display defaults.
+## Model variants
 
-`request_model` is the provider-side value sent in the API request.
+`variants` is a map keyed by a short variant id. A variant is selected with
+`provider/model/variant`; it does not create another model identity. Variant
+`options` and `request` are merged after provider and model values, and
+variant `headers` are layered last. Set `disabled` to keep a variant in the
+directory while preventing it from appearing in selectors.
 
-The legacy `model_name` key remains readable, but Devo writes `request_model`
-when the binding is saved again.
-
-They are often the same, but they do not have to be. Use different values when
-a gateway expects names like `openai/gpt-5.2` while Devo should still use a
-stable local slug.
-
-## Binding Id
-
-The table name is the binding id:
-
-```toml
-[model_bindings.main]
+```json
+{
+  "provider": {
+    "example": {
+      "models": {
+        "reasoning-model": {
+          "variants": {
+            "fast": {
+              "label": "Fast",
+              "options": {"thinking": {"budget": 1024}},
+              "request": {"speed": "fast"},
+              "headers": {"X-Mode": "fast"}
+            }
+          },
+          "default_variant": "fast"
+        }
+      }
+    }
+  }
+}
 ```
 
-The binding id is what `[defaults]` points to, and it is also the first match
-checked when a user runs `/model <value>`.
+## Dynamic model discovery
 
-## Default Binding
+Native `provider/discover` refreshes a connected Connection by trying its
+`/models` and compatible `/v1/models` endpoints. Credentials come from the
+user-scoped `auth.json`. OpenAI-style `{"data":[...]}` and provider-style
+`{"models":[...]}` responses are supported. Common identity, limits, cost,
+reasoning, modality, status, and release fields are normalized; the raw entry
+is retained in `metadata`. Discovery updates only the user Connection overlay,
+not the git-tracked built-in directory. Use `forceRefresh: true` to bypass the
+short in-process cache.
 
-Set the startup default under `[defaults]`:
+## Reasoning fields
 
-```toml
-[defaults]
-model_binding = "deepseek-v4-pro-deepseek-anthropic"
+`reasoning_capability` controls the choices exposed in the UI. These are the
+three supported JSON forms:
+
+| JSON value | Meaning |
+| --- | --- |
+| `"unsupported"` | No reasoning control. |
+| `"toggle"` | `off` and `on`. |
+| `{"levels":["off","low","high"]}` | Exactly the listed chips. Include `off` to allow disabling; omit `off` when reasoning cannot be turned off. |
+
+Legacy `{"toggle_with_levels":[...]}` (and spelling `togglewithlevels`) still
+reads and migrates to `levels` with a leading `off`.
+
+Effort values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and
+`max`. Use only values supported by the provider model.
+
+`reasoning_implementation` is retained only for old TOML migration. New JSON
+configuration should use the `reasoning_capability` field and the named
+`variants` map above. The legacy forms below are accepted only to keep old
+configuration readable during migration.
+
+
+`truncation_policy` uses this shape:
+
+```json
+{
+  "truncation_policy": {
+    "mode": "tokens",
+    "limit": 12000
+  }
+}
 ```
 
-If the default binding is disabled, runtime model resolution skips it and uses
-the first enabled binding it can find.
+`mode` is `bytes` or `tokens`; `limit` is an integer.
 
-## Provider Compatibility
+## Custom provider and model
 
-The binding `invocation_method` must be supported by the provider's
-`wire_apis`. This is valid:
+Add a provider and a model in a user or workspace overlay, then select it with
+the root `model` field:
 
-```toml
-[providers.deepseek-anthropic]
-wire_apis = ["anthropic_messages"]
-
-[model_bindings.deepseek-v4-pro-deepseek-anthropic]
-provider = "deepseek-anthropic"
-invocation_method = "anthropic_messages"
+```json
+{
+  "model": "example/custom",
+  "provider": {
+    "example": {
+      "name": "Example Gateway",
+      "base_url": "https://api.example.com/v1",
+      "credential": "example_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "custom": {
+          "name": "Example Custom Model",
+          "context_window": 128000,
+          "input_modalities": ["text"]
+        }
+      }
+    }
+  }
+}
 ```
 
-This is invalid because the binding asks for a wire API the provider does not
-advertise:
-
-```toml
-[providers.deepseek-anthropic]
-wire_apis = ["anthropic_messages"]
-
-[model_bindings.bad]
-provider = "deepseek-anthropic"
-invocation_method = "openai_chat_completions"
-```
+Repeating an existing provider/model key partially overrides only the fields
+present in the higher-priority file. Adding a new nested model creates a model
+with safe defaults; its map key is the id sent in the API request.

@@ -1,90 +1,84 @@
 ---
-title: Models and Providers
-description: 理解 model definitions、providers 和 model bindings。
+title: Models and Provider Connections
+description: 理解 provider template、Connection、model 和 variant。
 ---
 
-Devo 将 model capability metadata 与 provider connection details 分开。因此同一个 Devo UI 可以接 OpenAI、Anthropic、DeepSeek、OpenRouter、本地 gateways 和其他兼容 providers。
+Devo 用一个目录描述 provider template 及其模型，再用用户覆盖文件记录用户已经配置的
+Connection。模型归属于 provider，因此稳定的公开身份是 `provider/model`。
 
-## 三层结构
+## 三个概念
 
-| Layer | 描述什么 | 包含 secrets？ |
+| 概念 | 含义 | 存储位置 |
 | --- | --- | --- |
-| Model profile | 模型能力、display name、context window、reasoning support、modalities 和 max output tokens。 | 否 |
-| Provider vendor | 配置的 provider endpoint、base URL、credential reference、headers 和 supported wire APIs。 | 仅 credential reference |
-| Model binding | model slug 与 provider vendor 的连接，包括 provider model name、display name、wire API 和 default reasoning effort。 | 否 |
+| Provider template | 内置的 endpoint 默认值、wire API 和模型元数据。 | git 跟踪的 `crates/core/providers.json` |
+| Connection | 用户配置的 provider 实例，包含 endpoint 覆盖项和 credential 引用。 | 用户/工作区 `providers.json` |
+| Model | provider-facing model id，以及可选的能力和请求元数据。 | 两个文件中 provider 的嵌套 map |
 
-Model profiles 不应包含 API keys、provider URLs 或 invocation methods。
+API key 本身存储在用户级 `auth.json`；`providers.json` 只保存 credential id。TUI 中不能删除
+provider template；断开 Connection 会删除用户的 provider 覆盖项。
 
-Provider vendors 描述如何访问一个服务。Model bindings 描述 Devo model slug 应使用哪个 provider 和模型名称。
+## Provider 和 Model 身份
 
-## Model Profile
+Provider id 和嵌套 model id 都是 map key。Devo 不再需要额外的 model slug、model name、request
+model 或 description 来保持同步：
 
-Model profile 是 Devo 用于渲染 UI 和塑造请求的 capability record，包括：
+```json
+{
+  "model": "deepseek/deepseek-v4-flash",
+  "provider": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/anthropic",
+      "credential": "deepseek_api_key",
+      "wire_api": "anthropic_messages",
+      "models": {
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash",
+          "context_window": 200000
+        }
+      }
+    }
+  }
+}
+```
 
-- stable model slug；
-- display name；
-- base instructions；
-- context window 和有效可用 context；
-- reasoning capability；
-- default reasoning effort；
-- tool-use support；
-- image support；
-- streaming support；
-- prompt-caching support；
-- max output tokens。
+嵌套 model key 同时是发送给 provider 的 id，也是 `provider/model` 引用的后半部分；`name`
+仅用于显示。
 
-Model picker 和 status line 使用这些 metadata。Compaction 和 context status 也依赖 context window 字段。
+## Model 元数据
 
-## Provider Vendor
+Model record 可以描述上下文长度、输出上限、输入模态、reasoning 控制、采样默认值、能力、
+价格、发布状态、任意 request/options/headers 和命名 variants。Onboarding 常用表单会先显示
+常用字段，高级设置显示其余字段。
 
-Provider vendor 是 connection record，包括：
+根字段 `small_model` 是可选的轻量后台模型选择，例如用于生成 session 标题。它缺失或无效时，
+Devo 会先从主模型所在 provider 中选择明显轻量的模型，最后回退到 `model`。
 
-- provider id 或 name；
-- optional base URL；
-- credential id；
-- optional headers；
-- enabled state；
-- 一个或多个 supported wire APIs。
+## Wire API
 
-API key 本身属于 user auth storage，不属于 model profile。Onboarding 会为你写入 credential reference 和 provider settings。
-
-## Model Binding
-
-Model binding 将 model profile 与 provider vendor 连接起来。它回答：
-
-- 哪个 provider 服务这个模型？
-- 发给该 provider 的 model name 是什么？
-- Devo 应使用哪个 wire API？
-- UI 应显示什么 display name？
-- 应选择什么 default reasoning effort？
-
-例如，DeepSeek binding 可以使用 `deepseek-v4-flash` 这样的 Devo model slug，发送 DeepSeek 要求的 provider model name，并通过 DeepSeek Anthropic 兼容 base URL 使用 `anthropic_messages` wire API。
-
-## Wire APIs
-
-Devo 当前建模这些 provider wire APIs：
+选中的模型使用以下请求协议之一：
 
 | Wire API | 含义 |
 | --- | --- |
-| `openai_chat_completions` | OpenAI 兼容 chat completions requests。 |
-| `openai_responses` | OpenAI 兼容 Responses API requests。 |
-| `anthropic_messages` | Anthropic 兼容 Messages API requests。 |
+| `openai_chat_completions` | OpenAI 兼容 Chat Completions API。 |
+| `openai_responses` | OpenAI 兼容 Responses API。 |
+| `anthropic_messages` | Anthropic 兼容 Messages API。 |
 
-选择与 endpoint 匹配的 wire API，而不是只看公司名称。对于 DeepSeek 官方 API，Devo 推荐 Anthropic 兼容路径，因为 hosted `web_search` 和 `web_fetch` 可通过该 provider route 使用。
+DeepSeek 官方 Anthropic-compatible endpoint 表示为普通 Connection，其 `wire_api` 为
+`anthropic_messages`。
 
-## Resolution
+## Reasoning 和 Variants
 
-启动时和一个 turn 开始时，Devo 会 resolve active model binding。Runtime 会组合：
+`reasoning_capability` 决定 picker 展示哪些值。通过 `provider/model/variant` 选择模型 variant；
+variant 不是另一种模型身份。Variant 的 request、options 和 headers 会在 model/provider 值之后
+合并，因此可以支持 OpenCode 风格的 fast/reasoning variants，而不需要复制 provider 或 model。
 
-- selected model slug；
-- configured binding；
-- provider vendor；
-- `/model` 带来的 session 或 turn override；
-- selected thinking 或 reasoning mode。
+## 解析
 
-结果就是 Devo 为该 turn 发送的具体 provider request。
+每个 turn 都会解析明确的 `provider/model[/variant]` 引用，检查 Connection 和 model 已启用，
+从 `auth.json` 解析 credential，合并请求默认值，再通过模型的 wire API 发送请求。`/model` 和
+CLI `--model` 使用同一种引用格式。
 
-如果未配置 provider，Devo 无法运行 model requests，并会引导你运行：
+如果尚未配置 Connection，请运行：
 
 ```bash
 devo onboard

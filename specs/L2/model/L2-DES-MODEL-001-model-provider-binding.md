@@ -138,7 +138,12 @@ Current-session model and reasoning selection is not itself a `ModelProviderBind
 
 The TOML schema stores model metadata additions and partial overrides under `[model.<slug>]`, global provider HTTP settings under `[provider_http]`, providers under `[providers.<provider_id>]`, invocable bindings under `[model_bindings.<binding_id>]`, and durable default selection under `[defaults]`. Provider records reference credentials by id and may contain raw custom HTTP header configuration. Runtime-only `ResolvedModelProfile` values are not persisted in `config.toml`.
 
-Legacy user `~/.devo/models.json` and workspace `<workspace>/.devo/models.json` files are ignored. Migration is manual: users copy desired model metadata fields into the corresponding user or workspace `config.toml` `[model.<slug>]` section and retain or add the provider and binding records required for invocation.
+The former user `~/.devo/models.json` and workspace `<workspace>/.devo/models.json`
+catalogs are ignored. The canonical built-in directory is the git-tracked
+`crates/core/providers.json`; user and workspace provider Connections and model
+metadata are stored in `providers.json` overlays, with secrets in user-scoped
+`auth.json`. Startup automatically migrates legacy provider/model/binding records
+from `config.toml` once, then removes those provider-owned TOML records.
 
 The effective provider and binding set is resolved through configuration precedence:
 

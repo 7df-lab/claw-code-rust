@@ -3,15 +3,17 @@ title: Config Reference
 description: 在用户向导稳定后查阅 Devo config fields。
 ---
 
-本页列出主要 config files 和 fields。引导式配置请先读[配置基础](../configuration/config-basics)、[提供商配置](../configuration/provider-setup) 和[模型绑定](../configuration/model-bindings)。
+本页列出主要 config files 和 fields。引导式配置请先读[配置基础](../configuration/config-basics)、[提供商配置](../configuration/provider-setup) 和[Provider 与 Model 配置](../configuration/model-bindings)。
 
 ## 文件
 
 | File | Purpose |
 | --- | --- |
 | `<DEVO_HOME>/config.toml` | User-level Devo config。 |
+| `<DEVO_HOME>/providers.json` | User-level provider connections、model directory 和 active model。 |
 | `<DEVO_HOME>/auth.json` | User-level secrets 和 credentials。 |
 | `<workspace>/.devo/config.toml` | Workspace-level config overlay。 |
+| `<workspace>/.devo/providers.json` | Workspace provider/model overlay。 |
 
 默认 `DEVO_HOME` 路径：
 
@@ -27,11 +29,22 @@ description: 在用户向导稳定后查阅 Devo config fields。
 Effective config 按以下顺序解析，优先级从高到低：
 
 1. command-line startup arguments；
-2. `<workspace>/.devo/config.toml`；
-3. `<DEVO_HOME>/config.toml`；
-4. built-in defaults。
+2. `<workspace>/.devo/providers.json`（provider/model 字段）；
+3. `<workspace>/.devo/config.toml`（application 字段）；
+4. `<DEVO_HOME>/providers.json`（provider/model 字段）；
+5. `<DEVO_HOME>/config.toml`（application 字段）；
+6. built-in defaults 和 git 跟踪的 `crates/core/providers.json`。
 
-`auth.json` 是 user-scoped，不应提交到仓库。
+Provider API key 存在 user-scoped `auth.json`；`providers.json` 只存
+`provider.<id>.credential` 引用。包含真实密钥的文件都不应提交到仓库。
+
+## providers.json
+
+`<DEVO_HOME>/providers.json` 和 `<workspace>/.devo/providers.json` 保存 provider
+连接、模型目录和选择。`model` 是普通 turn 的默认主模型，`small_model` 是可选的
+轻量后台模型（例如会话标题生成）；未设置或无效时先自动选择同 provider 的轻量模型，
+再回退到 `model`。provider id 与嵌套
+model id 共同组成唯一身份 `provider/model`，不需要额外的 binding id。
 
 ## Top-Level Fields
 
@@ -51,19 +64,18 @@ Effective config 按以下顺序解析，优先级从高到低：
 | `project_root_markers` | string array | 用于发现 instruction project root 的 markers。默认 `.git`。 |
 | `projects` | table | 按 project key 记住的 user-level settings。 |
 
-Provider 相关字段被 flatten 到顶层：
+应用级字段位于 `config.toml`；provider/model 字段位于 `providers.json`：
 
 | Field | Meaning |
 | --- | --- |
-| `defaults` | Durable default selections，包括 active model binding。 |
-| `providers` | 按 provider id 存储的 provider records。 |
-| `model_bindings` | 按 binding id 存储的 invocable model bindings。 |
-| `model_provider`, `model`, `model_providers` | Legacy provider config compatibility fields。 |
-| `model_reasoning_effort_selection` | 当前模型的用户可见 reasoning effort selection。 |
-| `model_auto_compact_token_limit` | 可选 automatic compaction token threshold。 |
-| `model_context_window` | 可选 context-window override。 |
-| `disable_response_storage` | 可选 response-storage switch。 |
-| `preferred_auth_method` | Preferred provider auth method。目前基于 API key。 |
+| `model` | 默认主模型，格式为 `provider/model`。 |
+| `small_model` | 标题生成等轻量后台任务使用的可选模型；缺省时自动选择轻量模型，再回退到 `model`。 |
+| `reasoning_effort` | 当前 reasoning effort 选择。 |
+| `provider.<id>` | Connection 与其模型目录。 |
+| `provider.<id>.models.<model-id>` | 模型记录，map key 就是 provider-facing model id。 |
+
+旧 TOML 的 provider/model 字段仅作为启动时一次性迁移输入读取；新的配置和运行时
+解析不再使用 bindings。
 
 ## `[provider_http]`
 
@@ -98,13 +110,7 @@ override 这些值，不会修改 `config.toml`。
 启用后，auth state 按 connection 隔离，并同时 gate ACP methods 和 legacy
 Devo server methods。
 
-## `[defaults]`
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `model_binding` | string | 没有 CLI 或 runtime model override 时使用的 binding id。 |
-
-## `[providers.<id>]`
+## `providers.json` Provider 与 Model
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -113,9 +119,10 @@ Devo server methods。
 | `base_url` | string | Provider endpoint。 |
 | `credential` | string | `auth.json` 中的 credential id。 |
 | `headers` | JSON object string | Provider requests 的 extra HTTP headers。 |
-| `wire_apis` | string array | 该 provider 支持的 wire APIs。 |
-| `web_search` | table | Provider-level web search override。 |
-| `web_fetch` | table | Provider-level web fetch override。 |
+| `wire_api` | string | 该 provider 默认使用的 wire API。 |
+| `options`、`request` | JSON object | 任意 adapter 选项和 provider 请求默认值。 |
+| `models` | object | 按 provider-facing model id 存储的模型。 |
+| `web_search`、`web_fetch` | JSON object | Provider-level capability override。 |
 
 支持的 wire API 值：
 
@@ -126,19 +133,8 @@ Devo server methods。
 Provider 响应没有应用层总超时。本地模型可以按需要花费时间加载或生成输出，
 用户可以随时取消请求；连接建立仍保留内部期限。
 
-## `[model_bindings.<id>]`
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `enabled` | bool | Binding 是否出现在 model resolution 和 picker surfaces 中。默认 `true`。 |
-| `model_slug` | string | Local model metadata id。 |
-| `provider` | string | `[providers]` 中的 provider id。 |
-| `request_model` | string | 发送给 provider 的 model name。 |
-| `display_name` | string | UI 中显示的可选 label。 |
-| `invocation_method` | wire API | 该 binding 使用的 wire API。省略时默认 `openai_chat_completions`。 |
-| `default_reasoning_effort` | string | 可选 default reasoning effort。 |
-| `web_search` | table | Binding-level web search override。 |
-| `web_fetch` | table | Binding-level web fetch override。 |
+Model record 的字段、variants、reasoning、任意 `request/options/headers` 和动态发现格式，
+详见[Provider 与 Model 配置](../configuration/model-bindings)。
 
 ## `[tools.web_search]`
 

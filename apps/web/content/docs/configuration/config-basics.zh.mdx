@@ -20,11 +20,14 @@ Devo 从 `DEVO_HOME` 读取用户配置，并从当前工作区读取项目配�
 
 | 文件 | 作用域 | 用途 |
 | --- | --- | --- |
-| `<DEVO_HOME>/config.toml` | 用户 | 主要用户配置：providers、model bindings、skills、MCP、hooks、tools、logging、updates，以及记住的项目设置。 |
-| `<DEVO_HOME>/auth.json` | 用户 | provider 和 tool 配置引用的密钥值。 |
+| `<DEVO_HOME>/config.toml` | 用户 | 主要用户配置：skills、MCP、hooks、tools、logging、updates，以及记住的项目设置。 |
+| `<DEVO_HOME>/providers.json` | 用户 | provider 连接、嵌套模型目录、当前模型和 credential 引用。 |
+| `<DEVO_HOME>/auth.json` | 用户 | provider API key 和其他用户级密钥。 |
 | `<workspace>/.devo/config.toml` | 项目 | 工作区级覆盖项；当 Devo 带工作区根目录启动时读取。 |
+| `<workspace>/.devo/providers.json` | 项目 | 工作区 provider/model 覆盖项。 |
 
-Provider API key 应存放在 `auth.json`，并在 `config.toml` 中通过 credential id 引用。
+Provider API key 应存放在用户级 `auth.json` 中，`providers.json` 只保存对应的
+`provider.<id>.credential` 引用。
 
 ## 优先级
 
@@ -32,37 +35,48 @@ Devo 按以下顺序合并配置：
 
 1. Devo 内置默认值；
 2. `<DEVO_HOME>/config.toml` 中的用户配置；
-3. `<workspace>/.devo/config.toml` 中的项目配置；
-4. 命令行覆盖项。
+3. `<DEVO_HOME>/providers.json` 中的用户 provider 目录；
+4. `<workspace>/.devo/config.toml` 中的项目配置；
+5. `<workspace>/.devo/providers.json` 中的项目 provider 目录；
+6. 命令行覆盖项。
 
 后面的来源会覆盖前面的来源。因此项目配置可以只为某个仓库覆盖用户默认值，而 CLI 覆盖项优先级最高。
 
-Provider 配置中的 provider 表和 model binding 表有自己的合并行为。用户配置通常放 provider credential 和可复用的 model binding。项目配置更适合放项目特定默认值。
+Provider JSON 对 provider 和嵌套 model 记录采用按字段合并。用户 provider JSON
+通常放连接和 credential 引用；项目 provider JSON 更适合放项目特定覆盖项。
+
+## 启动迁移
+
+Devo 启动并发现 `config.toml` 中存在旧的 provider/model 配置时，会在解析当前
+模型前自动迁移。用户级配置迁移到 `<DEVO_HOME>/providers.json`，工作区配置迁移到
+`<workspace>/.devo/providers.json`；已经存在的 JSON 字段优先于旧 TOML。
+
+旧 API key 会复制到用户级 `auth.json`，`providers.json` 只写入 credential 引用。
+JSON 和凭据成功写入后，provider 所有的旧 TOML 字段才会删除；其他应用配置会继续
+保留。迁移是幂等的。
 
 ## 凭据
 
-`auth.json` 当前存储 API key 凭据：
+Provider 记录在 `providers.json` 中存放 credential 引用：
 
 ```json
-{
-  "version": 1,
-  "credentials": {
-    "deepseek_api_key": {
-      "kind": "api_key",
-      "value": "sk-your-key"
-    }
-  }
-}
+{"provider":{"deepseek":{"credential":"deepseek_api_key"}}}
 ```
 
-Provider 配置通过 id 引用 credential：
+旧的 `auth.json` credential 结构仍可用于迁移兼容：
 
-```toml
-[providers.deepseek-anthropic]
-credential = "deepseek_api_key"
+```json
+{"provider":{"deepseek":{"credential":"deepseek_api_key"}}}
 ```
 
-如果 provider 引用了不存在的 credential id，Devo 会在 provider 解析阶段报错，并指出 `auth.json`。
+实际密钥放在用户级 `auth.json`：
+
+```json
+{"version":1,"credentials":{"deepseek_api_key":{"kind":"api_key","value":"sk-your-key"}}}
+```
+
+旧 provider 引用了不存在的 credential id 时，Devo 会在解析阶段报错并指出
+`auth.json`。不要把 `apiKey` 或 `api_key` 写进 `providers.json`。
 
 ## 检查配置
 

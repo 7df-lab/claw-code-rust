@@ -3,41 +3,46 @@ title: Onboarding
 description: 从终端 UI 配置 Devo。
 ---
 
-Onboarding 配置 Devo 应使用的 provider 和 model。首次启动且没有 provider 配置时会自动运行，也可以随时手动运行：
+Onboarding 配置 Devo 应使用的 provider Connection 和 model。首次启动且没有 provider 配置时会自动运行，也可以随时手动运行：
 
 ```bash
 devo onboard
 ```
 
-添加第一个 provider、从 TUI 修改 provider setup，或创建新的 model binding 而不手动编辑 `config.toml` 时，用 onboarding。
+连接目录中的 provider 模板、添加自定义 provider、断开 Connection，或向 Connection 添加模型而不手动编辑 `providers.json` 时，用 onboarding。
 
 ## Onboarding 会创建什么
 
-Onboarding 会在 Devo 用户配置中保存 provider vendor 和 model binding。如果输入 API key，Devo 会把它存为 credential，而不会在 transcript 中回显。
+Onboarding 会在用户级 `providers.json` 中保存 Connection 和模型选择。如果输入 API key，Devo 会把它存入用户级 `auth.json`，而不会在 transcript 中回显。
 
 保存后的配置让 Devo 知道：
 
-- UI 中显示哪个 model slug；
-- 请求应发送给哪个 provider vendor；
-- 发给 provider 的 request model name 是什么；
+- UI 中显示哪个 provider/model ID；
+- 请求应发送给哪个 provider Connection；
+- 发给 provider 的 provider-facing model ID 是什么；
 - 使用哪个 wire API；
 - 模型支持 reasoning 时的默认 reasoning effort；
 - provider 的 base URL 和 credential。
 
 ## 流程
 
-Onboarding widget 在 TUI 中内联运行。
+Onboarding widget 在 TUI alternative screen 中运行。
 
-1. 选择 model profile。模型列表可搜索：输入过滤，使用 `Up` 和 `Down` 移动，按 `Enter` 选择。
-2. 选择已有 provider vendor，或选择 `Add provider...`。
-3. 输入 provider fields。新 provider 会询问 provider name、base URL、API key、request model name 和 display name。
-4. 选择 wire API：
+1. 选择 provider 模板或已有 Connection。选中 `Connected` 项后按 `d` 或 `Delete` 可以断开；目录模板仍会保留。
+2. 对尚未连接的内置模板，查看只读的 provider name 和 Base URL，然后输入一次 API key 创建 Connection。
+3. 对自定义 provider，输入 provider name、Base URL 和 API key。
+4. 选择 model profile。模型列表可搜索：输入过滤，使用 `Up` 和 `Down` 移动，按 `Enter` 选择。
+   `Use custom model` 卡片会打开一个表单，用来添加目录中没有的模型：
+   `Model ID` 必填，`Display name` 选填。Model ID 同时作为本地目录键和
+   provider request model 的默认值；后续还可以继续配置模型设置。
+5. 选择 wire API：
    - `OpenAI Chat Completions`
    - `OpenAI Responses`
    - `Anthropic Messages`
-5. 如果所选模型支持 reasoning，选择默认 reasoning effort。
-6. Devo 通过 server-side validation request 验证 provider。
-7. 验证成功后，Devo 保存 provider binding，并启用 composer。
+6. 如果所选模型支持 reasoning，选择默认 reasoning effort。
+7. 配置基础或高级模型设置，然后检查结果。
+8. Devo 通过 server-side validation request 验证 provider。
+9. 验证成功后，Devo 将模型保存到 Connection，并启用 composer。
 
 成功后 transcript 显示：
 
@@ -45,11 +50,41 @@ Onboarding widget 在 TUI 中内联运行。
 Provider configured successfully
 ```
 
-## 已有 Providers
+### 自定义模型字段
 
-如果 provider vendor 已存在，onboarding 可以复用它。Provider selection step 会在 `Add provider...` 前显示已有 provider vendors。
+自定义模型向导是完整的模型 profile 表单，不只是输入一个名称。常用区域包括
+provider-facing `Model ID`、显示名称、单位为 token 的上下文长度、最大输出 token
+数、temperature、输入模态以及 reasoning 能力和默认值。
 
-对于已有 provider，Devo 会复用已保存的 credential id 和 base URL。你仍可在验证前确认 request model name、display name、wire API 和 reasoning effort。
+展开高级设置后，还可以配置有效上下文百分比、`top_p` / `top_k`、family 和发布
+元数据、base instructions、reasoning implementation、截断策略、enabled/priority
+以及命名 variants。
+
+Provider 特有行为使用以下开放字段：
+
+- `capabilities`：模型能力目录 JSON object，可表达 `tools`、`input`/`output`、`attachment`、`interleaved` 等信息；
+- `request`：合并进 request body 的 JSON object；
+- `options`：传给 adapter 的请求选项 JSON object；
+- `headers`：模型级 HTTP headers JSON object；
+- `variants`：命名 variant 覆盖项 JSON object；
+- `cost` 和 `metadata`：可选的模型目录元数据。
+- `web_search` 和 `web_fetch`：可选的 provider-hosted tool 行为。
+
+Reasoning capability 可填写 `unsupported`、`toggle` 或 `levels`。
+`levels` 需填写逗号分隔的小写等级，例如 `off, low, medium, high`（仅在允许关闭时包含 `off`）。选择的默认值会保存为 `default_reasoning_selection`，因此
+toggle 模型选择 `disabled` 后不会被静默改回 `enabled`。Reasoning implementation 可填写 `disabled`、
+`request_parameter` 或 `model_variant`；后者使用 JSON rule 数组。保存前表单会校验
+数字、枚举、正数形式的上下文/输出/截断限制、JSON 语法、headers、variants 和 reasoning rules。
+Reasoning variant rules 只有在 implementation 为 `model_variant` 时才允许填写；无效值会直接报错，
+不会被静默丢弃。
+
+## 模板、Connection 与断开
+
+git 跟踪的 provider 目录包含只读模板。确认尚未连接的内置模板会创建用户级 Connection，不会修改目录。选择已经 Connected 的内置 provider 会进入它已保存的模型列表：可以选择已有模型、添加自定义模型，或选中已有模型后按 d/Delete 将它从这个 Connection 中移除；模板目录不会被修改。
+
+Connected provider 的 Base URL 和 API key 不能在这个流程中编辑。需要更换 credential 或 endpoint 时，先断开，再重新连接模板。
+
+自定义 provider 属于用户拥有的 Connection，创建时可以编辑连接字段。选中任意 `Connected` 项后按 `d` 或 `Delete` 并确认即可断开。Devo 会移除用户级 Connection，以及没有被其他 Connection 共用的 auth credential；内置模板仍然可用。
 
 ## 验证失败
 
@@ -59,10 +94,10 @@ Provider configured successfully
 | --- | --- |
 | Add model anyway | 你知道 provider 可用，但验证无法证明。 |
 | Retry with current settings | provider 可能临时失败。 |
-| Edit settings | base URL、API key、model name 或 wire API 错误。 |
+| Edit settings | 模型设置或自定义连接字段错误。 |
 | Choose different model | 选错了 model profile。 |
 
-跳过验证保存会记录 provider 和 model binding，但 transcript 会标记 validation was skipped。
+跳过验证保存会记录 provider 和 Connection 模型，但 transcript 会标记 validation was skipped。
 
 ## 取消
 

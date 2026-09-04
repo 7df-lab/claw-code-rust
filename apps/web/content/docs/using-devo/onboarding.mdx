@@ -3,49 +3,57 @@ title: Onboarding
 description: Configure Devo from the terminal UI.
 ---
 
-Onboarding configures the provider and model Devo should use. It runs on first
-launch when no provider is configured, and you can run it again at any time:
+Onboarding configures the provider Connection and model Devo should use. It
+runs on first launch when no provider is configured, and you can run it again
+at any time:
 
 ```bash
 devo onboard
 ```
 
-Use onboarding when you want to add your first provider, change the provider
-setup from the TUI, or create a new model binding without editing
-`config.toml` by hand.
+Use onboarding when you want to connect a directory provider template, add a
+custom provider, disconnect a Connection, or add a model to a Connection
+without editing `providers.json` by hand.
 
 ## What Onboarding Creates
 
-Onboarding saves a provider vendor and a model binding in Devo's user config.
-If you enter an API key, Devo stores it as a credential instead of printing it
-back in the transcript.
+Onboarding saves a user Connection and a model selection in the user
+`providers.json`. If you enter an API key, Devo stores it in user-scoped
+`auth.json` instead of printing it back in the transcript.
 
 The saved setup lets Devo know:
 
-- which model slug appears in the UI;
-- which provider vendor should receive requests;
-- which request model name should be sent to the provider;
+- which provider/model ID appears in the UI;
+- which provider Connection should receive requests;
+- which provider-facing model ID should be sent to the provider;
 - which wire API to use;
 - which default reasoning effort to use when the model supports it;
 - which base URL and credential belong to the provider.
 
 ## Flow
 
-The onboarding widget runs inline in the TUI.
+The onboarding widget runs in the TUI alternate screen.
 
-1. Choose a model profile. The model list is searchable: type to filter, use
-   `Up` and `Down` to move, and press `Enter` to select.
-2. Choose an existing provider vendor or choose `Add provider...`.
-3. Enter provider fields. New providers ask for provider name, base URL, API
-   key, request model name, and display name.
-4. Choose the wire API:
+1. Choose a provider template or an existing Connection. Use `d` or `Delete`
+   on a Connected entry to disconnect it; the directory template remains.
+2. For an unconnected built-in template, review the read-only provider name
+   and Base URL, then enter the API key once to create its Connection.
+3. For a custom provider, enter its provider name, Base URL, and API key.
+4. Choose a model profile. The model list is searchable: type to filter, use
+   `Up` and `Down` to move, and press `Enter` to select. The `Use custom
+   model` card opens a form for a model that is not in the directory:
+   `Model ID` is required and `Display name` is optional. The model ID is
+   used as both the local catalog key and the provider request model. The
+   following screens configure the protocol, reasoning, and model metadata.
+5. Choose the wire API:
    - `OpenAI Chat Completions`
    - `OpenAI Responses`
    - `Anthropic Messages`
-5. If the selected model supports reasoning, choose the default reasoning
+6. If the selected model supports reasoning, choose the default reasoning
    effort.
-6. Devo validates the provider by sending a server-side validation request.
-7. If validation succeeds, Devo saves the provider binding and enables the
+7. Configure basic or advanced model settings, then review the result.
+8. Devo validates the provider by sending a server-side validation request.
+9. If validation succeeds, Devo saves the model in the Connection and enables the
    composer.
 
 When the setup succeeds, the transcript shows:
@@ -54,14 +62,56 @@ When the setup succeeds, the transcript shows:
 Provider configured successfully
 ```
 
-## Existing Providers
+### Custom model fields
 
-If a provider vendor already exists, onboarding can reuse it. The provider
-selection step shows configured provider vendors before `Add provider...`.
+The custom-model wizard is a model profile form, not just a name prompt. The
+common section covers the provider-facing `Model ID`, display label, context
+window in tokens, maximum output tokens, temperature, input modalities, and
+reasoning capability/default. Advanced settings add effective context %,
+`top_p`/`top_k`, family and release metadata, base instructions, reasoning
+implementation, truncation, enabled/priority flags, and named variants.
 
-For an existing provider, Devo reuses the saved credential id and base URL when
-available. You can still confirm the request model name, display name, wire
-API, and reasoning effort before validation.
+The raw extension fields are also available for provider-specific behavior:
+
+- `capabilities` — JSON object for model capability metadata such as tools,
+  input/output, attachment, or interleaved reasoning;
+- `request` — JSON object merged into the request body;
+- `options` — JSON object passed to the adapter as request options;
+- `headers` — JSON object of model-level HTTP headers;
+- `variants` — JSON object of named variant overrides;
+- `cost` and `metadata` — optional model directory metadata.
+- `web_search` and `web_fetch` — optional provider-hosted tool behavior.
+
+Reasoning capability accepts `unsupported`, `toggle`, or `levels`. For
+`levels`, enter comma-separated lowercase values such as `off, low, medium, high`
+(include `off` only when reasoning can be disabled). The selected default is preserved as
+`default_reasoning_selection`, so choosing `disabled` on a toggle model is not
+silently changed to `enabled`. Reasoning implementation accepts
+`disabled`, `request_parameter`, or `model_variant`; the last one uses a JSON
+array of reasoning variant rules. The form validates numeric values, enum
+values, positive context/output/truncation limits, JSON syntax, headers, variants,
+and reasoning rules before saving. Reasoning variant rules cannot be entered
+unless the implementation is `model_variant`; invalid values are rejected rather
+than silently discarded.
+
+## Templates, Connections, and Disconnecting
+
+The tracked provider directory contains read-only templates. Confirming an
+unconnected built-in template creates a user Connection; it does not modify
+the directory. A Connected built-in provider opens its saved model list. From
+there, choose an existing model, add a custom model, or select a saved model
+and press d/Delete to remove it from that Connection. The template directory
+is unchanged.
+
+A Connected provider's Base URL and API key are not editable in this flow. To
+replace its credential or endpoint, disconnect it and connect the template
+again.
+
+Custom providers are user-owned Connections and their connection fields remain
+editable while creating them. Select any Connected entry and press `d` or
+`Delete`, then confirm. Devo removes the user Connection and an auth credential
+that is not shared by another Connection; the built-in template remains
+available.
 
 ## Validation Failures
 
@@ -72,10 +122,10 @@ what to do next:
 | --- | --- |
 | Add model anyway | You know the provider works but validation cannot prove it. |
 | Retry with current settings | The provider may have failed temporarily. |
-| Edit settings | The base URL, API key, model name, or wire API is wrong. |
+| Edit settings | A model setting or custom connection field is wrong. |
 | Choose different model | You selected the wrong model profile. |
 
-Saving without validation records the provider and model binding, but the
+Saving without validation records the provider and model in the Connection, but the
 transcript marks that validation was skipped.
 
 ## Canceling

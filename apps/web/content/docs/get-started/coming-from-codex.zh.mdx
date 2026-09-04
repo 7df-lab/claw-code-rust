@@ -25,7 +25,7 @@ Devo 最大的差异是 provider setup。Devo 是模型中立的：你在配置�
 devo onboard
 ```
 
-第一个 provider 可以按 [连接 DeepSeek](./connect-deepseek) 配置。DeepSeek 官方 API 会保存为一个 provider 加一个或多个 model binding。
+第一个 provider 可以按 [连接 DeepSeek](./connect-deepseek) 配置。DeepSeek 官方 API 会保存为一个 provider Connection 加一个或多个 model record。
 
 onboarding 后，从仓库中启动 Devo：
 
@@ -56,15 +56,15 @@ devo
 Devo 将这些概念分开：
 
 - provider 描述服务端点、credential 和 wire API；
-- model binding 将本地模型 id 连接到一个 provider model name；
-- active model 从启用的 binding 中选择。
+- model record 保存 provider-facing model id 和 capability metadata；
+- active model 从启用的 `provider/model` entry 中选择。
 
 同一套编程方式可以连接不同提供商。你可以把强模型作为默认值，同时添加更便宜或更快的 binding 处理常规工作。
 
 接下来阅读：
 
 - [Provider Setup](../configuration/provider-setup)
-- [Model Bindings](../configuration/model-bindings)
+- [Provider 与 Model 配置](../configuration/model-bindings)
 - [Model Resolution](../configuration/model-resolution)
 
 ## 权限

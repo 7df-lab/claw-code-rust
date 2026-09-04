@@ -1,32 +1,27 @@
 ---
 title: Model Resolution
-description: Understand how Devo selects the active model binding.
+description: Understand how Devo selects the active provider/model reference.
 ---
 
-Model resolution is the process that turns a user request like `/model
-deepseek-v4-pro` into a concrete provider, model name, wire API, and credential.
+Model resolution turns a user request like `/model
+deepseek/deepseek-v4-pro` into a concrete Connection, model id, wire API, and
+credential.
 
 ## Resolution Order
 
-When a requested model value is present, Devo checks enabled model bindings in
-this order:
-
-1. binding id equals the requested value;
-2. `model_slug` equals the requested value;
-3. `request_model` equals the requested value.
+When a requested model value is present, Devo resolves the `provider/model`
+reference against the nested provider/model directory.
 
 When no requested model value is present, Devo checks:
 
-1. `[defaults].model_binding`, if it names an enabled binding;
-2. the first enabled binding in config.
+1. the top-level `model` field, if it names an enabled provider/model;
+2. the first enabled provider/model in the catalog.
 
-The resolved binding gives Devo:
+The resolved provider/model entry gives Devo:
 
-- binding id;
-- model slug;
 - provider id;
-- provider model name;
-- invocation method;
+- provider-facing model id;
+- wire API;
 - default reasoning effort.
 
 ## Requested Model Sources
@@ -35,7 +30,7 @@ A requested model can come from:
 
 - startup CLI `--model`;
 - `/model <value>` in the TUI;
-- a resumed session's saved model binding id;
+- a resumed session's saved `provider/model` reference;
 - a direct turn-context override.
 
 `/model` without an argument opens the picker and selects from configured saved
@@ -43,24 +38,25 @@ models. `/model <value>` applies the value directly.
 
 ## Enabled Versus Configured
 
-Runtime turn selection only uses enabled bindings. Disabled bindings can still
-be visible to configuration validation so Devo can explain that a selected
-binding is disabled instead of silently selecting a different model.
+Runtime turn selection only uses enabled provider/model entries. Disabled
+entries can still be visible to configuration validation so Devo can explain
+that a selected model is disabled instead of silently selecting a different
+model.
 
-Providers are checked too. If a binding points to a disabled provider, Devo
-reports that the provider is disabled.
+Providers are checked too. If a selected Connection points to a disabled
+provider, Devo reports that the provider is disabled.
 
 ## Provider Settings
 
-After a binding resolves, Devo resolves provider settings:
+After a provider/model resolves, Devo resolves provider settings:
 
-1. find the provider named by the binding;
+1. find the provider named by the canonical model reference;
 2. confirm the provider is enabled;
-3. confirm the binding is enabled;
-4. confirm the binding's `invocation_method` is allowed by provider
-   `wire_apis`;
-5. read the provider credential id from `auth.json`;
-6. merge provider base URL, headers, selected model name, reasoning effort selection,
+3. confirm the model is enabled;
+4. confirm the model's `wire_api` is allowed by the provider;
+5. read the provider's `credential` reference;
+6. resolve that credential id in the user-scoped `auth.json`;
+7. merge provider base URL, headers, selected model id, reasoning effort selection,
    context settings, and HTTP proxy settings.
 
 If no provider can be resolved, Devo reports:
@@ -76,13 +72,13 @@ stores it as a user-facing value such as `disabled`, `enabled`, `high`, or
 `max`, then resolves it into provider-specific request fields for the selected
 wire API.
 
-`default_reasoning_effort` on a binding is used when no stronger session or
+`default_reasoning_effort` on a model record is used when no stronger session or
 turn selection is present.
 
 ## Request Model Map
 
 For models with variants, Devo builds a provider request model map scoped to the
-selected provider. This prevents another provider with the same local slug from
+selected provider. This prevents another provider with the same model id from
 changing the wire model name for the active provider.
 
 This matters when a reasoning variant has a different provider-side model name

@@ -5,15 +5,17 @@ description: Reference Devo config fields after user-facing guides are stable.
 
 This page lists the main config files and fields. For guided setup, start with
 [Config Basics](../configuration/config-basics), [Provider Setup](../configuration/provider-setup),
-and [Model Bindings](../configuration/model-bindings).
+and [Provider and Model Configuration](../configuration/model-bindings).
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `<DEVO_HOME>/config.toml` | User-level Devo config. |
+| `<DEVO_HOME>/providers.json` | User-level provider connections, model directory, and active model. |
 | `<DEVO_HOME>/auth.json` | User-level secrets and credentials. |
 | `<workspace>/.devo/config.toml` | Workspace-level config overlay. |
+| `<workspace>/.devo/providers.json` | Workspace-level provider/model overlay. |
 
 Default `DEVO_HOME` paths:
 
@@ -29,11 +31,17 @@ If `DEVO_HOME` is set, it must point to an existing directory.
 Effective config is resolved in this order, highest priority first:
 
 1. command-line startup arguments;
-2. `<workspace>/.devo/config.toml`;
-3. `<DEVO_HOME>/config.toml`;
-4. built-in defaults.
+2. `<workspace>/.devo/providers.json` for provider/model fields;
+3. `<workspace>/.devo/config.toml` for application fields;
+4. `<DEVO_HOME>/providers.json` for provider/model fields;
+5. `<DEVO_HOME>/config.toml` for application fields;
+6. built-in defaults and the tracked provider/model directory.
 
-`auth.json` is user-scoped and is not intended to be committed to a repository.
+Provider API keys are stored in the user-scoped `auth.json`. The provider record
+in `providers.json` stores only the matching `provider.<id>.credential` reference;
+neither file containing a real secret should be committed to a repository.
+The built-in provider/model directory is the git-tracked
+`crates/core/providers.json` asset.
 
 ## Top-Level Fields
 
@@ -53,19 +61,19 @@ Effective config is resolved in this order, highest priority first:
 | `project_root_markers` | string array | Markers used to discover project root for instructions. Defaults to `.git`. |
 | `projects` | table | User-level settings remembered per project key. |
 
-Provider-related fields are flattened into the top level:
+Provider-related fields are stored in `providers.json`:
 
 | Field | Meaning |
 | --- | --- |
-| `defaults` | Durable default selections, including active model binding. |
-| `providers` | Provider records keyed by provider id. |
-| `model_bindings` | Invocable model bindings keyed by binding id. |
-| `model_provider`, `model`, `model_providers` | Legacy provider config compatibility fields. |
-| `model_reasoning_effort_selection` | User-facing reasoning effort selection for the active model. |
-| `model_auto_compact_token_limit` | Optional automatic compaction token threshold. |
-| `model_context_window` | Optional context-window override. |
-| `disable_response_storage` | Optional response-storage switch. |
-| `preferred_auth_method` | Preferred provider auth method. Currently API key based. |
+| `model` | Active model reference in `provider/model` form. |
+| `small_model` | Optional lower-cost model for lightweight background tasks such as session-title generation; when unset, Devo auto-selects a same-provider lightweight model and then falls back to `model`. |
+| `reasoning_effort` | User-facing reasoning effort selection. |
+| `provider.<id>` | Provider connection and model directory entry. |
+| `provider.<id>.models.<model-id>` | Optional model metadata and request defaults. |
+
+The provider id and nested model id are the identity. Users do not need a
+separate binding id, model slug, request model, or model description. The old
+TOML provider fields remain readable only for migration.
 
 ## `[provider_http]`
 
@@ -100,24 +108,29 @@ Desktop-managed runtime process. They do not modify `config.toml`.
 When enabled, auth state is per connection and gates both ACP methods and legacy
 Devo server methods.
 
-## `[defaults]`
+## `providers.json`
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `model_binding` | string | Binding id used when no CLI or runtime model override is provided. |
+| `model` | string | Active model reference, for example `openai/gpt-5.5`. |
+| `small_model` | string | Optional lower-cost model for lightweight background tasks; invalid or absent values use same-provider automatic selection, then `model`. |
+| `reasoning_effort` | string | Global logical reasoning selection. |
+| `provider` | object | Provider records keyed by provider id. |
 
-## `[providers.<id>]`
+Provider record fields:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `name` | string | Human-readable provider name. |
+| `name` | string | Optional human-readable provider name. |
 | `enabled` | bool | Whether the provider can be used. Defaults to `true`. |
 | `base_url` | string | Provider endpoint. |
-| `credential` | string | Credential id in `auth.json`. |
-| `headers` | JSON object string | Extra HTTP headers for provider requests. |
-| `wire_apis` | string array | Supported wire APIs for this provider. |
-| `web_search` | table | Provider-level web search override. |
-| `web_fetch` | table | Provider-level web fetch override. |
+| `credential` | string | Credential id resolved from the user-scoped `auth.json`. |
+| `headers` | object | Extra HTTP headers for provider requests. |
+| `options` | object | Arbitrary adapter/SDK options. |
+| `request` | object | Arbitrary provider-level request-body defaults. |
+| `wire_api` | string | Provider wire API default. |
+| `env` | string array | Environment variable names exposed to integrations. |
+| `models` | object | Model records keyed by provider-facing model id. |
 
 Supported wire API values:
 
@@ -129,19 +142,30 @@ Provider responses do not have an application-level response timeout. Slow local
 models may take as long as needed to load or generate output; users can cancel a
 request at any time. Connection establishment retains an internal deadline.
 
-## `[model_bindings.<id>]`
+Model record fields:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `enabled` | bool | Whether the binding appears in model resolution and picker surfaces. Defaults to `true`. |
-| `model_slug` | string | Local model metadata id. |
-| `provider` | string | Provider id from `[providers]`. |
-| `request_model` | string | Model name sent to the provider. |
-| `display_name` | string | Optional label shown in UI. |
-| `invocation_method` | wire API | Wire API used by this binding. Defaults to `openai_chat_completions` if omitted. |
+| `name` | string | Optional label shown in UI. |
+| `enabled` | bool | Whether the model appears in model resolution and picker surfaces. Defaults to `true`. |
+| `wire_api` | string | Optional wire API override. |
+| `context_window` | integer | Maximum context window in tokens. |
+| `effective_context_window_percent` | number | Usable percentage of the context window (may be fractional). |
+| `max_tokens` | integer | Default response-output limit. |
+| `reasoning_capability` | object/string | Reasoning controls exposed by the model. |
+| `reasoning_implementation` | object/string | Legacy TOML-only compatibility field; JSON uses variants. |
 | `default_reasoning_effort` | string | Optional default reasoning effort. |
-| `web_search` | table | Binding-level web search override. |
-| `web_fetch` | table | Binding-level web fetch override. |
+| `input_modalities` | string array | Accepted input types, such as `text` and `image`. |
+| `temperature`, `top_p`, `top_k` | number | Optional sampling defaults. |
+| `family`, `release_date`, `status`, `channel` | string | Optional catalog metadata. |
+| `capabilities`, `cost`, `metadata` | object | Open-ended model metadata preserved by the catalog. |
+| `base_instructions` | string | Optional model-specific system instructions. |
+| `truncation_policy` | object | `{"mode":"bytes"|"tokens","limit":8000}`. |
+| `options`, `request` | object | Arbitrary adapter options and request-body defaults. |
+| `headers` | object | Model-specific headers layered over provider headers. |
+| `variants` | object | Named variant records with request/options/headers overrides. |
+| `default_variant` | string | Variant selected when none is specified. |
+| `web_search`, `web_fetch` | object | Optional provider-hosted capability overrides. |
 
 ## `[tools.web_search]`
 
@@ -176,7 +200,20 @@ Local provider fields:
 
 ## `auth.json`
 
-`auth.json` stores user-scoped credentials:
+`auth.json` stores user-scoped provider credentials. Provider configurations use
+the matching `provider.<id>.credential` reference in `providers.json`:
+
+```json
+{
+  "provider": {
+    "deepseek": {
+      "credential": "deepseek_api_key"
+    }
+  }
+}
+```
+
+The actual secret belongs in `auth.json`:
 
 ```json
 {
@@ -198,7 +235,9 @@ Credential fields:
 | `credentials.<id>.kind` | `api_key` | Credential kind. |
 | `credentials.<id>.value` | string | Secret value. |
 
-Do not commit `auth.json`.
+The credential id must match in both files. `apiKey` and `api_key` are not
+canonical fields in `providers.json` and are not resolved. Do not commit
+`auth.json` when it contains a real secret.
 
 ## Update Checks
 

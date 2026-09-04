@@ -2,348 +2,123 @@
 
 [English](./configuration.md) | [简体中文](./configuration.zh-Hans.md) | [繁體中文](./configuration.zh-Hant.md) | [日本語](./configuration.ja.md) | [Русский](./configuration.ru.md)
 
-`devo onboard` - рекомендуемый путь настройки. Для ручной конфигурации Devo
-объединяет настройки в таком порядке:
+`devo onboard` — рекомендуемый путь настройки. Provider и model хранятся в отдельном
+`providers.json`, а API key — только в пользовательском `auth.json`. Старые provider/model
+поля из `config.toml` автоматически мигрируются при запуске; после успешной миграции старые
+поля удаляются.
 
-1. Встроенные значения по умолчанию
-2. `DEVO_HOME/config.toml` - пользовательская конфигурация, по умолчанию
-   `~/.devo/config.toml` на macOS/Linux и
-   `C:\Users\yourname\.devo\config.toml` на Windows
-3. `<workspace>/.devo/config.toml` - конфигурация уровня проекта
-4. CLI flags
+## Файлы и приоритет
 
-Учетные данные хранятся отдельно в `DEVO_HOME/auth.json`; `config.toml` должен
-ссылаться на credential id, а не хранить API key напрямую.
+Настройки объединяются в порядке: встроенные значения, `DEVO_HOME/config.toml`,
+`DEVO_HOME/providers.json`, `.devo/config.toml` workspace, `.devo/providers.json` workspace,
+затем CLI flags. Встроенный каталог, отслеживаемый git, находится в
+`crates/core/providers.json`; пользовательские и workspace-файлы являются overlay.
 
-Минимальная структура (встроенная модель + provider binding):
-
-```toml
-[defaults]
-model_binding = "deepseek-v4-flash-api-deepseek-com"
-
-[providers."api.deepseek.com"]
-enabled = true
-name = "api.deepseek.com"
-base_url = "https://api.deepseek.com"
-credential = "api_deepseek_com_api_key"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.deepseek-v4-flash-api-deepseek-com]
-enabled = true
-model_slug = "deepseek-v4-flash"
-provider = "api.deepseek.com"
-request_model = "deepseek-v4-flash"
-display_name = "DeepSeek V4 Flash"
-invocation_method = "openai_chat_completions"
-default_reasoning_effort = "high"
-```
-
-Важное разделение:
-
-- `model_slug` выбирает локальные метаданные модели Devo по slug.
-- `provider` в binding выбирает запись подключения `[providers.<id>]`.
-- `request_model` - id модели, отправляемый поставщику.
-- `invocation_method` выбирает рабочий протокол поставщика. См.
-  [Методы вызова (Invocation methods)](#методы-вызова-invocation-methods).
-
-В метаданных модели тоже есть поле `provider`: оно описывает wire API модели.
-`invocation_method` в binding выбирает рабочее подключение; эти значения должны
-соответствовать друг другу. API key остается в `auth.json` и подключается через
-ссылку `credential` поставщика.
-
-Существующая конфигурация с `model_name` по-прежнему читается. При следующем
-сохранении binding Devo запишет поле как `request_model`.
-
-## Свой API key
-
-Devo не хранит API key в `config.toml`. Чтобы подключить свой ключ:
-
-1. Сохраните секрет в пользовательском `DEVO_HOME/auth.json`.
-2. Укажите этот credential id в `[providers.<id>].credential` в `config.toml`.
-
-`devo onboard` и потоки provider в Desktop/TUI записывают оба файла за вас.
-
-### Полный пример: кастомная модель + свой API key
-
-Ниже вместе настраиваются кастомная модель DeepSeek (Anthropic Messages),
-endpoint поставщика и credential, который хранится только в `auth.json`.
-
-`~/.devo/config.toml` (на Windows: `C:\Users\yourname\.devo\config.toml`):
-
-```toml
-[defaults]
-model_binding = "deepseek-example"
-
-[model.my-deepseek]
-display_name = "DeepSeek V4 Flash"
-description = "Custom Anthropic Messages coding model for DeepSeek."
-channel = "Custom"
-# Wire API, который ожидает модель. Должен совпадать с invocation_method binding.
-provider = "anthropic_messages"
-context_window = 200000
-effective_context_window_percent = 95
-max_tokens = 8192
-temperature = 0.2
-reasoning_capability = { togglewithlevels = ["high", "max"] }
-reasoning_implementation = "request_parameter"
-base_instructions = "(optional) You are Devo, a coding agent."
-input_modalities = ["text", "image"]
-
-[providers.deepseek]
-enabled = true
-name = "DeepSeek Anthropic Compatible"
-base_url = "https://api.deepseek.com/anthropic"
-# Только credential id — секрет лежит в auth.json.
-credential = "deepseek_compatible_api_key"
-wire_apis = ["anthropic_messages"]
-
-[model_bindings.deepseek-example]
-enabled = true
-model_slug = "my-deepseek"
-provider = "deepseek"
-request_model = "deepseek-v4-flash"
-display_name = "DeepSeek V4 Flash"
-invocation_method = "anthropic_messages"
-```
-
-Соответствующий `~/.devo/auth.json` (на Windows:
-`C:\Users\yourname\.devo\auth.json`):
+Минимальная форма:
 
 ```json
 {
-  "version": 1,
-  "credentials": {
-    "deepseek_compatible_api_key": {
-      "kind": "api_key",
-      "value": "sk-deepseek-your-api-key"
+  "model": "my-provider/my-model",
+  "provider": {
+    "my-provider": {
+      "name": "My Provider",
+      "base_url": "https://api.example.com/v1",
+      "credential": "my_provider_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "my-model": { "name": "My Model", "context_window": 131072 }
+      }
     }
   }
 }
 ```
 
-Правила:
+Provider id и model id — это ключи map. Единственный стабильный внешний идентификатор
+модели — `provider/model`; отдельные binding id, local slug, request model и model description
+не нужны.
 
-- Сейчас поддерживаются только credentials вида `api_key`.
-- Credential id должен точно совпадать с `[providers.<id>].credential`.
-- Храните `auth.json` в `DEVO_HOME`. Не коммитьте его в репозиторий проекта.
-- Workspace `<workspace>/.devo/config.toml` может ссылаться на credential id, но
-  значения секретов остаются только в пользовательском `auth.json`.
-- Чтобы обновить только ключ, правьте `auth.json`; при том же credential id
-  `config.toml` менять не нужно.
+`model` — основная модель для обычных turn. Необязательный `small_model` используется для
+легких фоновых задач, например заголовков сессий. Если он не задан или недействителен, Devo
+сначала ищет flash, mini, small или nano в том же provider, затем возвращается к основной модели.
 
-## Методы вызова (Invocation methods)
+## auth.json
 
-`invocation_method` на model binding и `wire_apis` на provider выбирают, какой
-HTTP API использует Devo. Поле `provider` в метаданных модели должно совпадать,
-чтобы возможности каталога соответствовали рабочему подключению.
+В `providers.json` хранится только credential id. Секрет записывается в пользовательский
+`DEVO_HOME/auth.json` и не должен попадать в git:
 
-| Значение | Протокол | Типичные endpoints |
-| --- | --- | --- |
-| `openai_chat_completions` | [OpenAI Chat Completions](https://developers.openai.com/api/reference/chat-completions/overview) | Большинство OpenAI-совместимых шлюзов (DeepSeek, Qwen, Kimi, OpenRouter, многие локальные прокси) |
-| `openai_responses` | [OpenAI Responses](https://developers.openai.com/api/reference/responses/overview) | Сервисы с Responses API |
-| `anthropic_messages` | [Anthropic Messages](https://platform.claude.com/docs/en/api/messages) | Anthropic-совместимые Messages endpoints |
-
-## Метаданные и пользовательские модели
-
-Настройте метаданные в пользовательском или workspace `config.toml` в разделе
-`[model.<slug>]`. Для встроенного slug это частичное переопределение: пропущенные
-поля сохраняют встроенные значения. Новый slug создает модель с безопасными
-значениями по умолчанию; подключите ее через `[providers.<id>]` и
-`[model_bindings.<id>]`, как в
-[полном примере](#полный-пример-кастомная-модель--свой-api-key).
-
-Пример частичного переопределения встроенной модели:
-
-```toml
-[model.qwen3-coder-next]
-context_window = 262144
-effective_context_window_percent = 90
+```json
+{
+  "version": 1,
+  "credentials": {
+    "my_provider_api_key": { "kind": "api_key", "value": "sk-your-key" }
+  }
+}
 ```
 
-Точная формула эффективного контекстного окна:
-`context_window * effective_context_window_percent / 100`; результат является
-доступным модели контекстом и границей автоматической compaction.
+Сейчас поддерживается только `kind: "api_key"`. Значение `credential` должно точно совпадать
+с `credentials.<id>`. Не помещайте `apiKey`, `api_key` или сам секрет в `providers.json`.
 
-Настраиваемые метаданные включают `display_name` (имя в picker), `description`
-(поясняющий текст) и `channel` (метка группировки). `context_window` и
-`effective_context_window_percent` задают эффективный контекст, а `max_tokens` -
-лимит выходных токенов по умолчанию. Параметры sampling: `temperature`
-(случайность), `top_p` (nucleus sampling), `top_k` (лимит кандидатов). Wire API
-в `provider` - одно из `openai_chat_completions`, `openai_responses` или
-`anthropic_messages`. Метаданные reasoning типизированы: `reasoning_capability`
-может быть `unsupported`, `toggle`, `{ levels = [...] }` или
-`{ togglewithlevels = [...] }`; `reasoning_implementation` - `disabled`,
-`request_parameter` или типизированная таблица `model_variant`. Вариант модели
-отображает логический выбор reasoning в другой provider-facing model id,
-опциональный effective effort и опциональное extra request body;
-`default_reasoning_effort` выбирает effort по умолчанию. `input_modalities`
-принимает `text` и `image`; `truncation_policy` задает лимит байт или токенов для
-слишком больших tool results; `supports_image_detail_original` включает
-оригинальную детализацию изображений.
+## Provider templates и Connections
 
-Если `base_instructions` опущен, встроенная модель сохраняет встроенные
-инструкции, а кастомная использует инструкции Devo по умолчанию. Явная пустая
-строка (`base_instructions = ""`) означает отсутствие базовых инструкций.
+Встроенные provider — это read-only шаблоны из git-каталога, а не подключенные аккаунты.
+Подтверждение шаблона создает пользовательский Connection в `providers.json`. У встроенного
+шаблона имя, Base URL и wire API нельзя менять в этом потоке. Для смены ключа или endpoint
+сначала отключите Connection, затем подключите шаблон заново. У custom provider имя, endpoint,
+протокол и model принадлежат пользователю и редактируются.
 
-Устаревший скаляр `model = "slug"` по-прежнему читается. Поскольку
-`[model.<slug>]` занимает пространство имен таблицы `model`, новая конфигурация
-должна выбирать активное подключение через `[defaults].model_binding`.
+В уже подключенном provider можно просмотреть сохраненные модели, добавить custom model или
+удалить модель. `d`/Delete отключает весь Connection, но не удаляет встроенный шаблон.
+Новый ключ в provider map создает custom provider, новый ключ в `models` — custom model.
 
-### Настройки TUI
+## Поля provider и model
 
-Ключевые поля верхнего уровня в `DEVO_HOME/config.toml` также хранят UI-настройки:
+Provider поддерживает `name`, `base_url`, `credential`, `wire_api`, `enabled`, `headers`,
+`options`, `request` и `models`. `headers` — JSON object со строковыми ключами и значениями;
+API key должен находиться в `auth.json`.
 
-```toml
-theme = "aurora"
-collapse_reasoning = true
+Ключ model map — это id модели, отправляемый provider. Поддерживаются `name`, `wire_api`,
+`context_window`, `effective_context_window_percent`, `max_tokens`, `temperature`, `top_p`,
+`top_k`, `input_modalities` (`text`/`image`), `base_instructions`, `enabled`, `priority`,
+`family`, `release_date`, `status`, `cost`, `metadata`, `headers`, `options` и `request`.
+
+`reasoning_capability` может быть `unsupported`, `toggle` или
+`{"levels":["off","low","high"]}` (включите `off`, чтобы разрешить отключение;
+без `off` рассуждение нельзя выключить). Устаревшая форма
+`{"toggle_with_levels":[...]}` при чтении мигрирует в `levels` с ведущим `off`.
+Значения effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+`reasoning_implementation` оставлен только для миграции старого TOML; в новом JSON используйте
+именованные variants.
+
+Variant — это именованный режим внутри model и может содержать `label`, `disabled`, произвольные
+JSON `options`/`request` и строковые `headers`:
+
+```json
+{
+  "models": {
+    "reasoning-model": {
+      "variants": {
+        "fast": {
+          "label": "Fast",
+          "options": { "thinking": { "budget": 1024 } },
+          "request": { "speed": "fast" },
+          "headers": { "X-Mode": "fast" }
+        }
+      },
+      "default_variant": "fast"
+    }
+  }
+}
 ```
 
-- `theme` выбирает цветовую тему TUI (также через `/theme`).
-- `collapse_reasoning` управляет отображением reasoning (также через
-  `/show-reasoning`):
-  - `true` (по умолчанию): при streaming показывать только последние 3 строки;
-    после завершения короткие рассуждения оставлять полностью, длинные сворачивать
-    в одну строку `Thought · …` (полный текст доступен по Ctrl+T).
-  - `false`: показывать полный reasoning и во время streaming, и после него.
+`wire_api` принимает `openai_chat_completions`, `openai_responses` или
+`anthropic_messages`. Значение model переопределяет значение provider; по умолчанию используется
+`openai_chat_completions`. Встроенный DeepSeek использует официальный Anthropic-compatible endpoint.
 
-### Миграция с `models.json`
+## Динамическое обнаружение
 
-Старые `~/.devo/models.json` и `<workspace>/.devo/models.json` игнорируются.
-Вручную скопируйте нужные поля в `[model.<slug>]` пользовательского или
-workspace `config.toml`, затем добавьте или сохраните соответствующие provider и
-binding. API key храните в `auth.json` и ссылайтесь на него через
-`[providers.<id>].credential`.
+Для подключенного Connection Native `provider/discover` использует credential из `auth.json`,
+пробует `/models` и `/v1/models`, нормализует ответ и сохраняет модели в пользовательский
+`providers.json`. Параметр `{"forceRefresh":true}` отключает короткий cache.
 
-## MCP-серверы
-
-Devo подключается к серверам [Model Context Protocol](https://modelcontextprotocol.io/),
-настроенным в пользовательском или workspace `config.toml` в разделе `[mcp]`.
-Каждый сервер - это одна запись в массиве `servers`, а его таблица `transport`
-определяет способ подключения. Поддерживаются транспорты `stdio`,
-`streamable_http` и устаревший `sse`.
-
-Настраивать MCP можно правкой `config.toml` или через CLI (`devo mcp …`).
-Для повседневного add / enable / disable / remove предпочитайте CLI; TOML
-удобнее, когда нужны детали транспорта, env или заголовки.
-
-### Встроенный `code_search` (по умолчанию выключен)
-
-Devo устанавливает опциональный бинарник семантического поиска рядом с `devo`.
-Запись конфигурации подставляется при отсутствии и остается **disabled**, пока
-вы ее не включите:
-
-```toml
-[[mcp.servers]]
-id = "code_search"
-display_name = "Code Search"
-enabled = false
-startup_policy = "lazy"
-
-[mcp.servers.transport]
-kind = "stdio"
-command = ["devo-code-search-mcp"]
-```
-
-```bash
-devo mcp enable code_search
-# или в интерактивной сессии: /mcps → Code Search → Enable
-```
-
-После включения модель видит инструмент как `mcp__code_search__code_search`.
-
-### Управление через CLI
-
-Пользовательские MCP-серверы (`~/.devo/config.toml`) управляются через `devo mcp`:
-
-```bash
-devo mcp list
-devo mcp add time -- docker run -i --rm mcp/time
-devo mcp add filesystem --env HOME=/tmp -- npx -y @modelcontextprotocol/server-filesystem .
-devo mcp add --transport http hello-mcp http://localhost:8080/mcp
-devo mcp add --transport http github --bearer-token "$TOKEN" https://api.githubcopilot.com/mcp/
-devo mcp add --transport sse legacy-mcp https://example.com/mcp/sse
-devo mcp enable time
-devo mcp disable time
-devo mcp remove time
-```
-
-`enable|disable` пишет пользовательский `config.toml`. В уже запущенной
-интерактивной сессии изменение применяется через TUI `/mcps` (`mcp/set_enabled`).
-
-### Примеры TOML
-
-Пример stdio:
-
-```toml
-[mcp]
-auto_start = true
-
-[[mcp.servers]]
-id = "filesystem"
-display_name = "Filesystem"
-enabled = true
-startup_policy = "lazy" # eager | lazy | manual
-trust_policy = "user" # user | workspace | untrusted
-allowed_capabilities = ["tools", "resources", "prompts"]
-roots_policy = "workspace" # none | workspace | custom
-
-[mcp.servers.transport]
-kind = "stdio"
-command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
-# cwd = "/path/to/workdir"
-# env = { MY_VAR = "value" }
-# env_vars = ["HOME", "PATH"]
-```
-
-Streamable HTTP с bearer token:
-
-```toml
-[[mcp.servers]]
-id = "github"
-display_name = "GitHub"
-startup_policy = "lazy"
-
-[mcp.servers.transport]
-kind = "streamable_http"
-url = "https://api.githubcopilot.com/mcp/"
-auth = { kind = "bearer_token", token = "replace-me" }
-http_headers = { "X-Custom" = "static-value" }
-env_http_headers = { "Authorization" = "GITHUB_TOKEN" }
-```
-
-Устаревший SSE-транспорт:
-
-```toml
-[mcp.servers.transport]
-kind = "sse"
-url = "https://example.com/mcp/sse"
-```
-
-Примечания к полям:
-
-- `auto_start` по умолчанию равен `true`. Включение/отключение MCP в активной сессии применяется через `mcp/set_enabled` (TUI `/mcps`).
-- `startup_policy` управляет запуском включенного сервера: `eager` - при
-  bootstrap, `lazy` - при первом использовании, `manual` - только по явному
-  запросу.
-- Для stdio `env` задает литеральные значения, а `env_vars` - список имен
-  переменных, наследуемых из локального окружения; `{ name = "X",
-  source = "remote" }` для stdio не поддерживается.
-- Для HTTP-транспортов `http_headers` задает литеральные заголовки, а
-  `env_http_headers` сопоставляет имя заголовка с переменной окружения,
-  поставляющей его значение.
-- Пустой `allowed_capabilities` означает отсутствие ограничений. Сейчас рантайм
-  в основном работает с `tools`; чтение resources еще не подключено.
-- `output_limits` задает `max_tool_output_bytes` (по умолчанию 1 MiB) и
-  `max_resource_bytes` (по умолчанию 10 MiB).
-- Верхнеуровневый `mcp_oauth_credentials_store` принимает `auto` (по умолчанию),
-  `file` или `keyring` и выбирает место хранения OAuth-credentials.
-- Предпочитайте заголовки или значения из переменных окружения, а не жестко
-  зашитые token в `config.toml`. Поле `auth_ref` есть в каждой записи сервера,
-  но пока не подключено к рантайму.
-
-Поведение при слиянии: `[mcp]` сливается по полям, как другие таблицы, но
-`servers` - это массив. Поэтому список `[[mcp.servers]]` уровня проекта заменяет
-пользовательский список целиком, а не сливает по `id`.
-
-Проверить конфигурацию можно в TUI командой `/mcps`. Клиенты могут вызывать RPC
-`mcp/list`, `mcp/tools` и `mcp/set_enabled`.
+Полная таблица полей, web search/fetch и подробности миграции приведены в
+[английском справочнике конфигурации](./configuration.md).

@@ -1,86 +1,277 @@
 ---
-title: 模型绑定
-description: 将一个支持的模型绑定到已配置的 provider。
+title: Provider 与模型配置
+description: 在 providers.json 中配置内置和自定义 provider 与模型。
 ---
 
-Model binding 把 Devo 本地的模型身份连接到实际发送给 provider 的模型名。
+Devo 将 provider 连接信息和模型元数据保存在 `providers.json` 中，API key 则单独
+保存在用户级 `auth.json`。模型由 provider 所拥有，因此用户侧唯一的模型身份是
+`provider/model`。
 
-Binding 位于 `[model_bindings.<id>]` 下。
+规范 provider map 是 `provider.<provider-id>`，内部 model map 的键是发送给
+provider 的模型 id：
 
-## 示例
-
-```toml
-[model_bindings.deepseek-v4-pro-deepseek-anthropic]
-enabled = true
-model_slug = "deepseek-v4-pro"
-provider = "deepseek-anthropic"
-request_model = "deepseek-v4-pro"
-display_name = "DeepSeek V4 Pro"
-invocation_method = "anthropic_messages"
-default_reasoning_effort = "high"
+```json
+{
+  "model": "my-provider/my-model",
+  "provider": {
+    "my-provider": {
+      "models": {
+        "my-model": {}
+      }
+    }
+  }
+}
 ```
 
-| 字段 | 必需 | 含义 |
+git 跟踪的内置目录是 `crates/core/providers.json`。用户级和工作区级文件是覆盖层，
+不是封闭白名单；新增 map key 会自动创建自定义 provider 或模型。
+
+## 根字段
+
+根字段都不是强制的：
+
+| 字段 | JSON 类型 | 默认值 | 含义 |
+| --- | --- | --- | --- |
+| `model` | 字符串 | 第一个启用的模型 | 当前主模型，格式为 `provider/model`。 |
+| `small_model` | 字符串 | 同 provider 的自动轻量模型，最后回退到 `model` | 标题生成等轻量后台任务使用的低成本模型；无效值也会走回退逻辑。 |
+| `reasoning_effort` | 字符串 | 模型默认值 | 全局选择：`default`、`disabled`、`enabled` 或模型支持的 effort。 |
+| `provider` | 对象 | `{}` | provider id 到 provider 记录的映射。读取时兼容 `providers`，新文件应使用 `provider`。 |
+
+## Provider 字段
+
+provider 字段写在 `provider.<provider-id>` 下：
+
+`<provider-id>` map 键是 `provider/model` 中稳定的 provider 身份；`name` 只是显示名称。
+重命名 provider 时不要修改这个 id。
+
+| 字段 | JSON 类型 | 默认值 | 含义 |
+| --- | --- | --- | --- |
+| `name` | 字符串 | provider id | 显示名称。 |
+| `base_url` | 字符串 | 无 | API 端点基础 URL。 |
+| `credential` | 字符串 | 无 | 在用户级 `auth.json` 中查找的凭据 id；密钥不存放在这里。 |
+| `headers` | 字符串到字符串的对象 | 无 | 发送给 provider 的字面量 HTTP headers。不要在这里放 API key。 |
+| `options` | 对象 | 无 | 任意 provider/SDK 选项，会并入适配器请求默认值。 |
+| `request` | 对象 | 无 | 任意 provider 级请求体默认字段。 |
+| `wire_api` | 枚举 | `openai_chat_completions` | provider 中所有模型的默认请求协议。 |
+| `enabled` | 布尔值 | `true` | provider 是否可被选择。 |
+| `env` | 字符串数组 | `[]` | 集成可用于获取凭据的环境变量名。 |
+| `web_search` | 对象 | 无 | provider 级 provider-hosted 或本地网页搜索配置。 |
+| `web_fetch` | 对象 | 无 | provider 级 provider-hosted 或本地 URL 抓取配置。 |
+| `models` | 对象 | `{}` | model id 到模型记录的映射。 |
+
+provider 在 `providers.json` 中使用 credential 引用：
+
+```json
+{
+  "provider": {
+    "my-provider": {
+      "base_url": "https://api.example.com/v1",
+      "credential": "example_api_key"
+    }
+  }
+}
+```
+
+实际密钥放在用户级 `auth.json`：
+
+```json
+{
+  "version": 1,
+  "credentials": {
+    "example_api_key": {
+      "kind": "api_key",
+      "value": "sk-example"
+    }
+  }
+}
+```
+
+不要把 `apiKey` 或 `api_key` 放进 `providers.json`；它们不是规范 provider 字段。
+`headers` 是键和值都为字符串的 JSON 对象，例如 `{"X-Organization":"my-team"}`。`env` 只是为集成记录可用的环境变量名；
+普通 provider resolver 不会自动把这些变量读取为 API key。真实凭据不要提交到 git。
+
+如果 onboarding 收到 API key 但没有明确的 credential id，Devo 会根据 provider id
+生成稳定 id，例如 `deepseek_api_key`。
+
+在 provider 记录内部，网页能力对象可以这样写：
+
+```json
+{
+  "web_search": {
+    "mode": "local",
+    "local_provider": "exa",
+    "local_providers": {
+      "exa": {
+        "kind": "exa",
+        "credential": "exa_api_key",
+        "base_url": "https://api.exa.ai/search",
+        "max_results": 5
+      }
+    }
+  },
+  "web_fetch": {
+    "mode": "provider"
+  }
+}
+```
+
+`web_search.mode` 可取 `disabled`、`provider`、`local`。可选的 `local_provider`
+选择命名的本地服务；`local_providers` 的每条记录中，`kind` 可取 `exa` 或 `tavily`，
+`credential` 是 `auth.json` 凭据 id，`base_url` 和 `max_results` 可选。`web_fetch.mode`
+可取 `disabled`、`provider`、`local`。搜索默认是 `provider`，抓取默认是 `local`。
+
+## Model 字段
+
+模型写在 `provider.<provider-id>.models.<model-id>` 下。所有模型字段都是可选的。
+规范格式故意不再提供 `model_slug`、`model_name`、`model_id` 或 `description` 字段。
+
+| 字段 | JSON 类型 | 默认值 | 含义 |
+| --- | --- | --- | --- |
+| `name` | 字符串 | model id | 模型选择器显示名称。 |
+| `wire_api` | 枚举 | provider 的 `wire_api` | 模型级请求协议覆盖项。 |
+| `context_window` | 整数 | 运行时默认值 | 最大上下文窗口 token 数。 |
+| `effective_context_window_percent` | 数字 | 运行时默认值 | 上下文窗口中视为可用的百分比（可为小数）。 |
+| `max_tokens` | 整数 | 运行时默认值 | 默认响应输出上限。 |
+| `temperature` | 数字 | 无 | 采样随机性。 |
+| `top_p` | 数字 | 无 | nucleus sampling 概率质量。 |
+| `top_k` | 数字 | 无 | 候选 token 数量上限。 |
+| `reasoning_capability` | 枚举或对象 | `unsupported` | 向用户展示的 reasoning 选项。 |
+| `reasoning_implementation` | 枚举或对象 | 支持 reasoning 时为请求参数 | 如何将 reasoning 选择转换为请求。 |
+| `default_reasoning_effort` | 枚举 | 无 | 初始 reasoning effort。 |
+| `base_instructions` | 字符串 | 内置/默认指令 | 模型基础指令；`""` 明确表示禁用。 |
+| `input_modalities` | 数组 | `["text"]` | 输入类型：`text` 和/或 `image`。 |
+| `channel` | 字符串 | 无 | 可选的模型分组标签。 |
+| `truncation_policy` | 对象 | `{"mode":"bytes","limit":8000}` | 工具结果内容限制。 |
+| `supports_image_detail_original` | 布尔值 | `false` | 是否支持原始分辨率图像细节。 |
+| `enabled` | 布尔值 | `true` | 模型是否可被选择。 |
+| `priority` | 整数 | `0` | 未明确指定模型时，数值越大越优先。 |
+| `family` | 字符串 | 无 | 用于分组和能力元数据的模型家族。 |
+| `release_date` | 字符串 | 无 | provider 报告的发布日期。 |
+| `status` | 字符串 | 无 | provider 报告的状态，例如 `active`、`preview`、`deprecated`。 |
+| `cost` | 对象 | 无 | 原样保留的开放式价格元数据。 |
+| `metadata` | 对象 | 无 | 开放式元数据；动态发现会把原始目录条目保存在这里。 |
+| `options` | 对象 | 无 | 任意 provider/SDK 选项，会并入适配器请求默认值。 |
+| `request` | 对象 | 无 | 任意请求体字段；具体的 model 值覆盖 provider 默认值。 |
+| `headers` | 字符串到字符串对象 | 无 | model 级 HTTP headers，叠加在 provider headers 之上。 |
+| `variants` | 对象 | `{}` | 命名模型 variant，可分别设置 request/options/headers。 |
+| `default_variant` | 字符串 | 无 | turn 没有指定 variant 时使用的 variant。 |
+
+有效上下文窗口为
+`context_window * effective_context_window_percent / 100`。该已应用窗口用于占用条
+与自动压缩。Desktop / TUI 模型设置里的 **Context window** 是绝对 token 数；保存时
+会存为硬 `context_window` 的百分比（未设置时默认 95%）。`config.toml` 中遗留的
+`compaction_token_limit` 会被忽略。
+
+## Wire API 可选值
+
+`wire_api` 可以写在 provider 或 model 上，model 的值会覆盖 provider 的值。Devo
+精确支持以下三种值：
+
+| 值 | 请求协议 | 适用情况 |
 | --- | --- | --- |
-| `model_slug` | 是 | Devo 的本地模型元数据 id。 |
-| `provider` | 是 | `[providers.<id>]` 中的 provider id。 |
-| `request_model` | 是 | 发送给 provider 的模型字符串。 |
-| `display_name` | 否 | TUI 模型选择器和 header 中显示的标签。 |
-| `invocation_method` | 是 | 该 binding 使用的 wire API。 |
-| `default_reasoning_effort` | 否 | 对支持的模型设置默认 reasoning effort。 |
-| `web_search` | 否 | Binding 特定的 web search 覆盖项。 |
-| `web_fetch` | 否 | Binding 特定的 web fetch 覆盖项。 |
-| `enabled` | 否 | 该 binding 是否可被选择。默认 `true`。 |
+| `openai_chat_completions` | OpenAI 兼容 Chat Completions | 端点接受 chat-completions 请求。 |
+| `openai_responses` | OpenAI 兼容 Responses | 端点接受 Responses API 请求。 |
+| `anthropic_messages` | Anthropic 兼容 Messages | 端点接受 Anthropic Messages 请求。 |
 
-## Slug 与模型名
+省略时使用 `openai_chat_completions`。应根据 provider 的 API 文档选择，不能只根据
+URL 判断协议。
 
-`model_slug` 是 Devo 侧的身份。它映射到本地模型元数据，例如 context window、reasoning 支持和显示默认值。
+## Model variants
 
-`request_model` 是 provider 侧的值，会放进 API 请求。
+`variants` 是以短 variant id 为 key 的 map。通过 `provider/model/variant` 选择，
+不会创建第二个模型身份。variant 的 `options` 和 `request` 在 provider、model 的值
+之后合并，variant 的 `headers` 最后叠加。`disabled` 可以让 variant 保留在目录中，
+但不出现在选择器里。
 
-两者通常相同，但不必须相同。当 gateway 需要 `openai/gpt-5.2` 这样的名称，而 Devo 仍应使用稳定本地 slug 时，可以使用不同值。
-
-## Binding Id
-
-表名就是 binding id：
-
-```toml
-[model_bindings.main]
+```json
+{
+  "provider": {
+    "example": {
+      "models": {
+        "reasoning-model": {
+          "variants": {
+            "fast": {
+              "label": "Fast",
+              "options": {"thinking": {"budget": 1024}},
+              "request": {"speed": "fast"},
+              "headers": {"X-Mode": "fast"}
+            }
+          },
+          "default_variant": "fast"
+        }
+      }
+    }
+  }
+}
 ```
 
-Binding id 是 `[defaults]` 指向的值，也是用户运行 `/model <value>` 时首先匹配的值。
+## 动态发现模型
 
-## 默认 Binding
+Native `provider/discover` 会对已连接的 Connection 尝试 `/models` 和兼容的 `/v1/models`
+端点来刷新模型目录。凭据从用户级 `auth.json` 读取，同时支持 OpenAI 风格的
+`{"data":[...]}` 和 provider 风格的 `{"models":[...]}` 返回。常见的身份、上下文/输出
+上限、价格、reasoning、输入模态、状态和发布日期会被规范化，原始条目保留在
+`metadata` 中。发现结果只更新用户级 Connection 覆盖层，不修改 git 跟踪的内置目录。
+使用 `forceRefresh: true` 可绕过进程内短期缓存。
 
-在 `[defaults]` 下设置启动默认值：
+## Reasoning 字段
 
-```toml
-[defaults]
-model_binding = "deepseek-v4-pro-deepseek-anthropic"
+`reasoning_capability` 决定 UI 展示的选项，精确支持以下三种 JSON 形式：
+
+| JSON 值 | 含义 |
+| --- | --- |
+| `"unsupported"` | 不展示 reasoning 控件。 |
+| `"toggle"` | 展示 `off` 和 `on`。 |
+| `{"levels":["off","low","high"]}` | 精确展示数组中的芯片。数组含 `off` 时允许关闭；不含 `off` 表示无法关闭 reasoning。 |
+
+旧写法 `{"toggle_with_levels":[...]}`（以及拼写 `togglewithlevels`）仍可读取，
+并迁移为带前导 `off` 的 `levels`。
+
+effort 完整取值为 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。
+数组只应填写该 provider 模型实际支持的值。
+
+`reasoning_implementation` 仅为旧 TOML 迁移保留。新的 JSON 配置应使用
+`reasoning_capability` 字段和上文的命名 `variants` map。下面的旧形式只为保持迁移期间
+的配置可读而接受。
+
+
+`truncation_policy` 使用以下结构：
+
+```json
+{
+  "truncation_policy": {
+    "mode": "tokens",
+    "limit": 12000
+  }
+}
 ```
 
-如果默认 binding 被禁用，运行时模型解析会跳过它，并使用能找到的第一个 enabled binding。
+`mode` 可取 `bytes` 或 `tokens`，`limit` 是整数。
 
-## Provider 兼容性
+## 自定义 Provider 和 Model
 
-Binding 的 `invocation_method` 必须被 provider 的 `wire_apis` 支持。下面是有效配置：
+在用户级或工作区级覆盖文件中新增 provider 和 model，然后用根字段 `model` 选择：
 
-```toml
-[providers.deepseek-anthropic]
-wire_apis = ["anthropic_messages"]
-
-[model_bindings.deepseek-v4-pro-deepseek-anthropic]
-provider = "deepseek-anthropic"
-invocation_method = "anthropic_messages"
+```json
+{
+  "model": "example/custom",
+  "provider": {
+    "example": {
+      "name": "Example Gateway",
+      "base_url": "https://api.example.com/v1",
+      "credential": "example_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "custom": {
+          "name": "Example Custom Model",
+          "context_window": 128000,
+          "input_modalities": ["text"]
+        }
+      }
+    }
+  }
+}
 ```
 
-下面是无效配置，因为 binding 请求了 provider 未声明支持的 wire API：
-
-```toml
-[providers.deepseek-anthropic]
-wire_apis = ["anthropic_messages"]
-
-[model_bindings.bad]
-provider = "deepseek-anthropic"
-invocation_method = "openai_chat_completions"
-```
+重复已有 provider/model key 时，只有高优先级文件中出现的字段会覆盖旧值。新增嵌套
+model 会使用安全默认值；它的 map key 就是发送给 API 的模型 id。

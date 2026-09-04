@@ -1,30 +1,26 @@
 ---
 title: 模型解析
-description: 理解 Devo 如何选择当前模型绑定。
+description: 理解 Devo 如何选择当前 provider/model 引用。
 ---
 
-模型解析会把 `/model deepseek-v4-pro` 这样的用户请求转换成具体的 provider、模型名、wire API 和 credential。
+模型解析会把 `/model deepseek/deepseek-v4-pro` 这样的用户请求转换成具体的
+Connection、model id、wire API 和 credential。
 
 ## 解析顺序
 
-当存在请求的模型值时，Devo 按以下顺序检查 enabled model binding：
-
-1. binding id 等于请求值；
-2. `model_slug` 等于请求值；
-3. `request_model` 等于请求值。
+当存在请求的模型值时，Devo 按 `provider/model` 引用在嵌套的 provider/model
+目录中解析。
 
 当没有请求的模型值时，Devo 检查：
 
-1. `[defaults].model_binding`，如果它指向一个 enabled binding；
-2. 配置中的第一个 enabled binding。
+1. 顶层 `model` 字段，如果它指向 enabled 的 provider/model；
+2. 目录中的第一个 enabled provider/model。
 
-解析得到的 binding 会给 Devo：
+解析得到的 provider/model 会给 Devo：
 
-- binding id；
-- model slug；
 - provider id；
-- provider model name；
-- invocation method；
+- provider-facing model id；
+- wire API；
 - default reasoning effort。
 
 ## 请求模型的来源
@@ -33,27 +29,28 @@ description: 理解 Devo 如何选择当前模型绑定。
 
 - 启动 CLI 的 `--model`；
 - TUI 中的 `/model <value>`；
-- 恢复会话时保存的 model binding id；
+- 恢复会话时保存的 `provider/model` 引用；
 - 直接的 turn-context override。
 
 不带参数的 `/model` 会打开选择器，从已配置和保存的模型中选择。`/model <value>` 会直接应用该值。
 
 ## Enabled 与 Configured
 
-运行时 turn selection 只使用 enabled binding。Disabled binding 仍可被配置校验看到，这样 Devo 可以解释 "选中的 binding 已禁用"，而不是静默选择另一个模型。
+运行时 turn selection 只使用 enabled 的 provider/model。Disabled 项仍可被配置校验看到，这样 Devo 可以解释“选中的模型已禁用”，而不是静默选择另一个模型。
 
-Provider 也会被检查。如果 binding 指向 disabled provider，Devo 会报告该 provider 已禁用。
+Provider 也会被检查。如果选中的 Connection 指向 disabled provider，Devo 会报告该 provider 已禁用。
 
 ## Provider 设置
 
-Binding 解析完成后，Devo 继续解析 provider 设置：
+Provider/model 解析完成后，Devo 继续解析 provider 设置：
 
-1. 找到 binding 指向的 provider；
+1. 找到规范 model reference 指向的 provider；
 2. 确认 provider 已启用；
-3. 确认 binding 已启用；
-4. 确认 binding 的 `invocation_method` 被 provider `wire_apis` 允许；
-5. 从 `auth.json` 读取 provider credential id；
-6. 合并 provider base URL、headers、选中的模型名、reasoning effort selection、context 设置和 HTTP proxy 设置。
+3. 确认 model 已启用；
+4. 确认模型的 `wire_api` 被 provider 允许；
+5. 读取 provider 的 `credential` 引用；
+6. 在用户级 `auth.json` 中解析该 credential id；
+7. 合并 provider base URL、headers、选中的模型 id、reasoning effort selection、context 设置和 HTTP proxy 设置。
 
 如果无法解析 provider，Devo 会报告：
 
@@ -65,10 +62,10 @@ No provider configured. Run `devo onboard` to complete setup.
 
 当前 reasoning effort selection 可以来自配置或模型选择。Devo 将它保存为用户可理解的值，例如 `disabled`、`enabled`、`high` 或 `max`，再为选中的 wire API 解析成 provider-specific 请求字段。
 
-当没有更强的 session 或 turn selection 时，会使用 binding 上的 `default_reasoning_effort`。
+当没有更强的 session 或 turn selection 时，会使用 model record 上的 `default_reasoning_effort`。
 
 ## Request Model Map
 
-对于带变体的模型，Devo 会构造一个按当前 provider 作用域限定的 provider request model map。这避免另一个 provider 上相同的本地 slug 改变当前 provider 的 wire model name。
+对于带变体的模型，Devo 会构造一个按当前 provider 作用域限定的 provider request model map。这避免另一个 provider 上相同的 model id 改变当前 provider 的 wire model name。
 
 当 reasoning 变体的 provider-side model name 与基础模型不同时，这一点很重要。

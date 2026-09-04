@@ -10,11 +10,11 @@ first.
 ## Main Difference
 
 Devo is model-neutral. Instead of being tied to one hosted model family, Devo
-uses provider records and model bindings:
+uses provider Connections and model records:
 
 - provider: endpoint, credential, and supported wire API;
-- model binding: local Devo model id plus provider model name;
-- active model: the binding selected by config or `/model`.
+- model: provider-facing model id plus capability metadata;
+- active model: the `provider/model` selection chosen by config or `/model`.
 
 This means your first important setup choice is provider configuration. For many
 users, the recommended first path is [DeepSeek official API](./connect-deepseek)
@@ -28,8 +28,8 @@ Install Devo, then run:
 devo onboard
 ```
 
-Onboarding collects provider details, stores credentials, and creates model
-bindings. After setup:
+Onboarding collects provider details, stores credentials, and creates a
+Connection with its model records. After setup:
 
 ```bash
 cd /path/to/project

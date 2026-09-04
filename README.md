@@ -42,7 +42,7 @@ runtime behavior, and workspace execution under your control.
 
 - **Bring your own model** - Connect OpenAI-compatible Chat Completions,
   OpenAI-compatible Responses, Anthropic Messages, DeepSeek, Qwen, Kimi, or
-  private model gateways through provider/model bindings.
+  private model gateways through provider/model Connections.
 - **Works in private and intranet environments** - Run a single local Rust
   binary, support offline installation paths, and point Devo at internal
   endpoints without depending on a hosted agent service.
@@ -55,7 +55,7 @@ runtime behavior, and workspace execution under your control.
 
 ## Features
 
-- **Model-neutral provider runtime** - Use provider/model bindings for
+- **Model-neutral provider runtime** - Use provider/model Connections for
   OpenAI-compatible, Anthropic-compatible, DeepSeek, Qwen, Kimi, GLM, MiniMax,
   Xiaomi MiMo, OpenRouter, or local endpoints.
 - **MCP support** - Connect external tools and context through
@@ -98,7 +98,7 @@ runtime behavior, and workspace execution under your control.
 
 Devo's built-in model catalog includes tested model definitions for Qwen, Kimi,
 MiniMax, GLM, and DeepSeek. Provider endpoints remain configurable through
-provider/model bindings.
+provider/model Connections.
 
 ## Tested Platforms
 
@@ -217,17 +217,17 @@ devo resume <session-id>
 
 ## Configuration
 
-`devo onboard` is the recommended setup path. It writes provider and model
-bindings to `config.toml` and stores your API key in user-scoped `auth.json`.
+`devo onboard` is the recommended setup path. It writes provider Connections
+and model directories to `providers.json` and stores your API key in
+user-scoped `auth.json`.
 
 To bring your own key with a custom model manually:
 
-1. Define `[model.<slug>]` parameters, `[providers.<id>]`, and
-   `[model_bindings.<id>]` in `config.toml`.
+1. Define a `provider.<id>.models.<model-id>` entry in `providers.json` and set
+   the active model as `provider/model`.
 2. Put the secret in `DEVO_HOME/auth.json` and reference that credential id from
-   `[providers.<id>].credential` — never put the API key itself in
-   `config.toml`.
-3. Set `invocation_method` to match the endpoint protocol:
+   `provider.<id>.credential` — never put the API key itself in `providers.json`.
+3. Set `wire_api` to match the endpoint protocol:
    `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
 
 Full worked example (custom model parameters + API key) and protocol details:
@@ -258,13 +258,13 @@ change.
 Built-in model metadata currently covers Qwen, Kimi, MiniMax, GLM, and DeepSeek
 families. Any model endpoint that supports OpenAI-compatible Chat Completions,
 OpenAI-compatible Responses, or the Anthropic Messages API can be connected through
-provider/model bindings.
+provider/model Connections.
 
 ### How do I bring my own API key?
 
-Use `devo onboard`, or manually define a custom `[model.<slug>]`, provider, and
-binding in `config.toml`, store the key in user-scoped `auth.json`, and set
-`invocation_method` to `openai_chat_completions`, `openai_responses`, or
+Use `devo onboard`, or manually define a custom provider/model in
+`providers.json`, store the key in user-scoped `auth.json`, and set
+`wire_api` to `openai_chat_completions`, `openai_responses`, or
 `anthropic_messages`. See
 [Configuration](./docs/configuration.md#bring-your-own-api-key).
 

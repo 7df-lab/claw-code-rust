@@ -1,103 +1,92 @@
 ---
-title: Models and Providers
-description: Understand model definitions, providers, and model bindings.
+title: Models and Provider Connections
+description: Understand provider templates, Connections, models, and variants.
 ---
 
-Devo separates model capability metadata from provider connection details. This
-is what lets one model-facing experience work across OpenAI, Anthropic,
-DeepSeek, OpenRouter, local gateways, and other compatible providers.
+Devo uses one catalog to describe provider templates and their models, and a
+separate user overlay to record the Connections a user has configured. A model
+is owned by its provider, so its stable public identity is `provider/model`.
 
-## Three Layers
+## Three concepts
 
-| Layer | What It Describes | Contains Secrets? |
+| Concept | Meaning | Stored where |
 | --- | --- | --- |
-| Model profile | The model's capabilities, display name, context window, reasoning support, modalities, and max output tokens. | No |
-| Provider vendor | A configured provider endpoint, base URL, credential reference, headers, and supported wire APIs. | Credential reference only |
-| Model binding | The link between a model slug and a provider vendor, including provider model name, display name, wire API, and default reasoning effort. | No |
+| Provider template | Built-in endpoint defaults, supported wire API, and model metadata. | Git-tracked `crates/core/providers.json` |
+| Connection | A configured instance of a provider, with endpoint overrides and a credential reference. | User/workspace `providers.json` |
+| Model | A provider-facing model id plus optional capability and request metadata. | Nested under the provider in both files |
 
-Model profiles should stay pure. They should not contain API keys, provider
-URLs, or invocation methods.
+The API key itself is stored in the user-scoped `auth.json`. `providers.json`
+contains only the credential id. A provider template cannot be deleted from the
+TUI; disconnecting a Connection removes the user's provider overlay.
 
-Provider vendors describe how to reach a service. Model bindings describe which
-provider and model name to use for a Devo model slug.
+## Provider and model identity
 
-## Model Profile
+Provider ids and nested model ids are map keys. Devo does not require a second
+model slug, model name, request model, or description to keep synchronized:
 
-A model profile is the capability record Devo uses to render the UI and shape
-requests. It includes fields like:
+```json
+{
+  "model": "deepseek/deepseek-v4-flash",
+  "provider": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/anthropic",
+      "credential": "deepseek_api_key",
+      "wire_api": "anthropic_messages",
+      "models": {
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash",
+          "context_window": 200000
+        }
+      }
+    }
+  }
+}
+```
 
-- stable model slug;
-- display name;
-- base instructions;
-- context window and effective usable context;
-- reasoning capability;
-- default reasoning effort;
-- tool-use support;
-- image support;
-- streaming support;
-- prompt-caching support;
-- max output tokens.
+The nested model key is both the provider-facing id sent in the request and the
+second half of the `provider/model` reference. `name` is only a display label.
 
-The model picker and status line use this metadata. Compaction and context
-status also depend on the context window fields.
+## Model metadata
 
-## Provider Vendor
+Model records can describe context limits, output limits, input modalities,
+reasoning controls, sampling defaults, capabilities, cost, release status,
+arbitrary request/options/headers, and named variants. The common onboarding
+form exposes the useful fields first; Advanced settings exposes the rest.
 
-A provider vendor is a connection record. It includes:
-
-- provider id or name;
-- optional base URL;
-- credential id;
-- optional headers;
-- enabled state;
-- one or more supported wire APIs.
-
-The API key itself belongs in user auth storage, not in the model profile.
-Onboarding writes the credential reference and provider settings for you.
-
-## Model Binding
-
-A model binding joins the model profile to a provider vendor. It answers:
-
-- Which provider serves this model?
-- What model name should be sent to that provider?
-- Which wire API should Devo use?
-- What display name should the UI show?
-- What default reasoning effort should be selected?
-
-For example, a DeepSeek binding can use a Devo model slug like
-`deepseek-v4-flash`, send the provider model name required by DeepSeek, and use
-the `anthropic_messages` wire API against DeepSeek's Anthropic-compatible base
-URL.
+`small_model` is an optional root selection for lightweight background work,
+such as session-title generation. When absent or invalid, Devo chooses a
+recognizably lightweight model from the primary provider and then falls back to
+`model`.
 
 ## Wire APIs
 
-Devo currently models these provider wire APIs:
+The selected model uses one of these request protocols:
 
 | Wire API | Meaning |
 | --- | --- |
-| `openai_chat_completions` | OpenAI-compatible chat completions requests. |
-| `openai_responses` | OpenAI-compatible Responses API requests. |
-| `anthropic_messages` | Anthropic-compatible Messages API requests. |
+| `openai_chat_completions` | OpenAI-compatible Chat Completions API. |
+| `openai_responses` | OpenAI-compatible Responses API. |
+| `anthropic_messages` | Anthropic-compatible Messages API. |
 
-Choose the wire API that matches the endpoint, not just the company name. For
-DeepSeek's official API, Devo recommends the Anthropic-compatible path because
-hosted `web_search` and `web_fetch` are available through that provider route.
+DeepSeek's official Anthropic-compatible endpoint is represented by a normal
+Connection whose `wire_api` is `anthropic_messages`.
+
+## Reasoning and variants
+
+`reasoning_capability` controls the values shown in the picker. A model variant
+is selected with `provider/model/variant`; it is not another model identity.
+Variant request fields, options, and headers are layered after the model and
+provider values. This supports OpenCode-style fast/reasoning variants without
+duplicating provider or model records.
 
 ## Resolution
 
-At startup and when a turn begins, Devo resolves an active model binding. The
-runtime combines:
+For a turn, Devo resolves the explicit `provider/model[/variant]` reference,
+checks that the Connection and model are enabled, resolves the credential from
+`auth.json`, merges request defaults, and sends the request through the model's
+wire API. `/model` and the CLI `--model` use the same reference format.
 
-- the selected model slug;
-- the configured binding;
-- the provider vendor;
-- any session or turn override from `/model`;
-- the selected reasoning effort.
-
-The result is the concrete provider request Devo sends for that turn.
-
-If no provider is configured, Devo cannot run model requests and points you to:
+If no Connection is configured, run:
 
 ```bash
 devo onboard

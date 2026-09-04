@@ -3,78 +3,80 @@ title: 其他提供商
 description: 添加 OpenRouter、Anthropic、OpenAI-compatible 或本地 provider。
 ---
 
-任何兼容 provider 都使用同一套 provider 和 model-binding 模型。
+任何兼容 provider 都使用同一套嵌套 `providers.json` provider/model 目录。下面的
+TOML 片段只是为迁移保留的旧写法；新配置应使用[提供商配置](./provider-setup)中的 JSON 结构。
 
-具体 base URL 和模型名来自你选择的 provider。Devo 需要 provider endpoint、credential id、支持的 wire API，以及一个把 Devo model slug 映射到 provider model name 的 binding。
+具体 base URL 和模型名来自你选择的 provider。Devo 需要 provider endpoint、需要时的
+credential 引用、支持的 wire API，以及以 provider model name 为键的嵌套 model 记录。
 
 ## Anthropic
 
-```toml
-[defaults]
-model_binding = "claude-sonnet-anthropic"
-
-[providers.anthropic]
-enabled = true
-name = "Anthropic"
-base_url = "https://api.anthropic.com"
-credential = "anthropic_api_key"
-wire_apis = ["anthropic_messages"]
-
-[model_bindings.claude-sonnet-anthropic]
-enabled = true
-model_slug = "claude-sonnet"
-provider = "anthropic"
-request_model = "claude-sonnet-provider-name"
-display_name = "Claude Sonnet"
-invocation_method = "anthropic_messages"
+```json
+{
+  "model": "anthropic/claude-sonnet",
+  "provider": {
+    "anthropic": {
+      "name": "Anthropic",
+      "base_url": "https://api.anthropic.com",
+      "credential": "anthropic_api_key",
+      "wire_api": "anthropic_messages",
+      "models": {
+        "claude-sonnet": {
+          "name": "Claude Sonnet",
+          "context_window": 200000,
+          "input_modalities": ["text", "image"]
+        }
+      }
+    }
+  }
+}
 ```
 
-将 `model_slug` 和 `request_model` 替换为你实际使用的模型 profile 和 provider model name。
+嵌套 model key 就是 provider-facing model id，不需要单独创建 binding。
 
 ## OpenAI Responses-Compatible
 
-```toml
-[defaults]
-model_binding = "gpt-openai"
-
-[providers.openai]
-enabled = true
-name = "OpenAI"
-base_url = "https://api.openai.com"
-credential = "openai_api_key"
-wire_apis = ["openai_responses"]
-
-[model_bindings.gpt-openai]
-enabled = true
-model_slug = "gpt-5"
-provider = "openai"
-request_model = "gpt-5"
-display_name = "GPT-5"
-invocation_method = "openai_responses"
+```json
+{
+  "model": "openai/gpt-5",
+  "provider": {
+    "openai": {
+      "name": "OpenAI",
+      "base_url": "https://api.openai.com",
+      "credential": "openai_api_key",
+      "wire_api": "openai_responses",
+      "models": {
+        "gpt-5": {"name": "GPT-5"}
+      }
+    }
+  }
+}
 ```
 
 当 provider endpoint 支持 Responses，并且你需要的模型行为依赖 Responses 能力时，使用 Responses wire API。
 
 ## OpenAI Chat Completions-Compatible
 
-```toml
-[defaults]
-model_binding = "gateway-main"
-
-[providers.gateway]
-enabled = true
-name = "OpenAI-Compatible Gateway"
-base_url = "https://gateway.example.com"
-credential = "gateway_api_key"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.gateway-main]
-enabled = true
-model_slug = "custom-main"
-provider = "gateway"
-request_model = "provider/model-name"
-display_name = "Gateway Main"
-invocation_method = "openai_chat_completions"
+```json
+{
+  "model": "gateway/custom-main",
+  "provider": {
+    "gateway": {
+      "name": "OpenAI-compatible Gateway",
+      "base_url": "https://gateway.example.com/v1",
+      "credential": "gateway_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "custom-main": {
+          "name": "Gateway Main",
+          "options": {"enable_reasoning": true},
+          "request": {"vendor_parameter": "value"},
+          "headers": {"X-Workspace": "team-a"}
+        }
+      }
+    }
+  }
+}
 ```
 
 这个模式覆盖很多 gateway 和本地 proxy。
@@ -83,46 +85,50 @@ invocation_method = "openai_chat_completions"
 
 OpenRouter-like provider 通常使用带 provider 前缀的模型名：
 
-```toml
-[providers.openrouter]
-enabled = true
-name = "OpenRouter"
-base_url = "https://openrouter.ai/api/v1"
-credential = "openrouter_api_key"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.kimi-openrouter]
-enabled = true
-model_slug = "kimi-k3"
-provider = "openrouter"
-request_model = "moonshotai/kimi-k3"
-display_name = "Kimi K3"
-invocation_method = "openai_chat_completions"
+```json
+{
+  "model": "openrouter/moonshotai/kimi-k3",
+  "provider": {
+    "openrouter": {
+      "name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "credential": "openrouter_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "moonshotai/kimi-k3": {"name": "Kimi K3"}
+      }
+    }
+  }
+}
 ```
 
-`model_slug` 可以保持 Devo-local，而 `request_model` 遵循 gateway 要求的命名规则。
+把完整的 provider-facing id 作为嵌套 model key。
 
 ## 本地 Provider 或 Proxy
 
 本地 OpenAI-compatible server 示例：
 
-```toml
-[providers.local]
-enabled = true
-name = "Local Provider"
-base_url = "http://127.0.0.1:11434/v1"
-wire_apis = ["openai_chat_completions"]
-
-[model_bindings.local-main]
-enabled = true
-model_slug = "local-main"
-provider = "local"
-request_model = "local-main"
-display_name = "Local Main"
-invocation_method = "openai_chat_completions"
+```json
+{
+  "model": "local/local-main",
+  "provider": {
+    "local": {
+      "name": "Local Provider",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "local-main": {"name": "Local Main"}
+      }
+    }
+  }
+}
 ```
 
-如果本地 provider 不需要 API key，就省略 `credential`。如果需要，照常把 key 放入 `auth.json` 并引用。
+如果本地 provider 不需要 API key，就省略 `credential`。如果需要，将 `credential`
+设置为用户级 `auth.json` 中的 id；不要把 API key 写进 `providers.json`。
+
+如果 provider 暴露 `/models` 端点，可以使用 Native `provider/discover` 填充并刷新模型
+目录；无法动态发现时仍可直接填写自定义模型。
 
 ## 选择 Wire API
 

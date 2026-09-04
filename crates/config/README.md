@@ -25,9 +25,10 @@ consumer crates.
 
 ## Config Files
 
-The user-level config file is `<DEVO_HOME>/config.toml`. `DEVO_HOME` defaults to
-`~/.devo`; if the environment variable is set, it must point to an existing
-directory.
+The user-level application config file is `<DEVO_HOME>/config.toml`. Provider
+connections and model selection live in the standalone
+`<DEVO_HOME>/providers.json` file. `DEVO_HOME` defaults to `~/.devo`; if the
+environment variable is set, it must point to an existing directory.
 
 When a workspace is known, the project-level config file is:
 
@@ -35,14 +36,41 @@ When a workspace is known, the project-level config file is:
 <workspace>/.devo/config.toml
 ```
 
-Provider credentials are stored separately in:
+When a workspace is known, its provider/model overlay is:
 
 ```text
-<DEVO_HOME>/auth.json
+<workspace>/.devo/providers.json
 ```
 
-`auth.json` stores secret values, while `config.toml` stores references to those
-credentials.
+The canonical provider/model shape is intentionally small:
+
+```json
+{
+  "model": "local/my-model",
+  "provider": {
+    "local": {
+      "base_url": "http://127.0.0.1:8000/v1",
+      "credential": "local_api_key",
+      "wire_api": "openai_chat_completions",
+      "models": {
+        "my-model": {"name": "My Model", "context_window": 131072}
+      }
+    }
+  }
+}
+```
+
+Provider ids and model ids are map keys; the only model reference exposed to
+users is `provider/model`. There is no persisted binding id, model slug, model
+name, model id, or model description. `crates/core/providers.json` is the
+git-tracked built-in directory. User and workspace `providers.json` files may
+add or override arbitrary providers and models.
+
+Provider API keys are stored in the user-scoped `auth.json`; `providers.json`
+contains only the matching `credential` id. Do not commit `auth.json` or other
+files containing real secrets. The old provider TOML tables remain readable as
+migration compatibility paths, while new provider/model writes use JSON plus
+the separate auth file.
 
 ## Load And Merge Order
 
@@ -314,56 +342,119 @@ Config-ready but not currently triggered:
 
 ## Provider Config
 
-Provider config is part of `config.toml` and is modeled by `ProviderConfigSection`.
-The current provider schema uses provider vendor entries plus model bindings:
+The canonical provider config is standalone JSON and is modeled by
+`ProviderConfigFile`. Provider ids and model ids are map keys, so the only
+model reference exposed to users is `provider/model`:
 
-```toml
-model = "gpt-5.4"
-model_reasoning_effort_selection = "medium"
-model_auto_compact_token_limit = 970000
-model_context_window = 997500
-disable_response_storage = true
-preferred_auth_method = "apikey"
-
-[defaults]
-model_binding = "gpt54-main"
-
-[providers.main]
-enabled = true
-name = "Main Provider"
-base_url = "https://api.example.com/v1"
-credential = "main_api_key"
-wire_apis = ["openai_responses"]
-
-[model_bindings.gpt54-main]
-enabled = true
-model_slug = "gpt-5.4"
-provider = "main"
-request_model = "gpt-5.4"
-invocation_method = "openai_responses"
-default_reasoning_effort = "medium"
+```json
+{
+  "model": "main/gpt-5.4",
+  "reasoning_effort": "medium",
+  "provider": {
+    "main": {
+      "enabled": true,
+      "name": "Main Provider",
+      "base_url": "https://api.example.com/v1",
+      "credential": "main_api_key",
+      "wire_api": "openai_responses",
+      "models": {
+        "gpt-5.4": {
+          "name": "GPT 5.4",
+          "default_reasoning_effort": "medium"
+        }
+      }
+    }
+  }
+}
 ```
 
-Supported `wire_apis` and `invocation_method` values are:
+`ProviderConfigFile` also accepts nested model capability metadata and arbitrary
+custom provider/model records. The git-tracked built-in directory is
+`crates/core/providers.json`; user and workspace JSON files are overlays.
 
-- `openai_chat_completions`
-- `openai_responses`
-- `anthropic_messages`
+The built-in directory covers Kimi, Z.ai and BigModel/Zhipu AI (each with
+`glm-5.3` and `glm-5.3-flash`), DeepSeek,
+Qwen, MiniMax, Xiaomi MiMo, Tencent Hunyuan, and a local Ollama template.
+The Ollama entry uses `http://localhost:11434/v1` with an empty model list;
+connected clients should refresh models through `provider/discover`
+(`/v1/models`). This list is an overlayable catalog, not a restriction on
+custom provider/model entries.
 
-The default `invocation_method` is `openai_chat_completions` when a model
-binding omits it.
+The canonical root fields are:
 
-`preferred_auth_method` accepts `apikey` and `api_key`; it serializes as
-`apikey`.
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `model` | string | first enabled model | Active `provider/model` reference. |
+| `small_model` | string | automatic same-provider model, then `model` | Optional lower-cost model for lightweight background work. Invalid values use the same fallback. |
+| `reasoning_effort` | string | model default | `default`, `off`, `on`, or a supported effort value. Legacy `disabled`/`enabled` normalize to `off`/`on`. |
+| `provider` | object | `{}` | Provider id to provider record map. |
 
-Legacy `[model_providers]` fields still deserialize into `ProviderConfigSection`,
-but the provider resolver does not use legacy-only config to produce runtime
-provider settings.
+Provider records support `name`, `base_url`, `credential`, string-to-string
+`headers`, `wire_api`, `enabled`, `env`,
+`web_search`, `web_fetch`, and a `models` map. All are optional; `wire_api`
+defaults to `openai_chat_completions` and `enabled` defaults to `true`.
+`credential` refers to a credential id in the user-scoped `auth.json`; the
+secret value is never stored in `providers.json`.
+
+Model records support `name`, `wire_api`, `context_window`,
+`effective_context_window_percent`, `max_tokens`, `temperature`, `top_p`,
+`top_k`, `reasoning_capability`, `reasoning_implementation`,
+`default_reasoning_effort`, `base_instructions`, `input_modalities`, `channel`,
+`truncation_policy`, `supports_image_detail_original`, `enabled`, and
+`priority`. They may also contain open-ended `family`, `release_date`, `status`,
+`cost`, `metadata`, `options`, `request`, `headers`, `variants`, and
+`default_variant` values. The nested model map key is both the provider-facing request id and
+the `provider/model` identity; there is no separate `model_slug`, `model_name`,
+`model_id`, or model `description` field.
+
+`wire_api` has exactly three values:
+
+| Value | Request family |
+| --- | --- |
+| `openai_chat_completions` | OpenAI-compatible Chat Completions |
+| `openai_responses` | OpenAI-compatible Responses |
+| `anthropic_messages` | Anthropic-compatible Messages |
+
+`reasoning_capability` is one of `"unsupported"`, `"toggle"`, or
+`{"levels":[...]}`. Include `off` in `levels` to allow disabling; omit `off`
+if reasoning cannot be turned off. Legacy `{"toggle_with_levels":[...]}`
+(and spelling `togglewithlevels`) still reads and migrates to `levels` with a
+leading `off`. Toggle options are `off`/`on`. Effort values
+are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
+`reasoning_implementation` is a legacy TOML-compatibility field. New JSON
+should use `reasoning_capability` plus the named `variants` map (keys named
+after logical selections; optional `request_model`) documented in
+the configuration reference. The full
+field reference, including JSON shapes for web capabilities and truncation,
+is maintained in [`docs/configuration.md`](../../docs/configuration.md) and
+its [Chinese version](../../docs/configuration.zh-Hans.md).
+
+Onboarding keeps the provider template directory separate from Connection
+model management. Selecting a saved Connection lists only its nested models;
+the user can add a custom model or remove a saved model with d/Delete. Model
+removal updates the user Connection overlay and never edits the tracked
+provider directory.
+
+Native `provider/discover` refreshes a connected Connection from its
+`/models` or compatible `/v1/models` endpoint. It reads the credential from
+the user-scoped `auth.json`, accepts OpenAI-style `data` arrays and provider
+`models` arrays, normalizes common model metadata, and stores the raw entry in
+the model's `metadata`. Discovery only updates the user Connection overlay;
+the git-tracked `crates/core/providers.json` directory remains unchanged.
+
+The old provider TOML shape remains readable only as a one-time startup
+migration input; it is not the canonical write format and is never used to
+build runtime provider settings after loading.
 
 ## Provider Credentials
 
-`auth.json` is modeled by `UserAuthConfigFile`. Example
-`<DEVO_HOME>/auth.json`:
+`providers.json` contains the provider connection and a credential reference:
+
+```json
+{"provider":{"main":{"credential":"main_api_key"}}}
+```
+
+The actual secret is stored in the user-scoped `auth.json`:
 
 ```json
 {
@@ -377,20 +468,17 @@ provider settings.
 }
 ```
 
-The credential id, such as `main_api_key`, is referenced from provider config
-with `credential = "main_api_key"`.
-
-Only `api_key` credentials are currently supported. Reading `auth.json` fails if
-the schema version is unsupported or a credential value is empty. Missing
-`auth.json` is treated as an empty credential file.
+Do not put `apiKey` or `api_key` in `providers.json`. Reading an existing
+`auth.json` fails if the schema version is unsupported or a credential value is
+empty; a missing file is treated as an empty credential file.
 
 ## Web Search
 
 `[tools.web_search]` controls whether a turn exposes web search to the model.
 The effective value is resolved with this priority:
 
-1. `[model_bindings.<id>.web_search]`
-2. `[providers.<id>.web_search]`
+1. The selected model's `web_search` object in `providers.json`
+2. The selected provider's `web_search` object in `providers.json`
 3. `[tools.web_search]`
 
 Supported modes:
@@ -416,8 +504,8 @@ to the model.
 `[tools.web_fetch]` controls whether a turn exposes URL fetching to the model.
 It resolves with the same priority as web search:
 
-1. `[model_bindings.<id>.web_fetch]`
-2. `[providers.<id>.web_fetch]`
+1. The selected model's `web_fetch` object in `providers.json`
+2. The selected provider's `web_fetch` object in `providers.json`
 3. `[tools.web_fetch]`
 
 Supported modes:
@@ -433,27 +521,21 @@ Supported modes:
 
 ## Provider Resolution
 
-`resolve_provider_settings_from_config_and_auth` chooses the active model
-binding in this order:
+The canonical resolver reads the standalone JSON file directly. It chooses the
+active model in this order:
 
-1. `[defaults].model_binding`, when it points to an existing binding.
-2. The top-level `model`, when it matches a binding's `model_slug` or
-   `request_model`.
-3. The first enabled model binding.
+1. The top-level `model`, when it is a `provider/model` reference.
+2. The first enabled model entry.
 
-Runtime turn resolution uses an explicit requested model first, when it matches
-an enabled binding's `model_slug` or `request_model`. Without a requested model, it
-uses `[defaults].model_binding` only when that binding is enabled, then falls
-back to the first enabled binding.
+Runtime turn resolution uses an explicit canonical `provider/model` selection
+and falls back to the first enabled directory model.
 
-After a binding is selected, resolution requires:
+After a model is selected, resolution requires:
 
-- The binding's `provider` exists in `[providers]`.
+- The provider exists in `provider`.
 - The provider is enabled.
-- The binding is enabled.
-- The binding's `model_slug` exists in the effective model catalog.
-- If the provider lists `wire_apis`, the binding's `invocation_method` is in
-  that list.
+- The model is enabled.
+- The model's `wire_api`, or its provider's `wire_api`, is supported.
 - If the provider references a credential, that credential exists in
   `auth.json`.
 
@@ -461,66 +543,49 @@ The resolved runtime settings contain the provider id, wire API, final model
 name, optional base URL, optional API key, model limits, reasoning effort selection,
 response-storage flag, and preferred auth method.
 
-`model_slug` is the local catalog key. Model metadata starts from the built-in
-catalog and is overlaid field-by-field from user and workspace `config.toml`
-`[model.<slug>]` sections. Existing slugs are partial overrides; new slugs create
-custom models with safe defaults. `request_model` is the provider-facing model id
-used for the API request. The legacy `model_name` key is accepted when reading
-existing configuration, while subsequent writes use `request_model`. Turn
-metadata records `model` as the catalog slug and `request_model` as the provider
-request model; these values may be identical.
-
-Model metadata `provider` describes the wire API and accepts
-`openai_chat_completions`, `openai_responses`, or `anthropic_messages`. The
-binding's `invocation_method` is the operational connection choice and should
-match that metadata. A usable custom model therefore needs a
-`[providers.<id>]` connection and `[model_bindings.<id>]` binding; the provider's
-optional `credential` points to an API key stored in `auth.json`.
+Model metadata starts from the tracked provider directory and is overlaid
+field-by-field from user and workspace `providers.json` files. Repeating a
+provider/model entry partially overrides it; a new nested model is a custom
+model with safe defaults. The nested model key is also the provider-facing id
+used for the API request, so there is no `model_slug`, `request_model`, or
+`model_name` alias in new config.
 
 A built-in partial override can be as small as:
 
-```toml
-[model.qwen3-coder-next]
-context_window = 262144
-effective_context_window_percent = 90
+```json
+{"provider":{"deepseek":{"models":{"deepseek-v4-flash":{"context_window":262144,"effective_context_window_percent":90}}}}}
 ```
 
-A custom model must also be selected through connection wiring:
+A custom model is selected directly through its provider/model reference:
 
-```toml
-[defaults]
-model_binding = "custom-example"
-
-[model.custom]
-display_name = "Custom"
-provider = "openai_responses"
-context_window = 128000
-reasoning_capability = { levels = ["low", "medium", "high"] }
-reasoning_implementation = "request_parameter"
-default_reasoning_effort = "medium"
-
-[providers.example]
-enabled = true
-name = "Example"
-base_url = "https://api.example.com/v1"
-credential = "example_api_key"
-wire_apis = ["openai_responses"]
-
-[model_bindings.custom-example]
-enabled = true
-model_slug = "custom"
-provider = "example"
-request_model = "provider-facing-model-id"
-invocation_method = "openai_responses"
+```json
+{
+  "model": "example/custom",
+  "provider": {
+    "example": {
+      "base_url": "https://api.example.com/v1",
+      "credential": "example_api_key",
+      "wire_api": "openai_responses",
+      "models": {
+        "custom": {
+          "name": "Custom",
+          "context_window": 128000,
+          "reasoning_capability": {"levels": ["low", "medium", "high"]},
+          "reasoning_implementation": "request_parameter",
+          "default_reasoning_effort": "medium"
+        }
+      }
+    }
+  }
+}
 ```
 
-`ModelOverrideConfig` exposes `display_name`, `description`, `channel`,
+`ProviderModelConfig` exposes `name`, `channel`,
 `context_window`, `effective_context_window_percent`, `max_tokens`, `temperature`,
-`top_p`, `top_k`, `provider`, `reasoning_capability`,
+`top_p`, `top_k`, `wire_api`, `reasoning_capability`,
 `reasoning_implementation`, `default_reasoning_effort`, `base_instructions`,
 `input_modalities`, `truncation_policy`, and `supports_image_detail_original`.
-`display_name` is the picker label, `description` is its explanatory text, and
-`channel` groups related models. The effective context is
+`name` is the picker label and `channel` groups related models. The effective context is
 `context_window * effective_context_window_percent / 100` and is also the
 automatic-compaction boundary; `max_tokens` is the default response-output
 limit. `temperature`, `top_p`, and `top_k` are request sampling defaults.
@@ -534,24 +599,26 @@ enables original-resolution image detail. Omitted built-in fields are
 preserved. Omitted custom-model `base_instructions` use the default
 instructions, while an explicit empty string means no base instructions.
 
-Old `<DEVO_HOME>/models.json` and `<workspace>/.devo/models.json` files are
-ignored. Migration is manual: copy desired fields into the corresponding user or
-workspace `config.toml` `[model.<slug>]` sections. The legacy top-level scalar
-`model = "slug"` remains readable, but it collides with the new `model` table
-namespace, so new configuration must select with `[defaults].model_binding`.
+The old TOML provider, binding, and model override fields remain readable as a
+compatibility input. On startup, they are migrated to the matching
+`providers.json` overlay before model resolution. User TOML moves to
+`<DEVO_HOME>/providers.json`; workspace TOML moves to
+`<workspace>/.devo/providers.json`. Existing JSON values win, API keys are
+copied to user-scoped `auth.json`, and unrelated app settings stay in
+`config.toml`. The migration is idempotent. The tracked
+`crates/core/providers.json` file is the canonical built-in directory.
 
-When reasoning effort resolution selects a model variant catalog slug, the provider
-request model is resolved from enabled bindings for the same provider as the
-selected turn binding. Duplicate `model_slug` values under other providers do
-not affect that request.
+When reasoning effort resolution selects a model variant, the provider request
+model is resolved within the selected provider namespace.
 
 ## Writing Provider Config
 
-Provider writes use atomic file replacement. They preserve unrelated TOML in
-`config.toml` and only overlay provider-owned keys.
+Provider writes use atomic file replacement. They write `providers.json` and
+preserve unrelated application settings in `config.toml`.
 
-`AppConfigStore::upsert_provider_vendor` writes provider vendors and model
-bindings to the user config. Project config may still override resolved
-settings, but onboarding and provider management persist shared provider setup in
-the user-level `config.toml`. The upsert rejects provider vendors with an empty
-`wire_apis` list and reloads the effective app config after a successful write.
+`AppConfigStore::upsert_provider_connection` writes a provider Connection and
+nested model record to the user-level `providers.json` file. The optional API
+key argument is written to the user-scoped `auth.json`; only its credential id
+is stored in `providers.json`. Project config may still override resolved
+settings. Disconnecting a Connection removes its user overlay; built-in
+provider templates are never modified.

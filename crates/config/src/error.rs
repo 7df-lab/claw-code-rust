@@ -47,6 +47,9 @@ pub enum ProviderConfigError {
     /// Parsing provider TOML from a file failed.
     #[error("failed to parse {path}: {message}")]
     ParseTomlFile { path: PathBuf, message: String },
+    /// Parsing provider JSON from a file failed.
+    #[error("failed to parse {path}: {message}")]
+    ParseJsonFile { path: PathBuf, message: String },
     /// Parsing user-scoped auth JSON failed.
     #[error("failed to parse {path}: {message}")]
     ParseAuth { path: PathBuf, message: String },

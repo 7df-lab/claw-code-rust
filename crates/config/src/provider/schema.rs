@@ -51,15 +51,21 @@ pub struct ConfiguredModel {
     pub api_key: Option<String>,
 }
 
-/// One persisted provider vendor record stored under `[providers.<id>]`.
+/// Migration-only provider record read from the old `[providers.<id>]` table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderVendorConfig {
+pub struct LegacyProviderConfig {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     /// Credential id in user-scoped `auth.json`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+    /// Transient API key compatibility value used only by in-memory callers.
+    ///
+    /// Canonical provider configuration never loads or persists this value;
+    /// API keys are resolved from the credential id and user-scoped auth.json.
+    #[serde(skip)]
+    pub api_key: Option<String>,
     /// Raw JSON object string containing provider-specific HTTP headers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<String>,
@@ -73,12 +79,13 @@ pub struct ProviderVendorConfig {
     pub enabled: bool,
 }
 
-impl Default for ProviderVendorConfig {
+impl Default for LegacyProviderConfig {
     fn default() -> Self {
         Self {
             name: String::new(),
             base_url: None,
             credential: None,
+            api_key: None,
             headers: None,
             wire_apis: Vec::new(),
             web_search: None,
@@ -88,12 +95,13 @@ impl Default for ProviderVendorConfig {
     }
 }
 
-impl ProviderVendorConfig {
+impl LegacyProviderConfig {
     /// Returns whether the profile has no configured values.
     pub fn is_empty(&self) -> bool {
         self.name.is_empty()
             && self.base_url.is_none()
             && self.credential.is_none()
+            && self.api_key.is_none()
             && self.headers.is_none()
             && self.wire_apis.is_empty()
             && self.web_search.is_none()
@@ -102,12 +110,9 @@ impl ProviderVendorConfig {
     }
 }
 
-/// Backward-compatible public name for provider vendor config.
-pub type ModelProviderConfig = ProviderVendorConfig;
-
-/// One invocable model binding stored under `[model_bindings.<id>]`.
+/// Migration-only model record read from the old `[model_bindings.<id>]` table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelBindingConfig {
+pub struct LegacyModelBindingConfig {
     pub model_slug: String,
     pub provider: String,
     #[serde(alias = "model_name")]
@@ -126,7 +131,7 @@ pub struct ModelBindingConfig {
     pub enabled: bool,
 }
 
-impl Default for ModelBindingConfig {
+impl Default for LegacyModelBindingConfig {
     fn default() -> Self {
         Self {
             model_slug: String::new(),
@@ -155,7 +160,7 @@ pub struct ModelOverrideConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub effective_context_window_percent: Option<u8>,
+    pub effective_context_window_percent: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -261,8 +266,8 @@ pub struct ProviderConfigSection {
     pub model_context_window: Option<u32>,
     pub disable_response_storage: Option<bool>,
     pub preferred_auth_method: Option<PreferredAuthMethod>,
-    pub providers: BTreeMap<String, ProviderVendorConfig>,
-    pub model_bindings: BTreeMap<String, ModelBindingConfig>,
+    pub providers: BTreeMap<String, LegacyProviderConfig>,
+    pub model_bindings: BTreeMap<String, LegacyModelBindingConfig>,
     pub model_overrides: BTreeMap<String, ModelOverrideConfig>,
     pub model_providers: BTreeMap<String, LegacyModelProviderConfig>,
 }
@@ -281,9 +286,9 @@ struct ProviderConfigSectionWire {
     disable_response_storage: Option<bool>,
     preferred_auth_method: Option<PreferredAuthMethod>,
     #[serde(default)]
-    providers: BTreeMap<String, ProviderVendorConfig>,
+    providers: BTreeMap<String, LegacyProviderConfig>,
     #[serde(default)]
-    model_bindings: BTreeMap<String, ModelBindingConfig>,
+    model_bindings: BTreeMap<String, LegacyModelBindingConfig>,
     #[serde(default)]
     model_providers: BTreeMap<String, LegacyModelProviderConfig>,
 }
@@ -321,9 +326,9 @@ struct ProviderConfigSectionSerialize<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     preferred_auth_method: &'a Option<PreferredAuthMethod>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    providers: &'a BTreeMap<String, ProviderVendorConfig>,
+    providers: &'a BTreeMap<String, LegacyProviderConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    model_bindings: &'a BTreeMap<String, ModelBindingConfig>,
+    model_bindings: &'a BTreeMap<String, LegacyModelBindingConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     model_providers: &'a BTreeMap<String, LegacyModelProviderConfig>,
 }
@@ -431,6 +436,9 @@ impl ProviderConfigSection {
             }
             if overlay_provider.credential.is_some() {
                 provider.credential = overlay_provider.credential;
+            }
+            if overlay_provider.api_key.is_some() {
+                provider.api_key = overlay_provider.api_key;
             }
             if overlay_provider.headers.is_some() {
                 provider.headers = overlay_provider.headers;
@@ -571,37 +579,6 @@ impl ProviderHttpConfig {
     }
 }
 
-/// The fully-resolved provider settings that can be forwarded to a server process.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedProviderSettings {
-    /// Selected provider identifier from `[providers.<id>]`.
-    pub provider_id: String,
-    /// Selected provider transport implementation.
-    pub wire_api: ProviderWireApi,
-    /// Final model identifier.
-    pub model: String,
-    /// Optional provider base URL override.
-    pub base_url: Option<String>,
-    /// Optional provider API key override.
-    pub api_key: Option<String>,
-    /// Optional global provider HTTP proxy URL.
-    pub proxy_url: Option<String>,
-    /// Optional provider HTTP proxy bypass list.
-    pub no_proxy: Option<String>,
-    /// Optional raw provider custom header JSON object string.
-    pub headers: Option<String>,
-    /// Optional active model auto-compaction threshold in tokens.
-    pub model_auto_compact_token_limit: Option<u32>,
-    /// Optional active model context window override in tokens.
-    pub model_context_window: Option<u32>,
-    /// Optional logical reasoning effort selection for the active model.
-    pub model_reasoning_effort_selection: Option<String>,
-    /// Whether provider-side response storage should be disabled.
-    pub disable_response_storage: bool,
-    /// Preferred authentication method for the active provider.
-    pub preferred_auth_method: Option<PreferredAuthMethod>,
-}
-
 fn default_true() -> bool {
     true
 }
@@ -719,7 +696,7 @@ supports_image_detail_original = true
                     display_name: Some("Grok 4".to_string()),
                     description: Some("Fast reasoning model".to_string()),
                     context_window: Some(256_000),
-                    effective_context_window_percent: Some(90),
+                    effective_context_window_percent: Some(90.0),
                     max_tokens: Some(8_192),
                     temperature: Some(0.7),
                     top_p: Some(0.95),
@@ -740,53 +717,5 @@ supports_image_detail_original = true
         let serialized = toml::to_string(&config).expect("serialize model overrides");
         assert!(serialized.contains("[model.grok-4]"));
         assert!(!serialized.contains("model = \""));
-    }
-
-    #[test]
-    fn provider_config_operational_equality_ignores_model_overrides() {
-        let baseline = ProviderConfigSection::default();
-        let metadata_override = ProviderConfigSection {
-            model_overrides: BTreeMap::from([(
-                "custom-model".to_string(),
-                ModelOverrideConfig {
-                    display_name: Some("Custom Model".to_string()),
-                    ..ModelOverrideConfig::default()
-                },
-            )]),
-            ..baseline.clone()
-        };
-
-        assert_ne!(baseline, metadata_override);
-        assert!(baseline.is_operationally_equivalent_to(&metadata_override));
-    }
-
-    #[test]
-    fn provider_config_operational_equality_detects_provider_and_binding_changes() {
-        let baseline = ProviderConfigSection::default();
-        let provider_change = ProviderConfigSection {
-            providers: BTreeMap::from([(
-                "openai".to_string(),
-                ProviderVendorConfig {
-                    name: "OpenAI".to_string(),
-                    ..ProviderVendorConfig::default()
-                },
-            )]),
-            ..baseline.clone()
-        };
-        let binding_change = ProviderConfigSection {
-            model_bindings: BTreeMap::from([(
-                "main".to_string(),
-                ModelBindingConfig {
-                    model_slug: "gpt-5.5".to_string(),
-                    provider: "openai".to_string(),
-                    request_model: "gpt-5.5".to_string(),
-                    ..ModelBindingConfig::default()
-                },
-            )]),
-            ..baseline.clone()
-        };
-
-        assert!(!baseline.is_operationally_equivalent_to(&provider_change));
-        assert!(!baseline.is_operationally_equivalent_to(&binding_change));
     }
 }

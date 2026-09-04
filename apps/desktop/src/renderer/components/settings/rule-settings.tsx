@@ -88,7 +88,7 @@ export function RuleSettings({
 	})
 
 	return (
-		<div className={embedded ? "space-y-6 px-8 py-8" : "space-y-10"}>
+		<div className={embedded ? "space-y-6" : "space-y-8"}>
 			{!embedded && (
 				<SettingsHeader
 					title="Rules"

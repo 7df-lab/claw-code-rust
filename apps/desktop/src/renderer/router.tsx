@@ -18,6 +18,7 @@ import { AboutSettings } from "./components/settings/about-settings"
 import { GeneralSettings } from "./components/settings/general-settings"
 import { McpSettings } from "./components/settings/mcp-settings"
 import { NotificationSettings } from "./components/settings/notification-settings"
+import { ModelSettings } from "./components/settings/model-settings"
 import { ProviderSettings } from "./components/settings/provider-settings"
 import { ServerSettings } from "./components/settings/server-settings"
 import { SettingsPage } from "./components/settings/settings-page"
@@ -121,6 +122,12 @@ const settingsProvidersRoute = createRoute({
 	component: ProviderSettings,
 })
 
+const settingsModelsRoute = createRoute({
+	getParentRoute: () => settingsRoute,
+	path: "models",
+	component: ModelSettings,
+})
+
 const settingsWorktreesRoute = createRoute({
 	getParentRoute: () => settingsRoute,
 	path: "worktrees",
@@ -174,10 +181,11 @@ const routeTree = rootRoute.addChildren([
 			settingsIndexRoute,
 			settingsGeneralRoute,
 			settingsServersRoute,
+			settingsProvidersRoute,
+			settingsModelsRoute,
 			settingsMcpRoute,
 			settingsSkillsRoute,
 			settingsNotificationsRoute,
-			settingsProvidersRoute,
 			settingsWorktreesRoute,
 			settingsSetupRoute,
 			settingsAboutRoute,

@@ -18,7 +18,6 @@ import {
 	FileCodeIcon,
 	FileIcon,
 	GlobeIcon,
-	Loader2Icon,
 	MessageCircleQuestionIcon,
 	PlugIcon,
 	SearchIcon,
@@ -702,7 +701,10 @@ function TodoContent({ part }: { part: ToolPart }) {
 						{todo.status === "completed" ? (
 							<SquareCheckIcon className="size-3.5 text-green-500" />
 						) : todo.status === "in_progress" ? (
-							<Loader2Icon className="size-3.5 animate-spin text-blue-400" />
+							<span
+								aria-hidden="true"
+								className="inline-block size-3.5 rounded-sm border border-blue-400/80 bg-blue-400/25"
+							/>
 						) : todo.status === "cancelled" ? (
 							<SquareCheckIcon className="size-3.5 text-muted-foreground/40" />
 						) : (
@@ -987,7 +989,11 @@ interface ChatToolCallProps {
  * Compares two ToolPart objects for meaningful changes.
  * Avoids re-renders when a new object reference has the same content.
  */
-function areToolPartsEqual(a: ToolPart, b: ToolPart): boolean {
+function areToolPartsEqual(
+	a: ToolPart,
+	b: ToolPart,
+	options?: { ignorePendingRaw?: boolean },
+): boolean {
 	if (a === b) return true
 	if (a.id !== b.id) return false
 	if (a.tool !== b.tool) return false
@@ -1008,9 +1014,14 @@ function areToolPartsEqual(a: ToolPart, b: ToolPart): boolean {
 			return false
 		}
 	}
-	// During "pending", the server streams partial tool-call arguments into
-	// state.raw. Compare raw length so the subtitle updates as arguments arrive.
-	if (a.state.status === "pending" && b.state.status === "pending") {
+	// During "pending", args stream into state.raw. Only invalidate when the
+	// caller opts in (expanded row) — collapsed rows keep a stable "Preparing…"
+	// subtitle and skip layout thrash on every chunk.
+	if (
+		!options?.ignorePendingRaw &&
+		a.state.status === "pending" &&
+		b.state.status === "pending"
+	) {
 		if (a.state.raw.length !== b.state.raw.length) return false
 	}
 	// During "running", the server streams incremental output via
@@ -1059,13 +1070,8 @@ export const ChatToolCall = memo(
 		const status = part.state.status as "running" | "error" | "completed" | "pending"
 		const isRunning = turnWorking && (status === "running" || status === "pending")
 
-		// Trailing: spinner only (file-change +/- live in the label).
-		const trailingElement = useMemo(() => {
-			if (!isRunning) return undefined
-			return (
-				<Loader2Icon className="size-3 animate-spin text-muted-foreground/40" />
-			)
-		}, [isRunning])
+		// Live tools rely on Running/Writing labels — no trailing spinner or pulse.
+		const trailingElement = undefined
 
 		// When the turn has an error, add a delete button so the user can
 		// surgically remove a problematic tool part and continue the conversation.
@@ -1172,10 +1178,23 @@ export const ChatToolCall = memo(
 		)
 	},
 	(prev, next) => {
-		if (!areToolPartsEqual(prev.part, next.part)) return false
+		const collapsed =
+			(prev.open === false && next.open === false) ||
+			(prev.open === undefined &&
+				next.open === undefined &&
+				!prev.defaultOpen &&
+				!next.defaultOpen)
+		if (
+			!areToolPartsEqual(prev.part, next.part, {
+				ignorePendingRaw: collapsed,
+			})
+		) {
+			return false
+		}
 		// open is controlled by the parent timeline (expandedRowIds); without this
 		// comparison the memo blocks the re-render and the row can never expand.
 		if (prev.open !== next.open) return false
+		if (prev.defaultOpen !== next.defaultOpen) return false
 		if (prev.compact !== next.compact) return false
 		if (prev.turnHasError !== next.turnHasError) return false
 		if (prev.turnWorking !== next.turnWorking) return false

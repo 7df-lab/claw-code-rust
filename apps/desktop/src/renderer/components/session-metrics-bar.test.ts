@@ -64,6 +64,9 @@ describe("SessionMetricsBar top timer wiring", () => {
 			replacesOverviewButtonInHeader: !agentDetailSource.includes("<SessionMetricsOverviewButton"),
 			opensPromptBreakdown: contextUsageSource.includes("Prompt breakdown"),
 			usesOccupancyCategories: contextUsageSource.includes("occupancyCategoryRows"),
+			prefersLiveUsageForFill:
+				contextUsageSource.includes("usageUsed > 0 ? usageUsed") &&
+				contextUsageSource.includes("occupancy?.totalTokens"),
 			alignsToConversationSurface:
 				contextUsageSource.includes("data-conversation-surface=") &&
 				chatViewSource.includes("data-conversation-surface={agent.sessionId}") &&
@@ -95,6 +98,7 @@ describe("SessionMetricsBar top timer wiring", () => {
 			replacesOverviewButtonInHeader: true,
 			opensPromptBreakdown: true,
 			usesOccupancyCategories: true,
+			prefersLiveUsageForFill: true,
 			alignsToConversationSurface: true,
 			sitsFlushToTop: true,
 			matchesAppPopoverChrome: true,

@@ -59,6 +59,10 @@ import {
 	stopServer,
 	subscribeNative,
 } from "./devo-manager"
+import {
+	isSessionNotFoundError,
+	nativeIpcErrorEnvelope,
+} from "../shared/native-ipc-error"
 import { getOpaqueWindows, getSettings, onSettingsChanged, updateSettings } from "./settings-store"
 import { desktopTerminalManager } from "./terminal-manager"
 import {
@@ -209,8 +213,23 @@ export function registerIpcHandlers(): void {
 		"native:request",
 		withLogging(
 			"native:request",
-			async (_, request: { method: string; params?: unknown; directory?: string }) =>
-				await requestNative(request.method, request.params, request.directory),
+			async (_, request: { method: string; params?: unknown; directory?: string }) => {
+				try {
+					return await requestNative(request.method, request.params, request.directory)
+				} catch (err) {
+					// SessionNotFound is an expected race (stale route / deleted session).
+					// Returning an envelope avoids Electron treating the handler rejection
+					// as an unhandled promise rejection; the renderer transport rethrows.
+					if (isSessionNotFoundError(err)) {
+						log.debug("native:request session not found", {
+							method: request.method,
+							message: err instanceof Error ? err.message : String(err),
+						})
+						return nativeIpcErrorEnvelope(err)
+					}
+					throw err
+				}
+			},
 		),
 	)
 

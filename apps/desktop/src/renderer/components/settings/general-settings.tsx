@@ -22,7 +22,7 @@ const isElectron = typeof window !== "undefined" && "devo" in window
 
 export function GeneralSettings() {
 	return (
-		<div className="space-y-10">
+		<div className="space-y-8">
 			<SettingsHeader title="General" />
 
 			<OpenDestinationRow />

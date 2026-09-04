@@ -191,18 +191,34 @@ export const ReasoningTrigger = memo(
 export type ReasoningContentProps = ComponentProps<typeof CollapsibleContent> & {
 	children: ReactNode
 	animated?: boolean
+	streaming?: boolean
 }
 
 const streamdownPlugins = { cjk, code, math, mermaid }
+const streamdownPluginsStreaming = { cjk, code }
 
-export const ReasoningText = memo(({ children, animated }: { children: string; animated?: boolean }) => (
-	<Streamdown plugins={streamdownPlugins} animated={animated}>
-		{children}
-	</Streamdown>
-))
+export const ReasoningText = memo(
+	({
+		children,
+		animated,
+		streaming = false,
+	}: {
+		children: string
+		animated?: boolean
+		streaming?: boolean
+	}) => (
+		<Streamdown
+			className={streaming ? "devo-reasoning-response--streaming" : undefined}
+			animated={streaming ? false : animated}
+			plugins={streaming ? streamdownPluginsStreaming : streamdownPlugins}
+		>
+			{children}
+		</Streamdown>
+	),
+)
 
 export const ReasoningContent = memo(
-	({ className, children, animated, ...props }: ReasoningContentProps) => (
+	({ className, children, animated, streaming, ...props }: ReasoningContentProps) => (
 		<CollapsibleContent
 			className={cn(
 				"mt-4 text-sm",
@@ -212,7 +228,9 @@ export const ReasoningContent = memo(
 			{...props}
 		>
 			{typeof children === "string" ? (
-				<ReasoningText animated={animated}>{children}</ReasoningText>
+				<ReasoningText animated={animated} streaming={streaming}>
+					{children}
+				</ReasoningText>
 			) : (
 				children
 			)}

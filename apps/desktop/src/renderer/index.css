@@ -34,6 +34,48 @@ body {
 	font-weight: 400;
 }
 
+/* Soft stream entrance: one-shot surface fade + feathered growing tail.
+ * Avoids Streamdown character animation (too expensive mid-stream). */
+@keyframes devo-stream-surface-in {
+	from {
+		opacity: 0.55;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes devo-stream-tail-in {
+	from {
+		opacity: 0.35;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+.devo-message-response--streaming,
+.devo-reasoning-response--streaming {
+	animation: devo-stream-surface-in 120ms ease-out;
+	-webkit-mask-image: linear-gradient(
+		to bottom,
+		#000 0%,
+		#000 calc(100% - 0.9em),
+		rgba(0, 0, 0, 0.4) 100%
+	);
+	mask-image: linear-gradient(
+		to bottom,
+		#000 0%,
+		#000 calc(100% - 0.9em),
+		rgba(0, 0, 0, 0.4) 100%
+	);
+}
+
+.devo-message-response--streaming > *:last-child,
+.devo-reasoning-response--streaming > *:last-child {
+	animation: devo-stream-tail-in 110ms ease-out;
+}
+
 :root.dark .devo-message-response {
 	--devo-markdown-surface: color-mix(in srgb, var(--card) 92%, transparent);
 	--devo-markdown-surface-subtle: color-mix(in srgb, var(--muted) 86%, transparent);

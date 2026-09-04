@@ -13,13 +13,13 @@ export function SettingsRow({ label, description, htmlFor, children }: SettingsR
 	const controlId = htmlFor ?? autoId
 
 	return (
-		<div className="flex items-center justify-between gap-4 px-5 py-3.5">
+		<div className="flex items-center justify-between gap-4 px-4 py-3">
 			<div className="flex min-w-0 flex-col gap-0.5">
-				<label htmlFor={controlId} className="text-[15px] font-normal tracking-[-0.01em]">
+				<label htmlFor={controlId} className="text-sm font-normal tracking-tight text-foreground">
 					{label}
 				</label>
 				{description && (
-					<span id={`${controlId}-desc`} className="text-[13px] leading-5 text-muted-foreground">
+					<span id={`${controlId}-desc`} className="text-xs leading-5 text-muted-foreground">
 						{description}
 					</span>
 				)}

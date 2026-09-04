@@ -5,7 +5,6 @@ import {
 	MessageContent,
 	MessageResponse,
 } from "@devo/ui/components/ai-elements/message"
-import { Shimmer } from "@devo/ui/components/ai-elements/shimmer"
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@devo/ui/components/dialog"
 
 import {
@@ -16,15 +15,15 @@ import {
 	ChevronRightIcon,
 	CopyIcon,
 	FileIcon,
-	Loader2Icon,
 	SplitIcon,
 	XIcon,
 } from "lucide-react"
+import { ActivityCue } from "./activity-cue"
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import { useDisplayMode } from "../../hooks/use-agents"
 import { usePreserveChatScroll } from "../../hooks/use-preserve-chat-scroll"
 import type { SessionCompactionStatus } from "../../atoms/compaction"
-import type { ProviderRetryStatus } from "../../atoms/sessions"
+import type { ProviderErrorEntry, ProviderRetryStatus } from "../../atoms/sessions"
 import type { ChatMessageEntry, ChatTurn as ChatTurnType } from "../../hooks/use-session-chat"
 import {
 	computeTurnCost,
@@ -41,9 +40,11 @@ import type {
 	TextPart,
 	ToolPart,
 } from "../../lib/types"
-import { buildProcessTimeline } from "./process-timeline"
+import { buildProcessTimeline, type ProcessTimelineItem } from "./process-timeline"
 import { ProcessTimelineView } from "./process-timeline-view"
+import { ProviderErrorRow } from "./provider-error-row"
 import {
+	COMPACTION_COMPLETED_TEXT,
 	CompactionStatusDivider,
 	compactionStatusFromMetadata,
 	isCompactionStatusText,
@@ -82,40 +83,40 @@ function computeStatus(parts: Part[]): string {
 				case "task": {
 					// Show what the sub-agent is actually doing
 					const desc = part.state.input?.description as string | undefined
-					const shortDesc = desc && desc.length > 30 ? `${desc.slice(0, 27)}...` : desc
-					return shortDesc ? `Agent: ${shortDesc}` : "Delegating..."
+					const shortDesc = desc && desc.length > 30 ? `${desc.slice(0, 27)}…` : desc
+					return shortDesc ? `Agent: ${shortDesc}` : "Delegating"
 				}
 				case "todowrite":
 				case "todoread":
-					return "Planning..."
+					return "Planning next moves"
 				case "read":
-					return "Reading files..."
+					return "Reading files"
 				case "list":
 				case "grep":
 				case "glob":
-					return "Searching codebase..."
+					return "Searching the codebase"
 				case "webfetch":
-					return "Fetching web content..."
+					return "Fetching from the web"
 				case "edit":
 				case "write":
 				case "apply_patch":
-					return "Making edits..."
+					return "Editing files"
 				case "bash":
 				case "shell_command":
 				case "exec_command":
 					return ""
 				case "question":
 				case "request_user_input":
-					return "Asking a question..."
+					return "Asking a question"
 				default:
-					if (Array.isArray(part.state.input?.questions)) return "Asking a question..."
-					return `Running ${part.tool}...`
+					if (Array.isArray(part.state.input?.questions)) return "Asking a question"
+					return `Running ${part.tool}`
 			}
 		}
-		if (part.type === "reasoning") return "Thinking..."
-		if (part.type === "text") return "Composing response..."
+		if (part.type === "reasoning") return ""
+		if (part.type === "text") return "Writing response"
 	}
-	return "Working..."
+	return ""
 }
 
 // ============================================================
@@ -309,22 +310,34 @@ function getPartsAndTools(assistantMessages: ChatMessageEntry[]): {
 	return { ordered, tools }
 }
 
-function compactionStatusFromTurn(
+function compactionStatusesFromTurn(
 	assistantMessages: ChatMessageEntry[],
 	sessionStatus: SessionCompactionStatus | null | undefined,
-): SessionCompactionStatus | null {
+	isLastTurn: boolean,
+): SessionCompactionStatus[] {
+	const statuses: SessionCompactionStatus[] = []
 	for (const msg of assistantMessages) {
 		for (const part of msg.parts) {
 			if (part.type !== "text") continue
 			const metadata = (part as { metadata?: Record<string, unknown> }).metadata
 			const fromPart = compactionStatusFromMetadata(metadata)
-			if (fromPart) return fromPart
+			if (fromPart) {
+				statuses.push(fromPart)
+				continue
+			}
 			if (isCompactionStatusText(part.text)) {
-				return sessionStatus === "completed" ? "completed" : "started"
+				statuses.push(
+					part.text.trim() === COMPACTION_COMPLETED_TEXT ? "completed" : "started",
+				)
 			}
 		}
 	}
-	return null
+	// Live session status can arrive before the synthetic assistant marker
+	// (e.g. context/compactionStarted). Surface it on the latest turn.
+	if (isLastTurn && sessionStatus === "started" && statuses[statuses.length - 1] !== "started") {
+		statuses.push("started")
+	}
+	return statuses
 }
 
 /**
@@ -369,35 +382,48 @@ function researchArtifactTitle(item: TextRenderablePart): string | undefined {
 
 function AssistantTextBlock({
 	item,
+	streaming = false,
 	showPlanActions = false,
 	onImplementPlan,
 	onRevisePlan,
 }: {
 	item: TextRenderablePart
+	/** While true, defer markdown updates so the UI stays responsive mid-stream. */
+	streaming?: boolean
 	showPlanActions?: boolean
 	onImplementPlan?: () => void
 	onRevisePlan?: () => void
 }) {
-	if (isPlanTextPart(item.metadata)) {
+	const deferredText = useDeferredValue(item.text)
+	const text = streaming ? deferredText : item.text
+	const displayItem = text === item.text ? item : { ...item, text }
+
+	if (isPlanTextPart(displayItem.metadata)) {
 		return (
 			<PlanBlock
-				item={item}
+				item={displayItem}
 				onImplementPlan={onImplementPlan}
 				onRevisePlan={onRevisePlan}
 				showActions={showPlanActions}
 			/>
 		)
 	}
-	return <ResearchArtifactBlock item={item} />
+	return <ResearchArtifactBlock item={displayItem} streaming={streaming} />
 }
 
-function ResearchArtifactBlock({ item }: { item: TextRenderablePart }) {
+function ResearchArtifactBlock({
+	item,
+	streaming = false,
+}: {
+	item: TextRenderablePart
+	streaming?: boolean
+}) {
 	const title = researchArtifactTitle(item)
 	if (!title) {
 		return (
 			<Message from="assistant">
 				<MessageContent>
-					<MessageResponse>{item.text}</MessageResponse>
+					<MessageResponse streaming={streaming}>{item.text}</MessageResponse>
 				</MessageContent>
 			</Message>
 		)
@@ -410,7 +436,7 @@ function ResearchArtifactBlock({ item }: { item: TextRenderablePart }) {
 			</div>
 			<Message from="assistant">
 				<MessageContent>
-					<MessageResponse>{item.text}</MessageResponse>
+					<MessageResponse streaming={streaming}>{item.text}</MessageResponse>
 				</MessageContent>
 			</Message>
 		</div>
@@ -516,6 +542,8 @@ interface ChatTurnProps {
 	isConnected?: boolean
 	compactionStatus?: SessionCompactionStatus | null
 	retryStatus?: ProviderRetryStatus
+	/** Expandable provider retry / failure rows for this turn. */
+	providerErrors?: ProviderErrorEntry[]
 	/** Fork the conversation from this turn boundary */
 	onForkFromTurn?: () => Promise<void>
 	/** Edit and resend this turn's user message */
@@ -526,18 +554,10 @@ interface ChatTurnProps {
 	onRevisePlan?: () => void
 }
 
-function retryStatusText(status: ProviderRetryStatus): string {
-	if (status.message.trim()) return status.message
-	const seconds = Math.max(status.backoffMs / 1000, 0.1)
-	return `Retrying provider request in ${seconds.toFixed(1)}s (attempt ${status.attempt})`
-}
-
 function WorkingTurnStatusStrip({
 	turn,
-	retryStatus,
 }: {
 	turn: ChatTurnType
-	retryStatus?: ProviderRetryStatus
 }) {
 	const [display, setDisplay] = useState(() =>
 		formatWorkDuration(computeTurnWorkTime(turn, { active: true })),
@@ -554,8 +574,7 @@ function WorkingTurnStatusStrip({
 
 	return (
 		<div className="flex items-center gap-2 pt-0.5 text-[13px] leading-5 tabular-nums text-muted-foreground">
-			<span aria-hidden="true" className="size-1.5 shrink-0 animate-pulse rounded-full bg-foreground/45" />
-			{retryStatus ? retryStatusText(retryStatus) : <>Working for {display}</>}
+			Working for {display}
 		</div>
 	)
 }
@@ -634,6 +653,7 @@ export const ChatTurnComponent = memo(
 		isConnected = false,
 		compactionStatus,
 		retryStatus,
+		providerErrors = [],
 		onForkFromTurn,
 		onEditUserMessage,
 		onDeletePart,
@@ -670,9 +690,10 @@ export const ChatTurnComponent = memo(
 			() => splitCompletedTurnParts(orderedParts),
 			[orderedParts],
 		)
-		const displayedCompactionStatus: SessionCompactionStatus | null = compactionStatusFromTurn(
-			turn.assistantMessages,
-			compactionStatus,
+		const displayedCompactionStatuses = useMemo(
+			() =>
+				compactionStatusesFromTurn(turn.assistantMessages, compactionStatus, isLast),
+			[turn.assistantMessages, compactionStatus, isLast],
 		)
 
 		// The last text for streaming display and copy action
@@ -681,17 +702,35 @@ export const ChatTurnComponent = memo(
 
 		const errorText = useMemo(() => getError(turn.assistantMessages), [turn.assistantMessages])
 
+		const errorRows = useMemo(() => {
+			const rows = [...providerErrors]
+			if (errorText && !rows.some((row) => row.message === errorText && row.phase === "failed")) {
+				rows.push({
+					id: `assistant-error-${turn.id}`,
+					turnId: turn.turnId ?? turn.id,
+					message: errorText,
+					phase: "failed",
+				})
+			}
+			return rows
+		}, [providerErrors, errorText, turn.id, turn.turnId])
+
+		const pendingRetryId =
+			retryStatus && retryStatus.phase !== "resumed"
+				? `retry-${retryStatus.turnId}-${retryStatus.attempt}`
+				: null
+
 		// Compute status by walking the last message's parts in reverse — no
 		// need to flatMap all messages into a temporary array.
 		const statusText = useMemo(() => {
-			if (retryStatus) return retryStatusText(retryStatus)
 			for (let m = turn.assistantMessages.length - 1; m >= 0; m--) {
 				const status = computeStatus(turn.assistantMessages[m].parts)
 				if (status === "") return ""
-				if (status !== "Working...") return status
+				return status
 			}
-			return "Working..."
-		}, [retryStatus, turn.assistantMessages])
+			// Quiet while waiting / while ThoughtRow already shows "Thinking".
+			return ""
+		}, [turn.assistantMessages])
 
 		const working = isLast && isWorking
 
@@ -702,11 +741,6 @@ export const ChatTurnComponent = memo(
 			() => buildProcessTimeline(processOrderedParts),
 			[processOrderedParts],
 		)
-		const processToolParts = useMemo(
-			() => processOrderedParts.flatMap((part) => (part.kind === "tool" ? [part.part] : [])),
-			[processOrderedParts],
-		)
-		const hasSteps = processToolParts.length > 0
 		const hasWorkToDisclose = !working && processTimelineItems.length > 0
 		const hasCompletedProcessDetails = hasWorkToDisclose
 		const workTimeMs = useMemo(
@@ -746,9 +780,17 @@ export const ChatTurnComponent = memo(
 
 		useEffect(() => {
 			if (working) return
+			// Failed turns keep the process timeline open so prior thoughts/tools
+			// stay visible next to the error instead of collapsing away.
+			const failed =
+				Boolean(errorText) || errorRows.some((row) => row.phase === "failed")
+			if (failed) {
+				setCompletedProcessExpanded(true)
+				return
+			}
 			setCompletedProcessExpanded(false)
 			setExpandedRowIds(new Set())
-		}, [working])
+		}, [working, errorText, errorRows])
 
 		const handleToggleTimelineRow = useCallback((rowId: string, open: boolean) => {
 			setExpandedRowIds((previous) => {
@@ -803,6 +845,22 @@ export const ChatTurnComponent = memo(
 			[onDeletePart],
 		)
 
+		const showPlanActionsOnTimeline = isLast && !working
+		const handleRenderTimelineText = useCallback(
+			(item: Extract<ProcessTimelineItem, { kind: "text" }>) => (
+				<div className="py-0.5">
+					<AssistantTextBlock
+						item={item}
+						onImplementPlan={onImplementPlan}
+						onRevisePlan={onRevisePlan}
+						showPlanActions={showPlanActionsOnTimeline}
+						streaming={working}
+					/>
+				</div>
+			),
+			[onImplementPlan, onRevisePlan, showPlanActionsOnTimeline, working],
+		)
+
 		return (
 			<div ref={turnRef} className="group/turn space-y-3">
 				{/* User message */}
@@ -826,7 +884,7 @@ export const ChatTurnComponent = memo(
 					</UserMessageBlock>
 				)}
 
-				{working && <WorkingTurnStatusStrip turn={turn} retryStatus={retryStatus} />}
+				{working && <WorkingTurnStatusStrip turn={turn} />}
 
 				{!working && showWorkedForSummary && (
 					<CompletedTurnProcessDisclosure
@@ -848,33 +906,27 @@ export const ChatTurnComponent = memo(
 							onToggleRow={showVerboseTools ? undefined : handleToggleTimelineRow}
 							orderedParts={processOrderedParts}
 							projectRoot={toolPathRoot}
-							renderText={(item) => (
-								<div className="py-0.5">
-									<AssistantTextBlock
-										item={item}
-										onImplementPlan={onImplementPlan}
-										onRevisePlan={onRevisePlan}
-										showPlanActions={isLast && !working}
-									/>
-								</div>
-							)}
+							renderText={handleRenderTimelineText}
 							turnHasError={!!errorText}
 							working={working}
 						/>
-
-						{working && hasSteps && statusText ? (
-							<div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-								<Loader2Icon className="size-3 animate-spin text-muted-foreground/30" />
-								<Shimmer className="text-[11px]">{statusText}</Shimmer>
-							</div>
-						) : null}
 					</div>
 				)}
 
-				{/* Error */}
-				{errorText && (
-					<div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-						{errorText.length > 300 ? `${errorText.slice(0, 300)}...` : errorText}
+				{working && statusText ? (
+					<ActivityCue active>{statusText}</ActivityCue>
+				) : null}
+
+				{/* Provider / LLM errors — expandable like tool calls */}
+				{errorRows.length > 0 && (
+					<div className="flex flex-col gap-0.5">
+						{errorRows.map((entry) => (
+							<ProviderErrorRow
+								key={entry.id}
+								entry={entry}
+								pending={pendingRetryId === entry.id}
+							/>
+						))}
 					</div>
 				)}
 
@@ -894,21 +946,18 @@ export const ChatTurnComponent = memo(
 				{working && responseText && !textAlreadyInline && (
 					<div>
 					{isPlanTextPart(finalResponsePart?.metadata) ? (
-						<AssistantTextBlock item={{ ...(finalResponsePart as TextRenderablePart), text: responseText }} />
+						<AssistantTextBlock
+							item={{ ...(finalResponsePart as TextRenderablePart), text: responseText }}
+							streaming
+						/>
 					) : (
 						<Message from="assistant">
 							<MessageContent>
-								<MessageResponse animated>{responseText}</MessageResponse>
+								<MessageResponse streaming>{responseText}</MessageResponse>
 							</MessageContent>
 						</Message>
 					)}
 					</div>
-				)}
-
-				{/* User requirement: render compaction lifecycle as a transcript divider,
-				   not as a normal assistant message that can hide the previous reply. */}
-				{displayedCompactionStatus && (
-					<CompactionStatusDivider status={displayedCompactionStatus} />
 				)}
 
 				{/* Per-turn metadata — shown on completed turns so badges are visible after long responses */}
@@ -943,6 +992,15 @@ export const ChatTurnComponent = memo(
 					)}
 					</MessageActions>
 				)}
+
+				{/* Compaction lifecycle dividers sit below turn actions so they
+				    read as a session boundary after Scroll/Copy/Fork. */}
+				{displayedCompactionStatuses.map((status, index) => (
+					<CompactionStatusDivider
+						key={`${status}-${index}`}
+						status={status}
+					/>
+				))}
 			</div>
 		)
 	},
@@ -951,6 +1009,7 @@ export const ChatTurnComponent = memo(
 		if (prev.isLast !== next.isLast) return false
 		if (prev.isWorking !== next.isWorking) return false
 		if (prev.retryStatus !== next.retryStatus) return false
+		if (prev.providerErrors !== next.providerErrors) return false
 		if (prev.agent?.sessionId !== next.agent?.sessionId) return false
 		if (prev.agent?.directory !== next.agent?.directory) return false
 		if (prev.agent?.projectDirectory !== next.agent?.projectDirectory) return false

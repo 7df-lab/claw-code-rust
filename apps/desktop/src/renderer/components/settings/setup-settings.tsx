@@ -34,7 +34,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 export function SetupSettings() {
 	return (
-		<div className="space-y-10">
+		<div className="space-y-8">
 			<SettingsHeader title="Setup" />
 
 			<DevoStatusSection />
@@ -105,7 +105,7 @@ function DevoStatusSection() {
 			</SettingsRow>
 
 			{result && !result.compatible && result.message && (
-				<div className="px-5 py-2.5 text-[13px] text-amber-500">{result.message}</div>
+				<div className="px-4 py-2.5 text-xs text-amber-500">{result.message}</div>
 			)}
 		</SettingsSection>
 	)

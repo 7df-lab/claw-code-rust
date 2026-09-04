@@ -42,7 +42,7 @@ function CommandDialog({
 	return (
 		<Dialog {...props}>
 			<DialogContent
-				className={cn("rounded-xl! top-1/3 translate-y-0 overflow-hidden p-0", className)}
+				className={cn("rounded-xl! top-1/2 -translate-y-1/2 overflow-hidden p-0", className)}
 				showCloseButton={showCloseButton}
 			>
 				<DialogHeader className="sr-only">

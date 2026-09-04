@@ -316,6 +316,10 @@ export class StdioNativeClient implements NativeTransport {
 					}, timeoutMs)
 			this.pending.set(id, { resolve, reject, timer })
 		})
+		// Server may reply (and reject) before the caller awaits — attach a
+		// no-op handler so Node does not log UnhandledPromiseRejectionWarning.
+		// Real callers still observe the rejection via await / .catch.
+		void response.catch(() => {})
 		this.pendingMethods.set(id, method)
 		try {
 			await this.writeJson(child, payload)
@@ -414,9 +418,13 @@ export class StdioNativeClient implements NativeTransport {
 				if (!pending) return
 				this.pending.delete(routed.id)
 				if (pending.timer !== undefined) clearTimeout(pending.timer)
-				const error = routed.message.error as { message?: string } | undefined
+				const error = routed.message.error as { message?: string; code?: string } | undefined
 				if (error) {
-					pending.reject(new Error(error.message ?? "Devo Native request failed"))
+					const rejected = new Error(error.message ?? "Devo Native request failed") as Error & {
+						code?: string
+					}
+					if (typeof error.code === "string") rejected.code = error.code
+					pending.reject(rejected)
 				} else {
 					pending.resolve(routed.message.result)
 				}

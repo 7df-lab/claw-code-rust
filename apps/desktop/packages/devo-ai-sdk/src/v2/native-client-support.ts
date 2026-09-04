@@ -58,13 +58,32 @@ export function defaultCwd(): string {
 
 let sharedIpcTransport: DevoNativeTransport | null = null
 
+/** Must match `DEVO_NATIVE_IPC_ERROR` in apps/desktop/src/shared/native-ipc-error.ts */
+const DEVO_NATIVE_IPC_ERROR = "$devoNativeError"
+
+function throwIfNativeIpcError(result: unknown): void {
+	if (!result || typeof result !== "object") return
+	const envelope = (result as Record<string, unknown>)[DEVO_NATIVE_IPC_ERROR]
+	if (!envelope || typeof envelope !== "object") return
+	const record = envelope as Record<string, unknown>
+	const error = new Error(
+		typeof record.message === "string" ? record.message : "Devo Native request failed",
+	) as Error & { code?: string }
+	if (typeof record.code === "string") error.code = record.code
+	throw error
+}
+
 export function createIpcTransport(): DevoNativeTransport {
 	if (sharedIpcTransport) return sharedIpcTransport
 
 	const api = globalThis.window?.devo?.native
 	if (!api) throw new Error("window.devo.native is not available")
 	sharedIpcTransport = {
-		request: (method, params, directory) => api.request({ method, params, directory }),
+		request: async (method, params, directory) => {
+			const result = await api.request({ method, params, directory })
+			throwIfNativeIpcError(result)
+			return result
+		},
 		notify: (method, params, directory) => api.notify({ method, params, directory }),
 		respond: (id, result) => api.respond({ id, result }),
 		subscribe: (listener) => api.subscribe(listener),

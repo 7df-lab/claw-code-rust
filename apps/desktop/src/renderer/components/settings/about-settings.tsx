@@ -23,7 +23,7 @@ export function AboutSettings() {
 	}, [])
 
 	return (
-		<div className="space-y-10">
+		<div className="space-y-8">
 			<SettingsHeader title="About" />
 
 			<SettingsSection>

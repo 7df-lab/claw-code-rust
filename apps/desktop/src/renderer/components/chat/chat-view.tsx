@@ -50,7 +50,7 @@ import {
 	sessionComposerFamily,
 	setSessionComposerAtom,
 } from "../../atoms/session-composer"
-import type { ProviderRetryStatus, SessionSetupPhase } from "../../atoms/sessions"
+import type { ProviderErrorEntry, ProviderRetryStatus, SessionSetupPhase } from "../../atoms/sessions"
 import { sessionFamily } from "../../atoms/sessions"
 import {
 	effectivePermissionFamily,
@@ -105,6 +105,9 @@ const SELECTION_PERSIST_DEBOUNCE_MS = 500
 const VIRTUALIZE_TURN_THRESHOLD = 30
 const VIRTUAL_TURN_GAP = 40
 
+/** Stable empty array so historical ChatTurn memo is not busted every stream tick. */
+const EMPTY_PROVIDER_ERRORS: ProviderErrorEntry[] = []
+
 import {
 	type DiffComment,
 	diffCommentsFamily,
@@ -116,6 +119,7 @@ import { ChatTurnComponent, isSyntheticMessage } from "./chat-turn"
 import { ForkBoundaryDivider } from "./fork-boundary-divider"
 import { forkBoundaryAfterTurnIndex } from "./fork-boundary"
 import { ChatLoadingSkeleton } from "./chat-turn-skeleton"
+import { ProviderErrorRow } from "./provider-error-row"
 import {
 	ComposerStatusStack,
 	type ComposerGoal,
@@ -455,20 +459,14 @@ function estimateTurnSize(turn: ChatTurn): number {
 	return Math.max(TURN_ESTIMATE_MIN, Math.min(TURN_ESTIMATE_MAX, estimated))
 }
 
-function turnListRevision(turns: ChatTurn[]): string {
+function turnListStructureRevision(turns: ChatTurn[]): string {
 	return turns
 		.map((turn) => {
 			let partCount = turn.userMessage.parts.length
-			let textLength = 0
 			for (const message of turn.assistantMessages) {
 				partCount += message.parts.length
-				for (const part of message.parts) {
-					if (part.type === "text" || part.type === "reasoning") {
-						textLength += part.text.length
-					}
-				}
 			}
-			return `${turn.id}:${partCount}:${textLength}`
+			return `${turn.id}:${partCount}`
 		})
 		.join("|")
 }
@@ -481,7 +479,7 @@ interface VirtualizedTurnListProps {
 
 function VirtualizedTurnList({ turns, renderTurn, sessionId }: VirtualizedTurnListProps) {
 	const { scrollRef } = useStickToBottomContext()
-	const turnsRevision = useMemo(() => turnListRevision(turns), [turns])
+	const turnsRevision = useMemo(() => turnListStructureRevision(turns), [turns])
 	const virtualizer = useVirtualizer({
 		count: turns.length,
 		getScrollElement: () => scrollRef.current,
@@ -1001,7 +999,8 @@ export function ChatView({
 		)
 	}, [turns])
 
-	const showSessionError = !!sessionErrorText && !lastTurnHasError
+	const showSessionError =
+		!!sessionErrorText && !lastTurnHasError && (sessionEntry?.providerErrors?.length ?? 0) === 0
 
 	// Stable callbacks for question/permission handlers — agent is stable
 	// per render, but wrapping in useCallback avoids creating new inline
@@ -1069,6 +1068,16 @@ export function ChatView({
 		: "mx-auto w-full min-w-0 max-w-3xl"
 
 	const retryStatus = sessionEntry?.retryStatus
+	const providerErrors = sessionEntry?.providerErrors ?? EMPTY_PROVIDER_ERRORS
+	const lastTurnProviderErrors = useMemo(() => {
+		if (providerErrors.length === 0) return EMPTY_PROVIDER_ERRORS
+		const lastTurn = turns[turns.length - 1]
+		if (!lastTurn?.turnId) return providerErrors
+		const filtered = providerErrors.filter(
+			(entry) => !entry.turnId || entry.turnId === lastTurn.turnId,
+		)
+		return filtered.length === providerErrors.length ? providerErrors : filtered
+	}, [providerErrors, turns])
 	const latestEditableUserTurnIndex = useMemo(() => {
 		for (let index = turns.length - 1; index >= 0; index--) {
 			if (!isSyntheticMessage(turns[index].userMessage)) return index
@@ -1102,6 +1111,7 @@ export function ChatView({
 						: isWorking
 							? retryStatus
 							: undefined
+			const turnProviderErrors = !isLastTurn ? EMPTY_PROVIDER_ERRORS : lastTurnProviderErrors
 			return (
 			<Fragment key={turn.id}>
 			<ChatTurnComponent
@@ -1112,6 +1122,7 @@ export function ChatView({
 				isConnected={isConnected}
 				compactionStatus={compactionStatus}
 				retryStatus={activeRetryStatus}
+				providerErrors={turnProviderErrors}
 				onForkFromTurn={
 					onForkFromTurn
 						? () => onForkFromTurn(turn.turnId)
@@ -1160,6 +1171,7 @@ export function ChatView({
 			onEditUserMessage,
 			onSendMessage,
 			parentSessionName,
+			lastTurnProviderErrors,
 			retryStatus,
 			turns,
 		],
@@ -1183,6 +1195,7 @@ export function ChatView({
 				<Conversation
 					key={agent.sessionId}
 					className="h-full"
+					streaming={isWorking}
 					targetScrollTop={conversationTargetScrollTop}
 				>
 					<ScrollOnLoad loading={loading} sessionId={agent.sessionId} isActive={isActive} />
@@ -1241,10 +1254,18 @@ export function ChatView({
 								</div>
 							))}
 
-							{/* Session-level error from session.error events */}
+							{/* Session-level error when no turn-scoped expandable rows exist */}
 							{showSessionError && sessionErrorText && (
-								<div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-									{sessionErrorText}
+								<div className="py-0.5">
+									<ProviderErrorRow
+										entry={{
+											id: "session-error",
+											turnId: "",
+											message: sessionErrorText,
+											phase: "failed",
+											code: sessionError?.name,
+										}}
+									/>
 								</div>
 							)}
 						</div>

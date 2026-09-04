@@ -43,7 +43,7 @@ describe("Claude Code provider migration", () => {
 		expect(result.category?.files[0].content).not.toContain("sk-xxxxxxxx")
 	})
 
-	test("executes provider upserts for each unique imported model", async () => {
+	test("executes one canonical provider upsert for the imported Connection", async () => {
 		const calls: Array<{ method: string; params: Record<string, unknown> }> = []
 
 		const result = await executeClaudeCodeProviderMigration(
@@ -56,36 +56,24 @@ describe("Claude Code provider migration", () => {
 
 		expect(result.errors).toEqual([])
 		expect(result.filesWritten).toEqual([
-			"provider/upsert:claude-code/deepseek-v4-pro-1m-claude-code",
-			"provider/upsert:claude-code/deepseek-v4-flash-claude-code",
+			"provider/upsert:claude-code",
 		])
-		expect(calls).toHaveLength(2)
+		expect(calls).toHaveLength(1)
 		expect(calls[0].method).toBe("provider/upsert")
 		expect(calls[0].params).toEqual({
-			provider_vendor: {
+			provider: {
+				id: "claude-code",
 				name: "claude-code",
-				base_url: "https://api.deepseek.com/anthropic",
-				credential: null,
-				headers: null,
-				wire_apis: ["anthropic_messages"],
+				baseUrl: "https://api.deepseek.com/anthropic",
+				wireApis: ["anthropic_messages"],
+				models: {
+					"deepseek-v4-pro[1m]": { name: "deepseek-v4-pro[1m]" },
+					"deepseek-v4-flash": { name: "deepseek-v4-flash" },
+				},
 				enabled: true,
 			},
-			model_binding: {
-				binding_id: "deepseek-v4-pro-1m-claude-code",
-				model_slug: "deepseek-v4-pro[1m]",
-				provider: "claude-code",
-				request_model: "deepseek-v4-pro[1m]",
-				display_name: "deepseek-v4-pro[1m]",
-				invocation_method: "anthropic_messages",
-				default_reasoning_effort: null,
-				enabled: true,
-			},
-			default_model_binding: "deepseek-v4-pro-1m-claude-code",
-			api_key: "sk-xxxxxxxx",
-		})
-		expect(calls[1].params).toMatchObject({
-			default_model_binding: undefined,
-			api_key: "sk-xxxxxxxx",
+		defaultModel: "claude-code/deepseek-v4-pro[1m]",
+		apiKey: "sk-xxxxxxxx",
 		})
 	})
 
@@ -104,7 +92,7 @@ describe("Claude Code provider migration", () => {
 		expect(calls).toEqual([])
 	})
 
-	test("imports model bindings without an API key and reports manual action", async () => {
+	test("imports models without an API key and reports manual action", async () => {
 		const calls: Array<Record<string, unknown>> = []
 
 		const result = await executeClaudeCodeProviderMigration(
@@ -121,6 +109,6 @@ describe("Claude Code provider migration", () => {
 		expect(result.errors).toEqual([])
 		expect(result.manualActions.some((item) => item.includes("ANTHROPIC_AUTH_TOKEN"))).toBe(true)
 		expect(calls).toHaveLength(1)
-		expect(calls[0].api_key).toBeUndefined()
+		expect(calls[0].apiKey).toBeUndefined()
 	})
 })

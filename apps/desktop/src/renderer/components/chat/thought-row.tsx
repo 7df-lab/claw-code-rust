@@ -1,11 +1,11 @@
 import { ReasoningText } from "@devo/ui/components/ai-elements/reasoning"
-import { Shimmer } from "@devo/ui/components/ai-elements/shimmer"
-import { memo, useEffect, useState } from "react"
+import { memo, useDeferredValue, useEffect, useState } from "react"
 import {
 	computeThoughtWorkTime,
 	formatWorkDuration,
 } from "../../lib/session-metrics"
 import type { ReasoningPart } from "../../lib/types"
+import { ActivityCue } from "./activity-cue"
 import {
 	TranscriptDisclosure,
 	TranscriptDisclosureContent,
@@ -26,6 +26,8 @@ export const ThoughtRow = memo(function ThoughtRow({
 	onOpenChange?: (open: boolean) => void
 }) {
 	const text = part.text.replace("[REDACTED]", "").trim()
+	const deferredText = useDeferredValue(text)
+	const displayText = isStreaming ? deferredText : text
 	if (!text) return null
 
 	return (
@@ -43,7 +45,11 @@ export const ThoughtRow = memo(function ThoughtRow({
 					aria-label="Reasoning details"
 					className="text-[13px] leading-5 text-muted-foreground/80 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_p]:my-0"
 				>
-					<ReasoningText animated={isStreaming}>{text}</ReasoningText>
+					{isStreaming ? (
+						<div className="whitespace-pre-wrap break-words">{displayText}</div>
+					) : (
+						<ReasoningText>{displayText}</ReasoningText>
+					)}
 				</div>
 			</TranscriptDisclosureContent>
 		</TranscriptDisclosure>
@@ -71,10 +77,12 @@ function ThoughtLabel({
 
 	if (isStreaming) {
 		return (
-			<span className="inline-flex items-baseline gap-1 tabular-nums">
-				<Shimmer duration={1}>Thinking...</Shimmer>
-				{display ? <span>{display}</span> : null}
-			</span>
+			<ActivityCue active>
+				<span className="inline-flex items-baseline gap-1 tabular-nums">
+					<span>Thinking</span>
+					{display ? <span>{display}</span> : null}
+				</span>
+			</ActivityCue>
 		)
 	}
 

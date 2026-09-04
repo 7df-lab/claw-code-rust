@@ -66,7 +66,7 @@ export function ServerSettings({ initialNativeTrafficLogState = null }: ServerSe
 	}
 
 	return (
-		<div className="space-y-10">
+		<div className="space-y-8">
 			<SettingsHeader
 				title="Server"
 				description="Devo Desktop manages a private local stdio Native process."
@@ -226,8 +226,8 @@ export function NativeTrafficLogStatus({
 				</Button>
 			</SettingsRow>
 			{expanded && (
-				<div className="space-y-2 px-5 py-3.5">
-					<div className="text-[15px] font-normal tracking-[-0.01em]">Current log file</div>
+				<div className="space-y-2 px-4 py-3">
+					<div className="text-sm tracking-tight">Current log file</div>
 					{state.path ? (
 						<code className="block truncate rounded-md bg-muted px-2 py-1.5 text-[13px] text-muted-foreground">
 							{state.path}

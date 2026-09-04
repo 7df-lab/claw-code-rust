@@ -41,10 +41,6 @@ const compactionDividerSource = readFileSync(
   new URL("./compaction-status-divider.tsx", import.meta.url),
   "utf8",
 );
-const eventProcessorSource = readFileSync(
-  new URL("../../atoms/actions/event-processor.ts", import.meta.url),
-  "utf8",
-);
 const clientSource = readFileSync(
   new URL("../../../../packages/devo-ai-sdk/src/v2/client.ts", import.meta.url),
   "utf8",
@@ -146,6 +142,9 @@ describe("ChatTurnComponent transcript controls", () => {
     expect({
       definesWorkingStrip: source.includes("function WorkingTurnStatusStrip"),
       usesWorkingForCopy: source.includes("Working for {display}"),
+      omitsTopRetryingLabel:
+        !source.includes("retryStatus ? <>Retrying") &&
+        !source.includes("if (retryStatus) return \"Retrying\""),
       reusesTurnDuration: source.includes(
         "computeTurnWorkTime(turn, { active: true })",
       ),
@@ -161,19 +160,34 @@ describe("ChatTurnComponent transcript controls", () => {
         workingStripIndex < responseTextIndex,
       removesOldWorkingShimmer: !source.includes("Working shimmer"),
       hidesRunningCommandStatus: !source.includes("Running command..."),
-      gatesActivityShimmerOnStatusText: source.includes(
-        "working && hasSteps && statusText",
+      gatesActivityCueOnStatusText: source.includes(
+        "working && statusText",
       ),
+      showsPlanningForTodoTools: source.includes('return "Planning next moves"'),
+      hidesPlanningDuringReasoning:
+        source.includes('if (part.type === "reasoning") return ""') &&
+        source.includes("Quiet while waiting") &&
+        source.includes('return ""'),
+      usesQuietActivityCue:
+        source.includes("<ActivityCue active") &&
+        !source.includes("Loader2Icon") &&
+        !source.includes("ai-elements/shimmer") &&
+        !source.includes("ActivityPulseDot") &&
+        !source.includes("animate-pulse"),
       keepsCompletedDurationAffordance: source.includes('Worked for "'),
     }).toEqual({
       definesWorkingStrip: true,
       usesWorkingForCopy: true,
+      omitsTopRetryingLabel: true,
       reusesTurnDuration: true,
       placesStripAfterUserMessage: true,
       placesStripBeforeProcessTimeline: true,
       removesOldWorkingShimmer: true,
       hidesRunningCommandStatus: true,
-      gatesActivityShimmerOnStatusText: true,
+      gatesActivityCueOnStatusText: true,
+      showsPlanningForTodoTools: true,
+      hidesPlanningDuringReasoning: true,
+      usesQuietActivityCue: true,
       keepsCompletedDurationAffordance: true,
     });
   });
@@ -262,7 +276,16 @@ describe("ChatTurnComponent transcript controls", () => {
       dropsVisibleThoughtCopyDependency: !source.includes(
         "Thought for a few seconds",
       ),
-      keepsActiveThinkingCue: thoughtRowSource.includes("Thinking..."),
+      keepsActiveThinkingCue:
+        thoughtRowSource.includes("Thinking") &&
+        thoughtRowSource.includes("<ActivityCue active") &&
+        !thoughtRowSource.includes("ai-elements/shimmer") &&
+        !thoughtRowSource.includes("ActivityPulseDot") &&
+        !thoughtRowSource.includes("Thinking..."),
+      streamsThoughtAsPlainText:
+        thoughtRowSource.includes("isStreaming ?") &&
+        thoughtRowSource.includes("whitespace-pre-wrap") &&
+        thoughtRowSource.includes("<ReasoningText>"),
       switchesToThoughtWhenComplete:
         thoughtRowSource.includes('"Thought"') ||
         thoughtRowSource.includes("Thought for "),
@@ -309,6 +332,13 @@ describe("ChatTurnComponent transcript controls", () => {
       completedWriteHidesSpinner: processTimelineViewSource.includes(
         "turnWorking={working}",
       ),
+      toolsUseQuietPulseCue:
+        !chatToolCallSource.includes("ActivityPulseDot") &&
+        !chatToolCallSource.includes("Loader2Icon") &&
+        !chatToolCallSource.includes("animate-spin"),
+      groupRowsUseQuietPulseCue:
+        !processTimelineViewSource.includes("ActivityPulseDot") &&
+        !processTimelineViewSource.includes("Loader2Icon"),
       gatesActionsUntilTurnFinishes: source.includes(
         "{!working && responseText && (",
       ),
@@ -321,6 +351,7 @@ describe("ChatTurnComponent transcript controls", () => {
       keepsSharedReasoningTriggerUnchanged: true,
       dropsVisibleThoughtCopyDependency: true,
       keepsActiveThinkingCue: true,
+      streamsThoughtAsPlainText: true,
       switchesToThoughtWhenComplete: true,
       showsThoughtDurationHelper: true,
       toolsUseTranscriptDisclosure: true,
@@ -339,18 +370,22 @@ describe("ChatTurnComponent transcript controls", () => {
       usesLayoutEffectForPanelReady: true,
       toolsOmitLeadingIcons: true,
       completedWriteHidesSpinner: true,
+      toolsUseQuietPulseCue: true,
+      groupRowsUseQuietPulseCue: true,
       gatesActionsUntilTurnFinishes: true,
     });
   });
 
   test("renders compaction lifecycle as a transcript divider", () => {
+    const actionsIndex = source.lastIndexOf("</MessageActions>")
+    const dividerIndex = source.indexOf("displayedCompactionStatuses.map")
     expect({
       filtersStartedTextFromAssistantResponse:
         source.includes("isCompactionStatusText(part.text)") &&
         source.includes("continue"),
-      rendersDividerAfterResponse: source.includes(
-        "<CompactionStatusDivider status={displayedCompactionStatus} />",
-      ),
+      rendersDividerBelowTurnActions:
+        dividerIndex > actionsIndex &&
+        source.includes("<CompactionStatusDivider"),
       updatesMemoWhenCompactionStatusChanges: source.includes(
         "prev.compactionStatus !== next.compactionStatus",
       ),
@@ -371,15 +406,13 @@ describe("ChatTurnComponent transcript controls", () => {
         eventProcessorSource.includes("session.compaction.completed") &&
         eventProcessorSource.includes("session.compaction.failed"),
       bridgesRuntimeCompactionEvents:
-        clientSource.includes("sessionCompactionFromOriginalEvent") &&
-        clientSource.includes("sessionIdFromCompactionPayload") &&
-        clientSource.includes("SessionCompactionCompleted") &&
-        clientSource.includes("session.compaction.${compaction.status}") &&
+        clientSource.includes("context/compactionStarted") &&
+        clientSource.includes("context/compactionCompleted") &&
         clientSource.includes("upsertCompaction") &&
-        clientSource.includes("contextCompaction"),
+        clientSource.includes("compaction-${update.itemId}-${update.status}"),
     }).toEqual({
       filtersStartedTextFromAssistantResponse: true,
-      rendersDividerAfterResponse: true,
+      rendersDividerBelowTurnActions: true,
       updatesMemoWhenCompactionStatusChanges: true,
       chatViewPassesSessionCompactionStatus: true,
       usesRequestedIcons: true,
@@ -408,6 +441,9 @@ describe("ChatTurnComponent transcript controls", () => {
       collapsesWorkWhenIdle: source.includes(
         "(!working && hasCompletedProcessDetails && completedProcessExpanded)",
       ),
+      keepsProcessOpenOnFailure:
+        source.includes("Failed turns keep the process timeline open") &&
+        source.includes('setCompletedProcessExpanded(true)'),
       keepsInnerRowsCollapsed:
         !source.includes("isProcessItemStreaming") &&
         source.includes("setExpandedRowIds(new Set())"),
@@ -420,6 +456,7 @@ describe("ChatTurnComponent transcript controls", () => {
       verboseUsesDisplayModeOnly: true,
       keepsWorkExpandedWhileRunning: true,
       collapsesWorkWhenIdle: true,
+      keepsProcessOpenOnFailure: true,
       keepsInnerRowsCollapsed: true,
     });
   });

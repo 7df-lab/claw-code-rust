@@ -130,6 +130,26 @@ describe("MessageResponse markdown surfaces", () => {
 		})
 	})
 
+	test("uses a lighter Streamdown plugin set while streaming", () => {
+		expect({
+			streamingProp: messageSource.includes("streaming?: boolean"),
+			streamingPlugins: messageSource.includes("streamdownPluginsStreaming"),
+			disablesAnimatedWhileStreaming: messageSource.includes(
+				"animated={streaming ? false : animated}",
+			),
+			streamingClass: messageSource.includes("devo-message-response--streaming"),
+			streamFadeCss: rendererCssSource.includes("devo-stream-surface-in"),
+			streamTailCss: rendererCssSource.includes("devo-stream-tail-in"),
+		}).toEqual({
+			streamingProp: true,
+			streamingPlugins: true,
+			disablesAnimatedWhileStreaming: true,
+			streamingClass: true,
+			streamFadeCss: true,
+			streamTailCss: true,
+		})
+	})
+
 	test("includes streamdown sources so code highlighting classes are generated", () => {
 		expect({
 			streamdownSource: uiStylesSource.includes('@source "../../../../node_modules/streamdown/dist/*.js";'),

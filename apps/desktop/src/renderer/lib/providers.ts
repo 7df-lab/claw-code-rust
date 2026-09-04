@@ -6,16 +6,20 @@
 // Provider ordering
 // ============================================================
 
-/** Popular providers shown prominently in onboarding and settings, in display order */
+/** Popular providers shown prominently in onboarding and settings, in display order.
+ * Ordered to match the built-in catalog (crates/core/providers.json). */
 export const POPULAR_PROVIDER_IDS = [
-	"devo",
-	"anthropic",
+	"deepseek",
+	"kimi",
+	"qwen",
 	"openai",
-	"google",
-	"github-copilot",
-	"groq",
-	"openrouter",
-	"xai",
+	"zai",
+	"zhipu",
+	"ollama",
+	"minimax",
+	"tencent",
+	"xiaomi",
+	"poolside",
 ] as const
 
 // ============================================================
@@ -34,6 +38,9 @@ export const ZEN_DOCS_URL = "https://devo.ai/docs/zen"
 // ============================================================
 // Provider key signup URLs
 // ============================================================
+
+/** Providers that can connect without an API key (local / no-auth). */
+export const PROVIDERS_OPTIONAL_API_KEY = new Set<string>(["ollama"])
 
 /** External URLs for getting API keys from popular providers */
 export const PROVIDER_KEY_URLS: Record<string, { label: string; url: string }> = {
@@ -79,6 +86,39 @@ export function compareConnectedFirst(
 	if (aConnected && !bConnected) return -1
 	if (!aConnected && bConnected) return 1
 	return compareByPopularity(a, b)
+}
+
+/**
+ * Model usable context capacity: `contextWindow × percent / 100` (default 95%).
+ *
+ * The Models editor shows this absolute token count. On save it keeps the hard
+ * `contextWindow` and stores the choice as `effectiveContextWindowPercent`.
+ */
+export function effectiveContextWindowTokens(model: {
+	contextWindow?: number | null
+	effectiveContextWindowPercent?: number | null
+}): number | undefined {
+	if (model.contextWindow == null || !Number.isFinite(model.contextWindow)) {
+		return undefined
+	}
+	const percent = model.effectiveContextWindowPercent ?? 95
+	return Math.floor((model.contextWindow * percent) / 100)
+}
+
+/** Map a user-entered absolute usable window onto percent of hard capacity. */
+export function contextWindowPercentFromAbsolute(
+	hardWindow: number,
+	absoluteTokens: number,
+): number {
+	const hard = Math.max(1, Math.floor(hardWindow))
+	const absolute = Math.max(0, Math.floor(absoluteTokens))
+	const percent = (absolute * 100) / hard
+	return Math.min(100, Math.max(1, percent))
+}
+
+export function formatContextWindowLabel(tokens: number | undefined): string | null {
+	if (tokens == null || !Number.isFinite(tokens) || tokens <= 0) return null
+	return `${Math.round(tokens / 1000)}k`
 }
 
 // ============================================================

@@ -3,6 +3,7 @@ import {
 	formatClaudeCodeProviderSettingsPreview,
 } from "@devo/configconv"
 import type { ClaudeCodeProviderSettings, ClaudeSettings } from "@devo/configconv"
+import type { CanonicalProviderUpsertParams } from "./canonical-provider-migration"
 
 interface MigrationFilePreview {
 	path: string
@@ -73,13 +74,12 @@ export async function executeClaudeCodeProviderMigration(
 	const errors: string[] = [...diagnostics.errors]
 
 	for (const params of buildProviderUpsertParams(settings)) {
-		const bindingId = params.model_binding.binding_id
 		try {
 			await requestProviderUpsert("provider/upsert", params)
-			filesWritten.push(`provider/upsert:${settings.providerId}/${bindingId}`)
+			filesWritten.push(`provider/upsert:${settings.providerId}`)
 		} catch (error) {
 			errors.push(
-				`Claude Code provider migration failed for ${params.model_binding.request_model}: ${error instanceof Error ? error.message : String(error)}`,
+				`Claude Code provider migration failed for ${settings.providerId}: ${error instanceof Error ? error.message : String(error)}`,
 			)
 		}
 	}
@@ -92,54 +92,27 @@ export async function executeClaudeCodeProviderMigration(
 	}
 }
 
-function buildProviderUpsertParams(settings: ClaudeCodeProviderSettings): Array<{
-	provider_vendor: {
-		name: string
-		base_url: string | null
-		credential: null
-		headers: null
-		wire_apis: string[]
-		enabled: true
-	}
-	model_binding: {
-		binding_id: string
-		model_slug: string
-		provider: string
-		request_model: string
-		display_name: string
-		invocation_method: string
-		default_reasoning_effort: null
-		enabled: true
-	}
-	default_model_binding?: string
-	api_key?: string
-}> {
-	return settings.models.map((model) => {
-		const bindingId = `${slugComponent(model)}-${settings.providerId}`
-		const params = {
-			provider_vendor: {
+function buildProviderUpsertParams(
+	settings: ClaudeCodeProviderSettings,
+): CanonicalProviderUpsertParams[] {
+	if (settings.models.length === 0) return []
+
+	return [
+		{
+			provider: {
+				id: settings.providerId,
 				name: settings.providerId,
-				base_url: settings.baseUrl ?? null,
-				credential: null,
-				headers: null,
-				wire_apis: [settings.wireApi],
-				enabled: true as const,
+				...(settings.baseUrl ? { baseUrl: settings.baseUrl } : {}),
+				wireApis: [settings.wireApi],
+				models: Object.fromEntries(settings.models.map((model) => [model, { name: model }])),
+				enabled: true,
 			},
-			model_binding: {
-				binding_id: bindingId,
-				model_slug: model,
-				provider: settings.providerId,
-				request_model: model,
-				display_name: model,
-				invocation_method: settings.wireApi,
-				default_reasoning_effort: null,
-				enabled: true as const,
-			},
-			default_model_binding: model === settings.defaultModel ? bindingId : undefined,
-			api_key: settings.apiKey,
-		}
-		return params
-	})
+			...(settings.defaultModel
+				? { defaultModel: `${settings.providerId}/${settings.defaultModel}` }
+				: {}),
+			...(settings.apiKey ? { apiKey: settings.apiKey } : {}),
+		},
+	]
 }
 
 function diagnosticsFor(settings: ClaudeCodeProviderSettings): {
@@ -152,7 +125,7 @@ function diagnosticsFor(settings: ClaudeCodeProviderSettings): {
 
 	if (settings.models.length === 0) {
 		warnings.push(
-			"Claude Code settings did not include ANTHROPIC_MODEL or default Anthropic model env vars; no provider model bindings were imported.",
+			"Claude Code settings did not include ANTHROPIC_MODEL or default Anthropic model env vars; no provider Connection was imported.",
 		)
 	}
 	if (!settings.apiKey) {
@@ -171,19 +144,6 @@ function readClaudeCodeSettings(scanResult: unknown): ClaudeSettings | undefined
 	const global = data.global
 	if (!isRecord(global)) return undefined
 	return isRecord(global.settings) ? (global.settings as ClaudeSettings) : undefined
-}
-
-function slugComponent(value: string): string {
-	let out = ""
-	for (const ch of value) {
-		if (/[a-zA-Z0-9]/.test(ch)) {
-			out += ch.toLowerCase()
-		} else if (!out.endsWith("-")) {
-			out += "-"
-		}
-	}
-	const slug = out.replace(/^-+|-+$/g, "")
-	return slug || "model"
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

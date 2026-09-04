@@ -71,22 +71,22 @@ export function CustomizeView() {
 
 	return (
 		<div className="flex h-full flex-col overflow-hidden bg-background">
-			<div className="mx-auto flex h-full w-full max-w-5xl flex-col px-10 py-8">
+			<div className="mx-auto flex h-full w-full max-w-5xl flex-col px-8 py-8 sm:px-10">
 				<label className="relative block">
 					<span className="sr-only">Search Plugins, Skills, MCPs</span>
 					<SearchIcon
 						aria-hidden="true"
-						className="pointer-events-none absolute top-1/2 left-4 size-4 -translate-y-1/2 text-muted-foreground"
+						className="pointer-events-none absolute top-1/2 left-3.5 size-3.5 -translate-y-1/2 stroke-[1.5] text-muted-foreground"
 					/>
 					<Input
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
 						placeholder="Search Plugins, Skills, MCPs..."
-						className="h-11 rounded-full border-transparent bg-muted/70 pr-4 pl-11 shadow-none md:text-sm"
+						className="h-9 rounded-lg border-border/50 bg-muted/40 pr-3 pl-9 shadow-none md:text-sm"
 					/>
 				</label>
 
-				<div className="mt-5 flex flex-wrap gap-2" role="tablist" aria-label="Customize">
+				<div className="mt-4 flex flex-wrap gap-1" role="tablist" aria-label="Customize">
 					{TABS.map((item) => (
 						<button
 							key={item.id}
@@ -95,7 +95,7 @@ export function CustomizeView() {
 							aria-selected={tab === item.id}
 							onClick={() => setTab(item.id)}
 							className={cn(
-								"h-8 rounded-full px-3.5 text-[13px] transition-colors",
+								"h-7 rounded-md px-2.5 text-[13px] transition-colors",
 								tab === item.id
 									? "bg-muted font-medium text-foreground"
 									: "bg-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground",
@@ -106,7 +106,8 @@ export function CustomizeView() {
 					))}
 				</div>
 
-				<div className="mt-6 min-h-0 flex-1 overflow-y-auto rounded-2xl border border-border/60 bg-muted/10">
+				{/* Flat content — no nested panel framing around SettingsSection cards */}
+				<div className="mt-6 min-h-0 flex-1 overflow-y-auto">
 					<CustomizePanel tab={tab} searchQuery={normalizedQuery} />
 				</div>
 			</div>
@@ -127,12 +128,12 @@ function CustomizePanel({ tab, searchQuery }: { tab: CustomizeTab; searchQuery: 
 
 	const copy = EMPTY_COPY[tab]
 	return (
-		<div className="flex min-h-full flex-col items-center justify-center px-8 py-16 text-center">
-			<h2 className="text-[22px] font-medium tracking-tight">{copy.title}</h2>
-			<p className="mt-2 max-w-lg text-[15px] leading-6 text-muted-foreground">{copy.description}</p>
-			<div className="mt-8">
-				<Button type="button" variant="secondary" className="h-9 rounded-full px-4" disabled>
-					<PlusIcon className="size-3.5" />
+		<div className="flex min-h-full flex-col items-center justify-center px-6 py-16 text-center">
+			<h2 className="text-lg font-medium tracking-tight">{copy.title}</h2>
+			<p className="mt-1.5 max-w-md text-sm leading-6 text-muted-foreground">{copy.description}</p>
+			<div className="mt-6">
+				<Button type="button" variant="secondary" size="sm" disabled>
+					<PlusIcon className="size-3.5 stroke-[1.5]" />
 					Add
 				</Button>
 			</div>

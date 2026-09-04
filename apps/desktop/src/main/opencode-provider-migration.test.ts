@@ -23,6 +23,7 @@ function scanResultWithConfig(
 
 const exampleConfig = {
 	model: "deepseek/deepseek-v4-pro",
+	small_model: "deepseek/deepseek-v4-flash",
 	provider: {
 		deepseek: {
 			npm: "@ai-sdk/openai-compatible",
@@ -78,7 +79,7 @@ describe("OpenCode provider migration", () => {
 		expect(result.category?.files[1].content).not.toContain("tp-xxxxxx")
 	})
 
-	test("executes provider upserts for each imported model and sets explicit default only", async () => {
+	test("executes one canonical provider upsert per imported provider", async () => {
 		const calls: Array<{ method: string; params: Record<string, unknown> }> = []
 
 		const result = await executeOpenCodeProviderMigration(
@@ -90,43 +91,30 @@ describe("OpenCode provider migration", () => {
 		)
 
 		expect(result.errors).toEqual([])
-		expect(result.filesWritten).toEqual([
-			"provider/upsert:deepseek/deepseek-v4-flash-deepseek",
-			"provider/upsert:deepseek/deepseek-v4-pro-deepseek",
-			"provider/upsert:mimo/mimo-v2-5-mimo",
-			"provider/upsert:mimo/mimo-v2-5-pro-mimo",
-		])
+		expect(result.filesWritten).toEqual(["provider/upsert:deepseek", "provider/upsert:mimo"])
 		expect(calls.map((call) => call.method)).toEqual([
-			"provider/upsert",
-			"provider/upsert",
 			"provider/upsert",
 			"provider/upsert",
 		])
 		expect(calls[1].params).toEqual({
-			provider_vendor: {
-				name: "deepseek",
-				base_url: "https://api.deepseek.com/v1",
-				credential: null,
-				headers: null,
-				wire_apis: ["openai_chat_completions"],
+			provider: {
+				id: "mimo",
+				name: "Xiaomi MiMo",
+				baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+				wireApis: ["openai_chat_completions"],
+				models: {
+					"mimo-v2.5": { name: "Mimo v2.5" },
+					"mimo-v2.5-pro": { name: "Mimo v2.5 Pro" },
+				},
 				enabled: true,
 			},
-			model_binding: {
-				binding_id: "deepseek-v4-pro-deepseek",
-				model_slug: "deepseek-v4-pro",
-				provider: "deepseek",
-				request_model: "deepseek-v4-pro",
-				display_name: "DeepSeek V4 Pro",
-				invocation_method: "openai_chat_completions",
-				default_reasoning_effort: null,
-				enabled: true,
-			},
-			default_model_binding: "deepseek-v4-pro-deepseek",
-			api_key: "sk-xxxx",
+		apiKey: "tp-xxxxxx",
 		})
-		expect(calls[0].params.default_model_binding).toBeUndefined()
-		expect(calls[2].params.default_model_binding).toBeUndefined()
-		expect(calls[2].params.api_key).toBe("tp-xxxxxx")
+		expect(calls[0].params.defaultModel).toBe("deepseek/deepseek-v4-pro")
+		expect(calls[0].params.smallModel).toBe("deepseek/deepseek-v4-flash")
+		expect(calls[0].params.apiKey).toBe("sk-xxxx")
+		expect(calls[1].params.defaultModel).toBeUndefined()
+		expect(calls[1].params.smallModel).toBeUndefined()
 	})
 
 	test("does not guess a default model when OpenCode does not define one", async () => {
@@ -152,7 +140,7 @@ describe("OpenCode provider migration", () => {
 		)
 
 		expect(calls).toHaveLength(1)
-		expect(calls[0].default_model_binding).toBeUndefined()
+		expect(calls[0].defaultModel).toBeUndefined()
 	})
 
 	test("reports missing config, parse errors, unsupported providers, and missing key/base URL without crashing", async () => {

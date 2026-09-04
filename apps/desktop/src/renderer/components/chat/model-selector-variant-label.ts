@@ -7,13 +7,15 @@ function capitalize(value: string): string {
 
 export function getVariantTriggerLabel(variant: string | undefined): string {
 	if (!variant) return DEFAULT_VARIANT_LABEL
-	if (variant === "disabled") return "off"
+	if (variant === "disabled" || variant === "off") return "off"
+	if (variant === "enabled") return "on"
 	return variant.toLowerCase()
 }
 
 export function getVariantMenuLabel(variant: string | undefined): string {
 	if (!variant) return capitalize(DEFAULT_VARIANT_LABEL)
-	if (variant === "disabled") return "Off"
+	if (variant === "disabled" || variant === "off") return "Off"
+	if (variant === "enabled" || variant === "on") return "On"
 	return capitalize(variant)
 }
 

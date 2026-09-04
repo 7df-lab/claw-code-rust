@@ -71,7 +71,8 @@ export function ProviderSetupStep({ onComplete, onSkip }: ProviderSetupStepProps
 	}, [allProviders, connectedIds])
 
 	const zenIsConnected = connectedIds.has(ZEN_PROVIDER_ID)
-	const zenHasApiKey = zenIsConnected && zenProvider !== null && !isZenFreeTier(zenProvider.models)
+	const zenHasApiKey =
+		zenIsConnected && zenProvider !== null && !isZenFreeTier(zenProvider.models ?? {})
 
 	const reload = useCallback(() => {
 		reloadCatalog()
@@ -163,8 +164,13 @@ export function ProviderSetupStep({ onComplete, onSkip }: ProviderSetupStepProps
 										className="group flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3 text-left transition-all hover:border-primary/50 hover:bg-accent"
 									>
 										<ProviderIcon id={provider.id} name={provider.name} />
-										<div className="flex flex-1 flex-col">
+										<div className="flex min-w-0 flex-1 flex-col">
 											<span className="text-sm font-medium">{provider.name}</span>
+											{typeof provider.description === "string" && provider.description.trim() ? (
+												<span className="truncate text-xs text-muted-foreground">
+													{provider.description}
+												</span>
+											) : null}
 											{isConnected && (
 												<span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
 													Connected
@@ -221,10 +227,10 @@ function ZenFeaturedCard({
 	hasApiKey: boolean
 	onConnect: () => void
 }) {
-	const freeModelCount = Object.values(provider.models).filter(
+	const freeModelCount = Object.values(provider.models ?? {}).filter(
 		(m) => (m as { cost?: { input?: number } }).cost?.input === 0,
 	).length
-	const totalModelCount = Object.keys(provider.models).length
+	const totalModelCount = Object.keys(provider.models ?? {}).length
 
 	return (
 		<motion.div

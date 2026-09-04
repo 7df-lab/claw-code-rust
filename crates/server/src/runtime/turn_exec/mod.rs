@@ -12,7 +12,8 @@ mod trace;
 mod types;
 
 pub(crate) use context_compaction::{
-    manual_compaction_completed_event, manual_compaction_started_event,
+    manual_compaction_completed_event, manual_compaction_item_failed_event,
+    manual_compaction_started_event,
 };
 pub(crate) use event_stream::{QUERY_EVENT_CHANNEL_CAPACITY, spawn_turn_event_stream};
 pub(crate) use finalize::FinalizeTurnParams;

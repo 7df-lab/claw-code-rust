@@ -485,15 +485,6 @@ fn effective_context_window_tokens(state: &SessionActorState, runtime: &ServerRu
                 .as_deref()
                 .and_then(|slug| runtime.deps.model_catalog.get(slug))
         });
-    let Some(model) = model else {
-        return state
-            .core
-            .config
-            .effective_context_window_override
-            .or(state.core.config.token_budget.auto_compact_token_limit)
-            .map(|limit| limit as u64)
-            .unwrap_or(0);
-    };
     let global = runtime
         .deps
         .config_store
@@ -501,13 +492,11 @@ fn effective_context_window_tokens(state: &SessionActorState, runtime: &ServerRu
         .expect("app config store mutex should not be poisoned")
         .effective_config()
         .compaction_token_limit;
-    // Live session override (from a hot global apply) wins; otherwise resolve
-    // from the global preference / model default.
-    if let Some(limit) = state.core.config.effective_context_window_override {
-        let model_window = u64::from(model.context_window.max(1));
-        return (limit as u64).min(model_window).max(1);
-    }
-    crate::runtime::context_occupancy::resolved_compaction_limit(global, model)
+    super::super::context_occupancy::occupancy_window_tokens(
+        state.core.config.effective_context_window_override,
+        model,
+        global,
+    )
 }
 
 fn append_terminal_history_items(

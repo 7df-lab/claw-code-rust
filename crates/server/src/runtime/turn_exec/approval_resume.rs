@@ -167,6 +167,7 @@ impl ServerRuntime {
     }
 
     /// Handles an approval decision from a restored or live interactive lane.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn resolve_approval_and_resume_turn(
         self: &Arc<Self>,
         host_session_id: SessionId,
@@ -405,6 +406,7 @@ impl ServerRuntime {
         continuation_result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_approval_continuation(
         self: &Arc<Self>,
         _host_session_id: SessionId,
@@ -456,7 +458,19 @@ impl ServerRuntime {
             self.tool_registry_for_actor_state(&working.state)
         };
         let usage_parent_session_id = working.state.parent_session_id();
-        let usage_context_window = Some(turn_config.model.context_window as u64);
+        let global_compaction = self
+            .deps
+            .config_store
+            .lock()
+            .expect("app config store mutex should not be poisoned")
+            .effective_config()
+            .compaction_token_limit;
+        let usage_context_window =
+            Some(crate::runtime::context_occupancy::occupancy_window_tokens(
+                working.state.core.config.effective_context_window_override,
+                Some(&turn_config.model),
+                global_compaction,
+            ));
         let stream = Arc::clone(&working.state.stream);
         let event_task = spawn_turn_event_stream(
             Arc::clone(self),

@@ -8,7 +8,6 @@ use devo_core::AppConfigStore;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::ModelCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::tools::ToolPlanConfig;
 use devo_core::tools::handlers;
 use devo_mcp::manager::RmcpMcpManager;
@@ -227,9 +226,12 @@ pub async fn run_server_process(
     let tool_plan = ToolPlanConfig::from_app_config(&config);
     let registry =
         handlers::build_registry_from_plan_with_mcp(&tool_plan, Arc::clone(&mcp_manager)).await;
-    let model_catalog: Arc<dyn ModelCatalog> = Arc::new(PresetModelCatalog::load_from_config(
-        &config.provider.model_overrides,
-    )?);
+    let model_catalog: Arc<dyn ModelCatalog> = Arc::new(
+        PresetModelCatalog::load_from_provider_config_with_overrides(
+            &config.provider_catalog_config(),
+            &config.provider.model_overrides,
+        )?,
+    );
     let default_model = model_catalog.resolve_for_turn(None)?.slug.clone();
     if !config.has_provider_configuration() {
         tracing::warn!(
@@ -263,7 +265,6 @@ pub async fn run_server_process(
             mcp_manager,
             provider.default_model,
             model_catalog,
-            Arc::new(ProviderVendorCatalog::default()),
             skill_catalog,
             AgentsMdConfig {
                 project_root_markers: config.project_root_markers.clone(),

@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
 use devo_core::AppConfigStore;
-use devo_core::ProviderVendorCatalog;
 use devo_core::normalize_native_path;
 use lru::LruCache;
 use tokio::sync::Mutex;
@@ -142,9 +141,6 @@ pub struct ServerRuntimeDependencies {
     /// Provider router facade for model invocation dispatch.
     #[allow(dead_code)]
     pub(crate) provider_router: Arc<dyn ProviderRouter>,
-    /// ProviderVendor catalog used to resolve current provider.
-    #[allow(dead_code)]
-    pub(crate) provider_vendor_catalog: Arc<ProviderVendorCatalog>,
     /// Model catalog used to resolve builtin prompt metadata.
     pub(crate) model_catalog: Arc<dyn ModelCatalog>,
     /// SQLite database for session metadata, token stats, and pending queues.
@@ -181,7 +177,6 @@ impl ServerRuntimeDependencies {
         mcp_manager: Arc<dyn McpManager>,
         default_model: String,
         model_catalog: Arc<dyn ModelCatalog>,
-        provider_vendor_catalog: Arc<ProviderVendorCatalog>,
         skill_catalog: Box<dyn SkillCatalog + Send>,
         agents_md: AgentsMdConfig,
         db: Arc<Database>,
@@ -202,7 +197,6 @@ impl ServerRuntimeDependencies {
         Self {
             provider_router,
             model_catalog,
-            provider_vendor_catalog,
             db,
             config_store,
             process_context,
@@ -382,12 +376,12 @@ mod tests {
     use devo_core::FileSystemSkillCatalog;
     use devo_core::Model;
     use devo_core::PresetModelCatalog;
-    use devo_core::ProviderVendorCatalog;
     use devo_core::SkillsConfig;
     use devo_core::tools::ToolRegistry;
     use devo_protocol::InputItem;
     use devo_protocol::ModelRequest;
     use devo_protocol::ModelResponse;
+    use devo_protocol::ProviderInfo;
     use devo_protocol::ProviderWireApi;
     use devo_protocol::StreamEvent;
     use devo_provider::ModelProviderSDK;
@@ -454,7 +448,6 @@ mod tests {
                     ..Model::default()
                 },
             ])),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
@@ -495,34 +488,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_for_workspace_loads_distinct_project_model_catalogs() {
+    async fn context_for_workspace_loads_distinct_project_provider_catalogs() {
         let deps = test_deps("");
         let root = unique_temp_dir("session-context-project-models");
         let workspace_a = root.join("workspace-a");
         let workspace_b = root.join("workspace-b");
         std::fs::create_dir_all(workspace_a.join(".devo")).expect("create workspace a config dir");
         std::fs::create_dir_all(workspace_b.join(".devo")).expect("create workspace b config dir");
-        let legacy_models_path = workspace_a.join(".devo").join("models.json");
-        let legacy_models =
-            br#"[{"slug":"legacy-only-workspace-model","display_name":"Legacy Only"}]"#;
-        std::fs::write(&legacy_models_path, legacy_models).expect("write legacy workspace models");
-        let absent_legacy_models_path = workspace_b.join(".devo").join("models.json");
         std::fs::write(
-            workspace_a.join(".devo").join("config.toml"),
+            workspace_a.join(".devo").join("providers.json"),
             r#"
-[model.workspace-a-model]
-display_name = "Workspace A"
+{
+  "provider": {
+    "workspace-a": {
+      "name": "Workspace A",
+      "models": {
+        "workspace-a-model": { "name": "Workspace A" }
+      }
+    }
+  }
+}
 "#,
         )
-        .expect("write workspace a config");
+        .expect("write workspace a provider catalog");
         std::fs::write(
-            workspace_b.join(".devo").join("config.toml"),
+            workspace_b.join(".devo").join("providers.json"),
             r#"
-[model.workspace-b-model]
-display_name = "Workspace B"
+{
+  "provider": {
+    "workspace-b": {
+      "name": "Workspace B",
+      "models": {
+        "workspace-b-model": { "name": "Workspace B" }
+      }
+    }
+  }
+}
 "#,
         )
-        .expect("write workspace b config");
+        .expect("write workspace b provider catalog");
 
         let context_a = deps
             .context_for_workspace(&workspace_a)
@@ -533,12 +537,10 @@ display_name = "Workspace B"
             .await
             .expect("load workspace b context");
 
-        assert_eq!(context_a.provider.name(), "noop");
-        assert_eq!(context_b.provider.name(), "noop");
         assert_eq!(
             context_a
                 .model_catalog
-                .get("workspace-a-model")
+                .get("workspace-a/workspace-a-model")
                 .expect("workspace a model")
                 .display_name,
             "Workspace A"
@@ -546,31 +548,23 @@ display_name = "Workspace B"
         assert_eq!(
             context_b
                 .model_catalog
-                .get("workspace-b-model")
+                .get("workspace-b/workspace-b-model")
                 .expect("workspace b model")
                 .display_name,
             "Workspace B"
         );
-        assert!(context_a.model_catalog.get("workspace-b-model").is_none());
-        assert!(context_b.model_catalog.get("workspace-a-model").is_none());
         assert!(
             context_a
                 .model_catalog
-                .get("legacy-only-workspace-model")
+                .get("workspace-b/workspace-b-model")
                 .is_none()
         );
         assert!(
             context_b
                 .model_catalog
-                .get("legacy-only-workspace-model")
+                .get("workspace-a/workspace-a-model")
                 .is_none()
         );
-        assert_eq!(
-            std::fs::read(&legacy_models_path).expect("read legacy workspace models"),
-            legacy_models
-        );
-        assert!(!absent_legacy_models_path.exists());
-
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -590,20 +584,27 @@ wire_apis = ["openai_chat_completions"]
 enabled = true
 model_slug = "catalog-slug"
 provider = "openrouter"
-request_model = "vendor/model-name"
+request_model = "catalog-slug"
 invocation_method = "openai_chat_completions"
 "#,
         );
         let workspace = unique_temp_dir("session-context-model-metadata");
         std::fs::create_dir_all(workspace.join(".devo")).expect("create workspace config dir");
         std::fs::write(
-            workspace.join(".devo").join("config.toml"),
+            workspace.join(".devo").join("providers.json"),
             r#"
-[model.catalog-slug]
-display_name = "Workspace Catalog Model"
+{
+  "provider": {
+    "openrouter": {
+      "models": {
+        "catalog-slug": { "name": "Workspace Catalog Model" }
+      }
+    }
+  }
+}
 "#,
         )
-        .expect("write workspace config");
+        .expect("write workspace provider catalog");
 
         let context = deps
             .context_for_workspace(&workspace)
@@ -621,7 +622,7 @@ display_name = "Workspace Catalog Model"
         assert_eq!(
             context
                 .model_catalog
-                .get("catalog-slug")
+                .get("openrouter/catalog-slug")
                 .expect("workspace catalog model")
                 .display_name,
             "Workspace Catalog Model"
@@ -667,6 +668,63 @@ proxy_url = "http://workspace-proxy.example:8080"
             .expect("load workspace context");
 
         assert_eq!(context.provider.name(), "openai");
+
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[tokio::test]
+    async fn context_for_workspace_rebuilds_after_shared_provider_store_mutation() {
+        let deps = test_deps(
+            r#"
+[defaults]
+model_binding = "main"
+
+[providers.openrouter]
+enabled = true
+name = "OpenRouter"
+wire_apis = ["openai_chat_completions"]
+
+[model_bindings.main]
+enabled = true
+model_slug = "catalog-slug"
+provider = "openrouter"
+request_model = "vendor/model-name"
+invocation_method = "openai_chat_completions"
+"#,
+        );
+        let workspace = unique_temp_dir("session-context-provider-store-mutation");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+
+        let initial = deps
+            .context_for_workspace(&workspace)
+            .await
+            .expect("load initial workspace context");
+
+        let mut provider = deps
+            .config_store
+            .lock()
+            .expect("config store")
+            .provider_connections()
+            .expect("read provider Connection")
+            .into_iter()
+            .next()
+            .expect("migrated provider Connection");
+        provider.base_url = Some("https://updated.example/v1".to_string());
+        deps.config_store
+            .lock()
+            .expect("config store")
+            .upsert_provider_connection(ProviderInfo { ..provider }, None, None, None)
+            .expect("persist provider Connection update");
+        deps.invalidate_workspace_contexts();
+
+        let updated = deps
+            .context_for_workspace(&workspace)
+            .await
+            .expect("load updated workspace context");
+        assert!(!Arc::ptr_eq(
+            &initial.provider_router,
+            &updated.provider_router
+        ));
 
         let _ = std::fs::remove_dir_all(workspace);
     }
@@ -788,7 +846,7 @@ invocation_method = "openai_chat_completions"
     }
 
     #[test]
-    fn resolve_turn_config_preserves_catalog_slug_and_uses_binding_request_model() {
+    fn resolve_turn_config_uses_canonical_model_reference_and_request_model() {
         let deps = test_deps(
             r#"
 [defaults]
@@ -830,16 +888,16 @@ invocation_method = "openai_chat_completions"
             /*reasoning_effort_selection*/ None,
         );
 
-        assert_eq!(turn_config.model.slug, "catalog-slug");
+        assert_eq!(turn_config.model.slug, "openrouter/vendor/model-name");
         assert_eq!(turn_config.request_model, "vendor/model-name");
         assert_eq!(
             turn_config.provider_route,
-            ProviderRoute::binding("openrouter", ProviderWireApi::OpenAIChatCompletions)
+            ProviderRoute::connection("openrouter", ProviderWireApi::OpenAIChatCompletions)
         );
     }
 
     #[test]
-    fn resolve_turn_config_maps_variant_slug_to_binding_request_model() {
+    fn resolve_turn_config_maps_canonical_variant_ref_to_binding_request_model() {
         let deps = test_deps(
             r#"
 [defaults]
@@ -852,36 +910,36 @@ wire_apis = ["openai_chat_completions"]
 
 [model_bindings.main]
 enabled = true
-model_slug = "catalog-slug"
+model_slug = "openrouter/vendor/model-name"
 provider = "openrouter"
 request_model = "vendor/model-name"
 invocation_method = "openai_chat_completions"
 
 [model_bindings.thinking]
 enabled = true
-model_slug = "catalog-slug-thinking"
+model_slug = "openrouter/vendor/model-name-thinking"
 provider = "openrouter"
 request_model = "vendor/model-name-thinking"
 invocation_method = "openai_chat_completions"
 
 [model_bindings.other-thinking]
 enabled = true
-model_slug = "catalog-slug-thinking"
+model_slug = "other/other-provider/model-name-thinking"
 provider = "other"
 request_model = "other-provider/model-name-thinking"
 invocation_method = "openai_chat_completions"
 "#,
         );
 
-        let turn_config = deps.resolve_turn_config(Some("catalog-slug"), None);
+        let turn_config = deps.resolve_turn_config(Some("openrouter/vendor/model-name"), None);
 
         assert_eq!(
-            turn_config.provider_request_model("catalog-slug-thinking"),
+            turn_config.provider_request_model("openrouter/vendor/model-name-thinking"),
             "vendor/model-name-thinking"
         );
         assert_eq!(
             turn_config.provider_route,
-            ProviderRoute::binding("openrouter", ProviderWireApi::OpenAIChatCompletions)
+            ProviderRoute::connection("openrouter", ProviderWireApi::OpenAIChatCompletions)
         );
     }
 

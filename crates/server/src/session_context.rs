@@ -15,6 +15,8 @@ use devo_core::McpManager;
 use devo_core::Model;
 use devo_core::ModelCatalog;
 use devo_core::PresetModelCatalog;
+use devo_core::ProviderConfigFile;
+use devo_core::ProviderHttpConfig;
 use devo_core::ProviderRequestModelMap;
 use devo_core::ResolvedSkill;
 use devo_core::ResolvedWebFetchConfig;
@@ -30,9 +32,9 @@ use devo_core::WebFetchConfig;
 use devo_core::WebSearchConfig;
 use devo_core::default_base_instructions;
 use devo_core::normalize_native_path;
-use devo_core::provider_request_model_map_for_binding;
+use devo_core::provider_request_config;
+use devo_core::provider_runtime_config_changed;
 use devo_core::read_user_auth_config;
-use devo_core::resolve_enabled_model_binding;
 use devo_core::resolve_web_fetch_config;
 use devo_core::resolve_web_search_config;
 use devo_core::tools::ToolPlanConfig;
@@ -67,6 +69,13 @@ pub(crate) struct SessionRuntimeContext {
     pub(crate) skill_catalog: Arc<StdMutex<Box<dyn SkillCatalog + Send>>>,
     pub(crate) agents_md: AgentsMdConfig,
     pub(crate) config_store: Arc<std::sync::Mutex<AppConfigStore>>,
+    /// Provider settings used to build this context's live adapters.
+    ///
+    /// `config_store` is shared and is intentionally mutable for settings
+    /// writes, so runtime reuse must compare against this immutable snapshot
+    /// instead of reading the current store through the inherited context.
+    pub(crate) provider_catalog_snapshot: ProviderConfigFile,
+    pub(crate) provider_http_snapshot: ProviderHttpConfig,
 }
 
 struct RoutedModelProvider {
@@ -122,6 +131,16 @@ impl SessionRuntimeContext {
         agents_md: AgentsMdConfig,
         config_store: Arc<std::sync::Mutex<AppConfigStore>>,
     ) -> Self {
+        let (provider_catalog_snapshot, provider_http_snapshot) = {
+            let config_store = config_store
+                .lock()
+                .expect("app config store mutex should not be poisoned");
+            let config = config_store.effective_config();
+            (
+                config.provider_catalog_config(),
+                config.provider_http.clone(),
+            )
+        };
         Self {
             provider,
             provider_router,
@@ -132,6 +151,8 @@ impl SessionRuntimeContext {
             skill_catalog,
             agents_md,
             config_store,
+            provider_catalog_snapshot,
+            provider_http_snapshot,
         }
     }
 
@@ -165,17 +186,18 @@ impl SessionRuntimeContext {
             .expect("app config store mutex should not be poisoned")
             .effective_config()
             .clone();
-        let has_provider_configuration = config.has_provider_configuration();
         let inherited_config = inherited_context
             .config_store
             .lock()
             .expect("inherited app config store mutex should not be poisoned")
             .effective_config()
             .clone();
-        let provider_runtime_config_changed = !config
-            .provider
-            .is_operationally_equivalent_to(&inherited_config.provider)
-            || config.provider_http != inherited_config.provider_http;
+        let provider_catalog = config.provider_catalog_config();
+        let provider_runtime_config_changed = provider_runtime_config_changed(
+            &provider_catalog,
+            &inherited_context.provider_catalog_snapshot,
+        ) || config.provider_http
+            != inherited_context.provider_http_snapshot;
         let workspace_cwd = workspace_root
             .map(Path::to_path_buf)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
@@ -226,33 +248,30 @@ impl SessionRuntimeContext {
             )));
             (registry, mcp_manager)
         };
-        let model_catalog: Arc<dyn ModelCatalog> = Arc::new(PresetModelCatalog::load_from_config(
-            &config.provider.model_overrides,
-        )?);
+        let model_catalog: Arc<dyn ModelCatalog> = Arc::new(
+            PresetModelCatalog::load_from_provider_config_with_overrides(
+                &provider_catalog,
+                &config.provider.model_overrides,
+            )?,
+        );
         let default_model = model_catalog.resolve_for_turn(None)?.slug.clone();
-        let (provider, provider_router, provider_default_model) =
-            if has_provider_configuration && provider_runtime_config_changed {
-                let provider =
-                    load_server_provider(&config, Some(default_model.as_str()), &user_config_dir)
-                        .context("load server provider for session workspace")?;
-                (
-                    provider.provider,
-                    provider.provider_router,
-                    provider.default_model,
-                )
-            } else if has_provider_configuration {
-                (
-                    Arc::clone(&inherited_context.provider),
-                    Arc::clone(&inherited_context.provider_router),
-                    inherited_context.default_model.clone(),
-                )
-            } else {
-                (
-                    Arc::clone(&inherited_context.provider),
-                    Arc::clone(&inherited_context.provider_router),
-                    default_model,
-                )
-            };
+        let (provider, provider_router, provider_default_model) = if provider_runtime_config_changed
+        {
+            let provider =
+                load_server_provider(&config, Some(default_model.as_str()), &user_config_dir)
+                    .context("load server provider for session workspace")?;
+            (
+                provider.provider,
+                provider.provider_router,
+                provider.default_model,
+            )
+        } else {
+            (
+                Arc::clone(&inherited_context.provider),
+                Arc::clone(&inherited_context.provider_router),
+                default_model,
+            )
+        };
         let skill_workspace_root = workspace_root
             .map(Path::to_path_buf)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
@@ -278,13 +297,15 @@ impl SessionRuntimeContext {
                 ..AgentsMdConfig::default()
             },
             config_store,
+            provider_catalog_snapshot: provider_catalog,
+            provider_http_snapshot: config.provider_http.clone(),
         }))
     }
 
     pub(crate) fn provider_for_route(&self, route: ProviderRoute) -> Arc<dyn ModelProviderSDK> {
         let provider_name = match &route {
             ProviderRoute::Default => self.provider.name().to_owned(),
-            ProviderRoute::Binding { provider_id, .. } => provider_id.clone(),
+            ProviderRoute::Connection { provider_id, .. } => provider_id.clone(),
         };
         Arc::new(RoutedModelProvider::new(
             Arc::clone(&self.provider_router),
@@ -390,8 +411,13 @@ impl SessionRuntimeContext {
     }
 
     pub(crate) fn resolve_turn_model(&self, requested_model: Option<&str>) -> Model {
-        if let Some(model) = requested_model.and_then(|requested| self.model_catalog.get(requested))
-        {
+        if let Some(model) = requested_model.and_then(|requested| {
+            self.model_catalog.get(requested).or_else(|| {
+                requested
+                    .rsplit_once('/')
+                    .and_then(|(base, _)| self.model_catalog.get(base))
+            })
+        }) {
             return model.clone();
         }
 
@@ -421,36 +447,80 @@ impl SessionRuntimeContext {
                 config_store.user_config_dir().to_path_buf(),
             )
         };
-        let provider_config = config.provider.clone();
+        let provider_config = config.provider_catalog_config();
+        let selected_model = requested_model
+            .or(provider_config.model.as_deref())
+            .or(Some(self.default_model.as_str()));
+        let selection = selected_model
+            .and_then(|model| provider_config.resolve_model(Some(model)).ok())
+            .or_else(|| provider_config.resolve_model(None).ok());
 
-        if let Some(binding) = resolve_enabled_model_binding(&provider_config, requested_model) {
-            let provider = provider_config.providers.get(&binding.provider_id);
-            let binding_config = provider_config.model_bindings.get(&binding.binding_id);
+        if let Some(selection) = selection {
+            let provider = provider_config.providers.get(&selection.provider_id);
+            let model_config =
+                provider.and_then(|provider| provider.models.get(&selection.model_id));
             let web_search = self.resolve_turn_web_search(
                 &config,
                 &user_config_dir,
                 provider.and_then(|provider| provider.web_search.as_ref()),
-                binding_config.and_then(|binding| binding.web_search.as_ref()),
+                model_config
+                    .as_ref()
+                    .and_then(|model| model.web_search.as_ref()),
             );
             let web_fetch = self.resolve_turn_web_fetch(
                 &config,
                 provider.and_then(|provider| provider.web_fetch.as_ref()),
-                binding_config.and_then(|binding| binding.web_fetch.as_ref()),
+                model_config
+                    .as_ref()
+                    .and_then(|model| model.web_fetch.as_ref()),
             );
-            let provider_request_models = ProviderRequestModelMap::new(
-                provider_request_model_map_for_binding(&provider_config, &binding),
+            let mut model_config = model_config.cloned();
+            if let Some(model) = model_config.as_mut() {
+                model.migrate_reasoning_implementation_into_variants();
+            }
+            let effort_for_variant = reasoning_effort_selection.clone().or_else(|| {
+                model_config
+                    .as_ref()
+                    .and_then(|model| model.default_reasoning_selection.clone())
+            });
+            let variant_id = model_config.as_ref().and_then(|model| {
+                model.resolve_turn_variant_id(
+                    selection.variant_id.as_deref(),
+                    effort_for_variant.as_deref(),
+                )
+            });
+            let (request_defaults, request_headers) = provider_request_config(
+                &provider_config,
+                &selection.provider_id,
+                &selection.model_id,
+                variant_id.as_deref(),
             );
-            let binding_id = binding.binding_id.clone();
+            let provider_request_models = provider_config
+                .providers
+                .get(&selection.provider_id)
+                .into_iter()
+                .flat_map(|provider| provider.models.keys())
+                .map(|model_id| {
+                    (
+                        format!("{}/{model_id}", selection.provider_id),
+                        model_id.clone(),
+                    )
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            let provider_request_models = ProviderRequestModelMap::new(provider_request_models)
+                .with_request_config(request_defaults, request_headers);
+            let model_reference = format!("{}/{}", selection.provider_id, selection.model_id);
             let mut turn_config = TurnConfig::with_provider_route_and_web_tools(
-                self.catalog_model_or_fallback(&binding.model_slug),
-                binding.request_model,
+                self.catalog_model_or_fallback(&model_reference),
+                selection.model_id,
                 provider_request_models,
-                ProviderRoute::binding(binding.provider_id, binding.invocation_method),
+                ProviderRoute::connection(selection.provider_id.clone(), selection.wire_api),
                 web_search,
                 web_fetch,
                 reasoning_effort_selection,
             );
-            turn_config.model_binding_id = Some(binding_id);
+            turn_config.model_binding_id = Some(model_reference);
+            turn_config.variant = variant_id;
             return turn_config;
         }
 
@@ -468,7 +538,7 @@ impl SessionRuntimeContext {
         config: &AppConfig,
         user_config_dir: &Path,
         provider_override: Option<&WebSearchConfig>,
-        binding_override: Option<&WebSearchConfig>,
+        model_override: Option<&WebSearchConfig>,
     ) -> ResolvedWebSearchConfig {
         let auth = match read_user_auth_config(&user_config_dir.join(AUTH_CONFIG_FILE_NAME)) {
             Ok(auth) => auth,
@@ -480,7 +550,7 @@ impl SessionRuntimeContext {
         match resolve_web_search_config(
             &config.tools.web_search,
             provider_override,
-            binding_override,
+            model_override,
             &auth,
         ) {
             Ok(web_search) => web_search,
@@ -495,9 +565,9 @@ impl SessionRuntimeContext {
         &self,
         config: &AppConfig,
         provider_override: Option<&WebFetchConfig>,
-        binding_override: Option<&WebFetchConfig>,
+        model_override: Option<&WebFetchConfig>,
     ) -> ResolvedWebFetchConfig {
-        resolve_web_fetch_config(&config.tools.web_fetch, provider_override, binding_override)
+        resolve_web_fetch_config(&config.tools.web_fetch, provider_override, model_override)
     }
 
     pub(crate) fn discover_skills(

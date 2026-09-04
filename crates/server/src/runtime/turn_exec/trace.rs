@@ -24,6 +24,7 @@ pub(super) fn query_event_delivery_policy(event: &QueryEvent) -> QueryEventDeliv
         | QueryEvent::ContextCompactionStarted
         | QueryEvent::ContextCompactionCompleted { .. }
         | QueryEvent::ContextCompactionFailed { .. }
+        | QueryEvent::ContextEstimate { .. }
         | QueryEvent::TextDelta(_)
         | QueryEvent::ReasoningDelta(_)
         | QueryEvent::ReasoningCompleted
@@ -49,6 +50,7 @@ pub(super) fn query_event_trace_kind(event: &QueryEvent) -> &'static str {
         QueryEvent::ContextCompactionStarted => "context_compaction_started",
         QueryEvent::ContextCompactionCompleted { .. } => "context_compaction_completed",
         QueryEvent::ContextCompactionFailed { .. } => "context_compaction_failed",
+        QueryEvent::ContextEstimate { .. } => "context_estimate",
         QueryEvent::TextDelta(_) => "text_delta",
         QueryEvent::ReasoningDelta(_) => "reasoning_delta",
         QueryEvent::ReasoningCompleted => "reasoning_completed",
@@ -77,6 +79,7 @@ pub(super) fn query_event_trace_delta_len(event: &QueryEvent) -> usize {
         | QueryEvent::ContextCompactionStarted
         | QueryEvent::ContextCompactionCompleted { .. }
         | QueryEvent::ContextCompactionFailed { .. }
+        | QueryEvent::ContextEstimate { .. }
         | QueryEvent::ReasoningCompleted
         | QueryEvent::ToolUseStart { .. }
         | QueryEvent::ToolUseInputDelta { .. }
@@ -95,6 +98,7 @@ pub(super) fn query_event_trace_token_preview(event: &QueryEvent) -> Option<Stri
         | QueryEvent::ContextCompactionStarted
         | QueryEvent::ContextCompactionCompleted { .. }
         | QueryEvent::ContextCompactionFailed { .. }
+        | QueryEvent::ContextEstimate { .. }
         | QueryEvent::ReasoningDelta(_)
         | QueryEvent::ReasoningCompleted
         | QueryEvent::ToolUseStart { .. }

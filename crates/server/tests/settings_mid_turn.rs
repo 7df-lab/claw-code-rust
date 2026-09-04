@@ -15,7 +15,6 @@ use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
 use devo_core::AppConfigStore;
-use devo_core::ProviderVendorCatalog;
 use futures::StreamExt;
 use futures::stream;
 use pretty_assertions::assert_eq;
@@ -324,7 +323,6 @@ fn build_runtime(
             devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::default()),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 enabled: false,
                 user_roots: Vec::new(),
@@ -656,7 +654,7 @@ async fn mid_turn_model_switch_reaches_next_model_request() -> Result<()> {
                 "params": {
                     "sessionId": session_id.to_string(),
                     "expectedVersion": 1,
-                    "model": { "provider": "builtin", "model": "gpt-5.5" }
+                    "model": { "provider": "openai", "model": "gpt-5.5" }
                 }
             }),
         )
@@ -666,7 +664,7 @@ async fn mid_turn_model_switch_reaches_next_model_request() -> Result<()> {
         serde_json::from_value(switch_response["result"].clone())
             .with_context(|| format!("model switch response: {switch_response}"))?;
     assert!(switch_result.applied_to_active_turn);
-    assert_eq!(switch_result.session.model.model, "gpt-5.5");
+    assert_eq!(switch_result.session.model.model, "openai/gpt-5.5");
 
     // Releasing the tool lets the loop build the next request, which must
     // already use the switched model.
@@ -694,7 +692,7 @@ async fn mid_turn_model_switch_reaches_next_model_request() -> Result<()> {
     .context("second model request should arrive")?;
     assert_eq!(
         second_request_model.as_deref(),
-        Some("gpt-5.5"),
+        Some("openai/gpt-5.5"),
         "the next model request must use the switched model"
     );
 

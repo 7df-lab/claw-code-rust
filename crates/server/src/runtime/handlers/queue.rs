@@ -896,6 +896,7 @@ pub(crate) fn native_turn_from_metadata(turn: &crate::turn::TurnMetadata) -> Nat
             } else {
                 turn.request_model.clone()
             },
+            variant: None,
             reasoning_effort: turn
                 .reasoning_effort_selection
                 .as_deref()

@@ -408,9 +408,9 @@ base_instructions = "Catalog-only model instructions"
     assert_eq!(model_option["category"], serde_json::json!("model"));
     assert_eq!(
         model_option["currentValue"],
-        serde_json::json!("test-openai")
+        serde_json::json!("openai/test-model")
     );
-    assert_model_config_option_values(model_option, &["alt-openai", "test-openai"])?;
+    assert_model_config_option_values(model_option, &["openai/alt-model", "openai/test-model"])?;
     assert_config_option_lacks_value(model_option, "catalog-only-model")?;
     let reasoning_effort_option =
         acp_config_option(&session_new_response["result"], "thought_level")?;
@@ -467,7 +467,7 @@ base_instructions = "Catalog-only model instructions"
     let model_option = acp_model_config_option(&set_reasoning_effort_response["result"])?;
     assert_eq!(
         model_option["currentValue"],
-        serde_json::json!("test-openai")
+        serde_json::json!("openai/test-model")
     );
 
     let reasoning_effort_prompt = "use the selected ACP reasoning effort";
@@ -505,7 +505,7 @@ base_instructions = "Catalog-only model instructions"
             "params": {
                 "sessionId": session_id,
                 "configId": "model",
-                "value": "alt-openai"
+                "value": "openai/alt-model"
             }
         }),
     )
@@ -521,7 +521,7 @@ base_instructions = "Catalog-only model instructions"
     let model_option = acp_model_config_option(&set_config_response["result"])?;
     assert_eq!(
         model_option["currentValue"],
-        serde_json::json!("alt-openai")
+        serde_json::json!("openai/alt-model")
     );
     assert!(acp_config_option_optional(&set_config_response["result"], "thought_level").is_none());
     let mode_option = acp_config_option(&set_config_response["result"], "mode")?;
@@ -560,7 +560,7 @@ base_instructions = "Catalog-only model instructions"
     let model_option = acp_model_config_option(&set_mode_response["result"])?;
     assert_eq!(
         model_option["currentValue"],
-        serde_json::json!("alt-openai")
+        serde_json::json!("openai/alt-model")
     );
 
     let prompt = "use the selected ACP model binding";

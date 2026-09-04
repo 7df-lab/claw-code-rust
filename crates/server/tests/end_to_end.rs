@@ -9,7 +9,6 @@ use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
 use devo_core::AppConfigStore;
-use devo_core::ProviderVendorCatalog;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -465,7 +464,6 @@ async fn websocket_listener_supports_handshake_subscription_and_turn_lifecycle()
             devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::default()),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig::default())),
             devo_core::AgentsMdConfig::default(),
             db,
@@ -668,7 +666,6 @@ async fn websocket_turn_streams_final_tool_metadata_for_read_and_glob() -> Resul
             devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::default()),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig::default())),
             devo_core::AgentsMdConfig::default(),
             db,

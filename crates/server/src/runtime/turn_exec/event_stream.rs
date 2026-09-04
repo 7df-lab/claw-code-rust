@@ -94,6 +94,7 @@ pub(crate) fn spawn_turn_event_stream(
         let mut latest_query_usage = None;
         let mut stop_reason = None;
         let mut context_compaction = ContextCompactionLifecycle::default();
+        let mut last_context_breakdown: Option<devo_core::RawContextBreakdown> = None;
         while let Some(event) = event_rx.recv().await {
             log_dequeued_query_event(&event);
             match event {
@@ -140,6 +141,15 @@ pub(crate) fn spawn_turn_event_stream(
                     context_compaction
                         .fail(&runtime, session_id, turn_for_events.turn_id, message)
                         .await;
+                }
+                devo_core::QueryEvent::ContextEstimate { breakdown } => {
+                    // Keep the latest category mix for provider-anchored
+                    // occupancy on Usage / UsageDelta. Do not broadcast here:
+                    // raw heuristic totals are not on the same scale as
+                    // provider display totals, and publishing them makes the
+                    // context bar drop then snap back (TUI prefers live
+                    // TurnUsageUpdated for the fill amount for the same reason).
+                    last_context_breakdown = Some(breakdown);
                 }
                 devo_core::QueryEvent::TextDelta(text) => {
                     if let Some(parser) = proposed_plan_parser.as_mut() {
@@ -299,18 +309,30 @@ pub(crate) fn spawn_turn_event_stream(
                                 kind,
                             )
                             .await;
-                    } else if let Some(snapshot) = runtime
-                        .publish_parent_turn_usage(
-                            session_id,
-                            turn_for_events.turn_id,
-                            usage,
-                            usage_context_window,
-                            kind,
-                        )
-                        .await
-                    {
-                        turn_usage = Some(snapshot.turn_usage.to_turn_usage());
-                        latest_query_usage = Some(snapshot.latest_query_usage.to_turn_usage());
+                    } else {
+                        if let Some(snapshot) = runtime
+                            .publish_parent_turn_usage(
+                                session_id,
+                                turn_for_events.turn_id,
+                                usage.clone(),
+                                usage_context_window,
+                                kind,
+                            )
+                            .await
+                        {
+                            turn_usage = Some(snapshot.turn_usage.to_turn_usage());
+                            latest_query_usage = Some(snapshot.latest_query_usage.to_turn_usage());
+                        }
+                        if let Some(raw) = last_context_breakdown {
+                            runtime
+                                .publish_live_context_occupancy(
+                                    session_id,
+                                    usage_context_window,
+                                    raw,
+                                    usage.display_total_tokens() as u64,
+                                )
+                                .await;
+                        }
                     }
                 }
                 devo_core::QueryEvent::Usage { usage } => {
@@ -327,18 +349,30 @@ pub(crate) fn spawn_turn_event_stream(
                                 kind,
                             )
                             .await;
-                    } else if let Some(snapshot) = runtime
-                        .publish_parent_turn_usage(
-                            session_id,
-                            turn_for_events.turn_id,
-                            usage,
-                            usage_context_window,
-                            kind,
-                        )
-                        .await
-                    {
-                        turn_usage = Some(snapshot.turn_usage.to_turn_usage());
-                        latest_query_usage = Some(snapshot.latest_query_usage.to_turn_usage());
+                    } else {
+                        if let Some(snapshot) = runtime
+                            .publish_parent_turn_usage(
+                                session_id,
+                                turn_for_events.turn_id,
+                                usage.clone(),
+                                usage_context_window,
+                                kind,
+                            )
+                            .await
+                        {
+                            turn_usage = Some(snapshot.turn_usage.to_turn_usage());
+                            latest_query_usage = Some(snapshot.latest_query_usage.to_turn_usage());
+                        }
+                        if let Some(raw) = last_context_breakdown {
+                            runtime
+                                .publish_live_context_occupancy(
+                                    session_id,
+                                    usage_context_window,
+                                    raw,
+                                    usage.display_total_tokens() as u64,
+                                )
+                                .await;
+                        }
                     }
                 }
                 devo_core::QueryEvent::TurnComplete {
@@ -781,7 +815,7 @@ async fn handle_tool_input_delta(
     let Some(pending) = pending_tool_calls.get(&tool_use_id) else {
         return;
     };
-    let Some(item_id) = pending.item_id.clone() else {
+    let Some(item_id) = pending.item_id else {
         return;
     };
     let chunk_index = tool_input_delta_seqs

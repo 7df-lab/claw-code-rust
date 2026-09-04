@@ -80,6 +80,7 @@ impl UsageLedger {
             model: ModelBinding {
                 provider: provider.to_owned(),
                 model: request.model.clone(),
+                variant: None,
                 reasoning_effort: request.reasoning_effort,
             },
             outcome,
@@ -343,6 +344,7 @@ mod tests {
                 model: ModelBinding {
                     provider: "test-provider".into(),
                     model: "wire-model".into(),
+                    variant: None,
                     reasoning_effort: None,
                 },
                 outcome: UsageCallOutcome::Succeeded,

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use devo_core::resolve_small_model;
+
 use crate::titles::build_title_generation_request;
 use crate::titles::heuristic_title_from_user_input;
 use crate::titles::normalize_generated_title;
@@ -280,15 +282,52 @@ impl ServerRuntime {
             return true;
         }
 
-        let model_selection = title_context
+        let configured_small_model = title_context
+            .runtime_context
+            .config_store
+            .lock()
+            .expect("app config store mutex should not be poisoned")
+            .effective_config()
+            .provider_catalog_config()
+            .small_model;
+        let primary_selection = title_context
             .model_selection
             .clone()
             .unwrap_or_else(|| title_context.runtime_context.default_model.clone());
         let reasoning_effort_selection = title_context.reasoning_effort_selection.clone();
         let runtime_context = title_context.runtime_context;
-
-        let turn_config = runtime_context
-            .resolve_turn_config(Some(model_selection.as_str()), reasoning_effort_selection);
+        let primary_turn_config = runtime_context.resolve_turn_config(
+            Some(primary_selection.as_str()),
+            reasoning_effort_selection.clone(),
+        );
+        let configured_small_model = configured_small_model.filter(|model_ref| {
+            let Some((provider_id, model_id)) = model_ref.split_once('/') else {
+                return false;
+            };
+            let provider_models = runtime_context
+                .model_catalog
+                .list_provider_models(provider_id);
+            provider_models.contains_key(model_id)
+                || model_id
+                    .rsplit_once('/')
+                    .is_some_and(|(base_model_id, variant_id)| {
+                        provider_models
+                            .get(base_model_id)
+                            .is_some_and(|model| model.variants.contains_key(variant_id))
+                    })
+        });
+        let small_model_selection = configured_small_model.or_else(|| {
+            resolve_small_model(
+                runtime_context.model_catalog.as_ref(),
+                primary_turn_config.model.slug.as_str(),
+            )
+        });
+        let turn_config = if let Some(model_selection) = small_model_selection {
+            runtime_context
+                .resolve_turn_config(Some(model_selection.as_str()), reasoning_effort_selection)
+        } else {
+            primary_turn_config
+        };
         let resolved_request = turn_config
             .model
             .resolve_reasoning_effort_selection(turn_config.reasoning_effort_selection.as_deref());

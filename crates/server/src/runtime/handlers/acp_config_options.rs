@@ -109,8 +109,8 @@ impl ServerRuntime {
 
                 let updated = session_arc
                     .update_session_metadata(
-                        Some(turn_config.model.slug.clone()),
-                        turn_config.model_binding_id.clone(),
+                        Some(value.clone()),
+                        None,
                         turn_config.reasoning_effort_selection.clone(),
                         None,
                     )
@@ -178,8 +178,8 @@ impl ServerRuntime {
 
                 let updated = session_arc
                     .update_session_metadata(
-                        Some(turn_config.model.slug.clone()),
-                        turn_config.model_binding_id.clone(),
+                        Some(canonical_model_selection(&turn_config)),
+                        None,
                         turn_config.reasoning_effort_selection.clone(),
                         None,
                     )
@@ -408,10 +408,7 @@ fn acp_model_config_option_for_turn_config(
     runtime_context: &SessionRuntimeContext,
     turn_config: &TurnConfig,
 ) -> AcpSessionConfigOption {
-    let current_value = turn_config
-        .model_binding_id
-        .clone()
-        .unwrap_or_else(|| turn_config.model.slug.clone());
+    let current_value = canonical_model_selection(turn_config);
     let config = runtime_context
         .config_store
         .lock()
@@ -419,40 +416,72 @@ fn acp_model_config_option_for_turn_config(
         .effective_config()
         .clone();
 
+    let provider_catalog = config.provider_catalog_config();
     let mut options = Vec::new();
     let mut seen_values = BTreeSet::new();
-    for (binding_id, binding) in &config.provider.model_bindings {
-        if !binding.enabled || !seen_values.insert(binding_id.clone()) {
+    for (provider_id, provider) in &provider_catalog.providers {
+        if provider.enabled == Some(false) {
             continue;
         }
-        let model_display_name = runtime_context
-            .model_catalog
-            .get(&binding.model_slug)
-            .map(|model| model.display_name.as_str())
-            .and_then(non_empty_str);
-        let name = binding
-            .display_name
+        let provider_name = provider
+            .name
             .as_deref()
             .and_then(non_empty_str)
-            .or(model_display_name)
-            .unwrap_or(binding.model_slug.as_str())
-            .to_string();
-        let provider_name = config
-            .provider
-            .providers
-            .get(&binding.provider)
-            .map(|provider| provider.name.as_str())
-            .and_then(non_empty_str)
-            .unwrap_or(binding.provider.as_str());
-        options.push(AcpSessionConfigSelectOption {
-            value: binding_id.clone(),
-            name,
-            description: Some(format!(
-                "{provider_name}: {} via {}",
-                binding.request_model, binding.invocation_method
-            )),
-            meta: None,
-        });
+            .unwrap_or(provider_id.as_str());
+        let provider_wire_api = provider
+            .wire_api
+            .unwrap_or(devo_protocol::ProviderWireApi::OpenAIChatCompletions);
+        for (model_id, model) in &provider.models {
+            if model.enabled == Some(false) {
+                continue;
+            }
+            let model_value = format!("{provider_id}/{model_id}");
+            if !seen_values.insert(model_value.clone()) {
+                continue;
+            }
+            let model_display_name = runtime_context
+                .model_catalog
+                .get(&model_value)
+                .map(|model| model.display_name.as_str())
+                .and_then(non_empty_str);
+            let name = model
+                .name
+                .as_deref()
+                .and_then(non_empty_str)
+                .or(model_display_name)
+                .unwrap_or(model_id.as_str())
+                .to_string();
+            let wire_api = model.wire_api.unwrap_or(provider_wire_api);
+            options.push(AcpSessionConfigSelectOption {
+                value: model_value.clone(),
+                name: name.clone(),
+                description: Some(format!("{provider_name}: {model_id} via {wire_api}")),
+                meta: None,
+            });
+
+            for (variant_id, variant) in &model.variants {
+                if variant.disabled {
+                    continue;
+                }
+                let value = format!("{model_value}/{variant_id}");
+                if !seen_values.insert(value.clone()) {
+                    continue;
+                }
+                let variant_name = variant
+                    .label
+                    .clone()
+                    .filter(|label| !label.trim().is_empty())
+                    .unwrap_or_else(|| variant_id.replace(['-', '_'], " "));
+                options.push(AcpSessionConfigSelectOption {
+                    value,
+                    name: format!("{name} ({variant_name})"),
+                    description: Some(format!(
+                        "{provider_name}: {variant_id} variant for {model_id}"
+                    )),
+                    meta: None,
+                });
+            }
+        }
     }
 
     if !seen_values.contains(&current_value) {
@@ -478,6 +507,20 @@ fn acp_model_config_option_for_turn_config(
         options: AcpSessionConfigSelectOptions::Ungrouped(options),
         meta: None,
     }
+}
+
+fn canonical_model_selection(turn_config: &TurnConfig) -> String {
+    let base = match &turn_config.provider_route {
+        devo_provider::ProviderRoute::Connection { provider_id, .. } => {
+            format!("{provider_id}/{}", turn_config.request_model)
+        }
+        devo_provider::ProviderRoute::Default => turn_config.model.slug.clone(),
+    };
+    turn_config
+        .variant
+        .as_deref()
+        .map(|variant| format!("{base}/{variant}"))
+        .unwrap_or(base)
 }
 
 fn acp_reasoning_effort_config_option_for_session(

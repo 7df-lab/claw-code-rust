@@ -7,7 +7,6 @@
 use std::collections::HashSet;
 
 use chrono::Utc;
-use tracing;
 
 use super::super::*;
 use crate::execution::PersistedTurnItem;

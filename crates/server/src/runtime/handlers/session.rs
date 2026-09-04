@@ -754,37 +754,11 @@ impl ServerRuntime {
                 overlay_mode = Some(mode);
             }
             if settings.effective_context_window != current.effective_context_window
-                && let Some(window) = settings.effective_context_window
+                && settings.effective_context_window.is_some()
             {
-                if window == 0 {
-                    return self.error_response(
-                        request_id,
-                        ProtocolErrorCode::InvalidParams,
-                        "effectiveContextWindow must be at least 1",
-                    );
-                }
-                // Durability target is the global config.toml (L2-DES-CONV-002
-                // DD-6); no field line is written. The canonical path applies
-                // only to the addressed session — the legacy compaction
-                // handler keeps the all-sessions fan-out until Phase C.
-                {
-                    let mut store = self
-                        .deps
-                        .config_store
-                        .lock()
-                        .expect("app config store mutex should not be poisoned");
-                    if let Err(error) = store.set_compaction_token_limit(window) {
-                        return self.error_response(
-                            request_id,
-                            ProtocolErrorCode::InternalError,
-                            format!("failed to persist compaction_token_limit: {error}"),
-                        );
-                    }
-                }
-                self.deps.invalidate_workspace_contexts();
-                // Resolve the model through the same two-catalog chain the
-                // legacy handler used: the workspace runtime context's
-                // catalog first, then the deps catalog (mailbox-free).
+                // Product: auto-compact threshold is removed. Ignore patches that
+                // try to set a global/session absolute limit; echo the model
+                // effective window for older clients.
                 let workspace_catalog = self
                     .deps
                     .context_for_workspace(&session_cwd)
@@ -797,8 +771,7 @@ impl ServerRuntime {
                     .or_else(|| self.deps.model_catalog.get(&session_model_slug).cloned());
                 if let Some(model) = model {
                     let applied = crate::runtime::context_occupancy::resolved_compaction_limit(
-                        Some(window),
-                        &model,
+                        /*global*/ None, &model,
                     );
                     if let Some(handle) = session_handle.as_ref() {
                         handle.notify_effective_context_window(applied as usize);
@@ -808,17 +781,31 @@ impl ServerRuntime {
                 }
             }
         }
-        if let Some(binding) = &params.model
-            && binding.model != session_model_slug
-        {
-            if rollout_path.is_some() {
-                settings_changes.push((
-                    SessionSettingsField::Model,
-                    serde_json::to_value(Some(binding.model.clone()))
-                        .expect("serialize model setting"),
-                ));
+        if let Some(binding) = &params.model {
+            let mut model_selection = if binding.provider.trim().is_empty()
+                || binding
+                    .model
+                    .starts_with(&format!("{}/", binding.provider.trim()))
+            {
+                binding.model.clone()
+            } else {
+                format!("{}/{}", binding.provider.trim(), binding.model)
+            };
+            if let Some(variant) = binding.variant.as_deref()
+                && !model_selection.ends_with(&format!("/{variant}"))
+            {
+                model_selection = format!("{model_selection}/{variant}");
             }
-            overlay_model = Some(binding.model.clone());
+            if model_selection != session_model_slug {
+                if rollout_path.is_some() {
+                    settings_changes.push((
+                        SessionSettingsField::Model,
+                        serde_json::to_value(Some(model_selection.clone()))
+                            .expect("serialize model setting"),
+                    ));
+                }
+                overlay_model = Some(model_selection);
+            }
         }
 
         // A model slug and its provider binding are one logical selection. A
@@ -831,14 +818,13 @@ impl ServerRuntime {
         } else {
             params.model_binding_id.clone().map(Some)
         };
-        if let Some(model_binding_id) = &model_binding_update {
-            if rollout_path.is_some() {
-                settings_changes.push((
-                    SessionSettingsField::ModelBindingId,
-                    serde_json::to_value(model_binding_id)
-                        .expect("serialize model binding setting"),
-                ));
-            }
+        if let Some(model_binding_id) = &model_binding_update
+            && rollout_path.is_some()
+        {
+            settings_changes.push((
+                SessionSettingsField::ModelBindingId,
+                serde_json::to_value(model_binding_id).expect("serialize model binding setting"),
+            ));
         }
         if let Some(path) = rollout_path.as_ref()
             && !settings_changes.is_empty()
@@ -866,26 +852,25 @@ impl ServerRuntime {
         // One consolidated metadata notification carrying every field's new
         // or current value: the actor overwrites absent fields on non-
         // mode-only updates, so partial notifications would wipe them.
-        if overlay_model.is_some()
+        if (overlay_model.is_some()
             || overlay_effort.is_some()
             || overlay_mode.is_some()
-            || model_binding_update.is_some()
+            || model_binding_update.is_some())
+            && let Some(handle) = session_handle.as_ref()
         {
-            if let Some(handle) = session_handle.as_ref() {
-                handle.notify_session_metadata(
-                    Some(
-                        overlay_model
-                            .clone()
-                            .or(current_model_slug)
-                            .unwrap_or_else(|| session_model_slug.clone()),
-                    ),
-                    model_binding_update
+            handle.notify_session_metadata(
+                Some(
+                    overlay_model
                         .clone()
-                        .unwrap_or_else(|| current_binding_id.clone()),
-                    overlay_effort.clone().or(current_effort),
-                    overlay_mode,
-                );
-            }
+                        .or(current_model_slug)
+                        .unwrap_or_else(|| session_model_slug.clone()),
+                ),
+                model_binding_update
+                    .clone()
+                    .unwrap_or_else(|| current_binding_id.clone()),
+                overlay_effort.clone().or(current_effort),
+                overlay_mode,
+            );
         }
 
         // Phase 3: deliver the override to the running turn's inline state,
@@ -1042,49 +1027,10 @@ impl ServerRuntime {
             };
             Self::native_session_from_index_metadata(index_metadata, legacy_session_id)
         };
-        // The compaction limit's durability target is config.toml, so the
-        // rollout re-read does not reflect it; echo the clamped applied value.
+        // Echo applied model effective window for older clients. Do not fan out
+        // a global compaction preference — that product surface is removed.
         if let Some(applied) = applied_window {
             session.settings.effective_context_window = Some(applied);
-        }
-        // Compaction settings are global, so update loaded sibling sessions
-        // after the addressed session has been persisted. This keeps the
-        // canonical settings patch behavior identical for every session
-        // without reintroducing a standalone compaction RPC.
-        if let Some(global) = params
-            .settings
-            .as_ref()
-            .and_then(|settings| settings.effective_context_window)
-        {
-            for handle in self.list_session_handles().await {
-                if handle.id() == legacy_session_id {
-                    continue;
-                }
-                let session_model = self
-                    .deps
-                    .db
-                    .get_session_index(&handle.id())
-                    .ok()
-                    .flatten()
-                    .and_then(|index| index.metadata.model.or(index.metadata.model_binding_id))
-                    .and_then(|slug| self.deps.model_catalog.get(&slug).cloned());
-                let Some(session_model) = session_model else {
-                    continue;
-                };
-                let applied_for_session =
-                    crate::runtime::context_occupancy::resolved_compaction_limit(
-                        Some(global),
-                        &session_model,
-                    );
-                handle.notify_effective_context_window(applied_for_session as usize);
-                self.broadcast_event(ServerEvent::SessionEffectiveContextWindowUpdated(
-                    SessionEffectiveContextWindowUpdatedPayload {
-                        session_id: handle.id(),
-                        effective_context_window: applied_for_session,
-                    },
-                ))
-                .await;
-            }
         }
         serde_json::to_value(SuccessResponse {
             id: request_id,
@@ -1154,6 +1100,7 @@ impl ServerRuntime {
                     .clone()
                     .unwrap_or_else(|| "unknown".to_string()),
                 model: metadata.model.clone().unwrap_or_default(),
+                variant: None,
                 reasoning_effort: metadata
                     .reasoning_effort_selection
                     .as_deref()
@@ -1841,14 +1788,14 @@ impl ServerRuntime {
             );
         };
 
-        if let Some(legacy_turn_id) = fork_at_turn_id {
-            if self.runtime_active_turn_id(legacy_session_id).await == Some(legacy_turn_id) {
-                return self.error_response(
-                    request_id,
-                    ProtocolErrorCode::ForkTurnNotStable,
-                    "atTurnId names an in-progress turn",
-                );
-            }
+        if let Some(legacy_turn_id) = fork_at_turn_id
+            && self.runtime_active_turn_id(legacy_session_id).await == Some(legacy_turn_id)
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::ForkTurnNotStable,
+                "atTurnId names an in-progress turn",
+            );
         }
 
         let user_turn_index = match fork_at_turn_id {

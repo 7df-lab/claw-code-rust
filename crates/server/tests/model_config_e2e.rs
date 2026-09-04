@@ -75,7 +75,11 @@ base_instructions = "Catalog-only model instructions"
     assert!(
         preferences["availableModels"]
             .as_array()
-            .is_some_and(|models| { models.iter().any(|model| model["value"] == "test-openai") })
+            .is_some_and(|models| {
+                models
+                    .iter()
+                    .any(|model| model["value"] == "openai/test-model")
+            })
     );
     assert!(
         preferences["availableEfforts"]
@@ -88,21 +92,21 @@ base_instructions = "Catalog-only model instructions"
         .expect("availableModels array");
     let test_model = available_models
         .iter()
-        .find(|model| model["value"] == "test-openai")
-        .expect("test-openai binding");
+        .find(|model| model["value"] == "openai/test-model")
+        .expect("openai/test-model option");
     let alt_model = available_models
         .iter()
-        .find(|model| model["value"] == "alt-openai")
-        .expect("alt-openai binding");
+        .find(|model| model["value"] == "openai/alt-model")
+        .expect("openai/alt-model option");
     let test_efforts: Vec<&str> = test_model["availableEfforts"]
         .as_array()
-        .expect("test-openai availableEfforts")
+        .expect("openai/test-model availableEfforts")
         .iter()
         .map(|effort| effort["value"].as_str().expect("effort value"))
         .collect();
     let alt_efforts: Vec<&str> = alt_model["availableEfforts"]
         .as_array()
-        .expect("alt-openai availableEfforts")
+        .expect("openai/alt-model availableEfforts")
         .iter()
         .map(|effort| effort["value"].as_str().expect("effort value"))
         .collect();

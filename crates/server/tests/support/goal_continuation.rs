@@ -14,7 +14,6 @@ use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::Model;
@@ -291,7 +290,6 @@ pub fn build_runtime_with_registry(
                 display_name: "test-model".to_string(),
                 ..Model::default()
             }])),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()

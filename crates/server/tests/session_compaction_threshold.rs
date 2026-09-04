@@ -1,5 +1,6 @@
-//! Global compaction threshold via the canonical session settings patch and
-//! config.toml.
+//! Session effective context window uses the model usable window only.
+//! Global `compaction_token_limit` and `effectiveContextWindow` patches do not
+//! change applied policy.
 
 use std::path::Path;
 use std::pin::Pin;
@@ -13,7 +14,6 @@ use devo_core::AppConfigStore;
 use devo_core::BundledSkillsConfig;
 use devo_core::FileSystemSkillCatalog;
 use devo_core::PresetModelCatalog;
-use devo_core::ProviderVendorCatalog;
 use devo_core::SkillsConfig;
 use devo_core::tools::ToolRegistry;
 use devo_protocol::ModelRequest;
@@ -74,7 +74,6 @@ fn build_runtime(data_root: &Path) -> Result<Arc<ServerRuntime>> {
             devo_server::empty_mcp_manager(),
             "test-model".to_string(),
             Arc::new(PresetModelCatalog::load()?),
-            Arc::new(ProviderVendorCatalog::default()),
             Box::new(FileSystemSkillCatalog::new(SkillsConfig {
                 bundled: Some(BundledSkillsConfig { enabled: false }),
                 ..SkillsConfig::default()
@@ -173,7 +172,7 @@ async fn compaction_update(
 }
 
 #[tokio::test]
-async fn compaction_update_writes_global_config_and_applies_to_session() -> Result<()> {
+async fn effective_context_window_patch_echoes_model_and_skips_global_config() -> Result<()> {
     let data_root = TempDir::new()?;
     let cwd = data_root.path().join("workspace");
     std::fs::create_dir_all(&cwd)?;
@@ -187,11 +186,11 @@ async fn compaction_update_writes_global_config_and_applies_to_session() -> Resu
     )
     .await?;
     let started_id = SessionId::try_from(started.session.id.as_str())?;
-    assert!(
-        started.session.settings.effective_context_window.is_some(),
-        "new session should expose an applied effective window"
-    );
-    let model_default = started.session.settings.effective_context_window;
+    let model_default = started
+        .session
+        .settings
+        .effective_context_window
+        .expect("new session should expose an applied effective window");
 
     let updated = compaction_update(
         &runtime,
@@ -202,15 +201,19 @@ async fn compaction_update_writes_global_config_and_applies_to_session() -> Resu
     .await?;
     assert_eq!(
         updated.session.settings.effective_context_window,
-        Some(250_000)
+        Some(model_default),
+        "patch must echo model effective window, not the requested absolute"
     );
 
-    let config_text = std::fs::read_to_string(data_root.path().join("config.toml"))?;
-    let document: toml::Value = toml::from_str(&config_text)?;
-    assert_eq!(
-        document["compaction_token_limit"].as_integer(),
-        Some(250_000)
-    );
+    let config_path = data_root.path().join("config.toml");
+    if config_path.exists() {
+        let config_text = std::fs::read_to_string(&config_path)?;
+        let document: toml::Value = toml::from_str(&config_text)?;
+        assert!(
+            document.get("compaction_token_limit").is_none(),
+            "effectiveContextWindow must not write compaction_token_limit"
+        );
+    }
 
     let second = start_session(
         &runtime,
@@ -221,18 +224,14 @@ async fn compaction_update_writes_global_config_and_applies_to_session() -> Resu
     .await?;
     assert_eq!(
         second.session.settings.effective_context_window,
-        Some(250_000),
-        "new sessions inherit the global compaction preference"
-    );
-    assert_ne!(
-        second.session.settings.effective_context_window,
-        model_default
+        Some(model_default),
+        "new sessions keep the model effective window"
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn new_session_reads_existing_global_compaction_limit() -> Result<()> {
+async fn new_session_ignores_existing_global_compaction_limit() -> Result<()> {
     let data_root = TempDir::new()?;
     let cwd = data_root.path().join("workspace");
     std::fs::create_dir_all(&cwd)?;
@@ -250,9 +249,14 @@ async fn new_session_reads_existing_global_compaction_limit() -> Result<()> {
         "compaction-threshold-session-existing",
     )
     .await?;
-    assert_eq!(
-        started.session.settings.effective_context_window,
-        Some(100_000)
+    let applied = started
+        .session
+        .settings
+        .effective_context_window
+        .expect("new session should expose an applied effective window");
+    assert_ne!(
+        applied, 100_000,
+        "stale compaction_token_limit must not become the applied window"
     );
     Ok(())
 }

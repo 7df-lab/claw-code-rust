@@ -143,12 +143,21 @@ fn compaction_failed_item(message: &str) -> Item {
     }
 }
 
-fn manual_compaction_item() -> Item {
+fn manual_compaction_started_item() -> Item {
     Item::ContextCompaction {
         trigger: CompactionTrigger::Manual,
         before: compaction_usage(),
         after: None,
-        summary: Some("Context Compaction".to_string()),
+        summary: Some("Compaction started".to_string()),
+    }
+}
+
+fn manual_compaction_completed_item() -> Item {
+    Item::ContextCompaction {
+        trigger: CompactionTrigger::Manual,
+        before: compaction_usage(),
+        after: None,
+        summary: Some("Context compacted".to_string()),
     }
 }
 
@@ -211,15 +220,15 @@ pub(crate) fn manual_compaction_started_event(
     session_id: SessionId,
     turn_id: TurnId,
     item_id: ItemId,
-    item_seq: u64,
+    item_seq: Option<u64>,
 ) -> ServerEvent {
     item_event_from_native(
         session_id,
         turn_id,
         item_id,
-        Some(item_seq),
+        item_seq,
         ServerEvent::ItemStarted,
-        manual_compaction_item(),
+        manual_compaction_started_item(),
     )
 }
 
@@ -235,7 +244,28 @@ pub(crate) fn manual_compaction_completed_event(
         item_id,
         Some(item_seq),
         ServerEvent::ItemCompleted,
-        manual_compaction_item(),
+        manual_compaction_completed_item(),
+    )
+}
+
+pub(crate) fn manual_compaction_item_failed_event(
+    session_id: SessionId,
+    turn_id: TurnId,
+    item_id: ItemId,
+    message: String,
+) -> ServerEvent {
+    item_event_from_native(
+        session_id,
+        turn_id,
+        item_id,
+        None,
+        ServerEvent::ItemCompleted,
+        Item::ContextCompaction {
+            trigger: CompactionTrigger::Manual,
+            before: compaction_usage(),
+            after: None,
+            summary: Some(format!("Compaction failed: {message}")),
+        },
     )
 }
 

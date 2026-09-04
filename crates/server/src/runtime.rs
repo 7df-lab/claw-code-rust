@@ -64,7 +64,6 @@ use crate::ServerEvent;
 use crate::ServerProtocol;
 use crate::ServerRequestResolvedPayload;
 use crate::SessionCompactionFailedPayload;
-use crate::SessionEffectiveContextWindowUpdatedPayload;
 use crate::SessionEventPayload;
 use crate::SessionForkResult;
 use crate::SessionMetadata;
@@ -137,7 +136,8 @@ mod model_api;
 mod outbound;
 mod permission_decision;
 mod proposed_plan;
-mod provider_vendor_api;
+mod provider_api;
+mod provider_discovery;
 mod reference_search;
 mod session_actor;
 mod session_cache;
@@ -305,6 +305,7 @@ fn session_model_selection(session: &SessionMetadata) -> Option<&str> {
     session
         .model_binding_id
         .as_deref()
+        .or_else(|| session.model.as_deref().filter(|model| model.contains('/')))
         .or(session.model.as_deref())
 }
 

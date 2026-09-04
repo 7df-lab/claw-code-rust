@@ -270,23 +270,10 @@ impl ServerRuntime {
                     .config_store
                     .lock()
                     .expect("app config store mutex should not be poisoned");
-                let provider_config = &config_store.effective_config().provider;
-                match provider_config.model_bindings.get(binding_id) {
-                    None => Some(format!("model binding `{binding_id}` does not exist")),
-                    Some(binding) if !binding.enabled => {
-                        Some(format!("model binding `{binding_id}` is disabled"))
-                    }
-                    Some(binding) => match provider_config.providers.get(&binding.provider) {
-                        None => Some(format!(
-                            "model binding `{binding_id}` references missing provider `{}`",
-                            binding.provider
-                        )),
-                        Some(provider) if !provider.enabled => Some(format!(
-                            "model binding `{binding_id}` references disabled provider `{}`",
-                            binding.provider
-                        )),
-                        Some(_) => None,
-                    },
+                let provider_config = config_store.effective_config().provider_catalog_config();
+                match provider_config.resolve_model(Some(binding_id)) {
+                    Ok(_) => None,
+                    Err(error) => Some(error.to_string()),
                 }
             };
             if let Some(error) = binding_error {

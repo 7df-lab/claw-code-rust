@@ -126,7 +126,7 @@ impl PresetModelCatalog {
                 (provider_id.clone(), models)
             })
             .collect();
-        models.sort_by(|left, right| right.0.cmp(&left.0));
+        models.sort_by_key(|left| std::cmp::Reverse(left.0));
         let mut models = models
             .into_iter()
             .map(|(_, model)| model)

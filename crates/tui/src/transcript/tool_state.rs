@@ -185,7 +185,11 @@ fn scan_json_string(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>) 
                             None => return None,
                         }
                     }
-                    value.push(u32::from_str_radix(&code, 16).ok().and_then(char::from_u32)?);
+                    value.push(
+                        u32::from_str_radix(&code, 16)
+                            .ok()
+                            .and_then(char::from_u32)?,
+                    );
                 }
                 _ => return None,
             },

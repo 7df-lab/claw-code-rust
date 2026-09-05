@@ -285,14 +285,20 @@ impl ToolHandler for ExecCommandHandler {
             ));
         }
 
+        let mut cancellation_guard = crate::unified_exec::cancellation::CancelProcessOnDrop::new(
+            Arc::clone(&proc),
+            Arc::clone(&self.store),
+            process_id,
+        );
         let cancel_token = ctx.cancel_token.clone();
         let store_for_cancel = Arc::clone(&self.store);
         let proc_for_cancel = Arc::clone(&proc);
-        let cancel_task = tokio::spawn(async move {
-            cancel_token.cancelled().await;
-            proc_for_cancel.terminate();
-            store_for_cancel.remove(process_id).await;
-        });
+        tokio::spawn(crate::unified_exec::cancellation::watch_turn(
+            cancel_token,
+            proc_for_cancel,
+            store_for_cancel,
+            process_id,
+        ));
 
         let mut rx = proc.subscribe();
         let output = tokio::select! {
@@ -305,11 +311,11 @@ impl ToolHandler for ExecCommandHandler {
             _ = ctx.cancel_token.cancelled() => {
                 proc.terminate();
                 self.store.remove(process_id).await;
-                cancel_task.abort();
+
                 return Err(ToolCallError::Cancelled);
             }
         };
-        cancel_task.abort();
+        cancellation_guard.disarm();
         let warning = if output.exit_code.is_some() {
             self.store.remove(process_id).await;
             None
@@ -404,8 +410,15 @@ impl ToolHandler for WriteStdinHandler {
             ToolCallError::ExecutionFailed(format!("Unknown process id {}", args.process_id))
         })?;
 
+        let mut cancellation_guard = crate::unified_exec::cancellation::CancelProcessOnDrop::new(
+            Arc::clone(&proc),
+            Arc::clone(&self.store),
+            args.process_id,
+        );
+
         if !args.chars.is_empty() {
             if !proc.tty() {
+                cancellation_guard.disarm();
                 return Err(ToolCallError::ExecutionFailed(
                     "stdin is closed for this session".to_string(),
                 ));
@@ -414,6 +427,7 @@ impl ToolHandler for WriteStdinHandler {
                 && proc.is_running()
                 && proc.exit_code().is_none()
             {
+                cancellation_guard.disarm();
                 return Err(ToolCallError::ExecutionFailed(format!(
                     "write_stdin failed: {error}"
                 )));
@@ -435,6 +449,7 @@ impl ToolHandler for WriteStdinHandler {
             self.store.remove(args.process_id).await;
         }
 
+        cancellation_guard.disarm();
         let response = format_exec_response(&output, Some(args.process_id), /*warning*/ None);
         Ok(ToolResult::success(
             ToolResultContent::Text(response),
@@ -576,6 +591,7 @@ fn apply_patch_command(
 
 #[cfg(test)]
 mod tests {
+    include!("exec_cancellation_tests.rs");
     use super::*;
     use devo_tools::contracts::ToolBudgets;
     use pretty_assertions::assert_eq;

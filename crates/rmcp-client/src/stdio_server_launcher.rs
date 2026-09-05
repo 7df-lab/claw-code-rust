@@ -219,6 +219,15 @@ impl LocalStdioServerLauncher {
         #[cfg(unix)]
         command.process_group(0);
 
+        // Assign the suspended child to a kill-on-close job before it can spawn
+        // descendants. Windows closes the job even when devo exits abruptly.
+        #[cfg(windows)]
+        let command = {
+            let mut wrapped = process_wrap::tokio::CommandWrap::from(command);
+            wrapped.wrap(devo_util_process::windows_job::OwnedJob);
+            wrapped
+        };
+
         let (transport, stderr) = TokioChildProcess::builder(command)
             .stderr(Stdio::piped())
             .spawn()?;

@@ -8,9 +8,12 @@
 
 mod launch;
 mod pipe;
+mod pipe_child;
 mod pty;
 mod resolve;
 
+#[cfg(test)]
+mod pipe_cancellation_tests;
 #[cfg(test)]
 mod tests;
 

@@ -4,7 +4,6 @@ use std::process::Stdio;
 
 use serde_json::json;
 use tokio::io::AsyncReadExt;
-use tokio::process::Child;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -70,8 +69,11 @@ pub(crate) async fn run_with_pipes(
         child.env("PYTHONUTF8", "1");
     }
 
-    let mut child = match child.spawn() {
-        Ok(child) => child,
+    let mut command = process_wrap::tokio::CommandWrap::from(child);
+    #[cfg(windows)]
+    command.wrap(devo_util_process::windows_job::OwnedJob);
+    let mut child = match command.spawn() {
+        Ok(child) => super::pipe_child::PipeChild(child),
         Err(error) => {
             return Ok(FunctionToolOutput::error(format!(
                 "failed to spawn process: {error}"
@@ -80,8 +82,8 @@ pub(crate) async fn run_with_pipes(
     };
     plan.schedule_placeholder_cleanup();
 
-    let stdout_task = spawn_stream_reader(child.stdout.take(), progress.clone());
-    let stderr_task = spawn_stream_reader(child.stderr.take(), progress);
+    let stdout_task = spawn_stream_reader(child.0.stdout().take(), progress.clone());
+    let stderr_task = spawn_stream_reader(child.0.stderr().take(), progress);
 
     enum WaitOutcome {
         Exited(std::process::ExitStatus),
@@ -91,7 +93,7 @@ pub(crate) async fn run_with_pipes(
     }
 
     let outcome = tokio::select! {
-        status = child.wait() => match status {
+        status = child.0.wait() => match status {
             Ok(status) => WaitOutcome::Exited(status),
             Err(error) => WaitOutcome::WaitError(error),
         },
@@ -183,10 +185,9 @@ where
     })
 }
 
-async fn kill_and_wait(child: &mut Child) {
-    let _ = devo_util_process::process_group::kill_child_process_group(child);
-    let _ = child.start_kill();
-    let _ = child.wait().await;
+async fn kill_and_wait(child: &mut super::pipe_child::PipeChild) {
+    child.terminate_tree();
+    let _ = child.0.wait().await;
 }
 
 pub(crate) fn merge_streams(stdout: &str, stderr: &str) -> String {

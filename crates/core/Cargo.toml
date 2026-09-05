@@ -28,6 +28,7 @@ diffy = { workspace = true }
 futures = { workspace = true }
 iana-time-zone = { workspace = true }
 portable-pty = "0.9"
+process-wrap = { version = "9.1", default-features = false, features = ["tokio1"] }
 rand = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }

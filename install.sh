@@ -27,6 +27,7 @@ requested_version="${VERSION:-}"
 binary_path=""
 no_modify_path="false"
 offline_mode="false"
+with_code_search="${DEVO_INSTALL_CODE_SEARCH:-}"
 install_code_search_model="${DEVO_INSTALL_CODE_SEARCH_MODEL:-}"
 install_dir="${DEVO_INSTALL_DIR:-$INSTALL_DIR_DEFAULT}"
 skip_app_install="false"
@@ -42,6 +43,7 @@ Options:
     -v, --version <version> Install a specific version (for example: v0.1.2)
     -b, --binary <path>     Install from a local binary instead of downloading
         --install-dir <dir> Install into a custom directory
+        --with-code-search     Install the code_search MCP and local model
         --install-code-search-model
                             Download the local Hugging Face model used by code_search
         --offline           Install from assets placed next to install.sh without network access
@@ -51,12 +53,15 @@ Environment:
     VERSION                 Same as --version
     DEVO_INSTALL_DIR        Same as --install-dir
     DEVO_SKIP_RG_INSTALL=1 Skip installing the ripgrep sidecar
+    DEVO_INSTALL_CODE_SEARCH=1
+                            Install the code_search MCP and local model
     DEVO_INSTALL_CODE_SEARCH_MODEL=1
                             Download the local Hugging Face model used by code_search
 
 Examples:
     curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh
     curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --version v0.1.2
+    curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --with-code-search
     curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --install-code-search-model
     sh ./install.sh --offline
     ./install.sh --binary ./target/release/devo
@@ -112,6 +117,10 @@ while [ "$#" -gt 0 ]; do
                 die "Error: --install-dir requires a directory argument"
             fi
             ;;
+        --with-code-search)
+            with_code_search="1"
+            shift
+            ;;
         --install-code-search-model)
             install_code_search_model="1"
             shift
@@ -148,7 +157,19 @@ is_truthy() {
 }
 
 should_install_code_search_model() {
+    if should_install_code_search; then
+        return 0
+    fi
+
     is_truthy "$install_code_search_model"
+}
+
+should_install_code_search() {
+    is_truthy "$with_code_search"
+}
+
+code_search_mcp_installed() {
+    [ -x "${install_dir}/${CODE_SEARCH_MCP_APP}" ]
 }
 
 normalize_version() {
@@ -451,7 +472,7 @@ check_version() {
         print_message info "${MUTED}${APP} ${NC}${expected_version}${MUTED} is already installed at ${NC}${installed_path}"
         skip_app_install="true"
         if [ "${DEVO_SKIP_RG_INSTALL:-}" = "1" ] || [ -x "${install_dir}/${RG_APP}" ]; then
-            if ! should_install_code_search_model; then
+            if ! should_install_code_search_model && { ! should_install_code_search || code_search_mcp_installed; }; then
                 exit 0
             fi
         else
@@ -460,6 +481,10 @@ check_version() {
 
         if should_install_code_search_model; then
             print_message info "${MUTED}code_search model install requested; continuing optional installation.${NC}"
+        fi
+        if should_install_code_search && ! code_search_mcp_installed; then
+            skip_app_install="false"
+            print_message info "${MUTED}code_search MCP install requested; continuing optional installation.${NC}"
         fi
         return
     fi
@@ -529,15 +554,16 @@ download_and_install() {
     tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
 
     extracted_binary="$(find_extracted_binary "$tmp_dir")"
-    extracted_mcp_binary="$(find_extracted_optional_binary "$tmp_dir" "$CODE_SEARCH_MCP_APP")"
 
     mkdir -p "$install_dir"
     install -m 755 "$extracted_binary" "${install_dir}/${APP}"
-    if [ -n "$extracted_mcp_binary" ]; then
+    if should_install_code_search; then
+        extracted_mcp_binary="$(find_extracted_optional_binary "$tmp_dir" "$CODE_SEARCH_MCP_APP")"
+        if [ -z "$extracted_mcp_binary" ]; then
+            die "Requested code_search MCP binary was not found in the release archive"
+        fi
         install -m 755 "$extracted_mcp_binary" "${install_dir}/${CODE_SEARCH_MCP_APP}"
         print_message info "${MUTED}Installed ${NC}${CODE_SEARCH_MCP_APP}${MUTED} sidecar${NC}"
-    else
-        print_message warning "Optional ${CODE_SEARCH_MCP_APP} binary was not found in the archive."
     fi
 
     rm -rf "$tmp_dir"
@@ -675,6 +701,13 @@ install_offline_devo() {
     if [ -f "${asset_dir}/${APP}" ]; then
         print_message info "${MUTED}Installing ${NC}${APP} ${MUTED}from local binary: ${NC}${asset_dir}/${APP}"
         install_from_binary "${asset_dir}/${APP}"
+        if should_install_code_search; then
+            local_mcp_binary="${asset_dir}/${CODE_SEARCH_MCP_APP}"
+            if [ ! -f "$local_mcp_binary" ]; then
+                die "Requested code_search MCP binary not found at ${local_mcp_binary}"
+            fi
+            install -m 755 "$local_mcp_binary" "${install_dir}/${CODE_SEARCH_MCP_APP}"
+        fi
         return
     fi
 
@@ -693,11 +726,13 @@ install_offline_devo() {
 
     tar -xzf "$archive_path" -C "$tmp_dir"
     extracted_binary="$(find_extracted_binary "$tmp_dir")"
-    extracted_mcp_binary="$(find_extracted_optional_binary "$tmp_dir" "$CODE_SEARCH_MCP_APP")"
-
     mkdir -p "$install_dir"
     install -m 755 "$extracted_binary" "${install_dir}/${APP}"
-    if [ -n "$extracted_mcp_binary" ]; then
+    if should_install_code_search; then
+        extracted_mcp_binary="$(find_extracted_optional_binary "$tmp_dir" "$CODE_SEARCH_MCP_APP")"
+        if [ -z "$extracted_mcp_binary" ]; then
+            die "Requested code_search MCP binary was not found in the offline archive"
+        fi
         install -m 755 "$extracted_mcp_binary" "${install_dir}/${CODE_SEARCH_MCP_APP}"
         print_message info "${MUTED}Installed ${NC}${CODE_SEARCH_MCP_APP}${MUTED} sidecar${NC}"
     fi
@@ -751,6 +786,10 @@ install_offline_ripgrep_sidecar() {
 }
 
 install_offline_code_search_model_files() {
+    if ! should_install_code_search_model; then
+        return
+    fi
+
     asset_dir="$1"
     model_dir="$(code_search_model_dir)"
     nested_model_dir="${asset_dir}/${CODE_SEARCH_MODEL_DIR_NAME}"
@@ -760,7 +799,7 @@ install_offline_code_search_model_files() {
     elif code_search_model_files_present "$asset_dir"; then
         source_dir="$asset_dir"
     else
-        die "Offline code_search model files not found. Place ${CODE_SEARCH_MODEL_FILES} next to install.sh or under ${CODE_SEARCH_MODEL_DIR_NAME}/."
+        die "Requested code_search model files were not found. Place ${CODE_SEARCH_MODEL_FILES} next to install.sh or under ${CODE_SEARCH_MODEL_DIR_NAME}/."
     fi
 
     mkdir -p "$model_dir"
@@ -775,7 +814,6 @@ install_offline_code_search_model_files() {
     fi
 }
 
-
 print_banner() {
     printf '\n'
     printf '%b%s%b\n' "$MUTED" "██████╗  ███████╗██╗   ██╗ ██████╗" "$NC"
@@ -789,6 +827,10 @@ print_banner() {
 
 main() {
     print_banner
+
+    if should_install_code_search && [ -n "$binary_path" ]; then
+        die "--with-code-search requires a release archive so the MCP binary can be installed"
+    fi
 
     if [ "$offline_mode" = "true" ]; then
         asset_dir="$(installer_asset_dir)"

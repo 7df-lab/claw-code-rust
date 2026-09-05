@@ -81,10 +81,11 @@ runtime behavior, and workspace execution under your control.
 - **Lightweight Rust runtime** - Built in Rust with low memory overhead and a
   compact local runtime.
 - **Built-in semantic code search (MCP)** - Optional bundled MCP server
-  (`code_search` / `devo-code-search-mcp`), **disabled by default**. Runs a
-  local CPU code-embedding model and combines dense retrieval with BM25 keyword
-  matching to reduce code-search context versus grep/find-only agents. Enable
-  with `devo mcp enable code_search` or TUI `/mcps`.
+  (`code_search` / `devo-code-search-mcp`), **not installed or enabled by
+  default**. Runs a local CPU code-embedding model and combines dense retrieval
+  with BM25 keyword matching to reduce code-search context versus grep/find-only
+  agents. Install it explicitly with `--with-code-search`, then enable it with
+  `devo mcp enable code_search` or TUI `/mcps`.
 
 ## Tested Models
 
@@ -164,25 +165,26 @@ Windows:
 irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
-The online installer places `devo` under the Devo home directory, installs the
-`rg` sidecar used for fast repository search, and supports optional setup for
-the local model used by `code_search`.
+The online installer places `devo` under the Devo home directory and installs
+the `rg` sidecar used for fast repository search. It does not install the
+`code_search` MCP or its local model by default.
 
 <details>
-<summary>Optional: preinstall the local <code>code_search</code> model</summary>
+<summary>Optional: install the <code>code_search</code> MCP and local model</summary>
 
-Use this only if you want the Hugging Face model downloaded during installation.
+Use this only if you want the code-search MCP and its Hugging Face model
+installed during setup.
 
 Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --install-code-search-model
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --with-code-search
 ```
 
 Windows:
 
 ```powershell
-$env:DEVO_INSTALL_CODE_SEARCH_MODEL = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
+$env:DEVO_INSTALL_CODE_SEARCH = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
 </details>

@@ -6,11 +6,15 @@
 # Pin a specific version:
 #   $env:VERSION = "v0.1.2"; irm https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | iex
 #
+# Optional code-search bundle:
+#   $env:DEVO_INSTALL_CODE_SEARCH = "1"; irm https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1 | iex
+#
 # Offline install from assets next to install.ps1:
 #   .\install.ps1 -Offline
 
 param(
     [string]$Version = $env:VERSION,
+    [switch]$WithCodeSearch,
     [switch]$InstallCodeSearchModel,
     [switch]$Offline
 )
@@ -174,7 +178,11 @@ function Test-Truthy {
 }
 
 function Should-InstallCodeSearchModel {
-    return $InstallCodeSearchModel -or (Test-Truthy $env:DEVO_INSTALL_CODE_SEARCH_MODEL)
+    return (Should-InstallCodeSearch) -or $InstallCodeSearchModel -or (Test-Truthy $env:DEVO_INSTALL_CODE_SEARCH_MODEL)
+}
+
+function Should-InstallCodeSearch {
+    return $WithCodeSearch -or (Test-Truthy $env:DEVO_INSTALL_CODE_SEARCH)
 }
 
 function Get-DevoHome {
@@ -420,6 +428,13 @@ function Install-DevoOffline {
         Write-Host "Installing devo from local binary: $localExe"
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
         Copy-Item -Path $localExe -Destination (Join-Path $InstallDir "devo.exe") -Force
+        if (Should-InstallCodeSearch) {
+            $localMcp = Join-Path $AssetDir "devo-code-search-mcp.exe"
+            if (-not (Test-Path $localMcp)) {
+                Write-Error "Requested code_search MCP binary not found at $localMcp"
+            }
+            Copy-Item -Path $localMcp -Destination (Join-Path $InstallDir "devo-code-search-mcp.exe") -Force
+        }
         return
     }
 
@@ -441,9 +456,11 @@ function Install-DevoOffline {
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Copy-Item -Path $exe.FullName -Destination (Join-Path $InstallDir "devo.exe") -Force
-
-    $mcpExe = Get-ChildItem -Recurse -Filter "devo-code-search-mcp.exe" -Path $devoTmpDir | Select-Object -First 1
-    if ($mcpExe) {
+    if (Should-InstallCodeSearch) {
+        $mcpExe = Get-ChildItem -Recurse -Filter "devo-code-search-mcp.exe" -Path $devoTmpDir | Select-Object -First 1
+        if (-not $mcpExe) {
+            Write-Error "Requested code_search MCP binary was not found in the offline archive"
+        }
         Copy-Item -Path $mcpExe.FullName -Destination (Join-Path $InstallDir "devo-code-search-mcp.exe") -Force
     }
 }
@@ -513,13 +530,17 @@ function Install-CodeSearchModelOffline {
         [string]$AssetDir
     )
 
+    if (-not (Should-InstallCodeSearchModel)) {
+        return
+    }
+
     $nestedModelDir = Join-Path $AssetDir $CodeSearchModelDirName
     if (Test-CodeSearchModelFiles -Directory $nestedModelDir) {
         $sourceDir = $nestedModelDir
     } elseif (Test-CodeSearchModelFiles -Directory $AssetDir) {
         $sourceDir = $AssetDir
     } else {
-        Write-Error "Offline code_search model files not found. Place config.json, model.safetensors, and tokenizer.json next to install.ps1 or under ${CodeSearchModelDirName}\."
+        Write-Error "Requested code_search model files were not found. Place config.json, model.safetensors, and tokenizer.json next to install.ps1 or under ${CodeSearchModelDirName}\."
     }
 
     $modelDir = Join-Path (Join-Path (Get-DevoHome) "local-models") $CodeSearchModelDirName
@@ -558,6 +579,12 @@ function Main {
             Write-VersionTransition -InstallDir $installDir -TargetVersion $version
 
             $skipAppInstall = Test-DevoVersionInstalled -InstallDir $installDir -ExpectedVersion $version
+            if ($skipAppInstall -and (Should-InstallCodeSearch)) {
+                $mcpPath = Join-Path $installDir "devo-code-search-mcp.exe"
+                if (-not (Test-Path $mcpPath)) {
+                    $skipAppInstall = $false
+                }
+            }
             if (-not $skipAppInstall) {
                 $archiveUrl = "https://github.com/$Repo/releases/download/$version/devo-${version}-${target}.zip"
 
@@ -577,12 +604,13 @@ function Main {
                 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
                 Copy-Item -Path $exe.FullName -Destination (Join-Path $installDir "devo.exe") -Force
 
-                $mcpExe = Get-ChildItem -Recurse -Filter "devo-code-search-mcp.exe" -Path $tmpDir | Select-Object -First 1
-                if ($mcpExe) {
+                if (Should-InstallCodeSearch) {
+                    $mcpExe = Get-ChildItem -Recurse -Filter "devo-code-search-mcp.exe" -Path $tmpDir | Select-Object -First 1
+                    if (-not $mcpExe) {
+                        Write-Error "Requested code_search MCP binary was not found in the release archive"
+                    }
                     Copy-Item -Path $mcpExe.FullName -Destination (Join-Path $installDir "devo-code-search-mcp.exe") -Force
                     Write-Host "Installed code_search MCP sidecar"
-                } else {
-                    Write-Host "Optional devo-code-search-mcp.exe was not found in the archive."
                 }
             }
             Install-RipgrepSidecar -InstallDir $installDir -TempRoot $tmpDir
@@ -598,7 +626,7 @@ function Main {
         } else {
             Write-Host "ripgrep sidecar was not installed."
         }
-        if ($Offline -or (Should-InstallCodeSearchModel)) {
+        if (Should-InstallCodeSearchModel) {
             $modelPath = Join-Path (Join-Path (Get-DevoHome) "local-models") $CodeSearchModelDirName
             Write-Host "code_search model available at $modelPath"
         }

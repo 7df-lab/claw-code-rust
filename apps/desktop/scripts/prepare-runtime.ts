@@ -15,6 +15,7 @@ interface StageRuntimeOptions extends DefaultSourcePathOptions {
 	hostArch?: NodeJS.Architecture
 	hostPlatform?: NodeJS.Platform
 	rgBin?: string
+	withCodeSearch?: boolean
 }
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
@@ -60,7 +61,8 @@ export function defaultCodeSearchMcpSourcePath({
 
 export function stageRuntime(options: StageRuntimeOptions): void {
 	const devoSource = options.devoBin ?? defaultDevoSourcePath(options)
-	const codeSearchMcpSource = defaultCodeSearchMcpSourcePath(options)
+	const withCodeSearch = options.withCodeSearch ?? false
+	const codeSearchMcpSource = withCodeSearch ? defaultCodeSearchMcpSourcePath(options) : undefined
 	const targetPlatform = platformForTargetTriple(options.targetTriple, options.platform ?? process.platform)
 	const rgOverride = options.rgBin ?? optionalPath(process.env.DEVO_DESKTOP_RUNTIME_RG_BIN)
 
@@ -88,7 +90,7 @@ export function stageRuntime(options: StageRuntimeOptions): void {
 	if (!existsSync(devoSource)) {
 		throw new Error(`Devo runtime binary not found at ${devoSource}`)
 	}
-	if (!existsSync(codeSearchMcpSource)) {
+	if (codeSearchMcpSource && !existsSync(codeSearchMcpSource)) {
 		throw new Error(`code_search MCP binary not found at ${codeSearchMcpSource}`)
 	}
 	if (!rgSource || !existsSync(rgSource)) {
@@ -100,17 +102,19 @@ export function stageRuntime(options: StageRuntimeOptions): void {
 	mkdirSync(runtimeBinDir, { recursive: true })
 
 	const devoDest = join(runtimeBinDir, runtimeBinaryName("devo", targetPlatform))
-	const codeSearchMcpDest = join(
-		runtimeBinDir,
-		runtimeBinaryName("devo-code-search-mcp", targetPlatform),
-	)
 	const rgDest = join(runtimeBinDir, runtimeBinaryName("rg", targetPlatform))
 	copyExecutable(devoSource, devoDest, targetPlatform)
-	copyExecutable(codeSearchMcpSource, codeSearchMcpDest, targetPlatform)
 	copyExecutable(rgSource, rgDest, targetPlatform)
+	if (codeSearchMcpSource) {
+		const codeSearchMcpDest = join(
+			runtimeBinDir,
+			runtimeBinaryName("devo-code-search-mcp", targetPlatform),
+		)
+		copyExecutable(codeSearchMcpSource, codeSearchMcpDest, targetPlatform)
+		console.log(`Prepared code_search MCP sidecar: ${codeSearchMcpDest}`)
+	}
 
 	console.log(`Prepared Desktop runtime: ${devoDest}`)
-	console.log(`Prepared code_search MCP sidecar: ${codeSearchMcpDest}`)
 	console.log(`Prepared ripgrep sidecar: ${rgDest}`)
 }
 
@@ -165,5 +169,6 @@ if (import.meta.main) {
 		platform: process.platform,
 		devoBin: argValue("--devo-bin") ?? optionalPath(process.env.DEVO_DESKTOP_RUNTIME_DEVO_BIN),
 		rgBin: argValue("--rg-bin"),
+		withCodeSearch: process.argv.includes("--with-code-search"),
 	})
 }

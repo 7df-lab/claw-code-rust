@@ -81,10 +81,10 @@ Devo предназначен для команд, которым нужен cod
 - **Легковесный Rust runtime** - Построен на Rust, с малым расходом памяти и
   компактным локальным runtime.
 - **Встроенный семантический поиск по коду (MCP)** - Опциональный bundled MCP
-  сервер (`code_search` / `devo-code-search-mcp`), **по умолчанию выключен**.
-  Запускает локальную CPU-модель эмбеддингов и сочетает dense retrieval с BM25,
-  сокращая контекст поиска по сравнению с агентами только на grep/find. Включите
-  через `devo mcp enable code_search` или TUI `/mcps`.
+  сервер (`code_search` / `devo-code-search-mcp`), **по умолчанию не устанавливается и
+  выключен**. Запускает локальную CPU-модель эмбеддингов и сочетает dense retrieval с BM25,
+  сокращая контекст поиска по сравнению с агентами только на grep/find. Установите через
+  `--with-code-search`, затем включите через `devo mcp enable code_search` или TUI `/mcps`.
 
 ## Проверенные модели
 
@@ -167,25 +167,25 @@ Windows:
 irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
-Онлайн-установщик размещает `devo` в Devo home directory, устанавливает
-вспомогательный `rg` sidecar для быстрого поиска по репозиторию и поддерживает
-дополнительную настройку локальной модели, которую использует `code_search`.
+Онлайн-установщик размещает `devo` в Devo home directory и устанавливает
+вспомогательный `rg` sidecar для быстрого поиска по репозиторию. По умолчанию
+`code_search` MCP и его локальная модель не устанавливаются.
 
 <details>
-<summary>Необязательно: предварительно установить локальную модель <code>code_search</code></summary>
+<summary>Необязательно: установить <code>code_search</code> MCP и локальную модель</summary>
 
-Используйте это только если хотите скачать модель Hugging Face во время установки.
+Используйте это только если хотите установить code-search MCP и скачать модель Hugging Face во время установки.
 
 Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --install-code-search-model
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --with-code-search
 ```
 
 Windows:
 
 ```powershell
-$env:DEVO_INSTALL_CODE_SEARCH_MODEL = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
+$env:DEVO_INSTALL_CODE_SEARCH = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
 </details>

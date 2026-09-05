@@ -10,12 +10,9 @@ Devo のインストーラーはオフラインモードをサポートしてお
 1. インストーラースクリプトをダウンロードします。Linux/macOS は `install.sh`、Windows は `install.ps1` です。
 2. 対象 CPU と OS 向けの最新 Devo release asset をダウンロードします。例: `x86_64`
    と `aarch64`/`arm64`。
-3. ローカルセマンティック `code_search` が使う Hugging Face `minishlab/potion-code-16M`
-   モデルファイルをダウンロードします: `config.json`、`model.safetensors`、`tokenizer.json`。
-4. 対象 CPU と OS に合う `ripgrep` release asset をダウンロードします。
+3. 対象 CPU と OS に合う `ripgrep` release asset をダウンロードします。
 
-これらのファイルをインストーラースクリプトの隣に置きます。モデルファイルはスクリプトの隣に直接置いても、
-`minishlab--potion-code-16M/` サブディレクトリに置いても構いません。
+これらのファイルをインストーラースクリプトの隣に置きます。
 
 Linux / macOS:
 
@@ -28,9 +25,3 @@ Windows:
 ```powershell
 .\install.ps1 -Offline
 ```
-
-オフラインモードでは、モデルは
-`<DEVO_HOME>/local-models/minishlab--potion-code-16M` にインストールされます。
-これはランタイムの code-search provider が使用するディレクトリです。
-`DEVO_HOME` が設定されていない場合は
-`~/.devo/local-models/minishlab--potion-code-16M` になります。

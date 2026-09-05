@@ -1,4 +1,5 @@
 mod auth_status;
+mod cancellable_request;
 mod elicitation_client_service;
 mod http_client_adapter;
 mod in_process_transport;

@@ -5,6 +5,7 @@
 //! polling without duplicating lifecycle policy.
 
 pub mod buffer;
+pub(crate) mod cancellation;
 pub mod process;
 pub mod store;
 

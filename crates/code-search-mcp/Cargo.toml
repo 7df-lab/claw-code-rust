@@ -1,6 +1,7 @@
 [package]
 description = "Semantic code retrieval and bundled code_search MCP server"
 edition.workspace = true
+build = "build.rs"
 license.workspace = true
 name = "devo-code-search-mcp"
 version.workspace = true

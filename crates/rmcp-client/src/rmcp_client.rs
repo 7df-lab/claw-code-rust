@@ -620,9 +620,8 @@ impl RmcpClient {
                                 meta,
                             },
                         )
-                        .await?
-                        .await_response()
                         .await?;
+                    let result = crate::cancellable_request::await_response(result).await?;
                     match result {
                         ServerResult::CallToolResult(result) => Ok(result),
                         _ => Err(rmcp::service::ServiceError::UnexpectedResponse),

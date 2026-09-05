@@ -24,6 +24,7 @@ tokio = { workspace = true, features = [
 ] }
 
 [target.'cfg(windows)'.dependencies]
+process-wrap = { version = "9.1", default-features = false, features = ["tokio1", "job-object", "kill-on-drop"] }
 filedescriptor = "0.8.3"
 lazy_static = { workspace = true }
 log = "0.4"

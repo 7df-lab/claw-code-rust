@@ -42,15 +42,17 @@ impl ToolHandler for McpToolHandler {
 
     async fn handle(
         &self,
-        _ctx: ToolContext,
+        ctx: ToolContext,
         input: serde_json::Value,
         _progress: Option<ToolProgressSender>,
     ) -> Result<ToolResult, ToolCallError> {
-        let result = self
-            .manager
-            .invoke_tool(&self.info.server_id, &self.info.raw_tool_name, input)
-            .await
-            .map_err(|err| ToolCallError::ExecutionFailed(err.to_string()))?;
+        let result = tokio::select! {
+            biased;
+            _ = ctx.cancel_token.cancelled() => return Err(ToolCallError::Cancelled),
+            result = self.manager.invoke_tool(&self.info.server_id, &self.info.raw_tool_name, input) => {
+                result.map_err(|err| ToolCallError::ExecutionFailed(err.to_string()))?
+            }
+        };
 
         Ok(ToolResult::success(
             ToolResultContent::Json(result),

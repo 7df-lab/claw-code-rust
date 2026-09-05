@@ -6,6 +6,8 @@
 
 mod pty;
 pub mod sandbox;
+#[cfg(windows)]
+pub mod windows_job;
 
 pub use pty::process_group;
 pub use pty::*;

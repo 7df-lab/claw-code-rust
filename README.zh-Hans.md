@@ -70,9 +70,9 @@ Desktop 体验、终端工作流以及工作区执行边界的团队。
   和上下文窗口用量。
 - **轻量级 Rust 运行时** - 使用 Rust 构建，内存开销低，本地运行时紧凑。
 - **内置语义代码搜索（MCP）** - 可选的捆绑 MCP 服务器（`code_search` /
-  `devo-code-search-mcp`），**默认关闭**。在本地 CPU 上运行代码嵌入模型，并结合
-  密集检索与 BM25 关键词匹配，相比仅用 grep/find 的代理减少代码搜索上下文。用
-  `devo mcp enable code_search` 或 TUI `/mcps` 启用。
+  `devo-code-search-mcp`），**默认不安装且不启用**。在本地 CPU 上运行代码嵌入模型，
+  并结合密集检索与 BM25 关键词匹配，相比仅用 grep/find 的代理减少代码搜索上下文。
+  使用 `--with-code-search` 安装，再用 `devo mcp enable code_search` 或 TUI `/mcps` 启用。
 
 ## 已测试模型
 
@@ -147,24 +147,24 @@ Windows:
 irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
-在线安装器会把 `devo` 放到 Devo home 目录下，安装用于快速仓库搜索的
-`rg` sidecar，并支持可选安装 `code_search` 使用的本地模型。
+在线安装器会把 `devo` 放到 Devo home 目录下，并安装用于快速仓库搜索的
+`rg` sidecar。默认不会安装 `code_search` MCP 或其本地模型。
 
 <details>
-<summary>可选：预安装本地 <code>code_search</code> 模型</summary>
+<summary>可选：安装 <code>code_search</code> MCP 和本地模型</summary>
 
-仅在希望安装阶段就下载 Hugging Face 模型时使用。
+仅在希望安装阶段就安装 code-search MCP 和下载 Hugging Face 模型时使用。
 
 Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --install-code-search-model
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --with-code-search
 ```
 
 Windows:
 
 ```powershell
-$env:DEVO_INSTALL_CODE_SEARCH_MODEL = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
+$env:DEVO_INSTALL_CODE_SEARCH = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
 </details>

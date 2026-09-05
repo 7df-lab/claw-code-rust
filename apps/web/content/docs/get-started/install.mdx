@@ -4,9 +4,9 @@ description: Install Devo online, from source, or in an offline environment.
 ---
 
 Devo installs as a user-local binary. The installer also installs the `rg`
-sidecar used by fast repository search. If you want local semantic
-`code_search`, install the small local model during setup or use the offline
-asset bundle described below.
+sidecar used by fast repository search. The optional `code_search` MCP and its
+local model are not installed by default. Use `--with-code-search` when you
+want both installed during setup.
 
 ## Linux And macOS
 
@@ -22,10 +22,10 @@ Install a specific release:
 curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --version v0.1.2
 ```
 
-Install the local `code_search` model at the same time:
+Install the `code_search` MCP and local model at the same time:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --install-code-search-model
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --with-code-search
 ```
 
 The Unix installer accepts these options:
@@ -35,6 +35,7 @@ The Unix installer accepts these options:
 | `--version <version>` | Pin the Devo release instead of installing the latest release. |
 | `--binary <path>` | Install a local `devo` binary instead of downloading a release archive. |
 | `--install-dir <dir>` | Install into a custom directory. |
+| `--with-code-search` | Install the `code_search` MCP and local model. |
 | `--install-code-search-model` | Download the local Hugging Face model used by `code_search`. |
 | `--offline` | Install from files placed next to `install.sh`. |
 | `--no-modify-path` | Skip shell profile updates. |
@@ -46,6 +47,7 @@ Useful environment variables:
 | `VERSION` | Same as `--version`. |
 | `DEVO_INSTALL_DIR` | Same as `--install-dir`. |
 | `DEVO_SKIP_RG_INSTALL=1` | Skip installing the bundled `rg` sidecar. |
+| `DEVO_INSTALL_CODE_SEARCH=1` | Install the `code_search` MCP and local model. |
 | `DEVO_INSTALL_CODE_SEARCH_MODEL=1` | Same as `--install-code-search-model`. |
 
 ## Windows
@@ -62,10 +64,10 @@ Install a specific release:
 $env:VERSION = "v0.1.2"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
-Install the local `code_search` model at the same time:
+Install the `code_search` MCP and local model at the same time:
 
 ```powershell
-$env:DEVO_INSTALL_CODE_SEARCH_MODEL = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
+$env:DEVO_INSTALL_CODE_SEARCH = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
 The Windows installer installs to the current user's local program directory
@@ -103,7 +105,7 @@ replace the running `devo.exe` while the current process still owns the file.
 ## Install Without Internet Access
 
 Use offline installation for enterprise machines, intranet hosts, or any
-machine that cannot reach GitHub and Hugging Face during setup.
+machine that cannot reach GitHub during setup.
 
 Prepare the files on a machine that has internet access, then move them to the
 target machine. Put every file next to the installer script.
@@ -116,7 +118,6 @@ Download sources:
 | Windows installer | `https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1` |
 | Devo release archive | `https://github.com/7df-lab/devo/releases` |
 | ripgrep release archive | `https://github.com/BurntSushi/ripgrep/releases` |
-| `code_search` model files | `https://huggingface.co/minishlab/potion-code-16M/tree/main` |
 
 Required files for Linux and macOS:
 
@@ -125,7 +126,6 @@ Required files for Linux and macOS:
 | Installer | `install.sh` |
 | Devo release archive or binary | `devo-*-${target}.tar.gz` or `devo` |
 | ripgrep archive or binary | `ripgrep-*-${rg_target}.tar.gz` or `rg` |
-| `code_search` model files | `config.json`, `model.safetensors`, `tokenizer.json` |
 
 Required files for Windows:
 
@@ -134,13 +134,6 @@ Required files for Windows:
 | Installer | `install.ps1` |
 | Devo release archive or binary | `devo-*-${target}.zip` or `devo.exe` |
 | ripgrep archive or binary | `ripgrep-*-${rg_target}.zip` or `rg.exe` |
-| `code_search` model files | `config.json`, `model.safetensors`, `tokenizer.json` |
-
-The `code_search` files come from the `minishlab/potion-code-16M` Hugging Face
-model. They can sit next to the installer script directly, or under a
-`minishlab--potion-code-16M/` subdirectory. Offline installers currently install
-these model files unconditionally; they are the local semantic-search model used
-by `code_search`.
 
 ## Offline Bundle Targets
 
@@ -161,9 +154,6 @@ Silicon:
 install.sh
 devo-v0.1.2-aarch64-apple-darwin.tar.gz
 ripgrep-14.1.1-aarch64-apple-darwin.tar.gz
-minishlab--potion-code-16M/config.json
-minishlab--potion-code-16M/model.safetensors
-minishlab--potion-code-16M/tokenizer.json
 ```
 
 Example Windows bundle:
@@ -172,9 +162,6 @@ Example Windows bundle:
 install.ps1
 devo-v0.1.2-x86_64-pc-windows-msvc.zip
 ripgrep-14.1.1-x86_64-pc-windows-msvc.zip
-minishlab--potion-code-16M/config.json
-minishlab--potion-code-16M/model.safetensors
-minishlab--potion-code-16M/tokenizer.json
 ```
 
 Archive URL patterns:
@@ -184,9 +171,6 @@ https://github.com/7df-lab/devo/releases/download/<version>/devo-<version>-<targ
 https://github.com/7df-lab/devo/releases/download/<version>/devo-<version>-<target>.zip
 https://github.com/BurntSushi/ripgrep/releases/download/<rg_version>/ripgrep-<rg_version>-<rg_target>.tar.gz
 https://github.com/BurntSushi/ripgrep/releases/download/<rg_version>/ripgrep-<rg_version>-<rg_target>.zip
-https://huggingface.co/minishlab/potion-code-16M/resolve/main/config.json
-https://huggingface.co/minishlab/potion-code-16M/resolve/main/model.safetensors
-https://huggingface.co/minishlab/potion-code-16M/resolve/main/tokenizer.json
 ```
 
 Run offline install on Linux or macOS:
@@ -199,12 +183,6 @@ Run offline install on Windows:
 
 ```powershell
 .\install.ps1 -Offline
-```
-
-Offline mode installs the model into:
-
-```text
-<DEVO_HOME>/local-models/minishlab--potion-code-16M
 ```
 
 If `DEVO_HOME` is not set, Devo uses the default user config directory:

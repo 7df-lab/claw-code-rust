@@ -3,7 +3,9 @@ title: 安装
 description: 在线安装、源码构建或离线安装 Devo。
 ---
 
-Devo 以用户本地二进制形式安装。安装器也会安装 `rg` sidecar，用于快速仓库搜索。如果你需要本地语义 `code_search`，可以在安装时下载小型本地模型，或使用下面的离线资源包。
+Devo 以用户本地二进制形式安装。安装器也会安装 `rg` sidecar，用于快速仓库搜索。
+可选的 `code_search` MCP 和本地模型默认不会安装。需要时使用
+`--with-code-search` 在安装时同时安装。
 
 ## Linux 和 macOS
 
@@ -19,10 +21,10 @@ curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --version v0.1.2
 ```
 
-同时安装本地 `code_search` 模型：
+同时安装 `code_search` MCP 和本地模型：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --install-code-search-model
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --with-code-search
 ```
 
 Unix 安装器支持：
@@ -32,6 +34,7 @@ Unix 安装器支持：
 | `--version <version>` | 固定 Devo 版本，而不是安装最新 release。 |
 | `--binary <path>` | 安装本地 `devo` 二进制，而不是下载 release archive。 |
 | `--install-dir <dir>` | 安装到自定义目录。 |
+| `--with-code-search` | 安装 `code_search` MCP 和本地模型。 |
 | `--install-code-search-model` | 下载 `code_search` 使用的本地 Hugging Face 模型。 |
 | `--offline` | 从 `install.sh` 旁边的文件离线安装。 |
 | `--no-modify-path` | 不更新 shell profile。 |
@@ -43,6 +46,7 @@ Unix 安装器支持：
 | `VERSION` | 等同于 `--version`。 |
 | `DEVO_INSTALL_DIR` | 等同于 `--install-dir`。 |
 | `DEVO_SKIP_RG_INSTALL=1` | 跳过内置 `rg` sidecar 安装。 |
+| `DEVO_INSTALL_CODE_SEARCH=1` | 安装 `code_search` MCP 和本地模型。 |
 | `DEVO_INSTALL_CODE_SEARCH_MODEL=1` | 等同于 `--install-code-search-model`。 |
 
 ## Windows
@@ -59,10 +63,10 @@ irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 $env:VERSION = "v0.1.2"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
-同时安装本地 `code_search` 模型：
+同时安装 `code_search` MCP 和本地模型：
 
 ```powershell
-$env:DEVO_INSTALL_CODE_SEARCH_MODEL = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
+$env:DEVO_INSTALL_CODE_SEARCH = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
 Windows 安装器会安装到当前用户的本地程序目录，并更新用户 `Path`。不需要管理员 shell。
@@ -96,7 +100,7 @@ Linux 和 macOS 上，`devo upgrade` 会下载并运行 `install.sh`。Windows �
 
 ## 无网络安装
 
-企业机器、内网主机或安装时不能访问 GitHub 和 Hugging Face 的机器，使用离线安装。
+企业机器、内网主机或安装时不能访问 GitHub 的机器，使用离线安装。
 
 先在有网络的机器上准备文件，再移动到目标机器。所有文件都放在安装脚本旁边。
 
@@ -108,7 +112,6 @@ Linux 和 macOS 上，`devo upgrade` 会下载并运行 `install.sh`。Windows �
 | Windows 安装器 | `https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1` |
 | Devo release archive | `https://github.com/7df-lab/devo/releases` |
 | ripgrep release archive | `https://github.com/BurntSushi/ripgrep/releases` |
-| `code_search` 模型文件 | `https://huggingface.co/minishlab/potion-code-16M/tree/main` |
 
 Linux 和 macOS 所需文件：
 
@@ -117,7 +120,6 @@ Linux 和 macOS 所需文件：
 | 安装器 | `install.sh` |
 | Devo release archive 或二进制 | `devo-*-${target}.tar.gz` 或 `devo` |
 | ripgrep archive 或二进制 | `ripgrep-*-${rg_target}.tar.gz` 或 `rg` |
-| `code_search` 模型文件 | `config.json`, `model.safetensors`, `tokenizer.json` |
 
 Windows 所需文件：
 
@@ -126,9 +128,6 @@ Windows 所需文件：
 | 安装器 | `install.ps1` |
 | Devo release archive 或二进制 | `devo-*-${target}.zip` 或 `devo.exe` |
 | ripgrep archive 或二进制 | `ripgrep-*-${rg_target}.zip` 或 `rg.exe` |
-| `code_search` 模型文件 | `config.json`, `model.safetensors`, `tokenizer.json` |
-
-`code_search` 文件来自 `minishlab/potion-code-16M` Hugging Face 模型。它们可以直接放在安装脚本旁边，也可以放在 `minishlab--potion-code-16M/` 子目录下。离线安装器当前会无条件安装这些模型文件；它们是 `code_search` 使用的本地语义搜索模型。
 
 ## 离线资源包 target
 
@@ -148,9 +147,6 @@ macOS Apple Silicon 上 Devo `v0.1.2` 和 ripgrep `14.1.1` 的 Unix 资源包示
 install.sh
 devo-v0.1.2-aarch64-apple-darwin.tar.gz
 ripgrep-14.1.1-aarch64-apple-darwin.tar.gz
-minishlab--potion-code-16M/config.json
-minishlab--potion-code-16M/model.safetensors
-minishlab--potion-code-16M/tokenizer.json
 ```
 
 Windows 资源包示例：
@@ -159,9 +155,6 @@ Windows 资源包示例：
 install.ps1
 devo-v0.1.2-x86_64-pc-windows-msvc.zip
 ripgrep-14.1.1-x86_64-pc-windows-msvc.zip
-minishlab--potion-code-16M/config.json
-minishlab--potion-code-16M/model.safetensors
-minishlab--potion-code-16M/tokenizer.json
 ```
 
 Archive URL 模式：
@@ -171,9 +164,6 @@ https://github.com/7df-lab/devo/releases/download/<version>/devo-<version>-<targ
 https://github.com/7df-lab/devo/releases/download/<version>/devo-<version>-<target>.zip
 https://github.com/BurntSushi/ripgrep/releases/download/<rg_version>/ripgrep-<rg_version>-<rg_target>.tar.gz
 https://github.com/BurntSushi/ripgrep/releases/download/<rg_version>/ripgrep-<rg_version>-<rg_target>.zip
-https://huggingface.co/minishlab/potion-code-16M/resolve/main/config.json
-https://huggingface.co/minishlab/potion-code-16M/resolve/main/model.safetensors
-https://huggingface.co/minishlab/potion-code-16M/resolve/main/tokenizer.json
 ```
 
 Linux 或 macOS 离线安装：
@@ -186,12 +176,6 @@ Windows 离线安装：
 
 ```powershell
 .\install.ps1 -Offline
-```
-
-离线模式会把模型安装到：
-
-```text
-<DEVO_HOME>/local-models/minishlab--potion-code-16M
 ```
 
 如果未设置 `DEVO_HOME`，Devo 使用默认用户配置目录：

@@ -55,9 +55,10 @@ Production code search uses a local model2vec embedding provider with the
 call.
 
 If the model files are missing, the MCP server tries to fetch them on first use.
-In an offline environment, pre-populate the local model cache before relying on
-`code_search`; otherwise the tool reports a recoverable model-unavailable
-configuration error.
+In an offline environment, install the optional code-search bundle with
+`--with-code-search` while preparing the machine, or pre-populate the local
+model cache manually before relying on `code_search`; otherwise the tool reports
+a recoverable configuration error.
 
 ## Cache Behavior
 

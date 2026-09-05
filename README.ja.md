@@ -75,10 +75,11 @@ Desktop 体験、terminal workflow、ランタイムの動作、ワークスペ�
   コンテキストウィンドウ使用量を表示します。
 - **軽量な Rust ランタイム** - Rust で構築され、メモリ使用量が小さく、コンパクトなローカルランタイムを備えます。
 - **組み込みセマンティックコード検索（MCP）** - 同梱のオプション MCP サーバー
-  （`code_search` / `devo-code-search-mcp`）。**既定では無効**です。ローカル CPU の
-  コード埋め込みモデルを実行し、dense retrieval と BM25 を組み合わせて、grep/find
-  のみのエージェントよりコード検索コンテキストを削減します。
-  `devo mcp enable code_search` または TUI `/mcps` で有効化します。
+  （`code_search` / `devo-code-search-mcp`）。**既定ではインストールも有効化もされません**。
+  ローカル CPU のコード埋め込みモデルを実行し、dense retrieval と BM25 を組み合わせて、
+  grep/find のみのエージェントよりコード検索コンテキストを削減します。
+  `--with-code-search` でインストールし、`devo mcp enable code_search` または TUI `/mcps`
+  で有効化します。
 
 ## 検証済みモデル
 
@@ -157,23 +158,23 @@ irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
 オンラインインストーラーは `devo` を Devo home ディレクトリに配置し、高速なリポジトリ検索に使う
-`rg` sidecar をインストールします。また、`code_search` が使うローカルモデルの任意設定にも対応しています。
+`rg` sidecar をインストールします。既定では `code_search` MCP とローカルモデルをインストールしません。
 
 <details>
-<summary>任意: ローカルの <code>code_search</code> モデルを事前インストール</summary>
+<summary>任意: <code>code_search</code> MCP とローカルモデルをインストール</summary>
 
-インストール時に Hugging Face モデルをダウンロードしたい場合だけ使用してください。
+インストール時に code-search MCP と Hugging Face モデルをインストールしたい場合だけ使用してください。
 
 Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --install-code-search-model
+curl -fsSL https://raw.githubusercontent.com/7df-lab/devo/main/install.sh | sh -s -- --with-code-search
 ```
 
 Windows:
 
 ```powershell
-$env:DEVO_INSTALL_CODE_SEARCH_MODEL = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
+$env:DEVO_INSTALL_CODE_SEARCH = "1"; irm 'https://raw.githubusercontent.com/7df-lab/devo/main/install.ps1' | iex
 ```
 
 </details>

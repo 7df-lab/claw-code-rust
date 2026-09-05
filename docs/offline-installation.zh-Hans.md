@@ -10,12 +10,9 @@
 1. 下载安装脚本：Linux/macOS 使用 `install.sh`，Windows 使用 `install.ps1`。
 2. 下载目标 CPU 和操作系统对应的最新 Devo release asset，例如 `x86_64`
    与 `aarch64`/`arm64`。
-3. 下载本地语义 `code_search` 使用的 Hugging Face `minishlab/potion-code-16M`
-   模型文件：`config.json`、`model.safetensors` 和 `tokenizer.json`。
-4. 下载目标 CPU 和操作系统对应的 `ripgrep` release asset。
+3. 下载目标 CPU 和操作系统对应的 `ripgrep` release asset。
 
-把这些文件放在安装脚本旁边。模型文件可以直接放在安装脚本旁边，也可以放在
-`minishlab--potion-code-16M/` 子目录下。
+把这些文件放在安装脚本旁边。
 
 Linux / macOS:
 
@@ -28,8 +25,3 @@ Windows:
 ```powershell
 .\install.ps1 -Offline
 ```
-
-离线模式会把模型安装到
-`<DEVO_HOME>/local-models/minishlab--potion-code-16M`，这是运行时
-code-search provider 使用的目录。如果没有设置 `DEVO_HOME`，该路径为
-`~/.devo/local-models/minishlab--potion-code-16M`。

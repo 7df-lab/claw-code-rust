@@ -536,7 +536,8 @@ Devo 通过用户或工作区 `config.toml` 中的 `[mcp]` 配置
 
 ### 捆绑的 `code_search`（默认关闭）
 
-Devo 会在 `devo` 旁边安装可选的语义搜索 MCP 二进制。配置项在缺失时会自动注入，
+Devo 支持可选的语义搜索 MCP 二进制。默认**不会安装或启用**。使用带有
+`--with-code-search` 的安装器可以安装 MCP 二进制和本地模型。配置项在缺失时会自动注入，
 且保持 **disabled**，直到你显式启用：
 
 ```toml
@@ -557,6 +558,7 @@ devo mcp enable code_search
 ```
 
 启用后，模型侧工具名为 `mcp__code_search__code_search`。
+如果 `devo-code-search-mcp` 尚未安装，启用服务会失败，需先安装可选的 code-search bundle。
 
 ### CLI 管理
 

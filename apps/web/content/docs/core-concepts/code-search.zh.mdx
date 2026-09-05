@@ -37,7 +37,7 @@ Search 可按 path、content kind（`code` / `docs` / `config` / `all`）、lang
 
 ## 本地模型
 
-生产环境使用本地 model2vec embedding：`minishlab/potion-code-16M`，首次 embedding 时懒加载。离线环境需预先安装模型缓存（`install.sh --install-code-search-model`）。
+生产环境使用本地 model2vec embedding：`minishlab/potion-code-16M`，首次 embedding 时懒加载。离线环境需在准备机器时使用 `--with-code-search` 安装可选 code-search bundle，或手动预先安装模型缓存。
 
 ## 何时使用
 

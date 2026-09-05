@@ -45,7 +45,6 @@ describe("prepare-runtime helpers", () => {
 		mkdirSync(targetDir, { recursive: true })
 		mkdirSync(desktopDir, { recursive: true })
 		writeFileSync(join(targetDir, "devo"), "")
-		writeFileSync(join(targetDir, "devo-code-search-mcp"), "")
 
 		expect(() =>
 			stageRuntime({
@@ -70,7 +69,6 @@ describe("prepare-runtime helpers", () => {
 		mkdirSync(releaseDir, { recursive: true })
 		writeFileSync(devoBin, "devo")
 		writeFileSync(rgBin, "rg")
-		writeFileSync(join(releaseDir, "devo-code-search-mcp"), "mcp")
 
 		stageRuntime({
 			desktopDir,
@@ -82,15 +80,40 @@ describe("prepare-runtime helpers", () => {
 
 		expect({
 			devo: readFileSync(join(desktopDir, "resources", "runtime", "bin", "devo"), "utf8"),
-			mcp: readFileSync(
-				join(desktopDir, "resources", "runtime", "bin", "devo-code-search-mcp"),
-				"utf8",
-			),
 			rg: readFileSync(join(desktopDir, "resources", "runtime", "bin", "rg"), "utf8"),
+			mcp: existsSync(join(desktopDir, "resources", "runtime", "bin", "devo-code-search-mcp")),
 		}).toEqual({
 			devo: "devo",
-			mcp: "mcp",
 			rg: "rg",
+			mcp: false,
 		})
+	})
+
+	test("stages the optional code search MCP sidecar when requested", () => {
+		const root = mkdtempSync(join(tmpdir(), "devo-runtime-test-"))
+		const desktopDir = join(root, "desktop")
+		const sourceDir = join(root, "source")
+		const releaseDir = join(root, "target", "release")
+		const devoBin = join(sourceDir, "devo")
+		const rgBin = join(sourceDir, "rg")
+		const mcpBin = join(releaseDir, "devo-code-search-mcp")
+		mkdirSync(sourceDir, { recursive: true })
+		mkdirSync(releaseDir, { recursive: true })
+		writeFileSync(devoBin, "devo")
+		writeFileSync(rgBin, "rg")
+		writeFileSync(mcpBin, "mcp")
+
+		stageRuntime({
+			desktopDir,
+			repoRoot: root,
+			platform: "darwin",
+			devoBin,
+			rgBin,
+			withCodeSearch: true,
+		})
+
+		expect(readFileSync(join(desktopDir, "resources", "runtime", "bin", "devo-code-search-mcp"), "utf8")).toBe(
+			"mcp",
+		)
 	})
 })

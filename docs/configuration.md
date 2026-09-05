@@ -628,8 +628,10 @@ edit TOML when you need transport details, env vars, or headers.
 
 ### Bundled `code_search` (disabled by default)
 
-Devo ships an optional semantic search MCP binary next to `devo`. The config
-entry is injected when missing and stays **disabled** until you enable it:
+Devo supports an optional semantic search MCP binary. It is **not installed or
+enabled by default**. Use the installer with `--with-code-search` to install
+the MCP binary and local model. The config entry is injected when missing and
+stays **disabled** until you enable it:
 
 ```toml
 [[mcp.servers]]
@@ -649,7 +651,8 @@ devo mcp enable code_search
 ```
 
 When enabled, the model-facing tool name is `mcp__code_search__code_search`.
-The `devo-code-search-mcp` binary is installed next to `devo`.
+If the `devo-code-search-mcp` binary is not installed, enabling the server will
+fail until you install the optional code-search bundle.
 
 ### CLI management
 

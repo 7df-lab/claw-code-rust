@@ -12,14 +12,9 @@ Devo поддерживают офлайн-режим: они читают вс�
    для Windows.
 2. Скачайте последний Devo release asset для целевой CPU и OS, например
    `x86_64` или `aarch64`/`arm64`.
-3. Скачайте файлы модели Hugging Face `minishlab/potion-code-16M`, которую
-   использует локальный семантический `code_search`: `config.json`,
-   `model.safetensors` и `tokenizer.json`.
-4. Скачайте соответствующий `ripgrep` release asset для целевой CPU и OS.
+3. Скачайте соответствующий `ripgrep` release asset для целевой CPU и OS.
 
-Положите эти файлы рядом со скриптом установщика. Файлы модели можно положить
-непосредственно рядом со скриптом или в подкаталог
-`minishlab--potion-code-16M/`.
+Положите эти файлы рядом со скриптом установщика.
 
 Linux / macOS:
 
@@ -32,8 +27,3 @@ Windows:
 ```powershell
 .\install.ps1 -Offline
 ```
-
-Офлайн-режим устанавливает модель в
-`<DEVO_HOME>/local-models/minishlab--potion-code-16M`; это каталог, который
-использует runtime code-search provider. Если `DEVO_HOME` не задан, путь будет
-`~/.devo/local-models/minishlab--potion-code-16M`.

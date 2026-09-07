@@ -468,12 +468,17 @@ describe("ChatTurnComponent transcript controls", () => {
     );
     expect({
       planBlock: planBlockSource.includes("Proposed Plan") && planBlockSource.includes("Implement Plan"),
+      checklistRow:
+        planBlockSource.includes("PlanChecklistRow") &&
+        planBlockSource.includes("Updated plan") &&
+        source.includes("PlanChecklistRow"),
       chatTurnUsesPlanBlock: source.includes("<PlanBlock") || source.includes("<AssistantTextBlock"),
       chatViewImplement: chatViewSource.includes('collaborationMode: "build"') && chatViewSource.includes("Implement Plan"),
       modeToggle: chipSource.includes("Shift + Tab to toggle"),
       skillsSlash: chatViewSource.includes('case "skills":'),
     }).toEqual({
       planBlock: true,
+      checklistRow: true,
       chatTurnUsesPlanBlock: true,
       chatViewImplement: true,
       modeToggle: true,

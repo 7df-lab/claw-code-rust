@@ -321,6 +321,7 @@ impl ChatWidget {
 
     pub(crate) fn handle_app_event(&mut self, event: AppEvent) {
         match event {
+            AppEvent::ContinueTurnRecovery { .. } | AppEvent::CancelTurnRecovery => {}
             AppEvent::Redraw => self.frame_requester.schedule_frame(),
             AppEvent::SubmitUserInput { text } => self.submit_text(text),
             AppEvent::ModelSelected { model } => {

@@ -159,6 +159,8 @@ pub(crate) fn diff_file_baseline(
             deletions: Some(deletions),
             binary,
             diff_truncated: false,
+            old_text: None,
+            new_text: None,
         });
         diff.push_str(&file_diff);
     }

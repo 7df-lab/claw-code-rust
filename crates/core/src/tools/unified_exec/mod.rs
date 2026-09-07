@@ -50,6 +50,8 @@ pub struct WriteStdinArgs {
 }
 
 pub struct ProcessOutput {
+    pub output_artifact: Option<devo_tools::output_store::OutputArtifact>,
+    pub capture_error: Option<String>,
     pub output: String,
     pub exit_code: Option<i32>,
     pub wall_time_secs: f64,

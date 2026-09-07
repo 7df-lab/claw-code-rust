@@ -196,6 +196,8 @@ mod tests {
     #[test]
     fn file_changed_events_map_tool_metadata_to_hook_events() {
         let result = ToolCallResult {
+            output_artifacts: Vec::new(),
+            output_kind: crate::tools::ToolOutputKind::Ordinary,
             tool_use_id: "call-1".to_string(),
             content: ToolContent::Mixed {
                 text: None,

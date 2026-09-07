@@ -6,7 +6,7 @@ active_baseline: no
 supersedes:
 superseded_by:
 owner: Assistant
-last_updated: 2026-05-25
+last_updated: 2026-09-07
 ---
 
 # L2-DES-SAFETY-002 — Approval Mechanism Design
@@ -192,14 +192,16 @@ fn authorize_tool_request(
 
 #### Tier 1: Additional Permissions
 
-The agent calls a tool with `sandbox_permissions: "with_additional_permissions"` and provides an `additional_permissions` block containing the extra filesystem paths or network access needed. The command runs inside the sandbox with the merged permissions. This is preferred over full escalation because the sandbox still constrains the command.
+The agent calls a command tool with `sandbox_permissions: "with_additional_permissions"` and provides an `additional_permissions` block containing the extra filesystem paths or network access needed. The command runs inside the sandbox with the merged permissions. This is preferred over full escalation because the sandbox still constrains the command.
 
 #### Tier 2: Full Escalation
 
-The agent calls a tool with `sandbox_permissions: "require_escalated"` and a `justification` string. The command runs outside the sandbox entirely. Full escalation:
+The agent calls a command tool with `sandbox_permissions: "require_escalated"` and a `justification` string. The command runs outside the sandbox entirely. Full escalation:
 - Enters the configured reviewer in `auto_review` mode; an approval produces a one-call unsandboxed grant. Uncertain, reviewer failure, or invalid reviewer output goes to the user.
 - May include a `prefix_rule` suggestion for future auto-approval.
 - The `prefix_rule` becomes an exec-policy allow rule if the user approves.
+
+`exec_command`, `shell_command`, and the legacy `bash` alias advertise these fields on the model-facing schema: `sandbox_permissions`, `additional_permissions`, `justification`, and `prefix_rule`. `write_stdin` does not; sandbox policy is decided when the process is spawned.
 
 #### Prefix Rules
 
@@ -208,6 +210,7 @@ A prefix rule is a command prefix (e.g. `["npm", "run", "dev"]`) that, once appr
 - Are evaluated per-segment (control operators like `|`, `&&`, `||`, `;` split the command)
 - Use exact token matching
 - Cannot be requested for destructive commands (`rm`, etc.) or commands using heredocs
+- An explicit `prefix_rule` on `exec_command`, `shell_command`, or `bash` overrides the prefix derived from the command string, subject to the destructive-prefix ban
 
 ### Approval Scope Types
 
@@ -361,3 +364,4 @@ The approval policy influences what instructions the agent receives about how to
 | Revision | Date | Author | Change Type | Notes |
 |---:|---|---|---|---|
 | 1 | 2026-05-25 | Assistant | Initial | Initial approval mechanism design. |
+| 1 | 2026-09-07 | Assistant | Refinement | Advertised sandbox escalation fields and explicit `prefix_rule` parsing on `shell_command` and `bash`, matching `exec_command`. |

@@ -8,6 +8,9 @@ version.workspace = true
 [dependencies]
 devo-protocol = { workspace = true }
 
+sha2 = { workspace = true }
+uuid = { workspace = true }
+
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -17,4 +20,8 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 pretty_assertions = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }

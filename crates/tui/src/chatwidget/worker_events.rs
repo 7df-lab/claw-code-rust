@@ -386,6 +386,9 @@ impl ChatWidget {
         }
         match event {
             WorkerEvent::SessionActivated { .. } => {}
+            WorkerEvent::TurnRecovery { recovery, error } => {
+                self.bottom_pane.set_turn_recovery(recovery, error);
+            }
             WorkerEvent::TurnStarted {
                 model,
                 model_binding_id,

@@ -133,6 +133,8 @@ pub struct SessionResumeParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionResumeResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<super::rpc_turn::TurnRecovery>,
     pub session: Session,
     /// Latest context-window occupancy from rollout replay or session stats.
     #[serde(default, skip_serializing_if = "Option::is_none")]

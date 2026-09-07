@@ -252,7 +252,20 @@ export type SubscriptionUnsubscribeParams = { subscriptionId: SubscriptionId, };
     push_decl::<CollaborationMode>(&cfg, &mut output);
     push_decl::<TurnExecutionMode>(&cfg, &mut output);
     push_decl::<TurnStartParams>(&cfg, &mut output);
-    push_decl::<TurnStartResult>(&cfg, &mut output);
+    push_decl::<native::turn::Turn>(&cfg, &mut output);
+    push_decl::<native::turn::TurnKind>(&cfg, &mut output);
+    push_decl::<native::turn::TurnStatus>(&cfg, &mut output);
+    push_decl::<native::usage::TurnUsage>(&cfg, &mut output);
+    push_decl::<native::usage::UsageTotals>(&cfg, &mut output);
+    push_decl::<native::usage::Money>(&cfg, &mut output);
+    push_decl::<native::error::AgentError>(&cfg, &mut output);
+    push_decl::<native::error::FieldViolation>(&cfg, &mut output);
+    push_decl::<crate::native::rpc_turn::TurnRecovery>(&cfg, &mut output);
+    push_decl::<crate::native::rpc_turn::TurnRecoveryReadParams>(&cfg, &mut output);
+    push_decl::<crate::native::rpc_turn::TurnRecoveryReadResult>(&cfg, &mut output);
+    push_decl::<crate::native::rpc_turn::TurnResumeParams>(&cfg, &mut output);
+    push_decl::<crate::native::rpc_turn::TurnResumeResult>(&cfg, &mut output);
+
     push_decl::<TurnInputDisposition>(&cfg, &mut output);
     push_decl::<native::rpc_session::SessionInterruptScope>(&cfg, &mut output);
     push_decl::<native::rpc_session::SessionInterruptParams>(&cfg, &mut output);
@@ -893,6 +906,12 @@ fn register_devo_protocol_schemas(
     schema::<CommandExecTerminateParams>(schemas);
     schema::<CommandExecTerminateResult>(schemas);
     schema::<TurnStartParams>(schemas);
+    schema::<crate::native::rpc_turn::TurnRecovery>(schemas);
+    schema::<crate::native::rpc_turn::TurnRecoveryReadParams>(schemas);
+    schema::<crate::native::rpc_turn::TurnRecoveryReadResult>(schemas);
+    schema::<crate::native::rpc_turn::TurnResumeParams>(schemas);
+    schema::<crate::native::rpc_turn::TurnResumeResult>(schemas);
+
     schema::<TurnStartResult>(schemas);
     schema::<native::rpc_session::SessionInterruptScope>(schemas);
     schema::<native::rpc_session::SessionInterruptParams>(schemas);
@@ -985,6 +1004,14 @@ fn register_devo_protocol_schemas(
     native_method::<ContextUsageReadParams, ContextUsageReadResult>(methods, "context/usage/read");
     native_method::<CommandExecParams, CommandExecResult>(methods, "command/exec");
     native_method::<TurnStartParams, TurnStartResult>(methods, "turn/start");
+    native_method::<
+        crate::native::rpc_turn::TurnResumeParams,
+        crate::native::rpc_turn::TurnResumeResult,
+    >(methods, "turn/resume");
+    native_method::<
+        crate::native::rpc_turn::TurnRecoveryReadParams,
+        crate::native::rpc_turn::TurnRecoveryReadResult,
+    >(methods, "turn/recovery/read");
     native_method::<
         native::rpc_session::SessionInterruptParams,
         native::rpc_session::SessionInterruptResult,

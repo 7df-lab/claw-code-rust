@@ -3,6 +3,7 @@ mod collaboration_mode_prompts;
 mod context;
 mod context_pipeline;
 mod conversation;
+pub mod durable_execution;
 mod durable_record;
 mod error;
 pub mod execution;
@@ -98,3 +99,5 @@ pub use skills::{
 };
 pub use small_model::resolve_small_model;
 pub use update_check::*;
+
+pub mod output_replay;

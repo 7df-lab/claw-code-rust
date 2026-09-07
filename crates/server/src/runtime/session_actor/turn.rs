@@ -143,6 +143,7 @@ pub(crate) async fn execute_turn_task(
         .clear_active_turn_interrupt_handles(session_id)
         .await;
     runtime.clear_active_turn_runtime_handles(session_id).await;
+    runtime.broadcast_recovery_state(session_id).await;
 
     should_auto_continue_goal
 }

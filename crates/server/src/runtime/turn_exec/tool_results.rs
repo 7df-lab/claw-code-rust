@@ -5,7 +5,7 @@ use devo_core::{
     CommandExecutionItem, SessionId, TextItem, ToolCallItem, ToolResultItem, TurnId, TurnItem,
 };
 use devo_protocol::native::item::{
-    ExecOrigin, ExecutionMode, FileChangeEntry, FileChangeKind, Item, PlanEntry, PlanStepStatus,
+    ExecOrigin, ExecutionMode, FileChangeEntry, FileChangeKind, Item, PlanStepStatus,
 };
 use devo_util_git::extract_paths_from_patch;
 
@@ -141,23 +141,29 @@ async fn complete_plan_tool_call(
         .get("explanation")
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned);
-    let plan = output_json
-        .get("plan")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let entries =
+        devo_protocol::native::plan_parse::plan_entries_from_update_plan_json(&output_json)
+            .unwrap_or_default();
+    let plan_steps: Vec<TurnPlanStepPayload> = entries
+        .iter()
+        .map(|entry| TurnPlanStepPayload {
+            step: entry.step.clone(),
+            status: match entry.status {
+                PlanStepStatus::Completed => "completed".to_string(),
+                PlanStepStatus::InProgress => "in_progress".to_string(),
+                PlanStepStatus::Pending => "pending".to_string(),
+            },
+        })
+        .collect();
     runtime
         .complete_native_item(
             session_id,
             turn_id,
             pending_item_id,
             pending_item_seq,
-            Item::Plan {
-                entries: vec![PlanEntry {
-                    step: output_json.to_string(),
-                    status: PlanStepStatus::Completed,
-                }],
-            },
+            Item::Plan { entries },
+            // Keep the structured JSON blob so history metadata / resume can
+            // re-parse steps (see plan_parse + projection::parse_plan_history_metadata).
             TurnItem::Plan(TextItem {
                 text: output_json.to_string(),
             }),
@@ -169,15 +175,7 @@ async fn complete_plan_tool_call(
                 session_id,
                 turn: turn_for_plan_updates.clone(),
                 explanation,
-                plan: plan
-                    .into_iter()
-                    .filter_map(|item| {
-                        Some(TurnPlanStepPayload {
-                            step: item.get("step")?.as_str()?.to_string(),
-                            status: item.get("status")?.as_str()?.to_string(),
-                        })
-                    })
-                    .collect(),
+                plan: plan_steps,
             },
         ))
         .await;

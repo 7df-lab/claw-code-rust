@@ -225,6 +225,12 @@ impl ToolHandler for ExecCommandHandler {
             args.login,
             args.tty,
             crate::unified_exec::process::SandboxExecutionOptions {
+                output_capture: ctx.output_store.as_ref().map(|store| {
+                    store
+                        .capture(&ctx.tool_call_id.0)
+                        .map(|capture| Arc::new(std::sync::Mutex::new(capture)))
+                        .map_err(|error| error.to_string())
+                }),
                 sandbox_profile: ctx.sandbox_profile.clone(),
                 sandbox_overlay: crate::tools::sandbox_overlay_for_spawn(
                     ctx.sandbox_permission_overlay.as_ref(),
@@ -325,10 +331,9 @@ impl ToolHandler for ExecCommandHandler {
         };
 
         let response = format_exec_response(&output, Some(process_id), warning.as_deref());
-        Ok(ToolResult::success(
-            ToolResultContent::Text(response),
-            "Command executed",
-        ))
+        let mut result = ToolResult::success(ToolResultContent::Text(response), "Command executed");
+        result.output_artifacts = output.output_artifact.into_iter().collect();
+        Ok(result)
     }
 }
 
@@ -451,10 +456,9 @@ impl ToolHandler for WriteStdinHandler {
 
         cancellation_guard.disarm();
         let response = format_exec_response(&output, Some(args.process_id), /*warning*/ None);
-        Ok(ToolResult::success(
-            ToolResultContent::Text(response),
-            "Input written",
-        ))
+        let mut result = ToolResult::success(ToolResultContent::Text(response), "Input written");
+        result.output_artifacts = output.output_artifact.into_iter().collect();
+        Ok(result)
     }
 }
 
@@ -480,6 +484,16 @@ fn format_exec_response(
         parts.push(output.output.clone());
     }
 
+    if let Some(artifact) = &output.output_artifact
+        && (output.exit_code.is_none()
+            || output.truncated
+            || artifact.bytes > output.output.len() as u64)
+    {
+        parts.push(artifact.notice());
+    }
+    if let Some(error) = &output.capture_error {
+        parts.push(format!("Full output could not be saved: {error}"));
+    }
     parts.join("\n")
 }
 
@@ -617,6 +631,7 @@ mod tests {
 
     fn test_ctx(cwd: std::path::PathBuf) -> crate::contracts::ToolContext {
         crate::contracts::ToolContext {
+            output_store: None,
             tool_call_id: crate::invocation::ToolCallId("test".into()),
             session_id: "test-session".into(),
             turn_id: Some("test-turn".into()),
@@ -648,6 +663,8 @@ mod tests {
     #[test]
     fn format_exec_response_exited() {
         let output = ProcessOutput {
+            output_artifact: None,
+            capture_error: None,
             output: "hello world".into(),
             exit_code: Some(0),
             wall_time_secs: 1.5,
@@ -661,6 +678,8 @@ mod tests {
     #[test]
     fn format_exec_response_running() {
         let output = ProcessOutput {
+            output_artifact: None,
+            capture_error: None,
             output: "building...".into(),
             exit_code: None,
             wall_time_secs: 10.0,
@@ -674,6 +693,8 @@ mod tests {
     #[test]
     fn format_exec_response_truncated() {
         let output = ProcessOutput {
+            output_artifact: None,
+            capture_error: None,
             output: "long output...".into(),
             exit_code: None,
             wall_time_secs: 5.0,
@@ -687,6 +708,8 @@ mod tests {
     #[test]
     fn format_exec_response_with_both_exit_and_process_id() {
         let output = ProcessOutput {
+            output_artifact: None,
+            capture_error: None,
             output: "done".into(),
             exit_code: Some(0),
             wall_time_secs: 3.0,
@@ -700,6 +723,8 @@ mod tests {
     #[test]
     fn format_exec_response_includes_open_process_warning() {
         let output = ProcessOutput {
+            output_artifact: None,
+            capture_error: None,
             output: "building...".into(),
             exit_code: None,
             wall_time_secs: 10.0,

@@ -241,6 +241,8 @@ export function SidebarLayout() {
 	const setLastProjectDirectory = useSetAtom(lastProjectDirectoryAtom)
 	const [sidebarWidth, setSidebarWidth] = useAtom(sidebarWidthAtom)
 	const [sidebarResizing, setSidebarResizing] = useState(false)
+	const [dragSidebarWidth, setDragSidebarWidth] = useState<number | null>(null)
+	const sidebarResizingRef = useRef(false)
 	const setCommandPaletteOpen = useSetCommandPaletteOpen()
 	const desktopFolders = useAtomValue(desktopFoldersAtom)
 	const folderStatuses = useAtomValue(desktopFolderStatusByDirectoryAtom)
@@ -545,12 +547,33 @@ export function SidebarLayout() {
 
 	const handleSidebarWidthChange = useCallback(
 		(nextWidth: number) => {
-			setSidebarWidth(clampSidebarWidth(nextWidth, { windowWidth: window.innerWidth }))
+			const clamped = clampSidebarWidth(nextWidth, { windowWidth: window.innerWidth })
+			// Live drag uses local state so we don't hit atomWithStorage/localStorage every frame.
+			if (sidebarResizingRef.current) {
+				setDragSidebarWidth(clamped)
+				return
+			}
+			setSidebarWidth(clamped)
+			setDragSidebarWidth(null)
 		},
 		[setSidebarWidth],
 	)
 
-	const resolvedSidebarWidth = clampSidebarWidth(sidebarWidth, {
+	const handleSidebarResizingChange = useCallback(
+		(resizing: boolean) => {
+			sidebarResizingRef.current = resizing
+			setSidebarResizing(resizing)
+			if (!resizing) {
+				setDragSidebarWidth((current) => {
+					if (current != null) setSidebarWidth(current)
+					return null
+				})
+			}
+		},
+		[setSidebarWidth],
+	)
+
+	const resolvedSidebarWidth = clampSidebarWidth(dragSidebarWidth ?? sidebarWidth, {
 		windowWidth: typeof window !== "undefined" ? window.innerWidth : undefined,
 	})
 
@@ -634,7 +657,7 @@ export function SidebarLayout() {
 					<SidebarResizeHandle
 						width={resolvedSidebarWidth}
 						onWidthChange={handleSidebarWidthChange}
-						onResizingChange={setSidebarResizing}
+						onResizingChange={handleSidebarResizingChange}
 					/>
 					<SidebarInset data-transcript-titlebar-fill={transcriptTitlebarFillAttr}>
 						<UpdateBanner />

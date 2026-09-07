@@ -86,6 +86,12 @@ impl ToolHandler for ShellCommandHandler {
 
         let output = execute_shell_command(
             ShellExecRequest {
+                output_capture: ctx.output_store.as_ref().map(|store| {
+                    store
+                        .capture(&ctx.tool_call_id.0)
+                        .map(|capture| std::sync::Arc::new(std::sync::Mutex::new(capture)))
+                        .map_err(|error| error.to_string())
+                }),
                 command: command.to_string(),
                 workdir,
                 description,

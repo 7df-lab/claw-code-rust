@@ -45,6 +45,13 @@ pub use exec_policy_loader::{
 pub(crate) mod shell_exec;
 pub(crate) mod websearch_prompt;
 
+/// Command tools that advertise sandbox escalation fields on the model-facing schema.
+///
+/// `write_stdin` is excluded: sandbox policy is decided when the process is spawned.
+pub(crate) fn tool_accepts_sandbox_escalation_fields(tool_name: &str) -> bool {
+    matches!(tool_name, "bash" | "shell_command" | "exec_command")
+}
+
 pub(crate) fn sandbox_overlay_for_spawn(
     overlay: Option<&devo_tools::SandboxPermissionOverlay>,
 ) -> Option<devo_sandbox::SandboxPermissionOverlay> {
@@ -88,3 +95,5 @@ pub fn create_default_tool_registry() -> registry::ToolRegistry {
     handlers::build_registry_from_plan(&ToolPlanConfig::default())
 }
 pub(crate) mod background_tasks;
+
+pub use devo_tools::output_store;

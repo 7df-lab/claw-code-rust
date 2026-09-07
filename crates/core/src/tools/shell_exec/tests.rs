@@ -14,6 +14,7 @@ async fn execute_shell_command_non_tty_sends_progress() {
 
     let result = execute_shell_command(
         ShellExecRequest {
+            output_capture: None,
             command: cmd.to_string(),
             workdir: std::env::current_dir().unwrap_or_default(),
             description: "test".into(),
@@ -43,6 +44,7 @@ async fn execute_shell_command_progress_none_does_not_crash() {
     let cmd = "echo test";
     let result = execute_shell_command(
         ShellExecRequest {
+            output_capture: None,
             command: cmd.to_string(),
             workdir: std::env::current_dir().unwrap_or_default(),
             description: "test".into(),
@@ -75,6 +77,7 @@ async fn execute_shell_command_cancels_non_tty_process() {
     let started = Instant::now();
     let result = execute_shell_command(
         ShellExecRequest {
+            output_capture: None,
             command: "echo cancelled_output; sleep 5; echo should_not_print".to_string(),
             workdir: std::env::current_dir().unwrap_or_default(),
             description: "cancel test".into(),
@@ -126,6 +129,7 @@ async fn execute_shell_command_cancels_tty_process() {
     let started = Instant::now();
     let result = execute_shell_command(
         ShellExecRequest {
+            output_capture: None,
             command: "echo cancelled_output; sleep 5; echo should_not_print".to_string(),
             workdir: std::env::current_dir().unwrap_or_default(),
             description: "pty cancel test".into(),
@@ -181,6 +185,7 @@ async fn aborting_tty_command_kills_pty_child() {
     let task_cancel_token = cancel_token.clone();
     let task = tokio::spawn(execute_shell_command(
         ShellExecRequest {
+            output_capture: None,
             command,
             workdir: temp_dir.path().to_path_buf(),
             description: "abort PTY test".into(),
@@ -219,6 +224,7 @@ async fn aborting_tty_command_kills_pty_child() {
 async fn execute_shell_command_success_metadata_is_mixed() {
     let result = execute_shell_command(
         ShellExecRequest {
+            output_capture: None,
             command: "echo metadata_test".to_string(),
             workdir: std::env::current_dir().unwrap_or_default(),
             description: "metadata test".into(),
@@ -265,6 +271,7 @@ async fn execute_shell_command_success_metadata_is_mixed() {
 async fn execute_shell_command_error_output_is_text_only() {
     let result = execute_shell_command(
         ShellExecRequest {
+            output_capture: None,
             command: "exit 7".to_string(),
             workdir: std::env::current_dir().unwrap_or_default(),
             description: "error test".into(),
@@ -295,6 +302,7 @@ async fn execute_shell_command_pipe_times_out() {
     let started = Instant::now();
     let result = execute_shell_command(
         ShellExecRequest {
+            output_capture: None,
             command: "echo before_timeout; sleep 5".to_string(),
             workdir: std::env::current_dir().unwrap_or_default(),
             description: "timeout test".into(),

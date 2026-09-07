@@ -585,6 +585,7 @@ impl RolloutStore {
     pub(crate) fn delete_session_rollouts(&self, session_id: &SessionId) -> Result<bool> {
         let suffix = format!("-{session_id}.jsonl");
         let mut deleted = false;
+        let mut output_candidates = Vec::new();
         for rollout_path in self.rollout_paths()? {
             let Some(file_name) = rollout_path.file_name().and_then(|name| name.to_str()) else {
                 continue;
@@ -592,6 +593,9 @@ impl RolloutStore {
             if !file_name.ends_with(&suffix) {
                 continue;
             }
+            output_candidates.extend(devo_core::output_replay::read_output_references(
+                &rollout_path,
+            )?);
             let file_lock = {
                 let mut locks = self
                     .file_locks
@@ -611,6 +615,9 @@ impl RolloutStore {
                         .with_context(|| format!("delete rollout {}", rollout_path.display()));
                 }
             }
+        }
+        if let Err(error) = self.collect_unreferenced_outputs(&output_candidates) {
+            tracing::warn!(%error, "output cleanup deferred to preserve session references");
         }
         Ok(deleted)
     }
@@ -670,6 +677,15 @@ impl RolloutStore {
             .into_runtime_session(deps)
             .await
             .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
+        if let Some(turn) = &recovered.latest_turn {
+            let execution =
+                devo_core::durable_execution::read_execution_replay(rollout_path, turn.turn_id)?;
+            if execution.has_checkpoint {
+                recovered.core_session.lock().await.set_prompt_messages(
+                    devo_core::history::response_items_to_messages(&execution.items),
+                );
+            }
+        }
         // Inverse-projected (v2) session records carry an empty rollout_path
         // by design; the real location is always the file being read.
         if let Some(record) = recovered.record.as_mut()
@@ -889,7 +905,11 @@ impl RolloutStore {
         self.write_v2_lines(rollout_path, state, &v2_lines)
     }
 
-    fn append_v2_lines(&self, rollout_path: &Path, v2_lines: Vec<RolloutLineV2>) -> Result<()> {
+    pub(crate) fn append_v2_lines(
+        &self,
+        rollout_path: &Path,
+        v2_lines: Vec<RolloutLineV2>,
+    ) -> Result<()> {
         if let Some(parent) = rollout_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create rollout directory {}", parent.display()))?;
@@ -5191,3 +5211,5 @@ mod tests {
         assert_eq!(line.value, serde_json::Value::String("workspace".into()));
     }
 }
+
+mod output_gc;

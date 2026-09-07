@@ -59,7 +59,9 @@ impl ServerRuntime {
                     .map(crate::goal::Goal::to_thread_goal)
             }
             super::super::TurnInputMode::HiddenGoalContinuation { goal } => Some(goal.clone()),
-            super::super::TurnInputMode::ApprovalResume => None,
+            super::super::TurnInputMode::ApprovalResume | super::super::TurnInputMode::Recovery => {
+                None
+            }
         };
         state.core.config.token_budget = turn_config
             .token_budget_for_session(state.core.config.effective_context_window_override);
@@ -67,7 +69,7 @@ impl ServerRuntime {
         state.summary.collaboration_mode = collaboration_mode;
         if let Some(goal) = turn_goal {
             state.core.set_active_goal(goal);
-        } else {
+        } else if !matches!(input_mode, super::super::TurnInputMode::Recovery) {
             state.core.clear_active_goal();
         }
         if input_mode.emits_user_message() && input_messages.is_empty() {
@@ -151,6 +153,23 @@ impl ServerRuntime {
             .effective_config()
             .provider_http
             .clone();
+        let output_store = state.record.as_ref().map(|record| {
+            Arc::new(devo_core::tools::output_store::OutputStore::new(
+                record.rollout_path.with_extension("outputs"),
+                session_id.to_string(),
+            ))
+        });
+        if let (Some(store), Some(record)) = (&output_store, &state.record) {
+            let path = record.rollout_path.clone();
+            match tokio::task::spawn_blocking(move || {
+                devo_core::output_replay::read_output_references(&path)
+            })
+            .await
+            {
+                Ok(Ok(artifacts)) => store.restore_references(artifacts),
+                error => tracing::warn!(?error, "output references could not be restored"),
+            }
+        }
         let runtime = ToolRuntime::new_with_context_and_options(
             Arc::clone(&registry),
             self.build_permission_checker(session_id, turn_id, permission_mode, permission_profile),
@@ -175,6 +194,7 @@ impl ServerRuntime {
                 sandbox_profile_live,
             },
             ToolExecutionOptions {
+                output_store: output_store.clone(),
                 cancel_token: turn_cancel_token,
                 on_tool_execution_start: Some(Arc::new(move |call: ToolCall| {
                     let tool_execution_start_tx = tool_execution_start_tx.clone();
@@ -220,6 +240,16 @@ impl ServerRuntime {
                 &runtime,
                 Some(callback),
                 QueryOptions {
+                    output_store,
+                    journal: state.record.as_ref().map(|record| {
+                        Arc::new(super::journal::RolloutToolJournal::new(
+                            Arc::clone(self),
+                            record.rollout_path.clone(),
+                            session_id,
+                            turn_id,
+                        ))
+                            as Arc<dyn devo_core::durable_execution::ToolIntentJournal>
+                    }),
                     cancel_token: Some(query_cancel_token.clone()),
                     compaction_provider: Some(compaction_provider),
                     live_settings: live_turn_settings.clone(),

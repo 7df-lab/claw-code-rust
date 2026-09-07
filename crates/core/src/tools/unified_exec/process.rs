@@ -144,6 +144,7 @@ fn command_for_shell(cmd: &str, shell_spec: &ShellSpec) -> String {
 }
 
 pub struct UnifiedExecProcess {
+    output_capture: Option<Result<devo_tools::output_store::SharedOutputCapture, String>>,
     session: Arc<devo_util_process::ProcessHandle>,
     exit_code: Arc<AtomicI32>,
     terminated_flag: Arc<AtomicBool>,
@@ -157,6 +158,7 @@ pub struct UnifiedExecProcess {
 
 /// Sandbox settings for a unified-exec process.
 pub struct SandboxExecutionOptions {
+    pub output_capture: Option<Result<devo_tools::output_store::SharedOutputCapture, String>>,
     /// Named sandbox profile applied before the child process starts.
     pub sandbox_profile: Option<String>,
     /// Per-invocation permissions merged into the named profile.
@@ -192,6 +194,7 @@ impl UnifiedExecProcess {
             login,
             tty,
             SandboxExecutionOptions {
+                output_capture: None,
                 sandbox_profile,
                 sandbox_overlay: None,
             },
@@ -209,6 +212,7 @@ impl UnifiedExecProcess {
         sandbox: SandboxExecutionOptions,
     ) -> Result<(Self, broadcast::Receiver<Vec<u8>>), String> {
         let SandboxExecutionOptions {
+            output_capture,
             sandbox_profile,
             sandbox_overlay,
         } = sandbox;
@@ -249,7 +253,12 @@ impl UnifiedExecProcess {
             .map_err(|error| format!("failed to spawn command: {error}"))?
         };
 
-        Ok(Self::from_spawned_process(process_id, tty, spawned))
+        Ok(Self::from_spawned_process(
+            process_id,
+            tty,
+            spawned,
+            output_capture,
+        ))
     }
 
     pub async fn spawn_interactive_shell(
@@ -300,7 +309,7 @@ impl UnifiedExecProcess {
         .await?;
 
         Ok(Self::from_spawned_process(
-            process_id, /*tty*/ true, spawned,
+            process_id, /*tty*/ true, spawned, /*output_capture*/ None,
         ))
     }
 
@@ -308,6 +317,7 @@ impl UnifiedExecProcess {
         process_id: i32,
         tty: bool,
         spawned: SpawnedProcess,
+        output_capture: Option<Result<devo_tools::output_store::SharedOutputCapture, String>>,
     ) -> (Self, broadcast::Receiver<Vec<u8>>) {
         let SpawnedProcess {
             session,
@@ -320,7 +330,12 @@ impl UnifiedExecProcess {
         let output_buffer = Arc::new(AsyncMutex::new(HeadTailBuffer::new()));
         let (output_tx, proc_output_rx) = broadcast::channel(256);
         let combined_rx = combine_output_receivers(stdout_rx, stderr_rx);
-        forward_output(combined_rx, output_tx.clone(), Arc::clone(&output_buffer));
+        forward_output(
+            combined_rx,
+            output_tx.clone(),
+            Arc::clone(&output_buffer),
+            output_capture.clone(),
+        );
 
         let exit_code = Arc::new(AtomicI32::new(-1));
         let terminated_flag = Arc::new(AtomicBool::new(false));
@@ -341,6 +356,7 @@ impl UnifiedExecProcess {
 
         (
             UnifiedExecProcess {
+                output_capture,
                 session,
                 exit_code,
                 terminated_flag,
@@ -479,16 +495,35 @@ fn forward_output(
     mut output_rx: broadcast::Receiver<Vec<u8>>,
     output_tx: broadcast::Sender<Vec<u8>>,
     output_buffer: Arc<AsyncMutex<HeadTailBuffer>>,
+    output_capture: Option<Result<devo_tools::output_store::SharedOutputCapture, String>>,
 ) {
     tokio::spawn(async move {
         loop {
             match output_rx.recv().await {
                 Ok(bytes) => {
+                    if let Some(Ok(capture)) = &output_capture {
+                        let mut capture = capture.lock().expect("output capture lock");
+                        if capture.append(&bytes).is_err() {
+                            capture.mark_incomplete();
+                        }
+                    }
                     output_buffer.lock().await.push(&bytes);
                     let _ = output_tx.send(bytes);
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if let Some(Ok(capture)) = &output_capture {
+                        capture
+                            .lock()
+                            .expect("output capture lock")
+                            .mark_incomplete();
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    if let Some(Ok(capture)) = &output_capture {
+                        let _ = capture.lock().expect("output capture lock").finish();
+                    }
+                    break;
+                }
             }
         }
     });
@@ -619,7 +654,17 @@ pub async fn collect_output(
     let raw_output = String::from_utf8_lossy(&collected).to_string();
     let (output, truncated) = formatted_truncate_tokens(&raw_output, max_output_tokens);
 
+    let (output_artifact, capture_error) = match &process.output_capture {
+        Some(Ok(capture)) => match capture.lock().expect("output capture lock").snapshot() {
+            Ok(artifact) => (Some(artifact), None),
+            Err(error) => (None, Some(error.to_string())),
+        },
+        Some(Err(error)) => (None, Some(error.clone())),
+        None => (None, None),
+    };
     ProcessOutput {
+        output_artifact,
+        capture_error,
         output,
         exit_code: process.exit_code(),
         wall_time_secs: started.elapsed().as_secs_f64(),

@@ -17,7 +17,7 @@ use devo_protocol::native::ids::{ItemId, SessionId, TurnId};
 use devo_protocol::native::item::{
     ApprovalDecision, ApprovalDecisionKind, ApprovalScope, ApprovalTarget, CompactionTrigger,
     ContextUsage, ExecOrigin, ExecutionMode, InternalEntry, Item, ItemEnvelope, ItemState,
-    PlanEntry, PlanStepStatus, ToolSource, UserInput, UserMessageEntry,
+    ToolSource, UserInput, UserMessageEntry,
 };
 use devo_protocol::native::model::{ModelBinding, PermissionProfile};
 use devo_protocol::native::session::{
@@ -616,14 +616,13 @@ impl LegacyProjector {
             },
             TurnItem::Plan(item) => Projected::Item {
                 state: ItemState::Completed,
-                // The legacy plan is a plain rendered text blob; one entry
-                // preserves it verbatim. Cold files are almost always finished
-                // turns, so the step is marked completed.
+                // Structured `update_plan` JSON expands into one entry per
+                // step. Proposed Plan markdown stays a single completed entry.
                 item: Item::Plan {
-                    entries: vec![PlanEntry {
-                        step: item.text.clone(),
-                        status: PlanStepStatus::Completed,
-                    }],
+                    entries:
+                        devo_protocol::native::plan_parse::plan_entries_from_plan_text_or_single(
+                            item.text.clone(),
+                        ),
                 },
             },
             TurnItem::Reasoning(item) => Projected::Item {

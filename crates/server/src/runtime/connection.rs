@@ -363,6 +363,8 @@ impl ServerRuntime {
             "search/cancel" => Some(self.handle_native_search_cancel(id?, params).await),
             "command/exec" => Some(self.handle_command_exec(connection_id, id?, params).await),
             // TODO: start a new user turn, maybe should change name to "turn/submit"
+            "turn/resume" => Some(self.handle_turn_resume(connection_id, id?, params).await),
+            "turn/recovery/read" => Some(self.handle_turn_recovery_read(id?, params).await),
             "turn/start" => Some(
                 self.handle_turn_start_for_connection(Some(connection_id), id?, params)
                     .await,

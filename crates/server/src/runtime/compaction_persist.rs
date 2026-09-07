@@ -200,7 +200,7 @@ pub(crate) fn append_compaction_summary_and_snapshot(
     rollout_store: &RolloutStore,
     record: &SessionRecord,
     persist: CompactionSummaryPersist,
-) {
+) -> anyhow::Result<()> {
     let CompactionSummaryPersist {
         session_id,
         turn_id,
@@ -219,20 +219,9 @@ pub(crate) fn append_compaction_summary_and_snapshot(
         None,
         None,
     );
-    if let Err(error) = rollout_store.append_item(record, item_record) {
-        tracing::warn!(
-            session_id = %session_id,
-            error = %error,
-            "failed to persist compaction summary item"
-        );
-    }
-    if let Err(error) = rollout_store.append_compaction_snapshot(record, snapshot) {
-        tracing::warn!(
-            session_id = %session_id,
-            error = %error,
-            "failed to persist compaction snapshot"
-        );
-    }
+    rollout_store.append_item(record, item_record)?;
+    rollout_store.append_compaction_snapshot(record, snapshot)?;
+    Ok(())
 }
 
 /// Build the in-memory journal entry for a compaction summary item.
@@ -403,7 +392,11 @@ impl ServerRuntime {
                 summary_turn_item,
                 snapshot,
             },
-        );
+        )
+        .map_err(
+            |error| tracing::warn!(%session_id, %error, "compaction snapshot persistence failed"),
+        )
+        .ok()?;
         Some(item_seq)
     }
 }

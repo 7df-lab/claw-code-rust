@@ -31,6 +31,11 @@ import {
 	stashAndCheckout,
 	stashPop,
 } from "./git-service"
+import {
+	localWorkspaceChangesSummary,
+	localWorkspaceFilePatch,
+	type LocalGitChangeScope,
+} from "./git-workspace-changes"
 import { getResolvedChromeTier, resolveTitleBarOverlay } from "./liquid-glass"
 import { createProjectAgentsMd, listRuleFiles } from "./rules-files"
 import { createLogger } from "./logger"
@@ -406,6 +411,39 @@ export function registerIpcHandlers(): void {
 	ipcMain.handle(
 		"git:root",
 		withLogging("git:root", async (_, directory: string) => await getGitRoot(directory)),
+	)
+
+	ipcMain.handle(
+		"git:workspace-changes-summary",
+		withLogging(
+			"git:workspace-changes-summary",
+			async (
+				_,
+				directory: string,
+				scope: LocalGitChangeScope,
+				options?: { baseBranch?: string | null; ignoreWhitespace?: boolean },
+			) => await localWorkspaceChangesSummary(directory, scope, options ?? {}),
+		),
+	)
+
+	ipcMain.handle(
+		"git:workspace-file-patch",
+		withLogging(
+			"git:workspace-file-patch",
+			async (
+				_,
+				directory: string,
+				scope: LocalGitChangeScope | "turn",
+				filePath: string,
+				options?: {
+					baseBranch?: string | null
+					ignoreWhitespace?: boolean
+					fileStatus?: string | null
+					checkpointId?: string | null
+					mergeBase?: string | null
+				},
+			) => await localWorkspaceFilePatch(directory, scope, filePath, options ?? {}),
+		),
 	)
 
 	ipcMain.handle(

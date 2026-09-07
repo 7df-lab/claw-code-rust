@@ -43,6 +43,32 @@ impl ServerRuntime {
         // for that terminal status; claiming `active_turn` is only an orphan
         // fallback after the wait times out.
         if self.runtime_active_turn_id(params.session_id).await != Some(params.turn_id) {
+            let matches_saved = session_handle
+                .turn_reservation_snapshot()
+                .await
+                .and_then(|snapshot| snapshot.latest_turn)
+                .is_some_and(|turn| turn.turn_id == params.turn_id);
+            match if matches_saved {
+                self.cancel_saved_turn(params.session_id).await
+            } else {
+                Ok(false)
+            } {
+                Ok(true) => {
+                    return self.turn_interrupt_success(
+                        request_id,
+                        params.turn_id,
+                        TurnStatus::Interrupted,
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    return self.error_response(
+                        request_id,
+                        ProtocolErrorCode::InternalError,
+                        error.to_string(),
+                    );
+                }
+            }
             if let Some(snapshot) = self.recent_terminal_turn_status(params.turn_id).await {
                 return self.turn_interrupt_success(request_id, params.turn_id, snapshot.status);
             }
@@ -66,6 +92,21 @@ impl ServerRuntime {
         // Cancel via a clone rather than `remove`: see the comment in
         // `interrupt_child_runtime_work` for why removing here races with
         // `run_turn_model_query` fetching the same token.
+        if let Err(error) = self
+            .persist_recovery_disposition(
+                params.session_id,
+                params.turn_id,
+                devo_core::durable_execution::RecoveryDisposition::Canceled,
+                "Stopped by user.",
+            )
+            .await
+        {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                error.to_string(),
+            );
+        }
         self.signal_active_turn_interrupt(params.session_id).await;
 
         let removed = self

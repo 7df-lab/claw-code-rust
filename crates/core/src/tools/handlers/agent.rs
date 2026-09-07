@@ -911,6 +911,7 @@ mod tests {
         cancel_token: CancellationToken,
     ) -> ToolContext {
         ToolContext {
+            output_store: None,
             tool_call_id: crate::invocation::ToolCallId("tool-call".to_string()),
             session_id: session_id.to_string(),
             turn_id: None,

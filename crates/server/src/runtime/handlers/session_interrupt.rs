@@ -108,7 +108,9 @@ impl ServerRuntime {
             }
             true
         } else {
-            false
+            self.cancel_saved_turn(session_id)
+                .await
+                .map_err(|error| (ProtocolErrorCode::InternalError, error.to_string()))?
         };
         let task_count = self
             .command_exec_manager

@@ -111,6 +111,13 @@ impl ServerRuntime {
             Some(handle) => handle.collaboration_mode().await.unwrap_or_default(),
             None => Default::default(),
         };
+        if let Err(error) = self.cancel_saved_turn(session_id).await {
+            return self.error_response(
+                request_id,
+                ProtocolErrorCode::InternalError,
+                error.to_string(),
+            );
+        }
         let turn_params = TurnStartParams {
             session_id,
             input,

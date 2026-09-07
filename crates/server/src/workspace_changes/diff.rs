@@ -147,6 +147,8 @@ fn files_from_diff(diff: &str) -> (Vec<WorkspaceChangedFile>, WorkspaceChangeSta
                 deletions: Some(0),
                 binary: false,
                 diff_truncated: false,
+                old_text: None,
+                new_text: None,
             });
             continue;
         }

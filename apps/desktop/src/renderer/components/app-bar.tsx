@@ -1,7 +1,7 @@
 import { useAppBarContent } from "./app-bar-context"
 
 // Height of the app bar in pixels — used as CSS variable
-export const APP_BAR_HEIGHT = 40
+export const APP_BAR_HEIGHT = 32
 
 /**
  * Detect whether we're running inside Electron (preload injects `window.devo`).

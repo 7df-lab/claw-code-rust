@@ -141,7 +141,7 @@ describe("desktop chrome CSS", () => {
 		);
 
 		expect(lightDeclarations).toEqual({
-			"--devo-titlebar-height": "40px",
+			"--devo-titlebar-height": "32px",
 			"--devo-windows-focus-chrome-bg": "var(--devo-chrome-background)",
 			"--devo-windows-unfocused-chrome-bg": "var(--devo-chrome-background)",
 		});

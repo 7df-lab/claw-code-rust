@@ -167,6 +167,23 @@ contextBridge.exposeInMainWorld("devo", {
 		stashPop: (directory: string) => ipcRenderer.invoke("git:stash-pop", directory),
 		getRoot: (directory: string) => ipcRenderer.invoke("git:root", directory),
 		diffStat: (directory: string) => ipcRenderer.invoke("git:diff-stat", directory),
+		workspaceChangesSummary: (
+			directory: string,
+			scope: "uncommitted" | "staged" | "unstaged" | "branch",
+			options?: { baseBranch?: string | null; ignoreWhitespace?: boolean },
+		) => ipcRenderer.invoke("git:workspace-changes-summary", directory, scope, options),
+		workspaceFilePatch: (
+			directory: string,
+			scope: "uncommitted" | "staged" | "unstaged" | "branch" | "turn",
+			filePath: string,
+			options?: {
+				baseBranch?: string | null
+				ignoreWhitespace?: boolean
+				fileStatus?: string | null
+				checkpointId?: string | null
+				mergeBase?: string | null
+			},
+		) => ipcRenderer.invoke("git:workspace-file-patch", directory, scope, filePath, options),
 		commitAll: (directory: string, message: string) =>
 			ipcRenderer.invoke("git:commit-all", directory, message),
 		push: (directory: string, remote?: string) => ipcRenderer.invoke("git:push", directory, remote),

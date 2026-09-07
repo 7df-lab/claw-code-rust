@@ -43,6 +43,19 @@ const log = createLogger("backend")
  */
 export const isElectron = typeof window !== "undefined" && "devo" in window
 
+/** Prefer runtime checks — module-load `isElectron` can be wrong before preload binds. */
+export function canUseLocalWorkspaceGit(): boolean {
+	try {
+		return (
+			typeof window !== "undefined" &&
+			typeof window.devo?.git?.workspaceChangesSummary === "function" &&
+			typeof window.devo?.git?.workspaceFilePatch === "function"
+		)
+	} catch {
+		return false
+	}
+}
+
 // ============================================================
 // Backend API — same signatures regardless of runtime
 // ============================================================
@@ -251,6 +264,41 @@ export async function fetchDiffStat(directory: string): Promise<GitDiffStat> {
 		return window.devo.git.diffStat(directory)
 	}
 	throw new Error("Git operations are only available in Electron mode")
+}
+
+export type LocalGitChangeScope = "uncommitted" | "staged" | "unstaged" | "branch"
+
+export type LocalWorkspaceFilePatchOptions = {
+	baseBranch?: string | null
+	ignoreWhitespace?: boolean
+	fileStatus?: string | null
+	checkpointId?: string | null
+	mergeBase?: string | null
+}
+
+/** Local Summary list for working-tree scopes (bypasses Devo stdio). */
+export async function fetchLocalWorkspaceChangesSummary(
+	directory: string,
+	scope: LocalGitChangeScope,
+	options?: { baseBranch?: string | null; ignoreWhitespace?: boolean },
+) {
+	if (!canUseLocalWorkspaceGit()) {
+		throw new Error("Local workspace changes require Electron git IPC")
+	}
+	return window.devo.git.workspaceChangesSummary(directory, scope, options)
+}
+
+/** Single-file patch for expand-on-demand (bypasses whole-tree Full). */
+export async function fetchLocalWorkspaceFilePatch(
+	directory: string,
+	scope: LocalGitChangeScope | "turn",
+	filePath: string,
+	options?: LocalWorkspaceFilePatchOptions,
+) {
+	if (!canUseLocalWorkspaceGit()) {
+		throw new Error("Local workspace file patch requires Electron git IPC")
+	}
+	return window.devo.git.workspaceFilePatch(directory, scope, filePath, options)
 }
 
 /**

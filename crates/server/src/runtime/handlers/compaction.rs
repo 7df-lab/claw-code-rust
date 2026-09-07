@@ -550,6 +550,49 @@ impl ServerRuntime {
                     .await;
                     return;
                 };
+                // A failed write must leave the previous prompt installed.
+                if let Some(record) = runtime_session.record.clone() {
+                    let persist = CompactionSummaryPersist {
+                        session_id,
+                        turn_id: turn.turn_id,
+                        summary_item_id: compaction_item_id,
+                        item_seq: runtime_session.next_item_seq,
+                        summary_turn_item: summary_turn_item_from_compacted(&compacted_items),
+                        snapshot: build_compaction_snapshot_line(
+                            session_id,
+                            turn.turn_id,
+                            compaction_item_id,
+                            preserved_item_ids_from_compacted(
+                                &runtime_session.persisted_turn_items,
+                                &compacted_items,
+                            ),
+                            runtime_session.summary.last_context_occupancy.clone(),
+                        ),
+                    };
+                    let runtime = Arc::clone(&self);
+                    let committed = tokio::task::spawn_blocking(move || {
+                        append_compaction_summary_and_snapshot(
+                            &runtime.rollout_store,
+                            &record,
+                            persist,
+                        )
+                    })
+                    .await;
+                    if let Err(error) = committed.unwrap_or_else(|error| Err(error.into())) {
+                        drop(state_change_guard);
+                        self.finalize_manual_compaction_turn(
+                            &session_handle,
+                            session_id,
+                            turn,
+                            CompactionTurnOutcome::Failed {
+                                message: format!("compaction persistence failed: {error}"),
+                            },
+                            Some(compaction_item_id),
+                        )
+                        .await;
+                        return;
+                    }
+                }
                 // Claim terminalization before mutating history so an interrupt that
                 // already took `active_turn` cannot race with replace_state.
                 if session_handle
@@ -564,14 +607,7 @@ impl ServerRuntime {
                     &runtime_session.persisted_turn_items,
                     &compacted_items,
                 );
-                let new_messages: Vec<Message> = compacted_items
-                    .iter()
-                    .filter_map(|item| match item {
-                        ResponseItem::Message(msg) => Some(msg.clone()),
-                        _ => None,
-                    })
-                    .collect();
-
+                let new_messages = devo_core::history::response_items_to_messages(&compacted_items);
                 {
                     let (
                         compacted_total_input_tokens,
@@ -716,7 +752,7 @@ impl ServerRuntime {
                     TurnItem::ContextCompaction(TextItem { text }) => text.clone(),
                     _ => String::new(),
                 };
-                if let Some(record) = runtime_session.record.clone() {
+                if runtime_session.record.is_some() {
                     let snapshot = build_compaction_snapshot_line(
                         session_id,
                         turn_id,
@@ -738,18 +774,6 @@ impl ServerRuntime {
                     {
                         runtime_session.history_items.push(history_item);
                     }
-                    append_compaction_summary_and_snapshot(
-                        &self.rollout_store,
-                        &record,
-                        CompactionSummaryPersist {
-                            session_id,
-                            turn_id,
-                            summary_item_id: item_id,
-                            item_seq,
-                            summary_turn_item,
-                            snapshot,
-                        },
-                    );
                 }
 
                 let mut completed_turn = turn.clone();

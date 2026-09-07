@@ -232,6 +232,9 @@ export async function getWorkspaceChanges(
 		turnId?: string
 		diffDetail?: WorkspaceDiffDetail
 		maxDiffBytes?: number
+		ignoreWhitespace?: boolean
+		paths?: string[]
+		includeFileSides?: boolean
 	},
 ): Promise<WorkspaceChangesReadResult> {
 	const result = await client.workspace.changes.read({
@@ -242,6 +245,9 @@ export async function getWorkspaceChanges(
 		turnID: params.turnId,
 		diffDetail: params.diffDetail,
 		maxDiffBytes: params.maxDiffBytes,
+		ignoreWhitespace: params.ignoreWhitespace,
+		paths: params.paths,
+		includeFileSides: params.includeFileSides,
 	})
 	return result.data as WorkspaceChangesReadResult
 }

@@ -516,3 +516,65 @@ fn model_response(text: &str) -> ModelResponse {
         metadata: ResponseMetadata::default(),
     }
 }
+
+/// Trace: L2-DES-CONTEXT-004. Recovery preserves the request and turn identity.
+#[tokio::test(start_paused = true)]
+async fn continue_failed_turn_reuses_context_and_is_idempotent() -> Result<()> {
+    let data_root = TempDir::new()?;
+    write_provider_config(data_root.path())?;
+    let router = Arc::new(ExhaustingRouter::default());
+    let runtime = build_runtime(data_root.path(), router.clone())?;
+    let (connection_id, mut notifications) = initialize_connection(&runtime).await?;
+    let session = start_session(&runtime, connection_id, data_root.path()).await?;
+    let session_id = SessionId::try_from(session.id.as_str())?;
+    let turn_id = start_turn(&runtime, connection_id, session_id, 21).await?;
+    let recovery = timeout(Duration::from_secs(30), async {
+        while let Some(event) = notifications.recv().await {
+            if event["method"] == "turn/recoveryUpdated" && event["params"]["recovery"].is_object()
+            {
+                return event["params"]["recovery"].clone();
+            }
+        }
+        panic!("notification stream closed");
+    })
+    .await
+    .context("recovery notification")?;
+    assert_eq!(recovery["turnId"], serde_json::json!(turn_id));
+    let request = serde_json::json!({
+        "id": 22, "method": "turn/resume", "params": {
+            "sessionId": session_id, "expectedTurnId": turn_id,
+            "recoveryRevision": recovery["revision"], "idempotencyKey": "resume-once"
+        }
+    });
+    let first = runtime
+        .handle_incoming(connection_id, request.clone())
+        .await
+        .context("continue response")?;
+    assert!(first.get("error").is_none(), "{first}");
+    let duplicate = runtime
+        .handle_incoming(connection_id, request)
+        .await
+        .context("duplicate continue response")?;
+    assert_eq!(duplicate, first);
+    assert_eq!(first["result"]["turn"]["id"], serde_json::json!(turn_id));
+    timeout(Duration::from_secs(30), async {
+        while let Some(event) = notifications.recv().await {
+            if event["method"] == "turn/completed"
+                && event["params"]["turn"]["status"] == "completed"
+            {
+                assert_eq!(event["params"]["turn"]["id"], serde_json::json!(turn_id));
+                return;
+            }
+        }
+        panic!("notification stream closed");
+    })
+    .await
+    .context("resumed completion")?;
+    let requests = router.requests();
+    assert_eq!(requests.len(), FAILING_ATTEMPTS + 1);
+    assert_eq!(
+        serde_json::to_value(&requests.first().unwrap().messages)?,
+        serde_json::to_value(&requests.last().unwrap().messages)?
+    );
+    Ok(())
+}

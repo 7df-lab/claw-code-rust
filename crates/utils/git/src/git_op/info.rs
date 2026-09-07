@@ -273,7 +273,13 @@ async fn run_git_command_with_timeout(args: &[&str], cwd: &Path) -> Option<std::
         .env("GIT_OPTIONAL_LOCKS", "0")
         .args(args)
         .current_dir(cwd)
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        // Never inherit the caller's stdin. Under `devo server --transport stdio`
+        // that pipe is the JSON-RPC stream; git blocking on it looks like a
+        // multi-second Changes hang (timeout × number of git children).
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
     let result = timeout(GIT_COMMAND_TIMEOUT, command.output()).await;
 
     match result {
@@ -301,10 +307,10 @@ async fn get_git_remotes(cwd: &Path) -> Option<Vec<String>> {
 
 /// Attempt to determine the repository's default branch name.
 ///
-/// Preference order:
-/// 1) The symbolic ref at `refs/remotes/<remote>/HEAD` for the first remote (origin prioritized)
-/// 2) `git remote show <remote>` parsed for "HEAD branch: <name>"
-/// 3) Local fallback to existing `main` or `master` if present
+/// Preference order (local only — never `git remote show`, which hits the
+/// network and can stall Changes / stdio for many seconds):
+/// 1) The symbolic ref at `refs/remotes/<remote>/HEAD` for the first remote
+/// 2) Local fallback to existing `main` or `master` if present
 async fn get_default_branch(cwd: &Path) -> Option<String> {
     // Prefer the first remote (with origin prioritized)
     let remotes = get_git_remotes(cwd).await.unwrap_or_default();
@@ -325,23 +331,6 @@ async fn get_default_branch(cwd: &Path) -> Option<String> {
             let trimmed = sym.trim();
             if let Some((_, name)) = trimmed.rsplit_once('/') {
                 return Some(name.to_string());
-            }
-        }
-
-        // Fall back to parsing `git remote show <remote>` output
-        if let Some(show_output) =
-            run_git_command_with_timeout(&["remote", "show", &remote], cwd).await
-            && show_output.status.success()
-            && let Ok(text) = String::from_utf8(show_output.stdout)
-        {
-            for line in text.lines() {
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("HEAD branch:") {
-                    let name = rest.trim();
-                    if !name.is_empty() {
-                        return Some(name.to_string());
-                    }
-                }
             }
         }
     }

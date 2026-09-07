@@ -331,10 +331,14 @@ fn parse_plan_history_metadata(text: &str) -> Option<SessionHistoryMetadata> {
         .and_then(serde_json::Value::as_array)?
         .iter()
         .filter_map(|item| {
-            let text = item.get("step")?.as_str()?.to_string();
+            let text = item
+                .get("step")
+                .or_else(|| item.get("content"))
+                .and_then(serde_json::Value::as_str)?
+                .to_string();
             let status = match item.get("status").and_then(serde_json::Value::as_str)? {
                 "pending" => SessionPlanStepStatus::Pending,
-                "in_progress" => SessionPlanStepStatus::InProgress,
+                "in_progress" | "inProgress" => SessionPlanStepStatus::InProgress,
                 "completed" => SessionPlanStepStatus::Completed,
                 "cancelled" => SessionPlanStepStatus::Cancelled,
                 _ => return None,

@@ -49,7 +49,7 @@ import {
 	compactionStatusFromMetadata,
 	isCompactionStatusText,
 } from "./compaction-status-divider"
-import { PlanBlock, isPlanTextPart } from "./plan-block"
+import { PlanBlock, PlanChecklistRow, isChecklistPlanPart, isProposedPlanPart } from "./plan-block"
 import { UserMessageBlock } from "./user-message-block"
 
 // ============================================================
@@ -347,7 +347,7 @@ function compactionStatusesFromTurn(
 function getLastResponseText(orderedParts: RenderablePart[]): string | undefined {
 	for (let i = orderedParts.length - 1; i >= 0; i--) {
 		const item = orderedParts[i]
-		if (item.kind === "text") return item.text
+		if (item.kind === "text" && !isChecklistPlanPart(item.metadata)) return item.text
 	}
 	return undefined
 }
@@ -358,7 +358,10 @@ function splitCompletedTurnParts(orderedParts: RenderablePart[]): {
 } {
 	let finalResponseIndex = -1
 	for (let i = orderedParts.length - 1; i >= 0; i--) {
-		if (orderedParts[i].kind === "text") {
+		const part = orderedParts[i]
+		// update_plan checklist text stays in the process timeline — never
+		// steal the final assistant answer slot.
+		if (part.kind === "text" && !isChecklistPlanPart(part.metadata)) {
 			finalResponseIndex = i
 			break
 		}
@@ -398,7 +401,10 @@ function AssistantTextBlock({
 	const text = streaming ? deferredText : item.text
 	const displayItem = text === item.text ? item : { ...item, text }
 
-	if (isPlanTextPart(displayItem.metadata)) {
+	if (isChecklistPlanPart(displayItem.metadata)) {
+		return <PlanChecklistRow item={displayItem} />
+	}
+	if (isProposedPlanPart(displayItem.metadata)) {
 		return (
 			<PlanBlock
 				item={displayItem}
@@ -776,7 +782,10 @@ export const ChatTurnComponent = memo(
 		const showVerboseTools = displayMode === "verbose"
 
 		const textAlreadyInline =
-			processSectionVisible && processOrderedParts.some((p) => p.kind === "text")
+			processSectionVisible &&
+			processOrderedParts.some(
+				(p) => p.kind === "text" && !isChecklistPlanPart(p.metadata),
+			)
 
 		useEffect(() => {
 			if (working) return
@@ -945,7 +954,7 @@ export const ChatTurnComponent = memo(
 				{/* Streaming response — visible while working, when text isn't already inline */}
 				{working && responseText && !textAlreadyInline && (
 					<div>
-					{isPlanTextPart(finalResponsePart?.metadata) ? (
+					{isProposedPlanPart(finalResponsePart?.metadata) ? (
 						<AssistantTextBlock
 							item={{ ...(finalResponsePart as TextRenderablePart), text: responseText }}
 							streaming

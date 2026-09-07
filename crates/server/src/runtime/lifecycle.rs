@@ -299,6 +299,33 @@ impl ServerRuntime {
                     .await;
                 self.resume_pending_queue_if_idle(session_id).await;
             }
+            // Loading a persisted InProgress turn with no live registry owner is
+            // an abandoned execution. Materialize recovery availability once so
+            // session reads and both clients see authoritative state.
+            if let Some(recovery) = self.turn_recovery(session_id).await?
+                && let Some(handle) = self.session(session_id).await
+                && let Some(snapshot) = handle.turn_persistence_snapshot().await
+                && let Some(record) = snapshot.record
+            {
+                let path = record.rollout_path.clone();
+                let turn_id = recovery.turn_id.clone();
+                let replay = tokio::task::spawn_blocking(move || {
+                    devo_core::durable_execution::read_execution_replay(
+                        &path,
+                        devo_core::TurnId::try_from(turn_id.as_str())?,
+                    )
+                })
+                .await??;
+                if replay.recovery.is_none() {
+                    self.persist_recovery_disposition(
+                        session_id,
+                        devo_core::TurnId::try_from(recovery.turn_id.as_str())?,
+                        devo_core::durable_execution::RecoveryDisposition::Available,
+                        "Execution was lost while the application was not running.",
+                    )
+                    .await?;
+                }
+            }
         }
         Ok(())
     }
@@ -339,6 +366,18 @@ impl ServerRuntime {
             let Some(turn_id) = snapshot.active_turn_id else {
                 continue;
             };
+
+            if let Err(error) = self
+                .persist_recovery_disposition(
+                    session_id,
+                    turn_id,
+                    devo_core::durable_execution::RecoveryDisposition::Available,
+                    "Application shut down during this turn.",
+                )
+                .await
+            {
+                tracing::warn!(%session_id, %error, "failed to save turn recovery state");
+            }
 
             if let Some(turn) = self.active_turns.active_turn_metadata(session_id).await
                 && turn.status == TurnStatus::WaitingApproval

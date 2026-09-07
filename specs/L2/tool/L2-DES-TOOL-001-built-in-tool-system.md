@@ -6,7 +6,7 @@ active_baseline: no
 supersedes:
 superseded_by:
 owner: Assistant
-last_updated: 2026-06-04
+last_updated: 2026-09-07
 ---
 
 # L2-DES-TOOL-001 — Built-In Tool System
@@ -107,6 +107,9 @@ Conceptual command tool invocation fields:
 - `command`
 - `timeout` where applicable.
 - `working_directory` where applicable.
+- `sandbox_permissions` (`use_default`, `with_additional_permissions`, or `require_escalated`) where the tool spawns a process.
+- `additional_permissions` when requesting a sandboxed overlay.
+- `justification` and optional `prefix_rule` when requesting full escalation.
 - `tool_call_id`
 - `session_id`
 - `turn_id`
@@ -415,3 +418,4 @@ Live server-client events may be more frequent than durable records, but replay 
 | 1 | 2026-06-04 | Assistant | Refinement | Clarified semantic code retrieval cache refresh as incremental per-file re-embedding with watcher-backed warm reuse bounded by a safety interval. |
 | 1 | 2026-06-04 | Assistant | Refinement | Clarified semantic code retrieval performance internals for binary vector cache storage, ANN candidate search with exact reranking, and exact fallbacks. |
 | 1 | 2026-06-04 | Assistant | Refinement | Clarified semantic code retrieval chunking as tree-sitter AST chunking for supported programming/config languages with line fallback for docs, data, unsupported labels, and parser failures. |
+| 1 | 2026-09-07 | Assistant | Refinement | Command tools that spawn a process advertise sandbox escalation fields (`sandbox_permissions`, overlay, justification, `prefix_rule`). |

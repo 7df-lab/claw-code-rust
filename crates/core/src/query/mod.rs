@@ -124,6 +124,7 @@ fn hosted_tools_for_web_search(
 /// - [`CompactionKind::Proactive`]: forced compaction after provider
 ///   `context_too_long`; keeps from the latest user message onward.
 struct CompactionModelRequest<'a> {
+    journal: Option<&'a dyn crate::durable_execution::ToolIntentJournal>,
     provider: &'a Arc<dyn ModelProviderSDK>,
     model_slug: &'a str,
     request_model: &'a str,
@@ -165,13 +166,28 @@ async fn summarize_and_compact(
     emit_query_event(on_event, QueryEvent::ContextCompactionStarted).await;
     match compact_history(&items, &token_info, &summarizer, &config, cancel_token).await {
         Ok(CompactAction::Replaced(compacted_items)) => {
-            let new_messages: Vec<Message> = compacted_items
-                .iter()
-                .filter_map(|item| match item {
-                    ResponseItem::Message(msg) => Some(msg.clone()),
-                    _ => None,
-                })
-                .collect();
+            if let Some(journal) = model.journal
+                && let Err(error) = journal
+                    .commit(
+                        crate::durable_execution::ExecutionRecord::PromptCheckpoint {
+                            counters: Some(crate::durable_execution::ExecutionCounters::capture(
+                                session,
+                            )),
+                            items: compacted_items.clone(),
+                        },
+                    )
+                    .await
+            {
+                emit_query_event(
+                    on_event,
+                    QueryEvent::ContextCompactionFailed {
+                        message: format!("failed to persist compaction checkpoint: {error}"),
+                    },
+                )
+                .await;
+                return;
+            }
+            let new_messages = crate::history::response_items_to_messages(&compacted_items);
             let removed = session
                 .prompt_source_messages()
                 .len()
@@ -372,6 +388,20 @@ pub async fn query(
     on_event: Option<EventCallback>,
     options: QueryOptions,
 ) -> Result<(), AgentError> {
+    if let Some(journal) = &options.journal {
+        let replay = journal.replay().await.map_err(AgentError::Provider)?;
+        if let Some(counters) = &replay.counters {
+            counters.restore(session);
+        }
+        if replay.completed {
+            session.set_prompt_messages(crate::history::response_items_to_messages(&replay.items));
+            if let Some(stop_reason) = replay.stop_reason {
+                emit_query_event(&on_event, QueryEvent::TurnComplete { stop_reason }).await;
+            }
+            session.end_turn();
+            return Ok(());
+        }
+    }
     let compaction_provider = options
         .compaction_provider
         .as_ref()
@@ -537,6 +567,7 @@ pub async fn query(
                 session,
                 &on_event,
                 CompactionModelRequest {
+                    journal: options.journal.as_deref(),
                     provider: &compaction_provider,
                     model_slug: &live_compaction_model_slug,
                     request_model: &live_compaction_request_model,
@@ -679,6 +710,25 @@ pub async fn query(
             *last = Some(request.clone());
         }
 
+        if let Some(journal) = &options.journal {
+            journal
+                .commit(
+                    crate::durable_execution::ExecutionRecord::PromptCheckpoint {
+                        counters: Some(crate::durable_execution::ExecutionCounters::capture(
+                            session,
+                        )),
+                        items: session
+                            .prompt_source_messages()
+                            .iter()
+                            .cloned()
+                            .flat_map(message_to_response_items)
+                            .collect(),
+                    },
+                )
+                .await
+                .map_err(AgentError::Provider)?;
+        }
+
         let assembled = match run_provider_attempt(
             provider.as_ref(),
             request,
@@ -726,6 +776,7 @@ pub async fn query(
                             session,
                             &on_event,
                             CompactionModelRequest {
+                                journal: options.journal.as_deref(),
                                 provider: &compaction_provider,
                                 model_slug: &retry_compaction_model_slug,
                                 request_model: &retry_compaction_request_model,
@@ -774,7 +825,7 @@ pub async fn query(
         };
 
         let AssembledModelTurn {
-            assistant_content,
+            mut assistant_content,
             tool_calls,
             stop_reason,
             has_hosted_tool_uses,
@@ -793,11 +844,40 @@ pub async fn query(
             hosted_tools: &hosted_tools,
         });
 
+        if options
+            .cancel_token
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            // History may retain partial text, but unfinished arguments and
+            // provider reasoning payloads are never valid recovered input.
+            assistant_content.retain(|block| matches!(block, ContentBlock::Text { .. }));
+        }
+
         if assistant_content_has_visible_content(&assistant_content) {
             session.push_message(Message {
                 role: Role::Assistant,
                 content: assistant_content,
             });
+        }
+
+        if let Some(journal) = &options.journal {
+            journal
+                .commit(
+                    crate::durable_execution::ExecutionRecord::PromptCheckpoint {
+                        counters: Some(crate::durable_execution::ExecutionCounters::capture(
+                            session,
+                        )),
+                        items: session
+                            .prompt_source_messages()
+                            .iter()
+                            .cloned()
+                            .flat_map(message_to_response_items)
+                            .collect(),
+                    },
+                )
+                .await
+                .map_err(AgentError::Provider)?;
         }
 
         match continuation {
@@ -808,6 +888,25 @@ pub async fn query(
                 continue;
             }
             TurnContinuation::Complete { stop_reason } => {
+                if let Some(journal) = &options.journal
+                    && !options
+                        .cancel_token
+                        .as_ref()
+                        .is_some_and(CancellationToken::is_cancelled)
+                {
+                    journal
+                        .commit(crate::durable_execution::ExecutionRecord::ModelCompleted {
+                            items: session
+                                .prompt_source_messages()
+                                .iter()
+                                .cloned()
+                                .flat_map(message_to_response_items)
+                                .collect(),
+                            stop_reason: stop_reason.clone(),
+                        })
+                        .await
+                        .map_err(AgentError::Provider)?;
+                }
                 if let Some(sr) = stop_reason {
                     emit_query_event(&on_event, QueryEvent::TurnComplete { stop_reason: sr }).await;
                 }
@@ -837,6 +936,22 @@ pub async fn query(
             return Ok(());
         }
 
+        if let Some(journal) = &options.journal {
+            journal
+                .commit(crate::durable_execution::ExecutionRecord::IntentBatch {
+                    calls: tool_calls
+                        .iter()
+                        .map(|call| ResponseItem::ToolCall {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            input: call.input.clone(),
+                        })
+                        .collect(),
+                })
+                .await
+                .map_err(AgentError::Provider)?;
+        }
+
         let tool_result_metadata: HashMap<String, (String, serde_json::Value, String)> = tool_calls
             .iter()
             .map(|call| {
@@ -858,7 +973,10 @@ pub async fn query(
         // Execute tool calls. When a caller is observing query events, wire
         // tool progress and per-call completion into the same event stream so
         // long-running and parallel tools can render before the whole batch ends.
+        let journal_error = Arc::new(std::sync::Mutex::new(None));
         let results = if let Some(progress_events) = on_event.clone() {
+            let journal = options.journal.clone();
+            let completion_error = Arc::clone(&journal_error);
             let completion_events = Arc::clone(&progress_events);
             let metadata = Arc::new(tool_result_metadata.clone());
             runtime
@@ -877,6 +995,8 @@ pub async fn query(
                     move |result| {
                         let completion_events = Arc::clone(&completion_events);
                         let metadata = Arc::clone(&metadata);
+                        let journal = journal.clone();
+                        let completion_error = Arc::clone(&completion_error);
                         Box::pin(async move {
                             let (tool_name, input, summary) = metadata
                                 .get(result.tool_use_id.as_str())
@@ -884,6 +1004,23 @@ pub async fn query(
                                 .unwrap_or_else(|| {
                                     (String::new(), serde_json::Value::Null, String::new())
                                 });
+                            if let Some(journal) = journal
+                                && let Err(error) = journal
+                                    .commit(crate::durable_execution::ExecutionRecord::Outcomes {
+                                        results: vec![ResponseItem::ToolCallOutput {
+                                            tool_use_id: result.tool_use_id.clone(),
+                                            content: serialize_tool_content_for_model(
+                                                result.content.clone(),
+                                                Some(&tool_name),
+                                            ),
+                                            is_error: result.is_error,
+                                        }],
+                                    })
+                                    .await
+                            {
+                                *completion_error.lock().expect("journal error lock") = Some(error);
+                                return;
+                            }
                             completion_events(QueryEvent::ToolResult {
                                 tool_use_id: result.tool_use_id,
                                 tool_name,
@@ -901,6 +1038,29 @@ pub async fn query(
         } else {
             runtime.execute_batch(&tool_calls).await
         };
+        if let Some(error) = journal_error.lock().expect("journal error lock").take() {
+            return Err(AgentError::Provider(error));
+        }
+        if let Some(journal) = &options.journal {
+            journal
+                .commit(crate::durable_execution::ExecutionRecord::Outcomes {
+                    results: results
+                        .iter()
+                        .map(|result| ResponseItem::ToolCallOutput {
+                            tool_use_id: result.tool_use_id.clone(),
+                            content: serialize_tool_content_for_model(
+                                result.content.clone(),
+                                tool_result_metadata
+                                    .get(&result.tool_use_id)
+                                    .map(|(name, _, _)| name.as_str()),
+                            ),
+                            is_error: result.is_error,
+                        })
+                        .collect(),
+                })
+                .await
+                .map_err(AgentError::Provider)?;
+        }
         let tool_result_count = results.len();
         let tool_error_count = results.iter().filter(|result| result.is_error).count();
         let tool_output_bytes = results
@@ -922,15 +1082,38 @@ pub async fn query(
 
         // Build tool result message (user role, per Anthropic API convention)
         let truncation_policy = TruncationPolicy::from(turn_config.model.truncation_policy);
+        let mut artifacts = Vec::new();
         let result_content: Vec<ContentBlock> = results
             .into_iter()
             .map(|r| {
+                artifacts.extend(r.output_artifacts.clone());
                 let tool_name = tool_result_metadata
                     .get(r.tool_use_id.as_str())
                     .map(|(tool_name, _, _)| tool_name.as_str());
                 let content_str = serialize_tool_content_for_model(r.content, tool_name);
-                let content =
-                    truncate_tool_result_for_model(content_str, tool_name, truncation_policy);
+                let content = if r.output_kind == crate::tools::ToolOutputKind::ArtifactPage {
+                    content_str
+                } else if !r.output_artifacts.is_empty() {
+                    let notice = r.output_artifacts.iter().map(devo_tools::output_store::OutputArtifact::notice).collect::<Vec<_>>().join("\n");
+                    let budget = truncation_policy.byte_budget().saturating_sub(notice.len() + 1);
+                    let mut end = budget.min(content_str.len());
+                    while !content_str.is_char_boundary(end) { end -= 1; }
+                    format!("{}\n{notice}", &content_str[..end])
+                } else if !preserve_full_tool_result(tool_name)
+                    && content_str.len() > truncation_policy.byte_budget()
+                    && let Some(store) = &options.output_store
+                {
+                    let notice = match store.save(&r.tool_use_id, content_str.as_bytes()) {
+                        Ok(artifact) => { let notice = artifact.notice(); artifacts.push(artifact); notice },
+                        Err(error) => format!("Output exceeded the inline limit. Full output could not be saved: {error}"),
+                    };
+                    let budget = truncation_policy.byte_budget().saturating_sub(notice.len() + 1);
+                    let mut end = budget.min(content_str.len());
+                    while !content_str.is_char_boundary(end) { end -= 1; }
+                    format!("{}\n{notice}", &content_str[..end])
+                } else {
+                    truncate_tool_result_for_model(content_str, tool_name, truncation_policy)
+                };
                 ContentBlock::ToolResult {
                     tool_use_id: r.tool_use_id,
                     content,
@@ -939,10 +1122,34 @@ pub async fn query(
             })
             .collect();
 
+        if let Some(journal) = &options.journal {
+            journal
+                .commit(crate::durable_execution::ExecutionRecord::OutputArtifacts { artifacts })
+                .await
+                .map_err(AgentError::Provider)?;
+        }
         session.push_message(Message {
             role: Role::User,
             content: result_content,
         });
+        if let Some(journal) = &options.journal {
+            journal
+                .commit(
+                    crate::durable_execution::ExecutionRecord::PromptCheckpoint {
+                        items: session
+                            .prompt_source_messages()
+                            .iter()
+                            .cloned()
+                            .flat_map(message_to_response_items)
+                            .collect(),
+                        counters: Some(crate::durable_execution::ExecutionCounters::capture(
+                            session,
+                        )),
+                    },
+                )
+                .await
+                .map_err(AgentError::Provider)?;
+        }
 
         // If the turn was cancelled while tools were running, keep the
         // interrupted tool results above and stop without another model call.

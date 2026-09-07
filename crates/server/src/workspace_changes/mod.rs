@@ -18,9 +18,14 @@ use uuid::Uuid;
 mod diff;
 mod fs_snapshot;
 mod git;
+mod git_list;
+mod git_path;
+mod git_sides;
+mod view_cache;
 
 pub(crate) use diff::{error_view, unsupported_view};
-pub(crate) use git::{branch_view, uncommitted_view};
+pub(crate) use git::{branch_view, staged_view, uncommitted_view, unstaged_view};
+pub(crate) use git_path::path_scoped_full_view;
 
 const DEFAULT_MAX_DIFF_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -303,7 +308,7 @@ impl ActiveWorkspaceBaseline {
         }
     }
 
-    fn checkpoint_id(&self) -> &str {
+    pub(crate) fn checkpoint_id(&self) -> &str {
         match self {
             Self::Git(baseline) => &baseline.checkpoint_id,
             Self::File(baseline) => &baseline.checkpoint_id,
@@ -324,8 +329,9 @@ mod tests {
     use std::process::Command;
 
     use devo_protocol::{
-        WorkspaceChangeCoverage, WorkspaceChangeSetStatus, WorkspaceChangeViewStatus,
-        WorkspaceChangedFileStatus, WorkspaceDiffDetail,
+        WorkspaceChangeBase, WorkspaceChangeCoverage, WorkspaceChangeScope,
+        WorkspaceChangeSetStatus, WorkspaceChangeViewStatus, WorkspaceChangedFileStatus,
+        WorkspaceDiffDetail,
     };
     use pretty_assertions::assert_eq;
     use tempfile::tempdir;
@@ -522,5 +528,541 @@ mod tests {
             .status()
             .expect("git command");
         assert!(status.success(), "git command failed: {args:?}");
+    }
+
+    /// Repo with a committed baseline of `staged.txt` + `unstaged.txt`, then:
+    /// `staged.txt` modified and staged, `unstaged.txt` modified in the
+    /// worktree only, `untracked.txt` left untracked.
+    fn init_split_repo() -> Result<tempfile::TempDir> {
+        let repo = tempdir()?;
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "core.autocrlf", "false"]);
+        run_git(
+            repo.path(),
+            &["config", "user.email", "changes@example.com"],
+        );
+        run_git(repo.path(), &["config", "user.name", "Changes Test"]);
+        fs::write(repo.path().join("staged.txt"), "base\n")?;
+        fs::write(repo.path().join("unstaged.txt"), "base\n")?;
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+        fs::write(repo.path().join("staged.txt"), "staged change\n")?;
+        run_git(repo.path(), &["add", "staged.txt"]);
+        fs::write(repo.path().join("unstaged.txt"), "unstaged change\n")?;
+        fs::write(repo.path().join("untracked.txt"), "untracked\n")?;
+        Ok(repo)
+    }
+
+    #[tokio::test]
+    async fn staged_view_reports_index_vs_head() -> Result<()> {
+        let repo = init_split_repo()?;
+        let view = git::staged_view(
+            repo.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(view.status, WorkspaceChangeViewStatus::Ready);
+        assert_eq!(
+            file_statuses(&view),
+            BTreeMap::from([(
+                "staged.txt".to_string(),
+                WorkspaceChangedFileStatus::Modified
+            )])
+        );
+        assert!(matches!(
+            view.base,
+            Some(WorkspaceChangeBase::Head { head: Some(_) })
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unstaged_view_excludes_staged_and_includes_untracked() -> Result<()> {
+        let repo = init_split_repo()?;
+        let summary = git::unstaged_view(
+            repo.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Summary,
+            None,
+        )
+        .await;
+        assert_eq!(summary.status, WorkspaceChangeViewStatus::Ready);
+        assert_eq!(
+            file_statuses(&summary),
+            BTreeMap::from([
+                (
+                    "untracked.txt".to_string(),
+                    WorkspaceChangedFileStatus::Untracked
+                ),
+                (
+                    "unstaged.txt".to_string(),
+                    WorkspaceChangedFileStatus::Modified
+                ),
+            ])
+        );
+        // Full lists tracked diffs only; untracked content is path-scoped on expand.
+        let full = git::unstaged_view(
+            repo.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(
+            file_statuses(&full),
+            BTreeMap::from([(
+                "unstaged.txt".to_string(),
+                WorkspaceChangedFileStatus::Modified
+            )])
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn staged_and_unstaged_ignore_whitespace_when_requested() -> Result<()> {
+        let repo = tempdir()?;
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "core.autocrlf", "false"]);
+        run_git(
+            repo.path(),
+            &["config", "user.email", "changes@example.com"],
+        );
+        run_git(repo.path(), &["config", "user.name", "Changes Test"]);
+        fs::write(repo.path().join("only.txt"), "content\n")?;
+        run_git(repo.path(), &["add", "only.txt"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+
+        // Staged: trailing-whitespace-only change.
+        fs::write(repo.path().join("only.txt"), "content  \n")?;
+        run_git(repo.path(), &["add", "only.txt"]);
+        // Unstaged: another trailing-whitespace-only change on top.
+        fs::write(repo.path().join("only.txt"), "content    \n")?;
+
+        let staged_without_flag = git::staged_view(
+            repo.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(
+            file_statuses(&staged_without_flag),
+            BTreeMap::from([("only.txt".to_string(), WorkspaceChangedFileStatus::Modified)]),
+            "staged should report the whitespace-only change without the flag"
+        );
+        let unstaged_without_flag = git::unstaged_view(
+            repo.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(
+            file_statuses(&unstaged_without_flag),
+            BTreeMap::from([("only.txt".to_string(), WorkspaceChangedFileStatus::Modified)]),
+            "unstaged should report the whitespace-only change without the flag"
+        );
+
+        let staged_with_flag = git::staged_view(
+            repo.path().to_path_buf(),
+            true,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(
+            staged_with_flag.status,
+            WorkspaceChangeViewStatus::Empty,
+            "staged should hide whitespace-only changes with the flag"
+        );
+        assert!(staged_with_flag.files.is_empty(), "staged files");
+        let unstaged_with_flag = git::unstaged_view(
+            repo.path().to_path_buf(),
+            true,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(
+            unstaged_with_flag.status,
+            WorkspaceChangeViewStatus::Empty,
+            "unstaged should hide whitespace-only changes with the flag"
+        );
+        assert!(unstaged_with_flag.files.is_empty(), "unstaged files");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn staged_and_unstaged_unsupported_without_head_and_outside_git() -> Result<()> {
+        let unborn = tempdir()?;
+        run_git(unborn.path(), &["init"]);
+        let unborn_staged = git::staged_view(
+            unborn.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(unborn_staged.status, WorkspaceChangeViewStatus::Unsupported);
+        assert_eq!(
+            unborn_staged.warnings,
+            vec!["no_head".to_string()],
+            "unborn branch should report no_head"
+        );
+        let unborn_unstaged = git::unstaged_view(
+            unborn.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(
+            unborn_unstaged.status,
+            WorkspaceChangeViewStatus::Unsupported
+        );
+        assert_eq!(unborn_unstaged.warnings, vec!["no_head".to_string()]);
+
+        let plain = tempdir()?;
+        let plain_staged = git::staged_view(
+            plain.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(plain_staged.status, WorkspaceChangeViewStatus::Unsupported);
+        assert_eq!(
+            plain_staged.warnings,
+            vec!["not_git_repository".to_string()],
+            "plain directory should report not_git_repository"
+        );
+        let plain_unstaged = git::unstaged_view(
+            plain.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(
+            plain_unstaged.status,
+            WorkspaceChangeViewStatus::Unsupported
+        );
+        assert_eq!(
+            plain_unstaged.warnings,
+            vec!["not_git_repository".to_string()]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn git_view_cache_returns_same_payload_without_rediff() -> Result<()> {
+        view_cache::clear_for_tests();
+        let repo = init_split_repo()?;
+        let first = git::unstaged_view(
+            repo.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        let second = git::unstaged_view(
+            repo.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Full,
+            None,
+        )
+        .await;
+        assert_eq!(first.files, second.files);
+        assert_eq!(first.unified_diff, second.unified_diff);
+        assert_eq!(first.stats, second.stats);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn summary_detail_lists_files_without_unified_diff() -> Result<()> {
+        view_cache::clear_for_tests();
+        let repo = init_split_repo()?;
+        let summary = git::unstaged_view(
+            repo.path().to_path_buf(),
+            false,
+            WorkspaceDiffDetail::Summary,
+            None,
+        )
+        .await;
+        assert_eq!(summary.status, WorkspaceChangeViewStatus::Ready);
+        assert!(
+            summary.unified_diff.is_none(),
+            "summary must omit patch text"
+        );
+        assert_eq!(
+            file_statuses(&summary),
+            BTreeMap::from([
+                (
+                    "untracked.txt".to_string(),
+                    WorkspaceChangedFileStatus::Untracked
+                ),
+                (
+                    "unstaged.txt".to_string(),
+                    WorkspaceChangedFileStatus::Modified
+                ),
+            ])
+        );
+        let untracked = summary
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("untracked.txt"))
+            .expect("untracked.txt");
+        assert_eq!(
+            untracked.additions,
+            Some(1),
+            "Summary should count untracked lines"
+        );
+        assert_eq!(untracked.deletions, Some(0));
+        Ok(())
+    }
+
+    /// Manual perf probe against the live `devo` checkout. Run with:
+    /// `cargo test -p devo-server --lib bench_devo_workspace_changes_summary_vs_full -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "manual perf probe against the live checkout"]
+    async fn bench_devo_workspace_changes_summary_vs_full() {
+        view_cache::clear_for_tests();
+        let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        eprintln!("bench cwd={}", cwd.display());
+
+        // Warm git's own pack/index once so the first timed call isn't dominated by cold OS cache.
+        let _ = git::unstaged_view(cwd.clone(), false, WorkspaceDiffDetail::Summary, None).await;
+
+        for scope_label in ["unstaged", "uncommitted", "branch", "staged"] {
+            view_cache::clear_for_tests();
+            let started = std::time::Instant::now();
+            let summary = match scope_label {
+                "unstaged" => {
+                    git::unstaged_view(cwd.clone(), false, WorkspaceDiffDetail::Summary, None).await
+                }
+                "uncommitted" => {
+                    git::uncommitted_view(cwd.clone(), false, WorkspaceDiffDetail::Summary, None)
+                        .await
+                }
+                "branch" => {
+                    git::branch_view(cwd.clone(), None, false, WorkspaceDiffDetail::Summary, None)
+                        .await
+                }
+                "staged" => {
+                    git::staged_view(cwd.clone(), false, WorkspaceDiffDetail::Summary, None).await
+                }
+                _ => unreachable!(),
+            };
+            let summary_ms = started.elapsed().as_millis();
+
+            // Same Summary again should hit the in-process view cache (list switch).
+            let started = std::time::Instant::now();
+            let _warm = match scope_label {
+                "unstaged" => {
+                    git::unstaged_view(cwd.clone(), false, WorkspaceDiffDetail::Summary, None).await
+                }
+                "uncommitted" => {
+                    git::uncommitted_view(cwd.clone(), false, WorkspaceDiffDetail::Summary, None)
+                        .await
+                }
+                "branch" => {
+                    git::branch_view(cwd.clone(), None, false, WorkspaceDiffDetail::Summary, None)
+                        .await
+                }
+                "staged" => {
+                    git::staged_view(cwd.clone(), false, WorkspaceDiffDetail::Summary, None).await
+                }
+                _ => unreachable!(),
+            };
+            let warm_summary_ms = started.elapsed().as_millis();
+
+            view_cache::clear_for_tests();
+            let started = std::time::Instant::now();
+            let full = match scope_label {
+                "unstaged" => {
+                    git::unstaged_view(cwd.clone(), false, WorkspaceDiffDetail::Full, None).await
+                }
+                "uncommitted" => {
+                    git::uncommitted_view(cwd.clone(), false, WorkspaceDiffDetail::Full, None).await
+                }
+                "branch" => {
+                    git::branch_view(cwd.clone(), None, false, WorkspaceDiffDetail::Full, None)
+                        .await
+                }
+                "staged" => {
+                    git::staged_view(cwd.clone(), false, WorkspaceDiffDetail::Full, None).await
+                }
+                _ => unreachable!(),
+            };
+            let full_ms = started.elapsed().as_millis();
+
+            // Warm cache hit for Full.
+            let started = std::time::Instant::now();
+            let _cached = match scope_label {
+                "unstaged" => {
+                    git::unstaged_view(cwd.clone(), false, WorkspaceDiffDetail::Full, None).await
+                }
+                "uncommitted" => {
+                    git::uncommitted_view(cwd.clone(), false, WorkspaceDiffDetail::Full, None).await
+                }
+                "branch" => {
+                    git::branch_view(cwd.clone(), None, false, WorkspaceDiffDetail::Full, None)
+                        .await
+                }
+                "staged" => {
+                    git::staged_view(cwd.clone(), false, WorkspaceDiffDetail::Full, None).await
+                }
+                _ => unreachable!(),
+            };
+            let cached_ms = started.elapsed().as_millis();
+
+            eprintln!(
+                "{scope_label}: summary={}ms warm_summary={}ms files={} full={}ms patch_bytes={} cached_full={}ms",
+                summary_ms,
+                warm_summary_ms,
+                summary.files.len(),
+                full_ms,
+                full.unified_diff.as_ref().map(|d| d.len()).unwrap_or(0),
+                cached_ms,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn path_scoped_include_file_sides_attaches_old_and_new() -> Result<()> {
+        let repo = tempdir()?;
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "core.autocrlf", "false"]);
+        run_git(repo.path(), &["config", "user.email", "sides@example.com"]);
+        run_git(repo.path(), &["config", "user.name", "Sides Test"]);
+        fs::write(repo.path().join("mod.txt"), "line1\nold\nline3\n")?;
+        run_git(repo.path(), &["add", "mod.txt"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+        fs::write(repo.path().join("mod.txt"), "line1\nnew\nline3\n")?;
+        fs::write(repo.path().join("added.txt"), "brand new\n")?;
+        fs::write(repo.path().join("gone.txt"), "delete me\n")?;
+        run_git(repo.path(), &["add", "gone.txt"]);
+        run_git(repo.path(), &["commit", "-m", "add gone"]);
+        run_git(repo.path(), &["rm", "gone.txt"]);
+
+        let modified = path_scoped_full_view(
+            repo.path().to_path_buf(),
+            WorkspaceChangeScope::Uncommitted,
+            vec![PathBuf::from("mod.txt")],
+            None,
+            false,
+            None,
+            None,
+            /*include_file_sides*/ true,
+        )
+        .await;
+        let mod_file = modified
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("mod.txt"))
+            .expect("mod.txt");
+        assert_eq!(mod_file.old_text.as_deref(), Some("line1\nold\nline3\n"));
+        assert_eq!(mod_file.new_text.as_deref(), Some("line1\nnew\nline3\n"));
+
+        let added = path_scoped_full_view(
+            repo.path().to_path_buf(),
+            WorkspaceChangeScope::Uncommitted,
+            vec![PathBuf::from("added.txt")],
+            None,
+            false,
+            None,
+            None,
+            true,
+        )
+        .await;
+        let added_file = added
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("added.txt"))
+            .expect("added.txt");
+        assert!(added_file.old_text.is_none());
+        assert_eq!(added_file.new_text.as_deref(), Some("brand new\n"));
+
+        let deleted = path_scoped_full_view(
+            repo.path().to_path_buf(),
+            WorkspaceChangeScope::Uncommitted,
+            vec![PathBuf::from("gone.txt")],
+            None,
+            false,
+            None,
+            None,
+            true,
+        )
+        .await;
+        let gone = deleted
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("gone.txt"))
+            .expect("gone.txt");
+        assert_eq!(gone.old_text.as_deref(), Some("delete me\n"));
+        assert!(gone.new_text.is_none());
+
+        let without_flag = path_scoped_full_view(
+            repo.path().to_path_buf(),
+            WorkspaceChangeScope::Uncommitted,
+            vec![PathBuf::from("mod.txt")],
+            None,
+            false,
+            None,
+            None,
+            /*include_file_sides*/ false,
+        )
+        .await;
+        let bare = without_flag
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("mod.txt"))
+            .expect("mod.txt");
+        assert!(bare.old_text.is_none());
+        assert!(bare.new_text.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn path_scoped_branch_sides_use_merge_base_and_head() -> Result<()> {
+        let repo = tempdir()?;
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "core.autocrlf", "false"]);
+        run_git(repo.path(), &["config", "user.email", "sides@example.com"]);
+        run_git(repo.path(), &["config", "user.name", "Sides Test"]);
+        // Ensure default branch is main for merge-base discovery.
+        let _ = Command::new("git")
+            .current_dir(repo.path())
+            .args(["branch", "-M", "main"])
+            .status();
+        fs::write(repo.path().join("file.txt"), "base\n")?;
+        run_git(repo.path(), &["add", "file.txt"]);
+        run_git(repo.path(), &["commit", "-m", "main"]);
+        run_git(repo.path(), &["checkout", "-b", "feature"]);
+        fs::write(repo.path().join("file.txt"), "feature\n")?;
+        run_git(repo.path(), &["add", "file.txt"]);
+        run_git(repo.path(), &["commit", "-m", "feature change"]);
+
+        let view = path_scoped_full_view(
+            repo.path().to_path_buf(),
+            WorkspaceChangeScope::Branch,
+            vec![PathBuf::from("file.txt")],
+            Some("main".to_string()),
+            false,
+            None,
+            None,
+            true,
+        )
+        .await;
+        let file = view
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("file.txt"))
+            .expect("file.txt");
+        assert_eq!(file.old_text.as_deref(), Some("base\n"));
+        assert_eq!(file.new_text.as_deref(), Some("feature\n"));
+        Ok(())
     }
 }

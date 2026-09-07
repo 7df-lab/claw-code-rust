@@ -36,6 +36,18 @@ impl ReadHandler {
                 input_schema: JsonSchema::object(
                     std::collections::BTreeMap::from([
                         (
+                            "byteOffset".to_string(),
+                            JsonSchema::integer(Some(
+                                "Byte offset for reading a generated output artifact",
+                            )),
+                        ),
+                        (
+                            "byteLimit".to_string(),
+                            JsonSchema::integer(Some(
+                                "Maximum bytes for an output artifact page, capped at 32768",
+                            )),
+                        ),
+                        (
                             "filePath".to_string(),
                             JsonSchema::string(Some(
                                 "The absolute path to the file or directory to read",
@@ -251,6 +263,7 @@ mod tests {
         let result = ReadHandler::new()
             .handle(
                 ToolContext {
+                    output_store: None,
                     tool_call_id: ToolCallId("call-1".to_string()),
                     session_id: "session-1".to_string(),
                     turn_id: Some("turn-1".to_string()),

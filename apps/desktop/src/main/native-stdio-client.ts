@@ -37,6 +37,8 @@ const REQUEST_TIMEOUT_MS = 10_000
 export const INITIALIZE_REQUEST_TIMEOUT_MS = 60_000
 /** MCP admin RPCs may start a lazy server before listing tools. */
 export const MCP_ADMIN_REQUEST_TIMEOUT_MS = 60_000
+/** Git-backed workspace diffs can exceed the default 10s budget on large trees. */
+export const WORKSPACE_CHANGES_REQUEST_TIMEOUT_MS = 60_000
 
 export function requestTimeoutMsForMethod(method: string, fallbackMs: number): number | undefined {
 	if (method === "initialize") {
@@ -47,6 +49,9 @@ export function requestTimeoutMsForMethod(method: string, fallbackMs: number): n
 	}
 	if (method === "mcp/tools" || method === "mcp/set_enabled") {
 		return Math.max(fallbackMs, MCP_ADMIN_REQUEST_TIMEOUT_MS)
+	}
+	if (method === "workspace/changes/read") {
+		return Math.max(fallbackMs, WORKSPACE_CHANGES_REQUEST_TIMEOUT_MS)
 	}
 	return fallbackMs
 }
@@ -314,7 +319,11 @@ export class StdioNativeClient implements NativeTransport {
 						this.pendingMethods.delete(id)
 						reject(new Error(`${method} request ${id} timed out`))
 					}, timeoutMs)
-			this.pending.set(id, { resolve, reject, timer })
+			this.pending.set(id, {
+				resolve,
+				reject,
+				timer,
+			})
 		})
 		// Server may reply (and reject) before the caller awaits — attach a
 		// no-op handler so Node does not log UnhandledPromiseRejectionWarning.

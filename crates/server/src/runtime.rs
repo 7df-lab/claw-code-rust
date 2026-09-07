@@ -215,6 +215,9 @@ pub struct ServerRuntime {
     /// In-process idempotency for canonical `turn/start`
     /// (`(session, idempotencyKey) -> turn`). Retry-safe within the process;
     /// cross-restart dedup is a documented follow-up (L2-DES-APP-008 Phase B).
+    recovery_idempotency:
+        Mutex<HashMap<(SessionId, String), devo_protocol::native::rpc_turn::TurnResumeResult>>,
+    recovery_gates: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     turn_start_idempotency: Mutex<HashMap<(SessionId, String), devo_protocol::native::turn::Turn>>,
     /// In-process idempotency for canonical `session/new`
     /// (`idempotencyKey -> session`). Same process-scope caveat as
@@ -260,6 +263,8 @@ pub(crate) enum TurnInputMode {
     },
     /// Resume a turn after interactive approval without emitting a user message.
     ApprovalResume,
+    /// Continue an unexpectedly stopped turn without synthetic input.
+    Recovery,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -413,6 +418,8 @@ impl ServerRuntime {
             reference_searches: Mutex::new(HashMap::new()),
             command_exec_manager: command_exec::CommandExecManager::new(),
             active_workspace_baselines: Mutex::new(HashMap::new()),
+            recovery_idempotency: Mutex::new(HashMap::new()),
+            recovery_gates: Mutex::new(HashMap::new()),
             turn_start_idempotency: Mutex::new(HashMap::new()),
             session_new_idempotency: Mutex::new(HashMap::new()),
             goal_set_idempotency: Mutex::new(HashMap::new()),

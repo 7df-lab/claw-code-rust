@@ -252,6 +252,22 @@ pub static NATIVE_METHODS: &[MethodSpec] = &[
     },
     // ── Turn & queue ──
     MethodSpec {
+        name: "turn/resume",
+        params_schema: schema_of::<TurnResumeParams>,
+        result_schema: schema_of::<TurnResumeResult>,
+        error_codes: SESSION_ERRORS,
+        required_capability: None,
+        idempotency: Idempotency::Key,
+    },
+    MethodSpec {
+        name: "turn/recovery/read",
+        params_schema: schema_of::<TurnRecoveryReadParams>,
+        result_schema: schema_of::<TurnRecoveryReadResult>,
+        error_codes: SESSION_ERRORS,
+        required_capability: None,
+        idempotency: Idempotency::None,
+    },
+    MethodSpec {
         name: "turn/start",
         params_schema: schema_of::<TurnStartParams>,
         result_schema: schema_of::<TurnStartResult>,

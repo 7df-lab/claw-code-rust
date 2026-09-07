@@ -24,27 +24,30 @@ impl PlanHandler {
         Self {
             spec: ToolSpec {
                 name: "update_plan".into(),
-                description: "Update the current task plan with progress tracking.".into(),
+                description: "Updates the task plan.\nProvide an optional explanation and a list of plan items, each with a step and status.\nAt most one step can be in_progress at a time.".into(),
                 input_schema: JsonSchema::object(
                     std::collections::BTreeMap::from([
                         (
                             "explanation".to_string(),
-                            JsonSchema::string(Some("Brief explanation of the plan changes")),
+                            JsonSchema::string(Some("Optional explanation for the plan update")),
                         ),
                         (
                             "plan".to_string(),
                             JsonSchema::array(
                                 JsonSchema::object(
                                     std::collections::BTreeMap::from([
-                                        ("content".to_string(), JsonSchema::string(None)),
-                                        ("status".to_string(), JsonSchema::string(None)),
-                                        ("priority".to_string(), JsonSchema::string(None)),
+                                        (
+                                            "step".to_string(),
+                                            JsonSchema::string(Some(
+                                                "Description of the plan step",
+                                            )),
+                                        ),
+                                        (
+                                            "status".to_string(),
+                                            JsonSchema::string(Some("Status of the step")),
+                                        ),
                                     ]),
-                                    Some(vec![
-                                        "content".to_string(),
-                                        "status".to_string(),
-                                        "priority".to_string(),
-                                    ]),
+                                    Some(vec!["step".to_string(), "status".to_string()]),
                                     None,
                                 ),
                                 Some("List of plan items"),
@@ -94,7 +97,12 @@ impl ToolHandler for PlanHandler {
 
         let in_progress_count = plan
             .iter()
-            .filter(|item| item.get("status").and_then(|v| v.as_str()) == Some("in_progress"))
+            .filter(|item| {
+                matches!(
+                    item.get("status").and_then(|v| v.as_str()),
+                    Some("in_progress" | "inProgress")
+                )
+            })
             .count();
         if in_progress_count > 1 {
             return Ok(ToolResult::error(

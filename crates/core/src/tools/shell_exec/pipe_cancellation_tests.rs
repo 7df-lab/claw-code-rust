@@ -10,6 +10,7 @@ async fn dropping_pipe_call_stops_descendant_work() {
     let command = "(sleep 2; touch delayed) & touch started; wait";
     let mut call = Box::pin(execute_shell_command(
         ShellExecRequest {
+            output_capture: None,
             command: command.into(),
             workdir: directory.path().to_path_buf(),
             description: "cancellation regression".into(),

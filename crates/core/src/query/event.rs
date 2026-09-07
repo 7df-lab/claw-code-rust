@@ -24,8 +24,7 @@ pub enum QueryEvent {
     /// Context compaction replaced the current prompt history.
     ContextCompactionCompleted {
         /// Full compacted history (summary + preserved suffix), including tool
-        /// pairs. Callers persist snapshots from this before Message-only
-        /// prompt conversion drops non-message items.
+        /// pairs. Prompt reconstruction preserves every retained variant.
         compacted_items: Vec<ResponseItem>,
     },
     /// Context compaction did not replace the current prompt history.
@@ -132,6 +131,9 @@ pub enum QueryProviderRetryPhase {
 
 #[derive(Clone, Default)]
 pub struct QueryOptions {
+    pub output_store: Option<Arc<devo_tools::output_store::OutputStore>>,
+    /// Acknowledged journal for durable sessions; absent for ephemeral callers.
+    pub journal: Option<Arc<dyn crate::durable_execution::ToolIntentJournal>>,
     pub cancel_token: Option<CancellationToken>,
     /// Optional provider used only for compaction summaries. Servers use this
     /// seam to attach Compaction metering without misclassifying the main

@@ -771,6 +771,14 @@ fn handle_app_event(
         return Ok(LoopAction::Continue);
     }
 
+    if let AppEvent::ContinueTurnRecovery { recovery } = &app_event {
+        worker.continue_turn_recovery(recovery.clone())?;
+        return Ok(LoopAction::Continue);
+    }
+    if matches!(&app_event, AppEvent::CancelTurnRecovery) {
+        worker.interrupt_active_work()?;
+        return Ok(LoopAction::Continue);
+    }
     if matches!(&app_event, AppEvent::Interrupt) {
         if loop_state.busy && chat_widget.request_interrupt() {
             worker.interrupt_active_work()?;
@@ -836,6 +844,12 @@ fn handle_worker_event(
     };
 
     match &worker_event {
+        WorkerEvent::TurnRecovery {
+            recovery: Some(_), ..
+        } => {
+            loop_state.busy = false;
+        }
+        WorkerEvent::TurnRecovery { recovery: None, .. } => {}
         WorkerEvent::TurnFinished {
             turn_count: next_turn_count,
             total_input_tokens: next_total_input_tokens,

@@ -39,6 +39,9 @@ impl ServerRuntime {
                 turn_id,
                 diff_detail: params.diff_detail,
                 max_diff_bytes: params.max_diff_bytes,
+                ignore_whitespace: params.ignore_whitespace,
+                paths: params.paths,
+                include_file_sides: params.include_file_sides,
             })
             .await;
         match views {
@@ -66,7 +69,7 @@ impl ServerRuntime {
     }
 
     async fn workspace_changes_read_views(
-        &self,
+        self: &Arc<Self>,
         params: WorkspaceChangesReadParams,
     ) -> Result<Vec<WorkspaceChangeView>, (ProtocolErrorCode, String)> {
         if params.scopes.is_empty() {
@@ -76,7 +79,11 @@ impl ServerRuntime {
             ));
         }
 
-        let Some(session_handle) = self.session(params.session_id).await else {
+        let Some(session_handle) = self
+            .get_or_load_parent_session(params.session_id)
+            .await
+            .ok()
+        else {
             return Err((
                 ProtocolErrorCode::SessionNotFound,
                 "session does not exist".to_string(),
@@ -84,62 +91,117 @@ impl ServerRuntime {
         };
         // Prefer the registry/spawn fast path when a turn is active so reads
         // never wait on turn I/O; falls through to the mailbox when idle.
-        let Some(reservation) = self
+        let reservation = self
             .session_turn_reservation_snapshot(params.session_id)
             .await
-            .or(session_handle.turn_reservation_snapshot().await)
-        else {
-            return Err((
-                ProtocolErrorCode::SessionNotFound,
-                "session does not exist".to_string(),
-            ));
-        };
-        let cwd = params
+            .or(session_handle.turn_reservation_snapshot().await);
+        let Some(cwd) = params
             .cwd
             .clone()
-            .unwrap_or_else(|| reservation.summary.cwd.clone());
-        let active_turn_id = reservation.active_turn.as_ref().map(|turn| turn.turn_id);
-        let latest_turn_id = reservation.latest_turn.as_ref().map(|turn| turn.turn_id);
+            .or_else(|| reservation.as_ref().map(|r| r.summary.cwd.clone()))
+        else {
+            return Err((
+                ProtocolErrorCode::InvalidParams,
+                "workspace/changes/read requires cwd when session cwd is unavailable".to_string(),
+            ));
+        };
+        let active_turn_id = reservation
+            .as_ref()
+            .and_then(|r| r.active_turn.as_ref().map(|turn| turn.turn_id));
+        let latest_turn_id = reservation
+            .as_ref()
+            .and_then(|r| r.latest_turn.as_ref().map(|turn| turn.turn_id));
+        let ignore_whitespace = params.ignore_whitespace.unwrap_or(false);
+        let path_filter = params
+            .paths
+            .as_ref()
+            .filter(|paths| !paths.is_empty())
+            .cloned();
+        let path_scoped_full =
+            path_filter.is_some() && matches!(params.diff_detail, WorkspaceDiffDetail::Full);
 
         let mut views = Vec::with_capacity(params.scopes.len());
         for scope in params.scopes {
-            let view = match scope {
-                WorkspaceChangeScope::Branch => {
-                    crate::workspace_changes::branch_view(
-                        cwd.clone(),
-                        params.base_branch.clone(),
-                        params.diff_detail,
-                        params.max_diff_bytes,
-                    )
-                    .await
-                }
-                WorkspaceChangeScope::Uncommitted => {
-                    crate::workspace_changes::uncommitted_view(
-                        cwd.clone(),
-                        params.diff_detail,
-                        params.max_diff_bytes,
-                    )
-                    .await
-                }
-                WorkspaceChangeScope::Turn => {
+            let view = if path_scoped_full {
+                let turn_checkpoint = if matches!(scope, WorkspaceChangeScope::Turn) {
                     let turn_id = params.turn_id.or(active_turn_id).or(latest_turn_id);
                     match turn_id {
-                        Some(turn_id) => {
-                            self.read_turn_workspace_changes(
-                                params.session_id,
-                                turn_id,
-                                cwd.clone(),
-                                params.diff_detail,
-                                params.max_diff_bytes,
-                            )
-                            .await
-                        }
-                        None => crate::workspace_changes::unsupported_view(
-                            WorkspaceChangeScope::Turn,
+                        Some(turn_id) => self.turn_checkpoint_id(turn_id).await,
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                crate::workspace_changes::path_scoped_full_view(
+                    cwd.clone(),
+                    scope,
+                    path_filter.clone().unwrap_or_default(),
+                    params.base_branch.clone(),
+                    ignore_whitespace,
+                    params.max_diff_bytes,
+                    turn_checkpoint,
+                    params.include_file_sides.unwrap_or(false),
+                )
+                .await
+            } else {
+                match scope {
+                    WorkspaceChangeScope::Branch => {
+                        crate::workspace_changes::branch_view(
                             cwd.clone(),
-                            WorkspaceChangeAttribution::WorkspaceNet,
-                            "turn_id_not_available",
-                        ),
+                            params.base_branch.clone(),
+                            ignore_whitespace,
+                            params.diff_detail,
+                            params.max_diff_bytes,
+                        )
+                        .await
+                    }
+                    WorkspaceChangeScope::Staged => {
+                        crate::workspace_changes::staged_view(
+                            cwd.clone(),
+                            ignore_whitespace,
+                            params.diff_detail,
+                            params.max_diff_bytes,
+                        )
+                        .await
+                    }
+                    WorkspaceChangeScope::Unstaged => {
+                        crate::workspace_changes::unstaged_view(
+                            cwd.clone(),
+                            ignore_whitespace,
+                            params.diff_detail,
+                            params.max_diff_bytes,
+                        )
+                        .await
+                    }
+                    WorkspaceChangeScope::Uncommitted => {
+                        crate::workspace_changes::uncommitted_view(
+                            cwd.clone(),
+                            ignore_whitespace,
+                            params.diff_detail,
+                            params.max_diff_bytes,
+                        )
+                        .await
+                    }
+                    WorkspaceChangeScope::Turn => {
+                        let turn_id = params.turn_id.or(active_turn_id).or(latest_turn_id);
+                        match turn_id {
+                            Some(turn_id) => {
+                                self.read_turn_workspace_changes(
+                                    params.session_id,
+                                    turn_id,
+                                    cwd.clone(),
+                                    params.diff_detail,
+                                    params.max_diff_bytes,
+                                )
+                                .await
+                            }
+                            None => crate::workspace_changes::unsupported_view(
+                                WorkspaceChangeScope::Turn,
+                                cwd.clone(),
+                                WorkspaceChangeAttribution::WorkspaceNet,
+                                "turn_id_not_available",
+                            ),
+                        }
                     }
                 }
             };
@@ -147,6 +209,16 @@ impl ServerRuntime {
         }
 
         Ok(views)
+    }
+
+    async fn turn_checkpoint_id(&self, turn_id: TurnId) -> Option<String> {
+        let baseline = self
+            .active_workspace_baselines
+            .lock()
+            .await
+            .get(&turn_id)
+            .cloned()?;
+        Some(baseline.checkpoint_id().to_string())
     }
 
     async fn read_turn_workspace_changes(

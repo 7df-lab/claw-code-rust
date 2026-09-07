@@ -1321,6 +1321,7 @@ async fn automatic_compaction_emits_started_then_completed_when_history_is_repla
         &mut session,
         &on_event,
         super::CompactionModelRequest {
+            journal: None,
             provider: &provider_sdk,
             model_slug: "compaction-model",
             request_model: "compaction-request-model",
@@ -1366,6 +1367,7 @@ async fn automatic_compaction_emits_failed_when_compaction_is_skipped() {
         &mut session,
         &on_event,
         super::CompactionModelRequest {
+            journal: None,
             provider: &provider_sdk,
             model_slug: "compaction-model",
             request_model: "compaction-request-model",
@@ -1405,6 +1407,7 @@ async fn proactive_compaction_emits_failed_when_compaction_errors() {
         &mut session,
         &on_event,
         super::CompactionModelRequest {
+            journal: None,
             provider: &provider_sdk,
             model_slug: "compaction-model",
             request_model: "compaction-request-model",
@@ -4629,3 +4632,6 @@ async fn query_emits_parallel_tool_results_as_each_tool_finishes() {
         .collect::<Vec<_>>();
     assert_eq!(tool_result_ids, vec!["slow", "fast"]);
 }
+
+#[path = "durability_tests.rs"]
+mod durability;

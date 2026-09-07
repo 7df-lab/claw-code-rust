@@ -264,7 +264,10 @@ impl ServerRuntime {
         })
     }
 
-    async fn pause_goal_continuation_after_failed_turn(
+    /// Pause an active goal when the latest turn failed after the goal was last
+    /// updated. Exposed so post-turn scheduling can still pause goals even when
+    /// recovery availability blocks auto-continuation.
+    pub(crate) async fn pause_goal_continuation_after_failed_turn(
         &self,
         session_id: SessionId,
         session_handle: &SessionHandle,

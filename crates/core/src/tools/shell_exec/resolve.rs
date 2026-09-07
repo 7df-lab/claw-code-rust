@@ -90,6 +90,8 @@ pub(crate) fn normalize_command_for_shell(shell: &ShellSpec, command: String) ->
 /// Shared post-resolution knobs for pipe and PTY runners.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedShellRun {
+    pub(crate) output_capture:
+        Option<Result<devo_tools::output_store::SharedOutputCapture, String>>,
     pub(crate) shell: ShellSpec,
     pub(crate) command_to_run: String,
     pub(crate) workdir: PathBuf,

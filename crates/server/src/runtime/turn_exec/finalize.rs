@@ -157,6 +157,19 @@ impl ServerRuntime {
                 session_prompt_token_estimate,
             )
             .await;
+        if final_turn.status == TurnStatus::Failed
+            && final_turn.failure_reason.is_none()
+            && let Err(error) = self
+                .persist_recovery_disposition(
+                    session_id,
+                    final_turn.turn_id,
+                    devo_core::durable_execution::RecoveryDisposition::Available,
+                    "This turn ended with a program or provider error.",
+                )
+                .await
+        {
+            tracing::warn!(%session_id, %error, "failed to save recovery state");
+        }
         if matches!(final_turn.status, TurnStatus::Interrupted) {
             state.core.mark_last_turn_interrupted();
         } else {

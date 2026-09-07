@@ -1564,6 +1564,7 @@ impl ServerRuntime {
             serde_json::to_value(SuccessResponse {
                 id: request_id,
                 result: devo_protocol::native::rpc_session::SessionResumeResult {
+                    recovery: self.turn_recovery(session_id).await.ok().flatten(),
                     session,
                     last_context_occupancy,
                     last_query_total_tokens,

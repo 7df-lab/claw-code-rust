@@ -186,6 +186,13 @@ pub enum ServerNotification {
     WorkspaceChangesUpdated(WorkspaceChangesUpdatedNotification),
 
     // ── Turn / Item ──
+    #[serde(rename = "turn/recoveryUpdated")]
+    TurnRecoveryUpdated {
+        session_id: SessionId,
+        recovery: Option<super::rpc_turn::TurnRecovery>,
+    },
+    #[serde(rename = "turn/resumed")]
+    TurnResumed { turn: Box<Turn>, attempt: u32 },
     #[serde(rename = "turn/started")]
     TurnStarted { turn: Box<Turn> },
     #[serde(rename = "turn/statusChanged")]

@@ -180,6 +180,10 @@ use devo_protocol::TurnId;
 /// One event emitted by the background query worker into the interactive UI.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum WorkerEvent {
+    TurnRecovery {
+        recovery: Option<devo_protocol::native::rpc_turn::TurnRecovery>,
+        error: Option<String>,
+    },
     /// A new assistant turn has started.
     TurnStarted {
         /// The model slug resolved by the server for this turn.

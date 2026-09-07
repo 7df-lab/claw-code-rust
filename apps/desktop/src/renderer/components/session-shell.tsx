@@ -21,7 +21,7 @@ import {
 } from "../hooks/use-session-keep-alive-logic"
 import { SessionPanelHeader } from "./agent-detail"
 import { ChatInputSection, ChatView, type ChatScrollHandle } from "./chat/chat-view"
-import { ReviewPanel } from "./review/review-panel"
+import { ReviewSideRail } from "./review/review-side-rail"
 
 interface SessionShellProps {
 	activeSessionId: string | null
@@ -127,6 +127,7 @@ export function SessionShell({ activeSessionId, evictRef }: SessionShellProps) {
 	const [composerInset, setComposerInset] = useState(0)
 	const [reviewPanelOpen, setReviewPanelOpen] = useAtom(reviewPanelOpenAtom)
 	const [reviewSettings, setReviewSettings] = useAtom(reviewPanelSettingsAtom)
+	const reviewExpanded = reviewPanelOpen && Boolean(reviewSettings.expanded)
 
 	useEffect(() => {
 		const handleKeyDown = (event: KeyboardEvent) => {
@@ -150,6 +151,13 @@ export function SessionShell({ activeSessionId, evictRef }: SessionShellProps) {
 	const isWorking = activeAgent?.status === "running"
 	const sessionEntry = useAtomValue(sessionFamily(activeSessionId ?? ""))
 	const setupPhase = sessionEntry?.setupPhase
+	const stickyWorkspaceDirectoryRef = useRef("")
+	const workspaceDirectory =
+		activeAgent?.worktreePath || activeAgent?.directory || stickyWorkspaceDirectoryRef.current
+	useEffect(() => {
+		const next = activeAgent?.worktreePath || activeAgent?.directory
+		if (next) stickyWorkspaceDirectoryRef.current = next
+	}, [activeAgent?.directory, activeAgent?.worktreePath])
 
 	const [isEditingTitle, setIsEditingTitle] = useState(false)
 	const [titleValue, setTitleValue] = useState(activeAgent?.name ?? "")
@@ -199,8 +207,13 @@ export function SessionShell({ activeSessionId, evictRef }: SessionShellProps) {
 	}
 
 	return (
-		<div className="flex h-full">
-			<div className="flex min-w-0 flex-1 flex-col">
+		<div className="flex h-full min-w-0">
+			<div
+				className={cn(
+					"flex min-w-0 flex-col",
+					reviewExpanded ? "w-0 flex-none overflow-hidden" : "min-w-0 flex-1",
+				)}
+			>
 				{activeAgent ? (
 					<SessionPanelHeader
 						agent={activeAgent}
@@ -314,22 +327,15 @@ export function SessionShell({ activeSessionId, evictRef }: SessionShellProps) {
 				) : null}
 			</div>
 
-			<div
-				className="shrink-0 overflow-hidden border-l border-border transition-[width] duration-250 ease-in-out"
-				style={{ width: reviewPanelOpen ? (reviewSettings.expanded ? "100%" : "40%") : 0 }}
-			>
-				{activeSessionId ? (
-					<div
-						className="h-full"
-						style={{ minWidth: reviewSettings.expanded ? "100vw" : "40vw" }}
-					>
-						<ReviewPanel
-							sessionId={activeSessionId}
-							directory={activeAgent?.directory ?? ""}
-						/>
-					</div>
-				) : null}
-			</div>
+			{activeSessionId && workspaceDirectory ? (
+				<ReviewSideRail
+					key={workspaceDirectory}
+					sessionId={activeSessionId}
+					directory={workspaceDirectory}
+				/>
+			) : (
+				<div className="w-0 shrink-0 overflow-hidden" />
+			)}
 		</div>
 	)
 }

@@ -287,6 +287,9 @@ pub(crate) struct QueryWorkerConfig {
 /// TODO: Should we extract the OperationCommand to the `protocol` crate? Since it can be shareable.
 /// Commands accepted by the background query worker.
 enum OperationCommand {
+    ContinueTurnRecovery {
+        recovery: devo_protocol::native::rpc_turn::TurnRecovery,
+    },
     /// Submit a new user prompt to the session.
     SubmitInput {
         input: Vec<InputItem>,
@@ -898,6 +901,15 @@ impl QueryWorkerHandle {
     }
 
     /// Interrupts the active turn, task, or shell process.
+    pub(crate) fn continue_turn_recovery(
+        &self,
+        recovery: devo_protocol::native::rpc_turn::TurnRecovery,
+    ) -> Result<()> {
+        self.command_tx
+            .send(OperationCommand::ContinueTurnRecovery { recovery })
+            .map_err(|_| anyhow::anyhow!("interactive worker is no longer running"))
+    }
+
     pub(crate) fn interrupt_active_work(&self) -> Result<()> {
         self.command_tx
             .send(OperationCommand::InterruptActiveWork)
@@ -1212,9 +1224,22 @@ async fn run_worker_inner(
         }
     }
     let _ = emit_skills_list(&mut client, &session_cwd, event_tx, false).await;
+    let mut recovery_tick = tokio::time::interval(Duration::from_secs(2));
+    recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_recovery = None;
 
     loop {
         tokio::select! {
+            _ = recovery_tick.tick() => {
+                if let Some(active_session_id) = session_id
+                    && let Ok(result) = client.turn_recovery_native(active_session_id).await
+                    && result.recovery != last_recovery
+                {
+                    last_recovery = result.recovery.clone();
+                    let _ = event_tx.send(WorkerEvent::TurnRecovery { recovery: result.recovery, error: None });
+                }
+            }
+
             maybe_command = command_rx.recv() => {
                 match maybe_command {
                     Some(OperationCommand::SubmitInput {
@@ -2759,6 +2784,25 @@ async fn run_worker_inner(
                             }
                         }
                     }
+                    Some(OperationCommand::ContinueTurnRecovery { recovery }) => {
+                        if let Some(active_session_id) = session_id {
+                            let result = client.turn_resume_native(devo_protocol::native::rpc_turn::TurnResumeParams {
+                                session_id: native_session_id(active_session_id),
+                                expected_turn_id: recovery.turn_id.clone(), recovery_revision: recovery.revision,
+                                idempotency_key: SessionId::new().to_string(),
+                            }).await;
+                            match result {
+                                Ok(result) => {
+                                    active_turn_id = TurnId::try_from(result.turn.id.as_str()).ok();
+                                    last_recovery = None;
+                                    let _ = event_tx.send(WorkerEvent::TurnRecovery { recovery: None, error: None });
+                                }
+                                Err(error) => {
+                                    let _ = event_tx.send(WorkerEvent::TurnRecovery { recovery: Some(recovery), error: Some(error.to_string()) });
+                                }
+                            }
+                        }
+                    }
                     Some(OperationCommand::InterruptActiveWork) => {
                         if let Some(active_session_id) = session_id {
                             if let Err(error) = client
@@ -2772,6 +2816,11 @@ async fn run_worker_inner(
                                 let _ = event_tx.send(WorkerEvent::InterruptFailed {
                                     message: error.to_string(),
                                 });
+                                if last_recovery.is_some() {
+                                    let _ = event_tx.send(WorkerEvent::TurnRecovery {
+                                        recovery: last_recovery.clone(), error: Some(error.to_string()),
+                                    });
+                                }
                             }
                         } else {
                             for process_id in active_shell_process_ids.iter().cloned().collect::<Vec<_>>() {

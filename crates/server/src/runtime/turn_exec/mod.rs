@@ -5,7 +5,10 @@ mod failure;
 mod finalize;
 mod followup;
 mod item_stream;
+pub(crate) mod journal;
 mod query;
+mod recovery;
+mod recovery_notifications;
 mod tool_display;
 mod tool_results;
 mod trace;
@@ -37,6 +40,24 @@ pub(crate) fn spawn_post_turn_scheduling(
     should_auto_continue_goal: bool,
 ) {
     tokio::spawn(async move {
+        // Provider/program failures mark recovery Available (no typed
+        // failure_reason). Still pause the goal before bailing — otherwise
+        // recovery gating would leave Active goals looping eligibility checks.
+        if should_auto_continue_goal && let Some(session_handle) = runtime.session(session_id).await
+        {
+            let _ = runtime
+                .pause_goal_continuation_after_failed_turn(session_id, &session_handle)
+                .await;
+        }
+        if runtime
+            .turn_recovery(session_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return;
+        }
         runtime.notify_title_polish(session_id).await;
         if runtime.chain_queued_followup_turn(session_id).await {
             return;

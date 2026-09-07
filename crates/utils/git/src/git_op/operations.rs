@@ -184,6 +184,9 @@ where
     }
     let mut command = Command::new("git");
     command.current_dir(dir);
+    // Server stdio transport owns stdin; inheriting it deadlocks git + the
+    // JSON-RPC read loop when this helper runs inside `devo server --transport stdio`.
+    command.stdin(std::process::Stdio::null());
     if let Some(envs) = env {
         for (key, value) in envs {
             command.env(key, value);

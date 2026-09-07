@@ -442,6 +442,7 @@ mod tests {
         let result = handler
             .handle(
                 ToolContext {
+                    output_store: None,
                     tool_call_id: crate::invocation::ToolCallId("call".to_string()),
                     session_id: "session-1".to_string(),
                     turn_id: Some("turn-1".to_string()),
@@ -581,6 +582,7 @@ mod tests {
             let err = handler
                 .handle(
                     ToolContext {
+                        output_store: None,
                         tool_call_id: crate::invocation::ToolCallId(format!("call-{requested}")),
                         session_id: "session-1".to_string(),
                         turn_id: Some("turn-1".to_string()),

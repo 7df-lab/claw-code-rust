@@ -28,6 +28,7 @@ pub(crate) async fn run_with_pipes(
     cancel_token: CancellationToken,
 ) -> anyhow::Result<FunctionToolOutput> {
     let ResolvedShellRun {
+        output_capture,
         shell,
         command_to_run,
         workdir,
@@ -82,8 +83,13 @@ pub(crate) async fn run_with_pipes(
     };
     plan.schedule_placeholder_cleanup();
 
-    let stdout_task = spawn_stream_reader(child.0.stdout().take(), progress.clone());
-    let stderr_task = spawn_stream_reader(child.0.stderr().take(), progress);
+    let stdout_task = spawn_stream_reader(
+        child.0.stdout().take(),
+        progress.clone(),
+        output_capture.clone(),
+    );
+    let stderr_task =
+        spawn_stream_reader(child.0.stderr().take(), progress, output_capture.clone());
 
     enum WaitOutcome {
         Exited(std::process::ExitStatus),
@@ -110,7 +116,8 @@ pub(crate) async fn run_with_pipes(
 
     let stdout = String::from_utf8_lossy(&stdout_task.await.unwrap_or_default()).into_owned();
     let stderr = String::from_utf8_lossy(&stderr_task.await.unwrap_or_default()).into_owned();
-    let result_text = truncate_output(&merge_streams(&stdout, &stderr), max_output_tokens);
+    let mut result_text = truncate_output(&merge_streams(&stdout, &stderr), max_output_tokens);
+    super::append_capture_notice(&mut result_text, &output_capture);
 
     match outcome {
         WaitOutcome::Cancelled => Ok(FunctionToolOutput::error(format!(
@@ -159,6 +166,7 @@ pub(crate) async fn run_with_pipes(
 fn spawn_stream_reader<R>(
     pipe: Option<R>,
     progress: Option<ToolProgressSender>,
+    output_capture: Option<Result<devo_tools::output_store::SharedOutputCapture, String>>,
 ) -> tokio::task::JoinHandle<Vec<u8>>
 where
     R: AsyncReadExt + Unpin + Send + 'static,
@@ -176,7 +184,14 @@ where
                     if let Some(ref sender) = progress {
                         let _ = sender.send(String::from_utf8_lossy(&chunk[..n]).into_owned());
                     }
-                    buffer.extend_from_slice(&chunk[..n]);
+                    if let Some(Ok(capture)) = &output_capture {
+                        let mut capture = capture.lock().expect("output capture lock");
+                        if capture.append(&chunk[..n]).is_err() {
+                            capture.mark_incomplete();
+                        }
+                    }
+                    let keep = n.min((1024_usize * 1024).saturating_sub(buffer.len()));
+                    buffer.extend_from_slice(&chunk[..keep]);
                 }
                 Err(_) => break,
             }

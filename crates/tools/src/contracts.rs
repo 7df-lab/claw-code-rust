@@ -59,6 +59,7 @@ pub enum ToolAgentScope {
 /// Full execution context passed to every tool handler invocation.
 #[derive(Clone)]
 pub struct ToolContext {
+    pub output_store: Option<Arc<crate::output_store::OutputStore>>,
     pub tool_call_id: ToolCallId,
     pub session_id: String,
     pub turn_id: Option<String>,
@@ -131,6 +132,8 @@ pub struct ToolPermissionProfile {
 /// Structured tool output (struct, not trait — per L3-BEH-TOOLS-001).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
+    #[serde(default)]
+    pub output_artifacts: Vec<crate::output_store::OutputArtifact>,
     /// Primary output content for model consumption.
     pub content: ToolResultContent,
     /// Optional display-only content (not sent to model).
@@ -149,6 +152,7 @@ impl ToolResult {
     pub fn success(content: ToolResultContent, summary: impl Into<String>) -> Self {
         Self {
             content,
+            output_artifacts: Vec::new(),
             display_content: None,
             structured_status: ToolTerminalStatus::Completed,
             result_summary: summary.into(),
@@ -164,6 +168,7 @@ impl ToolResult {
     ) -> Self {
         Self {
             content,
+            output_artifacts: Vec::new(),
             display_content: None,
             structured_status: ToolTerminalStatus::Failed(error),
             result_summary: summary.into(),

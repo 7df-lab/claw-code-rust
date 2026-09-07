@@ -198,6 +198,10 @@ pub enum RolloutLineV2 {
     rename_all_fields = "camelCase"
 )]
 pub enum InternalRecordV2 {
+    /// Acknowledged tool execution and prompt checkpoint, never a public item.
+    Execution {
+        record: crate::durable_execution::ExecutionRecord,
+    },
     /// A canonical internal replay entry. Kept as a nested payload rather than
     /// a flattened newtype variant: both enums use the `type` tag, so
     /// flattening would emit a duplicate `type` key and break round-trips.

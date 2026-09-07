@@ -1,6 +1,7 @@
 :root {
 	--devo-chrome-background: #f6f6f6;
 	--devo-transcript-background: var(--background);
+	--devo-titlebar-height: 32px;
 }
 
 :root:not(.dark) {
@@ -18,7 +19,7 @@
 }
 
 :root[data-platform="win32"] {
-	--devo-titlebar-height: 40px;
+	--devo-titlebar-height: 32px;
 	--devo-windows-focus-chrome-bg: var(--devo-chrome-background);
 	--devo-windows-unfocused-chrome-bg: var(--devo-chrome-background);
 }
@@ -44,7 +45,9 @@
 
 /* While dragging the sidebar split, snap width without the collapse animation. */
 [data-slot="sidebar-wrapper"][data-resizing="true"] [data-slot="sidebar"],
-[data-slot="sidebar-wrapper"][data-resizing="true"] [data-slot="sidebar-container"] {
+[data-slot="sidebar-wrapper"][data-resizing="true"] [data-slot="sidebar-container"],
+[data-slot="sidebar-wrapper"][data-resizing="true"] [data-slot="sidebar-gap"],
+[data-slot="sidebar-wrapper"][data-resizing="true"] [data-slot="sidebar-inset"] {
 	transition: none !important;
 }
 
@@ -114,7 +117,7 @@
 	right: 0;
 	left: 0;
 	z-index: 20;
-	height: var(--devo-titlebar-height, 40px);
+	height: var(--devo-titlebar-height, 32px);
 	pointer-events: none;
 	background-color: var(--devo-windows-chrome-bg);
 	/* Product requirement - after the splash enters the app, the Windows topbar

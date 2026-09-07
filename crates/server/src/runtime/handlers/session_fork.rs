@@ -111,6 +111,46 @@ impl ServerRuntime {
             forked_runtime.latest_compaction_snapshot.as_ref(),
         )?;
 
+        if let Some(source_record) = &source.record {
+            let kept_calls = forked_runtime
+                .persisted_turn_items
+                .iter()
+                .filter_map(|item| match &item.turn_item {
+                    TurnItem::ToolCall(call) => Some(call.tool_call_id.as_str()),
+                    TurnItem::ToolResult(result) => Some(result.tool_call_id.as_str()),
+                    TurnItem::CommandExecution(command) => Some(command.tool_call_id.as_str()),
+                    _ => None,
+                })
+                .collect::<HashSet<_>>();
+            let references =
+                devo_core::output_replay::read_output_references(&source_record.rollout_path)
+                    .map_err(|error| format!("failed to read fork output references: {error}"))?;
+            let artifacts = references
+                .into_iter()
+                .filter(|artifact| kept_calls.contains(artifact.call_id.as_str()))
+                .collect();
+            self.rollout_store
+                .append_v2_lines(
+                    &record.rollout_path,
+                    vec![devo_core::RolloutLineV2::Internal {
+                        v: 2,
+                        timestamp: now,
+                        session_id: devo_protocol::native::ids::SessionId::from_legacy_uuid(
+                            forked_id.into(),
+                        ),
+                        turn_id: None,
+                        seq: 0,
+                        entry: devo_core::InternalRecordV2::Execution {
+                            record:
+                                devo_core::durable_execution::ExecutionRecord::OutputArtifacts {
+                                    artifacts,
+                                },
+                        },
+                    }],
+                )
+                .map_err(|error| format!("failed to persist fork output references: {error}"))?;
+        }
+
         forked_runtime.record = Some(record);
         Ok(forked_runtime)
     }

@@ -46,7 +46,7 @@ import {
 import { ChatView } from "./chat"
 import { ContextUsageButton } from "./context-usage-button"
 import { BottomPanelIcon, RightPanelIcon } from "./panel-icons"
-import { ReviewPanel } from "./review/review-panel"
+import { ReviewSideRail } from "./review/review-side-rail"
 import { WorktreeActions } from "./worktree-actions"
 
 function useTurnWorkspaceChangeStats(sessionId: string): {
@@ -175,6 +175,7 @@ export function AgentDetail({
 	// Review panel state
 	const [reviewPanelOpen, setReviewPanelOpen] = useAtom(reviewPanelOpenAtom)
 	const [reviewSettings, setReviewSettings] = useAtom(reviewPanelSettingsAtom)
+	const reviewExpanded = reviewPanelOpen && Boolean(reviewSettings.expanded)
 
 	// Keyboard shortcut: Cmd/Ctrl+Shift+D to toggle review panel
 	useEffect(() => {
@@ -308,20 +309,23 @@ export function AgentDetail({
 	)
 
 	return (
-		<div className="flex h-full">
-			{/* Chat panel -- takes remaining space */}
-			<div className="min-w-0 flex-1 flex flex-col">{chatContent}</div>
-
-			{/* Review panel -- slides in/out from right */}
+		<div className="flex h-full min-w-0">
+			{/* Chat panel -- collapses when Changes is expanded full-width */}
 			<div
-				className="shrink-0 overflow-hidden border-l border-border transition-[width] duration-250 ease-in-out"
-				style={{ width: reviewPanelOpen ? (reviewSettings.expanded ? "100%" : "40%") : 0 }}
+				className={
+					reviewExpanded
+						? "w-0 flex-none overflow-hidden"
+						: "flex min-w-0 flex-1 flex-col"
+				}
 			>
-				{/* Keep ReviewPanel mounted so it retains state, just hidden at 0 width */}
-				<div className="h-full" style={{ minWidth: reviewSettings.expanded ? "100vw" : "40vw" }}>
-					<ReviewPanel sessionId={agent.sessionId} directory={agent.directory} />
-				</div>
+				{chatContent}
 			</div>
+
+			<ReviewSideRail
+				key={agent.worktreePath || agent.directory}
+				sessionId={agent.sessionId}
+				directory={agent.worktreePath || agent.directory}
+			/>
 		</div>
 	)
 }

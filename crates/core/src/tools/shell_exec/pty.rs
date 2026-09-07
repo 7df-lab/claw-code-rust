@@ -80,6 +80,7 @@ pub(crate) async fn run_with_pty(
     cancel_token: CancellationToken,
 ) -> anyhow::Result<FunctionToolOutput> {
     let ResolvedShellRun {
+        output_capture,
         shell,
         command_to_run,
         workdir,
@@ -160,7 +161,16 @@ pub(crate) async fn run_with_pty(
 
     loop {
         while let Ok(chunk) = rx.try_recv() {
-            output.extend_from_slice(&chunk);
+            if let Some(Ok(capture)) = &output_capture {
+                let mut capture = capture.lock().expect("output capture lock");
+                if capture.append(&chunk).is_err() {
+                    capture.mark_incomplete();
+                }
+            }
+            let keep = chunk
+                .len()
+                .min((1024_usize * 1024).saturating_sub(output.len()));
+            output.extend_from_slice(&chunk[..keep]);
             if let Some(ref sender) = progress {
                 let text = String::from_utf8_lossy(&chunk).into_owned();
                 let _ = sender.send(text);
@@ -192,11 +202,21 @@ pub(crate) async fn run_with_pty(
     }
 
     while let Ok(chunk) = rx.try_recv() {
-        output.extend_from_slice(&chunk);
+        if let Some(Ok(capture)) = &output_capture {
+            let mut capture = capture.lock().expect("output capture lock");
+            if capture.append(&chunk).is_err() {
+                capture.mark_incomplete();
+            }
+        }
+        let keep = chunk
+            .len()
+            .min((1024_usize * 1024).saturating_sub(output.len()));
+        output.extend_from_slice(&chunk[..keep]);
     }
 
     let mut text = String::from_utf8_lossy(&output).into_owned();
     text = truncate_output(&text, max_output_tokens);
+    super::append_capture_notice(&mut text, &output_capture);
 
     if timed_out {
         return Ok(FunctionToolOutput::error(format!(

@@ -101,7 +101,7 @@ impl ToolRegistry {
             .map(|spec| ToolDefinition {
                 name: spec.name.clone(),
                 description: spec.description.clone(),
-                input_schema: unified_exec_input_schema(
+                input_schema: with_sandbox_permission_fields(
                     &spec.name,
                     spec.input_schema.to_json_value(),
                 ),
@@ -211,8 +211,11 @@ impl ToolRegistry {
     }
 }
 
-fn unified_exec_input_schema(tool_name: &str, mut schema: serde_json::Value) -> serde_json::Value {
-    if tool_name != "exec_command" {
+fn with_sandbox_permission_fields(
+    tool_name: &str,
+    mut schema: serde_json::Value,
+) -> serde_json::Value {
+    if !super::tool_accepts_sandbox_escalation_fields(tool_name) {
         return schema;
     }
 
@@ -379,7 +382,7 @@ impl ToolRegistryBuilder {
             .map(|spec| ToolDefinition {
                 name: spec.name.clone(),
                 description: spec.description.clone(),
-                input_schema: unified_exec_input_schema(
+                input_schema: with_sandbox_permission_fields(
                     &spec.name,
                     spec.input_schema.to_json_value(),
                 ),
@@ -489,6 +492,7 @@ mod tests {
 
     fn test_ctx() -> ToolContext {
         ToolContext {
+            output_store: None,
             tool_call_id: devo_tools::ToolCallId("test-id".to_string()),
             session_id: "test-session".to_string(),
             turn_id: Some("test-turn".to_string()),
@@ -769,12 +773,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn registry_adds_permission_fields_for_exec_command() {
+    fn permission_field_presence(tool_name: &str) -> (bool, bool, bool, bool) {
         let mut builder = ToolRegistryBuilder::new();
         builder.push_spec(ToolSpec {
-            name: "exec_command".into(),
-            description: "exec".into(),
+            name: tool_name.into(),
+            description: "command".into(),
             input_schema: JsonSchema::object(Default::default(), None, None),
             output_mode: ToolOutputMode::Mixed,
             execution_mode: ToolExecutionMode::Mutating,
@@ -794,10 +797,38 @@ mod tests {
             .and_then(serde_json::Value::as_object)
             .expect("object schema should have properties");
 
-        assert!(properties.contains_key("sandbox_permissions"));
-        assert!(properties.contains_key("additional_permissions"));
-        assert!(properties.contains_key("justification"));
-        assert!(properties.contains_key("prefix_rule"));
+        (
+            properties.contains_key("sandbox_permissions"),
+            properties.contains_key("additional_permissions"),
+            properties.contains_key("justification"),
+            properties.contains_key("prefix_rule"),
+        )
+    }
+
+    /// Trace: L2-DES-SAFETY-002
+    /// Verifies: sandbox escalation fields are advertised on exec_command, shell_command, and bash.
+    #[test]
+    fn registry_adds_permission_fields_for_shell_family_command_tools() {
+        for tool_name in ["exec_command", "shell_command", "bash"] {
+            assert_eq!(
+                permission_field_presence(tool_name),
+                (true, true, true, true),
+                "{tool_name} should advertise sandbox escalation fields"
+            );
+        }
+    }
+
+    /// Trace: L2-DES-SAFETY-002
+    /// Verifies: write_stdin and non-command tools do not advertise sandbox escalation fields.
+    #[test]
+    fn registry_omits_permission_fields_for_non_spawn_tools() {
+        for tool_name in ["write_stdin", "read"] {
+            assert_eq!(
+                permission_field_presence(tool_name),
+                (false, false, false, false),
+                "{tool_name} should not advertise sandbox escalation fields"
+            );
+        }
     }
 
     #[tokio::test]

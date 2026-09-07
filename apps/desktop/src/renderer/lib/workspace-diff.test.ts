@@ -46,6 +46,118 @@ describe("workspacePatchFilesFromView", () => {
 		])
 	})
 
+	test("matches Windows PathBuf separators to git patch paths", () => {
+		const view = {
+			scope: "uncommitted",
+			status: "ready",
+			workspace_root: "C:\\repo",
+			coverage: "git_visible",
+			attribution: "git_working_tree",
+			change_set_status: "accumulating",
+			files: [file("apps\\desktop\\foo.ts", "modified", 1, 1)],
+			stats: { files_changed: 1, additions: 1, deletions: 1 },
+			unified_diff: [
+				"diff --git a/apps/desktop/foo.ts b/apps/desktop/foo.ts",
+				"--- a/apps/desktop/foo.ts",
+				"+++ b/apps/desktop/foo.ts",
+				"@@ -1 +1 @@",
+				"-old",
+				"+new",
+			].join("\n"),
+			warnings: [],
+			generated_at: "2026-06-26T00:00:00Z",
+		} as unknown as WorkspaceChangeView
+
+		expect(workspacePatchFilesFromView(view)).toEqual([
+			expect.objectContaining({
+				file: "apps/desktop/foo.ts",
+				patch: expect.stringContaining("+new"),
+				patchPending: false,
+			}),
+		])
+	})
+
+	test("treats header-only untracked stubs as patchPending", () => {
+		const view = {
+			scope: "uncommitted",
+			status: "ready",
+			workspace_root: "/repo",
+			coverage: "git_visible",
+			attribution: "git_working_tree",
+			change_set_status: "accumulating",
+			files: [file("new.ts", "untracked", 0, 0)],
+			stats: { files_changed: 1, additions: 0, deletions: 0 },
+			unified_diff: [
+				"diff --git a/new.ts b/new.ts",
+				"new file mode 100644",
+				"--- /dev/null",
+				"+++ b/new.ts",
+			].join("\n"),
+			warnings: [],
+			generated_at: "2026-06-26T00:00:00Z",
+		} as unknown as WorkspaceChangeView
+
+		expect(workspacePatchFilesFromView(view)[0]).toEqual(
+			expect.objectContaining({
+				file: "new.ts",
+				status: "added",
+				patch: null,
+				patchPending: true,
+			}),
+		)
+	})
+
+	test("marks Summary-only rows as patchPending", () => {
+		const view = {
+			scope: "uncommitted",
+			status: "ready",
+			workspace_root: "/repo",
+			coverage: "git_visible",
+			attribution: "git_working_tree",
+			change_set_status: "accumulating",
+			files: [file("src/a.ts", "modified", 1, 1)],
+			stats: { files_changed: 1, additions: 1, deletions: 1 },
+			unified_diff: null,
+			warnings: [],
+			generated_at: "2026-06-26T00:00:00Z",
+		} as unknown as WorkspaceChangeView
+
+		expect(workspacePatchFilesFromView(view)[0]).toEqual(
+			expect.objectContaining({
+				file: "src/a.ts",
+				patch: null,
+				patchPending: true,
+			}),
+		)
+	})
+
+	test("keeps patchPending for files missing from a partial unified_diff", () => {
+		const view = {
+			scope: "uncommitted",
+			status: "ready",
+			workspace_root: "/repo",
+			coverage: "git_visible",
+			attribution: "git_working_tree",
+			change_set_status: "accumulating",
+			files: [file("src/a.ts", "modified", 1, 1), file("src/b.ts", "modified", 1, 0)],
+			stats: { files_changed: 2, additions: 2, deletions: 1 },
+			unified_diff: [
+				"diff --git a/src/a.ts b/src/a.ts",
+				"--- a/src/a.ts",
+				"+++ b/src/a.ts",
+				"@@ -1 +1 @@",
+				"-old",
+				"+new",
+			].join("\n"),
+			warnings: [],
+			generated_at: "2026-06-26T00:00:00Z",
+		} as unknown as WorkspaceChangeView
+
+		const rows = workspacePatchFilesFromView(view)
+		expect(rows[0]).toEqual(expect.objectContaining({ file: "src/a.ts", patchPending: false }))
+		expect(rows[1]).toEqual(expect.objectContaining({ file: "src/b.ts", patch: null, patchPending: true }))
+	})
+
 	test("keeps metadata-only files visible", () => {
 		const view = {
 			scope: "turn",
@@ -70,15 +182,49 @@ describe("workspacePatchFilesFromView", () => {
 				binary: true,
 				diffTruncated: true,
 				patch: null,
-				warnings: ["Binary file", "Diff truncated", "No text diff available"],
+				patchPending: false,
+				oldText: null,
+				newText: null,
+				warnings: ["Binary file", "Diff truncated"],
 			},
 		])
+	})
+
+	test("copies old_text/new_text onto WorkspacePatchFile", () => {
+		const view = {
+			scope: "uncommitted",
+			status: "ready",
+			workspace_root: "/repo",
+			coverage: "git_visible",
+			attribution: "git_working_tree",
+			change_set_status: "accumulating",
+			files: [
+				{
+					...file("src/a.ts", "modified", 1, 1),
+					old_text: "line1\nold\nline3\n",
+					new_text: "line1\nnew\nline3\n",
+				},
+			],
+			stats: { files_changed: 1, additions: 1, deletions: 1 },
+			unified_diff: null,
+			warnings: [],
+			generated_at: "2026-06-26T00:00:00Z",
+		} as unknown as WorkspaceChangeView
+
+		expect(workspacePatchFilesFromView(view)[0]).toEqual(
+			expect.objectContaining({
+				file: "src/a.ts",
+				patchPending: false,
+				oldText: "line1\nold\nline3\n",
+				newText: "line1\nnew\nline3\n",
+			}),
+		)
 	})
 })
 
 function file(
 	path: string,
-	status: "added" | "modified" | "deleted",
+	status: "added" | "modified" | "deleted" | "untracked",
 	additions: number,
 	deletions: number,
 	binary = false,

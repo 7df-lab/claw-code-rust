@@ -10,24 +10,37 @@
  * 6. Stable memoized objects prevent @pierre/diffs re-parsing unchanged content
  * 7. Only the active theme (light/dark) is rendered, not both
  */
+import {
+	DropdownMenu,
+	DropdownMenuCheckboxItem,
+	DropdownMenuContent,
+	DropdownMenuGroup,
+	DropdownMenuItem,
+	DropdownMenuLabel,
+	DropdownMenuRadioGroup,
+	DropdownMenuRadioItem,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@devo/ui/components/dropdown-menu"
 import { cn } from "@devo/ui/lib/utils"
-import { PatchDiff, useWorkerPool, WorkerPoolContextProvider } from "@pierre/diffs/react"
+import { FileDiff, MultiFileDiff, PatchDiff, useWorkerPool, WorkerPoolContextProvider } from "@pierre/diffs/react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import {
 	AlertTriangleIcon,
+	CheckIcon,
 	ChevronDownIcon,
 	ChevronRightIcon,
 	ChevronsDownUpIcon,
 	ChevronsUpDownIcon,
-	ColumnsIcon,
-	FileIcon,
+	EllipsisIcon,
 	Loader2Icon,
 	MaximizeIcon,
 	MinimizeIcon,
 	MinusIcon,
 	PlusIcon,
-	RowsIcon,
+	RefreshCwIcon,
+	SearchIcon,
 	XIcon,
 } from "lucide-react"
 import {
@@ -44,15 +57,25 @@ import {
 	type DiffStyle,
 	reviewPanelOpenAtom,
 	reviewPanelSelectedFileAtom,
+	reviewPanelWorkspaceUiFamily,
 	reviewPanelSettingsAtom,
 } from "../../atoms/ui"
-import { useWorkspaceChanges } from "../../hooks/use-workspace-changes"
+import { isMockModeAtom } from "../../atoms/mock-mode"
+import { appStore } from "../../atoms/store"
+import {
+	workspaceChangesStateFamily,
+} from "../../atoms/workspace-changes"
+import { useVcs } from "../../hooks/use-devo-data"
+import { useWorkspaceChanges, useWorkspaceScopeStatsPreview } from "../../hooks/use-workspace-changes"
 import type { WorkspaceChangeScope, WorkspaceChangeView } from "../../lib/types"
 import {
 	type WorkspacePatchFile,
 	workspaceChangeStats,
 	workspacePatchFilesFromView,
 } from "../../lib/workspace-diff"
+import { buildExpandableGitFileDiff } from "../../lib/review-file-diff"
+import { fetchGitBranches, isElectron } from "../../services/backend"
+import { CommitPushDialog } from "./commit-push-dialog"
 
 // ============================================================
 // Constants
@@ -65,17 +88,45 @@ import {
  */
 const AUTO_COLLAPSE_THRESHOLD = 12
 
+const EMPTY_TOGGLES: Record<string, boolean> = {}
+
 /** Max total lines changed before a diff shows a "Load diff" gate. */
 const LARGE_DIFF_LINE_THRESHOLD = 1500
 
 /** Estimated height (px) of a collapsed diff section (header only). */
 const COLLAPSED_ROW_HEIGHT = 32
 
+/** Hide pierre's empty right-side separator stub + reserved scrollbar gutter.
+ *
+ * For "N unmodified lines" rows, pierre paints a `[data-separator]` cell in both
+ * gutters. The additions-side wrapper is `display:none`, but the cell itself still
+ * keeps `--diffs-bg-separator`, which shows up as a small gray block on the right.
+ */
+const REVIEW_DIFF_UNSAFE_CSS = `
+:host {
+	--diffs-scrollbar-gutter-override: 0px;
+}
+[data-additions] [data-gutter] [data-separator=line-info] [data-separator-wrapper],
+[data-additions] [data-gutter] [data-separator=line-info-basic] [data-separator-wrapper] {
+	display: none !important;
+}
+[data-additions] [data-gutter] [data-separator],
+[data-additions] [data-gutter] [data-gutter-buffer] {
+	background-color: var(--diffs-bg) !important;
+}
+`
+
 const WORKSPACE_CHANGE_SCOPES: Array<{ scope: WorkspaceChangeScope; label: string }> = [
-	{ scope: "turn", label: "Turn" },
-	{ scope: "branch", label: "Branch" },
+	{ scope: "turn", label: "Last Agent Turn" },
 	{ scope: "uncommitted", label: "Uncommitted" },
+	{ scope: "unstaged", label: "Unstaged" },
+	{ scope: "staged", label: "Staged" },
+	{ scope: "branch", label: "Branch" },
 ]
+
+function scopeLabel(scope: WorkspaceChangeScope): string {
+	return WORKSPACE_CHANGE_SCOPES.find((item) => item.scope === scope)?.label ?? "Changes"
+}
 
 function statsFromView(view: WorkspaceChangeView | null | undefined): {
 	fileCount: number
@@ -182,22 +233,82 @@ interface ReviewPanelProps {
 	sessionId: string
 	directory: string
 	className?: string
+	/** When true, chrome (close/expand) lives on the parent RightPanel host. */
+	embedded?: boolean
 }
 
 export const ReviewPanel = memo(function ReviewPanel({
 	sessionId,
 	directory,
 	className,
+	embedded = false,
 }: ReviewPanelProps) {
-	const [scope, setScope] = useState<WorkspaceChangeScope>("turn")
+	const [workspaceUi, setWorkspaceUi] = useAtom(reviewPanelWorkspaceUiFamily(directory || "\0"))
+	const scope = workspaceUi.scope
+	const baseBranch = workspaceUi.baseBranch
+	const filterOpen = workspaceUi.filterOpen
+	const filterQuery = workspaceUi.filterQuery
+	const userToggles = workspaceUi.userTogglesByScope[scope] ?? EMPTY_TOGGLES
 	const [settings, setSettings] = useAtom(reviewPanelSettingsAtom)
 	const [panelOpen, setOpen] = useAtom(reviewPanelOpenAtom)
-	const [selectedFile, setSelectedFile] = useState<string | null>(null)
-	const { view, loading, error } = useWorkspaceChanges(sessionId, directory, scope, {
-		enabled: panelOpen,
+	const ignoreWhitespace = settings.ignoreWhitespace ?? false
+	const wordWrap = settings.wordWrap ?? false
+	const { view, error, refetch, isInitialLoading, isRefreshing, ensureFullPatches, key } =
+		useWorkspaceChanges(sessionId, directory, scope, {
+			enabled: panelOpen && Boolean(directory),
+			ignoreWhitespace,
+			baseBranch,
+		})
+	const scopeStats = useWorkspaceScopeStatsPreview(sessionId, directory, {
+		enabled: panelOpen && Boolean(directory),
+		ignoreWhitespace,
+		baseBranch,
 	})
 	const diffs = useMemo(() => workspacePatchFilesFromView(view), [view])
 	const stats = useMemo(() => statsFromView(view), [view])
+
+	// --- Toolbar extras: branch display, commit dialog, find-in-changes ---
+	const { data: vcs, reload: reloadVcs } = useVcs(directory || null)
+	const isMockMode = useAtomValue(isMockModeAtom)
+	const canCommit = isElectron && !isMockMode
+	const [commitOpen, setCommitOpen] = useState(false)
+
+	const setScope = useCallback(
+		(next: WorkspaceChangeScope) => setWorkspaceUi((prev) => ({ ...prev, scope: next })),
+		[setWorkspaceUi],
+	)
+	const setBaseBranch = useCallback(
+		(next: string | null) => setWorkspaceUi((prev) => ({ ...prev, baseBranch: next })),
+		[setWorkspaceUi],
+	)
+	const setFilterOpen = useCallback(
+		(next: boolean) => setWorkspaceUi((prev) => ({ ...prev, filterOpen: next })),
+		[setWorkspaceUi],
+	)
+	const setFilterQuery = useCallback(
+		(next: string) => setWorkspaceUi((prev) => ({ ...prev, filterQuery: next })),
+		[setWorkspaceUi],
+	)
+	const patchScopeToggles = useCallback(
+		(updater: (prev: Record<string, boolean>) => Record<string, boolean>) => {
+			setWorkspaceUi((prev) => {
+				const current = prev.userTogglesByScope[prev.scope] ?? {}
+				return {
+					...prev,
+					userTogglesByScope: {
+						...prev.userTogglesByScope,
+						[prev.scope]: updater(current),
+					},
+				}
+			})
+		},
+		[setWorkspaceUi],
+	)
+
+	const handleCommitted = useCallback(() => {
+		void refetch()
+		reloadVcs()
+	}, [refetch, reloadVcs])
 
 	// --- External file selection (e.g. "View diff" button in tool cards) ---
 	const externalFile = useAtomValue(reviewPanelSelectedFileAtom)
@@ -205,8 +316,6 @@ export const ReviewPanel = memo(function ReviewPanel({
 	useEffect(() => {
 		if (!externalFile || diffs.length === 0) return
 		// The tool card sends an absolute path; diff entries use relative paths.
-		// Match by suffix: find the diff whose relative path is a suffix of the
-		// absolute path (or vice versa).
 		const match = diffs.find(
 			(d) =>
 				d.file === externalFile ||
@@ -214,71 +323,81 @@ export const ReviewPanel = memo(function ReviewPanel({
 				d.file.endsWith(`/${externalFile}`),
 		)
 		if (match) {
-			setSelectedFile(match.file)
-			setUserToggles((prev) => ({ ...prev, [match.file]: true }))
+			patchScopeToggles((prev) => ({ ...prev, [match.file]: true }))
 		}
 		clearExternalFile(null)
-	}, [externalFile, clearExternalFile, diffs])
-
-	// --- Collapse state management ---
-	// Track which files the user has explicitly toggled (overrides auto-collapse).
-	// Key = file path, value = true (expanded) | false (collapsed).
-	const [userToggles, setUserToggles] = useState<Record<string, boolean>>({})
+	}, [externalFile, clearExternalFile, diffs, patchScopeToggles])
 
 	const manyFiles = diffs.length > AUTO_COLLAPSE_THRESHOLD
+	// Stay collapsed while any text file still lacks a patch, so we never
+	// auto-expand a row into an infinite "Loading diff…" state.
+	const collapseByDefault =
+		manyFiles || diffs.some((diff) => !diff.binary && diff.patchPending)
 
 	const getIsCollapsed = useCallback(
 		(diff: WorkspacePatchFile): boolean => {
 			// User override takes priority
 			if (diff.file in userToggles) return !userToggles[diff.file]
 			// Auto-collapse rules
-			if (manyFiles) return true
+			if (collapseByDefault) return true
 			if (isGeneratedFile(diff.file)) return true
 			return false
 		},
-		[userToggles, manyFiles],
+		[userToggles, collapseByDefault],
 	)
 
 	const toggleFile = useCallback(
 		(file: string) => {
-			setUserToggles((prev) => {
-				// Compute current expanded state from prev toggles (no external deps)
+			const willExpand =
+				file in userToggles
+					? !userToggles[file]
+					: collapseByDefault || isGeneratedFile(file)
+			patchScopeToggles((prev) => {
 				const wasExpanded =
-					file in prev
-						? prev[file]
-						: // Default: expanded unless auto-collapse rules apply
-							!(manyFiles || isGeneratedFile(file))
+					file in prev ? prev[file] : !(collapseByDefault || isGeneratedFile(file))
 				return { ...prev, [file]: !wasExpanded }
 			})
+			if (willExpand) {
+				void ensureFullPatches(file)
+			}
 		},
-		[manyFiles],
+		[collapseByDefault, ensureFullPatches, patchScopeToggles, userToggles],
 	)
 
 	const collapseAll = useCallback(() => {
 		const next: Record<string, boolean> = {}
 		for (const d of diffs) next[d.file] = false
-		setUserToggles(next)
-	}, [diffs])
+		patchScopeToggles(() => next)
+	}, [diffs, patchScopeToggles])
 
 	const expandAll = useCallback(() => {
 		const next: Record<string, boolean> = {}
 		for (const d of diffs) next[d.file] = true
-		setUserToggles(next)
-	}, [diffs])
+		patchScopeToggles(() => next)
+		void (async () => {
+			await ensureFullPatches()
+			const latest = appStore.get(workspaceChangesStateFamily(key)).view
+			if (!latest) return
+			const pending = workspacePatchFilesFromView(latest).filter(
+				(row) =>
+					!row.binary &&
+					(row.patchPending || (row.oldText == null && row.newText == null)),
+			)
+			const concurrency = 4
+			for (let i = 0; i < pending.length; i += concurrency) {
+				const batch = pending.slice(i, i + concurrency)
+				await Promise.all(batch.map((row) => ensureFullPatches(row.file)))
+			}
+		})()
+	}, [diffs, ensureFullPatches, key, patchScopeToggles])
 
-	// Reset user toggles when session changes
-	const prevSessionRef = useRef(sessionId)
-	useEffect(() => {
-		if (prevSessionRef.current !== sessionId) {
-			prevSessionRef.current = sessionId
-			setUserToggles({})
-		}
-	}, [sessionId])
+	const allCollapsed =
+		diffs.length > 0 && diffs.every((diff) => getIsCollapsed(diff))
 
-	useEffect(() => {
-		setSelectedFile(null)
-		setUserToggles({})
-	}, [scope])
+	const toggleCollapseExpandAll = useCallback(() => {
+		if (allCollapsed) expandAll()
+		else collapseAll()
+	}, [allCollapsed, collapseAll, expandAll])
 
 	// --- Handlers ---
 	const handleClose = useCallback(() => setOpen(false), [setOpen])
@@ -290,110 +409,167 @@ export const ReviewPanel = memo(function ReviewPanel({
 		(style: DiffStyle) => setSettings((prev) => ({ ...prev, diffStyle: style })),
 		[setSettings],
 	)
+	const handleToggleIgnoreWhitespace = useCallback(
+		() =>
+			startTransition(() => {
+				setSettings((prev) => ({
+					...prev,
+					ignoreWhitespace: !(prev.ignoreWhitespace ?? false),
+				}))
+			}),
+		[setSettings],
+	)
+	const handleToggleWordWrap = useCallback(
+		() => setSettings((prev) => ({ ...prev, wordWrap: !(prev.wordWrap ?? false) })),
+		[setSettings],
+	)
 
-	// Apply file selection filter
+	// Apply find-in-changes filter
 	const displayedDiffs = useMemo(() => {
-		if (!selectedFile) return diffs
-		return diffs.filter((d) => d.file === selectedFile)
-	}, [diffs, selectedFile])
-
-	// Count how many are currently expanded (for the toggle icon)
-	const expandedCount = useMemo(() => {
-		return displayedDiffs.filter((d) => !getIsCollapsed(d)).length
-	}, [displayedDiffs, getIsCollapsed])
+		const query = filterQuery.trim().toLowerCase()
+		if (!query) return diffs
+		return diffs.filter(
+			(d) => d.file.toLowerCase().includes(query) || (d.patch ?? "").toLowerCase().includes(query),
+		)
+	}, [diffs, filterQuery])
 
 	return (
 		<div className={cn("flex h-full flex-col overflow-hidden bg-background", className)}>
-			{/* Panel header */}
-			<div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
-				<div className="flex items-center gap-2">
-					<h3 className="text-xs font-semibold text-foreground">Changes</h3>
-					<ScopeSegmentedControl scope={scope} onScopeChange={setScope} />
-					{stats.fileCount > 0 && (
-						<span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-							<span className="flex items-center gap-0.5 text-green-500">
-								<PlusIcon className="size-2.5" aria-hidden="true" />
-								{stats.additions}
-							</span>
-							<span className="flex items-center gap-0.5 text-red-500">
-								<MinusIcon className="size-2.5" aria-hidden="true" />
-								{stats.deletions}
-							</span>
-						</span>
-					)}
+			{/* Toolbar: scope stats · branch · … · Commit & Push · sidebar toggle */}
+			<div
+				className={cn(
+					"flex shrink-0 items-center gap-1.5 px-2",
+					embedded ? "h-9 border-b border-border/40" : "border-b border-border px-3 py-1.5",
+				)}
+			>
+				<div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+					<ScopeDropdown
+						scope={scope}
+						additions={stats.additions}
+						deletions={stats.deletions}
+						scopeStats={scopeStats}
+						onScopeChange={setScope}
+					/>
+					{vcs?.branch && vcs.state !== "not_git" ? (
+						<BranchDropdown
+							directory={directory}
+							currentBranch={vcs.branch}
+							baseBranch={baseBranch}
+							scope={scope}
+							onSelectBranch={(branch) => {
+								setBaseBranch(branch)
+								setScope("branch")
+							}}
+						/>
+					) : null}
 				</div>
-				<div className="flex items-center gap-0.5">
-					{/* Collapse / Expand all */}
-					{displayedDiffs.length > 1 && (
+				<div className="flex shrink-0 items-center gap-1">
+					<OptionsMenu
+						settings={settings}
+						onSetDiffStyle={handleSetDiffStyle}
+						onToggleIgnoreWhitespace={handleToggleIgnoreWhitespace}
+						onToggleWordWrap={handleToggleWordWrap}
+						onFind={() => setFilterOpen(true)}
+						onToggleCollapseExpandAll={toggleCollapseExpandAll}
+						allCollapsed={allCollapsed}
+						onRefresh={refetch}
+						hasChanges={displayedDiffs.length > 0}
+					/>
+					{canCommit ? (
 						<button
 							type="button"
-							onClick={expandedCount > 0 ? collapseAll : expandAll}
-							className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-							title={expandedCount > 0 ? "Collapse all" : "Expand all"}
+							onClick={() => setCommitOpen(true)}
+							className="flex h-7 items-center gap-1 rounded-md bg-foreground px-2.5 text-[11px] font-medium text-background transition-opacity hover:opacity-90"
+							title="Commit all changes and push"
 						>
-							{expandedCount > 0 ? (
-								<ChevronsDownUpIcon className="size-3.5" />
-							) : (
-								<ChevronsUpDownIcon className="size-3.5" />
-							)}
+							Commit & Push
+							<ChevronDownIcon className="size-3 opacity-80" aria-hidden="true" />
 						</button>
+					) : null}
+					{!embedded && (
+						<>
+							<button
+								type="button"
+								onClick={handleToggleExpanded}
+								className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+								title={settings.expanded ? "Restore panel size" : "Expand to full width"}
+							>
+								{settings.expanded ? (
+									<MinimizeIcon className="size-3.5 stroke-[1.5]" />
+								) : (
+									<MaximizeIcon className="size-3.5 stroke-[1.5]" />
+								)}
+							</button>
+							<button
+								type="button"
+								onClick={handleClose}
+								className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+							>
+								<XIcon className="size-3.5 stroke-[1.5]" />
+							</button>
+						</>
 					)}
-					{/* Diff style toggle */}
-					<button
-						type="button"
-						onClick={() =>
-							handleSetDiffStyle(settings.diffStyle === "unified" ? "split" : "unified")
-						}
-						className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-						title={
-							settings.diffStyle === "unified" ? "Switch to split view" : "Switch to unified view"
-						}
-					>
-						{settings.diffStyle === "unified" ? (
-							<ColumnsIcon className="size-3.5" />
-						) : (
-							<RowsIcon className="size-3.5" />
-						)}
-					</button>
-					{/* Expand / collapse panel */}
-					<button
-						type="button"
-						onClick={handleToggleExpanded}
-						className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-						title={settings.expanded ? "Restore panel size" : "Expand to full width"}
-					>
-						{settings.expanded ? (
-							<MinimizeIcon className="size-3.5" />
-						) : (
-							<MaximizeIcon className="size-3.5" />
-						)}
-					</button>
-					{/* Close */}
-					<button
-						type="button"
-						onClick={handleClose}
-						className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-					>
-						<XIcon className="size-3.5" />
-					</button>
 				</div>
 			</div>
 
-			{/* File list */}
-			{diffs.length > 0 && (
-				<div className="shrink-0 border-b border-border">
-					<FileList diffs={diffs} selectedFile={selectedFile} onSelectFile={setSelectedFile} />
+			{/* Find in changes filter row */}
+			{filterOpen && (
+				<div className="flex shrink-0 items-center gap-1.5 border-b border-border px-3 py-1.5">
+					<SearchIcon className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+					<input
+						autoFocus
+						type="text"
+						value={filterQuery}
+						onChange={(e) => setFilterQuery(e.target.value)}
+						onKeyDown={(e) => {
+							if (e.key === "Escape") {
+								setFilterOpen(false)
+								setFilterQuery("")
+							}
+						}}
+						placeholder="Find in changes (path or content)"
+						className="h-5 w-full bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground/60"
+					/>
+					{filterQuery && (
+						<button
+							type="button"
+							onClick={() => setFilterQuery("")}
+							className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+							title="Clear filter"
+						>
+							<XIcon className="size-3" />
+						</button>
+					)}
+					<button
+						type="button"
+						onClick={() => {
+							setFilterOpen(false)
+							setFilterQuery("")
+						}}
+						className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+						title="Close find"
+					>
+						<XIcon className="size-3" />
+					</button>
 				</div>
 			)}
 
-			<WorkspaceChangeNotice view={view} error={error} />
+			<WorkspaceChangeNotice view={view} error={error} onRetry={refetch} />
 
-			{/* Diff content -- virtualized */}
-			<div className="min-h-0 flex-1">
-				{loading ? (
-					<div className="flex items-center justify-center py-12">
-						<Loader2Icon className="size-5 animate-spin text-muted-foreground" />
-						<span className="ml-2 text-sm text-muted-foreground">Loading changes...</span>
+			{/* Diff content -- virtualized; keep mounted during soft refresh */}
+			<div className="relative min-h-0 flex-1">
+				{isRefreshing ? (
+					<div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center pt-2">
+						<div className="flex items-center gap-1.5 rounded-full border border-border/60 bg-background/90 px-2.5 py-1 text-[11px] text-muted-foreground shadow-sm backdrop-blur-sm">
+							<Loader2Icon className="size-3 animate-spin" />
+							Refreshing…
+						</div>
+					</div>
+				) : null}
+				{isInitialLoading ? (
+					<div className="flex items-center justify-center gap-2 py-16">
+						<Loader2Icon className="size-3.5 animate-spin text-muted-foreground/70" />
+						<span className="text-[12px] text-muted-foreground">Loading…</span>
 					</div>
 				) : diffs.length === 0 ? (
 					<EmptyState scope={scope} view={view} error={error} />
@@ -401,65 +577,347 @@ export const ReviewPanel = memo(function ReviewPanel({
 					<VirtualizedDiffList
 						diffs={displayedDiffs}
 						diffStyle={settings.diffStyle}
+						wordWrap={wordWrap}
+						ignoreWhitespace={ignoreWhitespace}
+						loadError={error}
 						getIsCollapsed={getIsCollapsed}
 						onToggle={toggleFile}
 					/>
 				)}
 			</div>
+
+			{/* Commit & push */}
+			{canCommit && (
+				<CommitPushDialog
+					open={commitOpen}
+					onOpenChange={setCommitOpen}
+					directory={directory}
+					onCommitted={handleCommitted}
+				/>
+			)}
 		</div>
 	)
 })
 
-function ScopeSegmentedControl({
+function ScopeDropdown({
 	scope,
+	additions,
+	deletions,
+	scopeStats,
 	onScopeChange,
 }: {
 	scope: WorkspaceChangeScope
+	additions: number
+	deletions: number
+	scopeStats: Partial<Record<WorkspaceChangeScope, { additions: number; deletions: number }>>
 	onScopeChange: (scope: WorkspaceChangeScope) => void
 }) {
+	const primaryScopes = WORKSPACE_CHANGE_SCOPES.filter((item) => item.scope !== "branch")
+	const branchStats = scopeStats.branch
 	return (
-		<div className="flex rounded-md bg-muted p-0.5">
-			{WORKSPACE_CHANGE_SCOPES.map((item) => (
-				<button
-					key={item.scope}
-					type="button"
-					onClick={() => onScopeChange(item.scope)}
-					className={cn(
-						"rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
-						scope === item.scope
-							? "bg-background text-foreground shadow-sm"
-							: "text-muted-foreground hover:text-foreground",
-					)}
-				>
-					{item.label}
-				</button>
-			))}
-		</div>
+		<DropdownMenu>
+			<DropdownMenuTrigger
+				render={
+					<button
+						type="button"
+						className="flex max-w-full min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-left text-[12px] font-medium text-foreground transition-colors hover:bg-muted/60"
+						aria-label="Change scope"
+					>
+						<span className="truncate">{scopeLabel(scope)}</span>
+						{additions > 0 || deletions > 0 ? (
+							<span className="flex shrink-0 items-center gap-1 tabular-nums">
+								{additions > 0 ? (
+									<span className="text-emerald-600 dark:text-emerald-400">+{additions}</span>
+								) : null}
+								{deletions > 0 ? <span className="text-red-500/90">−{deletions}</span> : null}
+							</span>
+						) : null}
+						<ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+					</button>
+				}
+			/>
+			<DropdownMenuContent align="start" className="min-w-52">
+				<DropdownMenuGroup>
+					{primaryScopes.map((item) => {
+						const active = item.scope === scope
+						const preview = scopeStats[item.scope]
+						return (
+							<DropdownMenuItem
+								key={item.scope}
+								className="text-xs"
+								onClick={() => onScopeChange(item.scope)}
+							>
+								<span className="flex-1">{item.label}</span>
+								{preview && (preview.additions > 0 || preview.deletions > 0) ? (
+									<span className="mr-1.5 flex shrink-0 items-center gap-1 tabular-nums text-muted-foreground">
+										{preview.additions > 0 ? (
+											<span className="text-emerald-600 dark:text-emerald-400">
+												+{preview.additions}
+											</span>
+										) : null}
+										{preview.deletions > 0 ? (
+											<span className="text-red-500/90">−{preview.deletions}</span>
+										) : null}
+									</span>
+								) : null}
+								{active ? <CheckIcon className="size-3.5 text-foreground" /> : <span className="size-3.5" />}
+							</DropdownMenuItem>
+						)
+					})}
+				</DropdownMenuGroup>
+				<DropdownMenuSeparator />
+				<DropdownMenuGroup>
+					<DropdownMenuItem className="text-xs" onClick={() => onScopeChange("branch")}>
+						<span className="flex-1">Branch</span>
+						{branchStats && (branchStats.additions > 0 || branchStats.deletions > 0) ? (
+							<span className="mr-1.5 flex shrink-0 items-center gap-1 tabular-nums text-muted-foreground">
+								{branchStats.additions > 0 ? (
+									<span className="text-emerald-600 dark:text-emerald-400">
+										+{branchStats.additions}
+									</span>
+								) : null}
+								{branchStats.deletions > 0 ? (
+									<span className="text-red-500/90">−{branchStats.deletions}</span>
+								) : null}
+							</span>
+						) : null}
+						{scope === "branch" ? (
+							<CheckIcon className="size-3.5 text-foreground" />
+						) : (
+							<span className="size-3.5" />
+						)}
+					</DropdownMenuItem>
+				</DropdownMenuGroup>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	)
+}
+
+function BranchDropdown({
+	directory,
+	currentBranch,
+	baseBranch,
+	scope,
+	onSelectBranch,
+}: {
+	directory: string
+	currentBranch: string
+	baseBranch: string | null
+	scope: WorkspaceChangeScope
+	onSelectBranch: (branch: string) => void
+}) {
+	const [branches, setBranches] = useState<string[]>([])
+	const [loading, setLoading] = useState(false)
+	const label = scope === "branch" && baseBranch ? baseBranch : currentBranch
+
+	const loadBranches = useCallback(async () => {
+		if (!directory || !isElectron) return
+		setLoading(true)
+		try {
+			const info = await fetchGitBranches(directory)
+			const locals = info.local.length > 0 ? info.local : [info.current].filter(Boolean)
+			setBranches(locals)
+		} catch {
+			setBranches([currentBranch].filter(Boolean))
+		} finally {
+			setLoading(false)
+		}
+	}, [currentBranch, directory])
+
+	return (
+		<DropdownMenu
+			onOpenChange={(open) => {
+				if (open) void loadBranches()
+			}}
+		>
+			<DropdownMenuTrigger
+				render={
+					<button
+						type="button"
+						className="flex max-w-[42%] min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-left text-[12px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+						title={label}
+						aria-label="Compare branch"
+					>
+						<span className="truncate">{label}</span>
+						<ChevronDownIcon className="size-3 shrink-0 opacity-70" aria-hidden="true" />
+					</button>
+				}
+			/>
+			<DropdownMenuContent align="start" className="min-w-48 max-w-72">
+				{loading ? (
+					<div className="flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground">
+						<Loader2Icon className="size-3 animate-spin" />
+						Loading branches…
+					</div>
+				) : branches.length === 0 ? (
+					<div className="px-2 py-1.5 text-xs text-muted-foreground">No branches found</div>
+				) : (
+					<DropdownMenuGroup>
+						{branches.map((branch) => {
+							const active = scope === "branch" && (baseBranch ?? currentBranch) === branch
+							return (
+								<DropdownMenuItem
+									key={branch}
+									className="text-xs"
+									onClick={() => onSelectBranch(branch)}
+								>
+									<span className="min-w-0 flex-1 truncate">{branch}</span>
+									{active ? <CheckIcon className="size-3.5 shrink-0 text-foreground" /> : null}
+								</DropdownMenuItem>
+							)
+						})}
+					</DropdownMenuGroup>
+				)}
+			</DropdownMenuContent>
+		</DropdownMenu>
+	)
+}
+
+interface OptionsMenuProps {
+	settings: {
+		diffStyle: DiffStyle
+		ignoreWhitespace?: boolean
+		wordWrap?: boolean
+	}
+	onSetDiffStyle: (style: DiffStyle) => void
+	onToggleIgnoreWhitespace: () => void
+	onToggleWordWrap: () => void
+	onFind: () => void
+	onToggleCollapseExpandAll: () => void
+	allCollapsed: boolean
+	onRefresh: () => void
+	hasChanges: boolean
+}
+
+function OptionsMenu({
+	settings,
+	onSetDiffStyle,
+	onToggleIgnoreWhitespace,
+	onToggleWordWrap,
+	onFind,
+	onToggleCollapseExpandAll,
+	allCollapsed,
+	onRefresh,
+	hasChanges,
+}: OptionsMenuProps) {
+	return (
+		<DropdownMenu>
+			<DropdownMenuTrigger
+				render={
+					<button
+						type="button"
+						className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+						title="Changes options"
+						aria-label="Changes options"
+					>
+						<EllipsisIcon className="size-3.5" />
+					</button>
+				}
+			/>
+			<DropdownMenuContent align="end" className="min-w-48">
+				<DropdownMenuGroup>
+					<DropdownMenuLabel>Layout</DropdownMenuLabel>
+					<DropdownMenuRadioGroup
+						value={settings.diffStyle ?? "unified"}
+						onValueChange={(detail) => onSetDiffStyle(detail as DiffStyle)}
+					>
+						<DropdownMenuRadioItem value="unified" className="text-xs">
+							Unified
+						</DropdownMenuRadioItem>
+						<DropdownMenuRadioItem value="split" className="text-xs">
+							Split
+						</DropdownMenuRadioItem>
+					</DropdownMenuRadioGroup>
+				</DropdownMenuGroup>
+				<DropdownMenuSeparator />
+				<DropdownMenuGroup>
+					<DropdownMenuCheckboxItem
+						checked={settings.ignoreWhitespace ?? false}
+						onClick={onToggleIgnoreWhitespace}
+						closeOnClick={false}
+						className="text-xs"
+					>
+						Ignore whitespace
+					</DropdownMenuCheckboxItem>
+					<DropdownMenuCheckboxItem
+						checked={settings.wordWrap ?? false}
+						onClick={onToggleWordWrap}
+						closeOnClick={false}
+						className="text-xs"
+					>
+						Word wrap
+					</DropdownMenuCheckboxItem>
+				</DropdownMenuGroup>
+				<DropdownMenuSeparator />
+				<DropdownMenuGroup>
+					<DropdownMenuItem onClick={onFind} className="text-xs">
+						<SearchIcon /> Find in changes
+					</DropdownMenuItem>
+					<DropdownMenuItem
+						onClick={onToggleCollapseExpandAll}
+						disabled={!hasChanges}
+						className="text-xs"
+					>
+						{allCollapsed ? (
+							<>
+								<ChevronsUpDownIcon /> Expand all
+							</>
+						) : (
+							<>
+								<ChevronsDownUpIcon /> Collapse all
+							</>
+						)}
+					</DropdownMenuItem>
+					<DropdownMenuItem onClick={onRefresh} className="text-xs">
+						<RefreshCwIcon /> Refresh changes
+					</DropdownMenuItem>
+				</DropdownMenuGroup>
+			</DropdownMenuContent>
+		</DropdownMenu>
 	)
 }
 
 function WorkspaceChangeNotice({
 	view,
 	error,
+	onRetry,
 }: {
 	view: WorkspaceChangeView | null
 	error: string | null
+	onRetry?: () => void
 }) {
 	const warnings = view?.warnings ?? []
 	if (!error && warnings.length === 0 && view?.status !== "partial") return null
+	const timedOut = Boolean(error?.toLowerCase().includes("timed out"))
 	return (
-		<div className="border-b border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+		<div className="border-b border-border/60 bg-muted/15 px-3 py-2.5 text-[12px] text-muted-foreground">
 			{error ? (
-				<div className="flex items-center gap-1.5 text-red-500">
-					<AlertTriangleIcon className="size-3.5" />
-					<span>{error}</span>
+				<div className="flex items-start gap-2">
+					<AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0 text-red-500/80" />
+					<div className="min-w-0 flex-1 space-y-1">
+						<p className="text-red-500/90">{timedOut ? "Changes took too long to load" : error}</p>
+						{timedOut ? (
+							<p className="text-[11px] text-muted-foreground">
+								Large git trees can be slow. Try All / Staged, or refresh.
+							</p>
+						) : null}
+						{onRetry ? (
+							<button
+								type="button"
+								onClick={onRetry}
+								className="text-[11px] font-medium text-foreground underline-offset-2 hover:underline"
+							>
+								Retry
+							</button>
+						) : null}
+					</div>
 				</div>
 			) : (
 				<div className="flex flex-wrap items-center gap-1.5">
-					<AlertTriangleIcon className="size-3.5 text-amber-500" />
-					<span className="text-amber-500">Partial change view</span>
+					<AlertTriangleIcon className="size-3.5 text-amber-500/80" />
+					<span className="text-amber-600 dark:text-amber-400">Partial change view</span>
 					{warnings.map((warning) => (
-						<span key={warning} className="rounded bg-muted px-1.5 py-0.5">
+						<span key={warning} className="rounded bg-muted px-1.5 py-0.5 text-[11px]">
 							{warning}
 						</span>
 					))}
@@ -476,6 +934,9 @@ function WorkspaceChangeNotice({
 interface VirtualizedDiffListProps {
 	diffs: WorkspacePatchFile[]
 	diffStyle: DiffStyle
+	wordWrap: boolean
+	ignoreWhitespace: boolean
+	loadError?: string | null
 	getIsCollapsed: (diff: WorkspacePatchFile) => boolean
 	onToggle: (file: string) => void
 }
@@ -483,6 +944,9 @@ interface VirtualizedDiffListProps {
 const VirtualizedDiffList = memo(function VirtualizedDiffList({
 	diffs,
 	diffStyle,
+	wordWrap,
+	ignoreWhitespace,
+	loadError,
 	getIsCollapsed,
 	onToggle,
 }: VirtualizedDiffListProps) {
@@ -587,7 +1051,6 @@ const VirtualizedDiffList = memo(function VirtualizedDiffList({
 							file={pinnedDiff.file}
 							additions={pinnedDiff.additions}
 							deletions={pinnedDiff.deletions}
-							status={pinnedDiff.status}
 							collapsed={false}
 							onToggle={handlePinnedToggle}
 							isGenerated={isGeneratedFile(pinnedDiff.file)}
@@ -621,7 +1084,10 @@ const VirtualizedDiffList = memo(function VirtualizedDiffList({
 									<FileDiffSection
 										diff={diff}
 										diffStyle={diffStyle}
+										wordWrap={wordWrap}
+										ignoreWhitespace={ignoreWhitespace}
 										collapsed={collapsed}
+										loadError={loadError}
 										onToggle={onToggle}
 									/>
 								</div>
@@ -659,125 +1125,43 @@ function DiffThemeSyncer() {
 }
 
 // ============================================================
-// File list
-// ============================================================
-
-const FileList = memo(function FileList({
-	diffs,
-	selectedFile,
-	onSelectFile,
-}: {
-	diffs: WorkspacePatchFile[]
-	selectedFile: string | null
-	onSelectFile: (file: string | null) => void
-}) {
-	return (
-		<div className="max-h-32 overflow-auto px-1 py-1">
-			<button
-				type="button"
-				onClick={() => onSelectFile(null)}
-				className={cn(
-					"flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] transition-colors",
-					selectedFile === null
-						? "bg-muted text-foreground"
-						: "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-				)}
-			>
-				<span className="font-medium">All files</span>
-				<span className="ml-auto text-[10px] text-muted-foreground/70">{diffs.length}</span>
-			</button>
-			{diffs.map((diff) => (
-				<FileListItem
-					key={diff.file}
-					file={diff.file}
-					additions={diff.additions}
-					deletions={diff.deletions}
-					isSelected={selectedFile === diff.file}
-					isLarge={isLargeDiff(diff)}
-					isGenerated={isGeneratedFile(diff.file)}
-					onSelect={onSelectFile}
-				/>
-			))}
-		</div>
-	)
-})
-
-const FileListItem = memo(function FileListItem({
-	file,
-	additions,
-	deletions,
-	isSelected,
-	isLarge,
-	isGenerated,
-	onSelect,
-}: {
-	file: string
-	additions: number
-	deletions: number
-	isSelected: boolean
-	isLarge: boolean
-	isGenerated: boolean
-	onSelect: (file: string | null) => void
-}) {
-	const handleClick = useCallback(
-		() => onSelect(isSelected ? null : file),
-		[file, isSelected, onSelect],
-	)
-	return (
-		<button
-			type="button"
-			onClick={handleClick}
-			className={cn(
-				"flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] transition-colors",
-				isSelected
-					? "bg-muted text-foreground"
-					: isGenerated
-						? "text-muted-foreground/60 hover:bg-muted/50 hover:text-foreground"
-						: "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-			)}
-		>
-			<FileIcon className="size-3 shrink-0" aria-hidden="true" />
-			<span className={cn("min-w-0 flex-1 truncate font-mono", isGenerated && "italic")}>
-				{file}
-			</span>
-			<span className="flex shrink-0 items-center gap-1.5 text-[10px]">
-				{isGenerated && (
-					<span className="rounded bg-muted px-1 py-0.5 text-[9px] font-medium leading-none text-muted-foreground/60">
-						generated
-					</span>
-				)}
-				{isLarge && (
-					<span title="Large diff">
-						<AlertTriangleIcon className="size-3 text-amber-500" aria-hidden="true" />
-					</span>
-				)}
-				{additions > 0 && <span className="text-green-500">+{additions}</span>}
-				{deletions > 0 && <span className="text-red-500">-{deletions}</span>}
-			</span>
-		</button>
-	)
-})
-
-// ============================================================
 // Per-file diff section
 // ============================================================
 
 interface FileDiffSectionProps {
 	diff: WorkspacePatchFile
 	diffStyle: DiffStyle
+	wordWrap: boolean
+	ignoreWhitespace: boolean
 	collapsed: boolean
+	loadError?: string | null
 	onToggle: (file: string) => void
 }
 
 const FileDiffSection = memo(function FileDiffSection({
 	diff,
 	diffStyle,
+	wordWrap,
+	ignoreWhitespace,
 	collapsed,
+	loadError,
 	onToggle,
 }: FileDiffSectionProps) {
 	const generated = isGeneratedFile(diff.file)
 	const large = isLargeDiff(diff)
 	const [loadLargeDiff, setLoadLargeDiff] = useState(!large)
+
+	const fileName = diff.file.split(/[/\\]/).pop() || diff.file
+	const hasSides = diff.oldText != null || diff.newText != null
+	const gitFileDiff = useMemo(() => {
+		if (!diff.patch || !hasSides) return null
+		return buildExpandableGitFileDiff({
+			patch: diff.patch,
+			fileName,
+			oldText: diff.oldText,
+			newText: diff.newText,
+		})
+	}, [diff.newText, diff.oldText, diff.patch, fileName, hasSides])
 
 	// Per-component options (only non-pool-controlled settings).
 	// theme and lineDiffType are managed by the WorkerPoolManager.
@@ -786,8 +1170,14 @@ const FileDiffSection = memo(function FileDiffSection({
 			diffStyle: diffStyle as "unified" | "split",
 			disableFileHeader: true,
 			expandUnchanged: false,
+			overflow: (wordWrap ? "wrap" : "scroll") as "wrap" | "scroll",
+			unsafeCSS: REVIEW_DIFF_UNSAFE_CSS,
+			parseDiffOptions: {
+				stripTrailingCr: true,
+				ignoreWhitespace,
+			},
 		}),
-		[diffStyle],
+		[diffStyle, ignoreWhitespace, wordWrap],
 	)
 
 	const handleToggle = useCallback(() => onToggle(diff.file), [diff.file, onToggle])
@@ -807,12 +1197,25 @@ const FileDiffSection = memo(function FileDiffSection({
 				/>
 			)
 		} else {
-			// Worker pool renders plain text synchronously, then streams in
-			// syntax highlighting from the background -- no manual queue needed.
+			// Prefer git patch + sides (hunks match numstat, expand still works).
+			// Fall back to MultiFileDiff (EOL/whitespace normalized) or PatchDiff.
 			body = (
-				<div className="overflow-x-auto">
-					{diff.patch ? (
+				<div className={cn(wordWrap ? "overflow-x-hidden" : "overflow-x-auto", "overflow-y-hidden")}>
+					{gitFileDiff ? (
+						<FileDiff options={options} fileDiff={gitFileDiff} />
+					) : hasSides ? (
+						<MultiFileDiff
+							options={options}
+							oldFile={{ name: fileName, contents: diff.oldText ?? "" }}
+							newFile={{ name: fileName, contents: diff.newText ?? "" }}
+						/>
+					) : diff.patch ? (
 						<PatchDiff options={options} patch={diff.patch} />
+					) : diff.patchPending && !loadError ? (
+						<div className="flex items-center gap-1.5 bg-muted/10 px-4 py-5 text-xs text-muted-foreground">
+							<Loader2Icon className="size-3.5 animate-spin" />
+							<span>Loading diff…</span>
+						</div>
 					) : (
 						<MetadataOnlyPlaceholder warnings={diff.warnings} />
 					)}
@@ -827,7 +1230,6 @@ const FileDiffSection = memo(function FileDiffSection({
 				file={diff.file}
 				additions={diff.additions}
 				deletions={diff.deletions}
-				status={diff.status}
 				collapsed={collapsed}
 				onToggle={handleToggle}
 				isLarge={large && !loadLargeDiff}
@@ -897,7 +1299,6 @@ const FileDiffHeader = memo(function FileDiffHeader({
 	file,
 	additions,
 	deletions,
-	status,
 	collapsed,
 	onToggle,
 	isLarge,
@@ -907,7 +1308,6 @@ const FileDiffHeader = memo(function FileDiffHeader({
 	file: string
 	additions: number
 	deletions: number
-	status?: "added" | "deleted" | "modified"
 	collapsed: boolean
 	onToggle: () => void
 	isLarge?: boolean
@@ -946,43 +1346,22 @@ const FileDiffHeader = memo(function FileDiffHeader({
 						LARGE
 					</span>
 				)}
-				<span className="flex items-center gap-0.5 text-green-500">
-					<PlusIcon className="size-2.5" aria-hidden="true" />
-					{additions}
-				</span>
-				<span className="flex items-center gap-0.5 text-red-500">
-					<MinusIcon className="size-2.5" aria-hidden="true" />
-					{deletions}
-				</span>
-				{status && <StatusBadge status={status} />}
+				{additions > 0 || deletions > 0 ? (
+					<>
+						<span className="flex items-center gap-0.5 text-green-500">
+							<PlusIcon className="size-2.5" aria-hidden="true" />
+							{additions}
+						</span>
+						<span className="flex items-center gap-0.5 text-red-500">
+							<MinusIcon className="size-2.5" aria-hidden="true" />
+							{deletions}
+						</span>
+					</>
+				) : null}
 			</span>
 		</button>
 	)
 })
-
-// ============================================================
-// Status badge
-// ============================================================
-
-const STATUS_CONFIG = {
-	added: { label: "A", className: "bg-green-500/15 text-green-500" },
-	deleted: { label: "D", className: "bg-red-500/15 text-red-500" },
-	modified: { label: "M", className: "bg-blue-500/15 text-blue-500" },
-} as const
-
-function StatusBadge({ status }: { status: "added" | "deleted" | "modified" }) {
-	const c = STATUS_CONFIG[status]
-	return (
-		<span
-			className={cn(
-				"inline-flex size-4 items-center justify-center rounded text-[10px] font-bold leading-none",
-				c.className,
-			)}
-		>
-			{c.label}
-		</span>
-	)
-}
 
 // ============================================================
 // Empty state
@@ -997,26 +1376,28 @@ function EmptyState({
 	view: WorkspaceChangeView | null
 	error: string | null
 }) {
-	const scopeLabel = WORKSPACE_CHANGE_SCOPES.find((item) => item.scope === scope)?.label ?? "Changes"
+	const label = scopeLabel(scope)
+	const timedOut = Boolean(error?.toLowerCase().includes("timed out"))
 	const title = error
-		? "Unable to load changes"
+		? timedOut
+			? "Changes took too long"
+			: "Unable to load changes"
 		: view?.status === "unsupported"
-			? `${scopeLabel} changes unavailable`
-			: "No changes yet"
+			? `${label} unavailable`
+			: "No changes"
 	const detail = error
-		? error
+		? timedOut
+			? "Try Uncommitted or Staged, or refresh."
+			: error
 		: view?.status === "unsupported"
 			? (view.warnings[0] ?? "This workspace does not support that change scope")
-			: "File changes will appear here as the agent works"
+			: "Edits will show up here as the agent works."
 	return (
-		<div className="flex flex-col items-center justify-center gap-3 py-16">
-			<div className="flex size-10 items-center justify-center rounded-lg border border-border/50 bg-muted/30">
-				<FileIcon className="size-4 text-muted-foreground" />
-			</div>
-			<div className="text-center">
-				<p className="text-sm font-medium text-foreground">{title}</p>
-				<p className="mt-1 text-xs text-muted-foreground">{detail}</p>
-			</div>
+		<div className="flex flex-col items-center justify-center gap-2 px-6 py-20">
+			<p className="text-[13px] font-medium text-foreground/90">{title}</p>
+			<p className="max-w-[220px] text-center text-[12px] leading-relaxed text-muted-foreground">
+				{detail}
+			</p>
 		</div>
 	)
 }

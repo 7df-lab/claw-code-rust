@@ -17,7 +17,7 @@ use super::ids::{ItemId, SessionId, TurnId};
 use super::item::{
     ApprovalDecision, ApprovalDecisionKind, ApprovalScope, ApprovalTarget, CompactionTrigger,
     ContextUsage, ExecOrigin, ExecutionMode, FileChangeEntry, FileChangeKind, Item, ItemEnvelope,
-    ItemState, PlanEntry, PlanStepStatus, ToolSource, UserInput, UserMessageEntry,
+    ItemState, ToolSource, UserInput, UserMessageEntry,
 };
 use super::model::ModelBinding;
 use crate::protocol::ExecCommandSource;
@@ -66,13 +66,10 @@ pub fn project_wire_item(
         }
         ItemKind::Plan => {
             let text = payload_text(payload)?;
-            // Same caveat as the rollout projector: the legacy plan is one
-            // rendered text blob, preserved verbatim in a single entry.
+            // Structured `update_plan` JSON expands into one entry per step;
+            // Proposed Plan markdown stays a single completed entry.
             Some(Item::Plan {
-                entries: vec![PlanEntry {
-                    step: text,
-                    status: PlanStepStatus::Completed,
-                }],
+                entries: crate::native::plan_parse::plan_entries_from_plan_text_or_single(text),
             })
         }
         ItemKind::ToolCall => {
@@ -808,11 +805,7 @@ pub fn typed_item_notification_from_server_event(
                 .iter()
                 .map(|step| crate::native::item::PlanEntry {
                     step: step.step.clone(),
-                    status: match step.status.as_str() {
-                        "in_progress" => crate::native::item::PlanStepStatus::InProgress,
-                        "completed" => crate::native::item::PlanStepStatus::Completed,
-                        _ => crate::native::item::PlanStepStatus::Pending,
-                    },
+                    status: crate::native::plan_parse::plan_step_status_from_str(&step.status),
                 })
                 .collect();
             let now = Utc::now();
@@ -1001,6 +994,7 @@ mod tests {
 
     use super::*;
     use crate::native::item::ApprovalDecisionSource;
+    use crate::native::item::{PlanEntry, PlanStepStatus};
     use crate::parse_command::ParsedCommand;
     use crate::{ApprovalRequestPayload, PendingServerRequestContext, ServerRequestKind};
 
@@ -1117,6 +1111,32 @@ mod tests {
                     step: "1. do\n2. done".into(),
                     status: PlanStepStatus::Completed,
                 }],
+            })
+        );
+    }
+
+    #[test]
+    fn update_plan_json_projects_as_structured_entries() {
+        let item = project(
+            ItemKind::Plan,
+            serde_json::json!({
+                "title": "Plan",
+                "text": r#"{"explanation":"chores","plan":[{"step":"买酱油","status":"completed"},{"step":"充电费","status":"pending"}]}"#
+            }),
+        );
+        assert_eq!(
+            item,
+            Some(Item::Plan {
+                entries: vec![
+                    PlanEntry {
+                        step: "买酱油".into(),
+                        status: PlanStepStatus::Completed,
+                    },
+                    PlanEntry {
+                        step: "充电费".into(),
+                        status: PlanStepStatus::Pending,
+                    },
+                ],
             })
         );
     }

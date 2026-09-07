@@ -190,6 +190,7 @@ mod tests {
         let result = WriteHandler::new()
             .handle(
                 ToolContext {
+                    output_store: None,
                     tool_call_id: crate::invocation::ToolCallId("call-1".to_string()),
                     session_id: "session-1".to_string(),
                     turn_id: Some("turn-1".to_string()),

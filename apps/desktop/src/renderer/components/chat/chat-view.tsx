@@ -1,3 +1,5 @@
+import { useTurnRecovery } from "../../hooks/use-turn-recovery"
+import { TurnRecoveryPanel } from "./turn-recovery-panel"
 import {
 	Conversation,
 	ConversationContent,
@@ -795,7 +797,8 @@ export function ChatView({
 	composerInsetPx,
 	sideQuestionHandlerRef,
 }: ChatViewProps) {
-	const isWorking = agent.status === "running"
+	const recoveryState = useTurnRecovery(agent.sessionId, agent.directory, agent.status)
+	const isWorking = agent.status === "running" && !recoveryState.recovery
 	const settingsOverlayOpen = useAtomValue(settingsOverlayOpenAtom)
 
 	useEffect(() => {
@@ -1204,7 +1207,7 @@ export function ChatView({
 					<ScrollBridge scrollRef={scrollRef} />
 					<ConversationContent
 						scrollClassName="scrollbar-chat"
-						className="gap-12 px-6 pt-4 pb-[calc(var(--chat-composer-inset)+1rem)] sm:px-10 sm:pt-8 sm:pb-[calc(var(--chat-composer-inset)+1.5rem)] lg:px-12"
+						className="gap-12 px-6 pt-4 pb-4 sm:px-10 sm:pt-8 sm:pb-6 lg:px-12"
 					>
 						<div className={cn(contentWidthClass, "animate-in fade-in space-y-12 duration-150")}>
 							<LoadEarlierOnScroll
@@ -1270,7 +1273,7 @@ export function ChatView({
 							)}
 						</div>
 					</ConversationContent>
-					<ConversationScrollButton className="!bottom-[calc(var(--chat-composer-inset)+1rem)]" />
+					<ConversationScrollButton className="!bottom-3" />
 				</Conversation>
 
 				{/* Top fade */}
@@ -1283,7 +1286,7 @@ export function ChatView({
 				<div
 					data-slot="scroll-fade"
 					aria-hidden="true"
-					className="pointer-events-none absolute inset-x-0 bottom-[var(--chat-composer-inset)] z-10 h-6 bg-gradient-to-t from-background/30 to-transparent"
+					className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-background/30 to-transparent"
 				/>
 			</div>
 			) : null}
@@ -1298,6 +1301,7 @@ export function ChatView({
 						turns={turns}
 						isConnected={isConnected}
 						isWorking={isWorking}
+						recoveryState={recoveryState}
 						onSendMessage={onSendMessage}
 						onStop={onStop}
 						providers={providers}
@@ -1330,6 +1334,7 @@ interface ChatInputSectionProps {
 	turns: ChatTurn[]
 	isConnected: boolean
 	isWorking: boolean
+	recoveryState?: ReturnType<typeof useTurnRecovery>
 	onSendMessage?: ChatViewProps["onSendMessage"]
 	onStop?: ChatViewProps["onStop"]
 	providers?: ProvidersData | null
@@ -1359,6 +1364,7 @@ interface ChatInputSectionProps {
 }
 
 export function ChatInputSection({
+	recoveryState,
 	agent,
 	turns,
 	isConnected,
@@ -2027,7 +2033,7 @@ export function ChatInputSection({
 				sending,
 				sessionId: agent.sessionId,
 			})
-			if (!text.trim() || (!onSendMessage && !activeTrigger) || sending) {
+			if (recoveryState?.recovery || recoveryState?.pending || !text.trim() || (!onSendMessage && !activeTrigger) || sending) {
 				log.warn("handleSend bailed", {
 					emptyText: !text.trim(),
 					noOnSendMessage: !onSendMessage,
@@ -2118,6 +2124,7 @@ export function ChatInputSection({
 			}
 		},
 		[
+			recoveryState,
 			onSendMessage,
 			sending,
 			agent,
@@ -2143,7 +2150,7 @@ export function ChatInputSection({
 			: "Queue a follow-up…"
 		: "What would you like to do?"
 
-	const canSend = isConnected && !sending
+	const canSend = isConnected && !sending && !recoveryState?.recovery && !recoveryState?.pending
 
 	const handleStop = useCallback(() => {
 		if (onStop && isWorking) {
@@ -2388,7 +2395,8 @@ export function ChatInputSection({
 											handleSend(message.text, message.files.length > 0 ? message.files : undefined)
 									}}
 								>
-									<ComposerStatusStack
+									{recoveryState && <TurnRecoveryPanel state={recoveryState} />}
+                                    <ComposerStatusStack
 										goal={activeGoal}
 										goalAction={goalAction}
 										queueItems={queueItems}

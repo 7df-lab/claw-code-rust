@@ -33,7 +33,7 @@ export interface ResolveWindowChromeOptions {
 	platform?: NodeJS.Platform
 }
 
-const TITLE_BAR_OVERLAY_HEIGHT = 40
+const TITLE_BAR_OVERLAY_HEIGHT = 32
 const TITLE_BAR_OVERLAY_COLOR = "#00000000"
 const TITLE_BAR_OVERLAY_DARK_SYMBOL_COLOR = "#111111"
 const TITLE_BAR_OVERLAY_LIGHT_SYMBOL_COLOR = "#f4f4f5"

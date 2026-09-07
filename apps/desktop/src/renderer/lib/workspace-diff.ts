@@ -15,7 +15,28 @@ export type WorkspacePatchFile = {
 	binary: boolean
 	diffTruncated: boolean
 	patch: string | null
+	/** True while Summary list is shown and Full patch has not arrived yet. */
+	patchPending: boolean
+	/** Full previous-side text for MultiFileDiff; null when unavailable. */
+	oldText: string | null
+	/** Full new-side text for MultiFileDiff; null when unavailable. */
+	newText: string | null
 	warnings: string[]
+}
+
+/** Normalize path separators so Windows PathBuf keys match git patch paths. */
+export function normalizeWorkspacePath(path: string): string {
+	return path.replace(/\\/g, "/")
+}
+
+/** Header-only stubs (no hunks) are not real patches — keep lazy-loading. */
+export function isCompletePatch(patch: string | null | undefined): boolean {
+	if (!patch) return false
+	return (
+		/^@@ /m.test(patch) ||
+		/Binary files /.test(patch) ||
+		/GIT binary patch/.test(patch)
+	)
 }
 
 export function numberFromProtocol(value: unknown): number {
@@ -47,29 +68,36 @@ export function workspacePatchFilesFromView(
 	if (!view) return []
 	const patches = patchesByPath(view.unified_diff ?? "")
 	return view.files.map((file) => {
-		const path = String(file.path)
+		const path = normalizeWorkspacePath(String(file.path))
+		const binary = Boolean(file.binary)
+		const patch = patches.get(path) ?? null
+		const complete = isCompletePatch(patch)
 		return {
 			file: path,
 			status: reviewStatus(file.status),
 			rawStatus: file.status,
 			additions: numberFromProtocol(file.additions),
 			deletions: numberFromProtocol(file.deletions),
-			binary: Boolean(file.binary),
+			binary,
 			diffTruncated: Boolean(file.diff_truncated),
-			patch: patches.get(path) ?? null,
+			patch: complete ? patch : null,
+			// Missing or header-only stub → still waiting on path-scoped Full.
+			patchPending: !binary && !complete && file.old_text == null && file.new_text == null,
+			oldText: typeof file.old_text === "string" ? file.old_text : null,
+			newText: typeof file.new_text === "string" ? file.new_text : null,
 			warnings: warningsForFile(view, file),
 		}
 	})
 }
 
 function warningsForFile(
-	view: WorkspaceChangeView,
+	_view: WorkspaceChangeView,
 	file: WorkspaceChangedFile,
 ): string[] {
 	const warnings: string[] = []
 	if (file.binary) warnings.push("Binary file")
 	if (file.diff_truncated) warnings.push("Diff truncated")
-	if (!view.unified_diff) warnings.push("No text diff available")
+	// Missing unified_diff is normal for Summary responses (patches upgrade later).
 	return warnings
 }
 
@@ -115,5 +143,5 @@ function pathFromPatch(patch: string): string | null {
 }
 
 function cleanPath(path: string): string {
-	return path.replace(/^"|"$/g, "")
+	return normalizeWorkspacePath(path.replace(/^"|"$/g, ""))
 }

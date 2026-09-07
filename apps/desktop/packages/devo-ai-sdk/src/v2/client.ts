@@ -234,6 +234,11 @@ export type WorkspaceChangesReadOptions = {
 	turnID?: string
 	diffDetail?: WorkspaceDiffDetail
 	maxDiffBytes?: number | bigint
+	ignoreWhitespace?: boolean
+	/** Relative paths for expand-on-demand Full (avoids whole-tree patch). */
+	paths?: string[]
+	/** Request old/new file text for MultiFileDiff expand-up/down. */
+	includeFileSides?: boolean
 }
 
 export type WorkspaceChangesUpdatedEventProperties = {
@@ -283,6 +288,122 @@ function renderedNativeItemKey(sessionId: string, itemId: string): string {
 
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
+}
+
+/** Normalize wire/tool plan status onto the UI snake_case vocabulary. */
+function normalizePlanStatus(status: string): string {
+	switch (status) {
+		case "completed":
+			return "completed"
+		case "in_progress":
+		case "inProgress":
+			return "in_progress"
+		case "cancelled":
+			return "cancelled"
+		default:
+			return "pending"
+	}
+}
+
+type MappedPlanEntry = { content: string; status: string }
+
+function mapPlanEntry(entry: unknown): MappedPlanEntry | null {
+	const value = objectRecord(entry) ?? {}
+	const content = String(value.step ?? value.content ?? value.title ?? "").trim()
+	if (!content) return null
+	return {
+		content,
+		status: normalizePlanStatus(String(value.status ?? "pending")),
+	}
+}
+
+/**
+ * Expand a single Plan entry when the server historically stored the whole
+ * `update_plan` output as one `step` (JSON object, JSON array, or Mixed text
+ * with a trailing pretty-printed plan array). Structured entries pass through.
+ */
+function expandPlanEntries(entries: unknown[]): MappedPlanEntry[] {
+	const mapped = entries.map(mapPlanEntry).filter((entry): entry is MappedPlanEntry => entry !== null)
+	if (mapped.length !== 1) return mapped
+	const only = mapped[0]
+	const expanded = expandPlanEntriesFromBlob(only.content)
+	return expanded.length > 0 ? expanded : mapped
+}
+
+function expandPlanEntriesFromBlob(content: string): MappedPlanEntry[] {
+	const trimmed = content.trim()
+	if (!trimmed) return []
+
+	const tryParsePlan = (value: unknown): MappedPlanEntry[] => {
+		const plan = Array.isArray(value)
+			? value
+			: Array.isArray(objectRecord(value)?.plan)
+				? (objectRecord(value)?.plan as unknown[])
+				: null
+		if (!plan) return []
+		return plan.map(mapPlanEntry).filter((entry): entry is MappedPlanEntry => entry !== null)
+	}
+
+	if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+		try {
+			return tryParsePlan(JSON.parse(trimmed) as unknown)
+		} catch {
+			// Fall through to Mixed-text extraction.
+		}
+	}
+
+	// Mixed tool text: "<explanation>\n\n[ { status, step }, ... ]"
+	const arrayStart = trimmed.indexOf("\n[")
+	if (arrayStart >= 0) {
+		const maybeArray = trimmed.slice(arrayStart + 1).trim()
+		if (maybeArray.startsWith("[")) {
+			try {
+				return tryParsePlan(JSON.parse(maybeArray) as unknown)
+			} catch {
+				return []
+			}
+		}
+	}
+
+	// Embedded update_plan-shaped objects inside prose.
+	if (
+		/"status"\s*:\s*"(?:pending|completed|in_progress|inProgress|cancelled)"/.test(trimmed) &&
+		/"(?:step|content)"\s*:/.test(trimmed)
+	) {
+		const objectStart = trimmed.indexOf("{")
+		const arrayStartInline = trimmed.indexOf("[")
+		const start =
+			objectStart >= 0 && (arrayStartInline < 0 || objectStart < arrayStartInline)
+				? objectStart
+				: arrayStartInline
+		if (start >= 0) {
+			try {
+				return tryParsePlan(JSON.parse(trimmed.slice(start)) as unknown)
+			} catch {
+				return []
+			}
+		}
+	}
+
+	return []
+}
+
+/**
+ * Proposed Plan is Plan-mode markdown (`<proposed_plan>`). The `update_plan`
+ * checklist must never use that chrome — even when a legacy blob was stored as
+ * one multiline entry.
+ */
+function isProposedPlanEntries(mapped: MappedPlanEntry[]): boolean {
+	if (mapped.length !== 1) return false
+	const only = mapped[0]
+	if (only.status === "pending" || only.status === "in_progress") return false
+	if (expandPlanEntriesFromBlob(only.content).length > 0) return false
+	const content = only.content
+	if (!content.includes("\n")) return false
+	const trimmed = content.trim()
+	if (trimmed.startsWith("{") || trimmed.startsWith("[")) return false
+	// Plan-mode docs are markdown (headings) or multi-paragraph prose.
+	return /^#{1,6}\s/m.test(content) || content.includes("\n\n")
 }
 
 const KNOWN_PERMISSION_SCOPES: PermissionResponse[] = [
@@ -1554,6 +1675,15 @@ class NativeClient {
 				if (params.maxDiffBytes !== undefined) {
 					wireParams.maxDiffBytes = Number(params.maxDiffBytes)
 				}
+				if (params.ignoreWhitespace !== undefined) {
+					wireParams.ignoreWhitespace = params.ignoreWhitespace
+				}
+				if (params.paths !== undefined) {
+					wireParams.paths = params.paths
+				}
+				if (params.includeFileSides !== undefined) {
+					wireParams.includeFileSides = params.includeFileSides
+				}
 				const canonical = (await this.requestCanonical(
 					"workspace/changes/read",
 					wireParams,
@@ -2144,7 +2274,29 @@ class NativeClient {
 		return this.referenceSearchSession
 	}
 
+    private recoveryListeners = new Set<() => void>()
+
+    readonly turnRecovery = {
+        read: async (sessionId: string) => this.request("turn/recovery/read", { sessionId }),
+        resume: async (sessionId: string, recovery: { turnId: string; revision: number }, idempotencyKey: string) => {
+            const result = await this.request("turn/resume", {
+                sessionId, expectedTurnId: recovery.turnId, recoveryRevision: recovery.revision, idempotencyKey,
+            })
+            return result
+        },
+        cancel: async (sessionId: string) => this.session.abort({ sessionID: sessionId }),
+        subscribe: (listener: () => void) => {
+            this.recoveryListeners.add(listener)
+            return () => { this.recoveryListeners.delete(listener) }
+        },
+    }
+
 	private handleTransportEvent(event: DevoNativeTransportEvent): void {
+        if (event.type === "closed" || (event.type === "notification" &&
+            (event.method?.startsWith("turn/") || event.method === "session/metadataUpdated"))) {
+            for (const listener of this.recoveryListeners) listener()
+        }
+
 		if (event.type === "closed") {
 			if (this.transport) {
 				initializePromises.delete(this.transport)
@@ -2303,7 +2455,7 @@ class NativeClient {
 			}
 			return true
 		}
-		if (method === "turn/started" || method === "turn/statusChanged" || method === "turn/completed") {
+		if ((method === "turn/started" || method === "turn/resumed") || method === "turn/statusChanged" || method === "turn/completed") {
 			const turn = objectRecord(value.turn)
 			const turnId = String(turn?.id ?? value.turnId ?? "")
 			const sessionId = String(turn?.sessionId ?? this.turnSessions.get(turnId) ?? "")
@@ -2312,7 +2464,7 @@ class NativeClient {
 			const directory = this.sessionDirectories.get(sessionId) ?? this.options.directory ?? defaultCwd()
 			const turnStatus = String(turn?.status ?? value.status ?? "")
 			const terminal = method === "turn/completed" || ["completed", "interrupted", "failed"].includes(turnStatus)
-			if (method === "turn/started" && turnId) {
+			if ((method === "turn/started" || method === "turn/resumed") && turnId) {
 				this.activeTurnIds.set(sessionId, turnId)
 				this.emit(directory, {
 					type: "session.activeTurn",
@@ -2327,7 +2479,7 @@ class NativeClient {
 				parseTimestampMs(turn?.updatedAt) ??
 				Date.now()
 			// Start + terminal only: statusChanged mid-turn would spam session.updated.
-			if (method === "turn/started" || terminal) {
+			if ((method === "turn/started" || method === "turn/resumed") || terminal) {
 				this.touchNativeSessionActivity(sessionId, activityAt)
 			}
 			if (terminal) {
@@ -3225,19 +3377,14 @@ class NativeClient {
 		turnId: string,
 	): void {
 		const entries = Array.isArray(item.entries) ? item.entries : []
-		const mapped = entries.map((entry) => {
-			const value = objectRecord(entry) ?? {}
-			return {
-				content: String(value.step ?? value.content ?? value.title ?? ""),
-				status: String(value.status ?? "pending"),
-			}
-		})
+		const mapped = expandPlanEntries(entries)
 		if (mapped.length === 0) return
 		this.emit(directory, {
 			type: "todo.updated",
 			properties: { sessionID: sessionId, todos: mapped },
 		})
-		const proposed = mapped.length === 1 && mapped[0].content.includes("\n")
+		// Proposed Plan = Plan-mode markdown only. update_plan is always a checklist.
+		const proposed = isProposedPlanEntries(mapped)
 		this.replaceText(sessionId, directory, "assistant", {
 			messageId: itemId,
 			content: {

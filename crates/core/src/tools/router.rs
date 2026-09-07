@@ -44,8 +44,17 @@ pub struct ToolCall {
     pub input: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolOutputKind {
+    #[default]
+    Ordinary,
+    ArtifactPage,
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolCallResult {
+    pub output_artifacts: Vec<devo_tools::output_store::OutputArtifact>,
+    pub output_kind: ToolOutputKind,
     pub tool_use_id: String,
     pub content: ToolContent,
     pub is_error: bool,
@@ -55,6 +64,8 @@ pub struct ToolCallResult {
 impl ToolCallResult {
     pub fn success(tool_use_id: &str, content: ToolContent) -> Self {
         ToolCallResult {
+            output_artifacts: Vec::new(),
+            output_kind: ToolOutputKind::Ordinary,
             tool_use_id: tool_use_id.to_string(),
             content,
             is_error: false,
@@ -64,6 +75,8 @@ impl ToolCallResult {
 
     pub fn error(tool_use_id: &str, message: &str) -> Self {
         ToolCallResult {
+            output_artifacts: Vec::new(),
+            output_kind: ToolOutputKind::Ordinary,
             tool_use_id: tool_use_id.to_string(),
             content: ToolContent::Text(message.to_string()),
             is_error: true,
@@ -274,6 +287,26 @@ impl ToolRuntime {
             }
         };
 
+        if tool_name == "read"
+            && let Some(store) = &self.execution_options.output_store
+            && let Some(path) = call.input["filePath"].as_str()
+        {
+            match store.read(Path::new(path), &call.input) {
+                Ok(Some(text)) => {
+                    let mut result = ToolCallResult::success(&call.id, ToolContent::Text(text));
+                    result.output_kind = ToolOutputKind::ArtifactPage;
+                    return result;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return ToolCallResult::error(
+                        &call.id,
+                        &format!("output artifact read failed: {error}"),
+                    );
+                }
+            }
+        }
+
         let mut sandbox_profile = match &self.context.sandbox_profile_live {
             Some(live) => live
                 .lock()
@@ -344,6 +377,7 @@ impl ToolRuntime {
         info!(tool = %tool_name, id = %call.id, "executing tool");
 
         let build_ctx = |sandbox_profile: Option<String>| crate::contracts::ToolContext {
+            output_store: self.execution_options.output_store.clone(),
             tool_call_id: crate::invocation::ToolCallId(call.id.clone()),
             session_id: self.context.session_id.clone(),
             turn_id: self.context.turn_id.clone(),
@@ -460,6 +494,8 @@ impl ToolRuntime {
                         | crate::contracts::ToolTerminalStatus::BlockedByMode { .. }
                 );
                 let result = ToolCallResult {
+                    output_artifacts: output.output_artifacts,
+                    output_kind: ToolOutputKind::Ordinary,
                     tool_use_id: call.id.clone(),
                     content,
                     is_error,
@@ -743,6 +779,7 @@ impl std::fmt::Debug for ToolRuntimeContext {
 
 #[derive(Clone)]
 pub struct ToolExecutionOptions {
+    pub output_store: Option<Arc<devo_tools::output_store::OutputStore>>,
     pub budgets: ToolBudgets,
     pub cancel_token: CancellationToken,
     pub on_tool_execution_start: Option<ExecutionStartCallbackArc>,
@@ -767,6 +804,7 @@ impl std::fmt::Debug for ToolExecutionOptions {
 impl Default for ToolExecutionOptions {
     fn default() -> Self {
         Self {
+            output_store: None,
             budgets: ToolBudgets {
                 output_limit_bytes: 32 * 1024,
                 wall_time_limit_ms: Some(6_000),
@@ -921,7 +959,7 @@ fn command_prefix_for_tool_input(
     tool_name: &str,
     input: &serde_json::Value,
 ) -> Option<Vec<String>> {
-    if tool_name == "exec_command"
+    if crate::tools::tool_accepts_sandbox_escalation_fields(tool_name)
         && let Some(prefix_rule) = input.get("prefix_rule").and_then(prefix_rule_from_value)
     {
         if crate::tools::exec_policy_amend::is_banned_prefix_suggestion(&prefix_rule) {
@@ -2039,32 +2077,44 @@ mod tests {
         assert_eq!(command_prefix("cargo fmt && cargo test"), None);
     }
 
+    /// Trace: L2-DES-SAFETY-002
+    /// Verifies: prefix_rule on exec_command, shell_command, and bash overrides the derived command prefix.
     #[test]
-    fn exec_command_prefix_rule_overrides_derived_prefix() {
-        assert_eq!(
-            command_prefix_for_tool_input(
-                "exec_command",
-                &serde_json::json!({
-                    "cmd": "git add -A",
-                    "prefix_rule": ["cargo", "test"]
-                })
-            ),
-            Some(vec!["cargo".to_string(), "test".to_string()])
-        );
+    fn shell_family_prefix_rule_overrides_derived_prefix() {
+        for tool_name in ["exec_command", "shell_command", "bash"] {
+            assert_eq!(
+                command_prefix_for_tool_input(
+                    tool_name,
+                    &serde_json::json!({
+                        "cmd": "git add -A",
+                        "command": "git add -A",
+                        "prefix_rule": ["cargo", "test"]
+                    })
+                ),
+                Some(vec!["cargo".to_string(), "test".to_string()]),
+                "{tool_name}"
+            );
+        }
     }
 
+    /// Trace: L2-DES-SAFETY-002
+    /// Verifies: a banned prefix_rule is not offered for exec_command, shell_command, or bash.
     #[test]
-    fn exec_command_banned_prefix_rule_is_not_offered() {
-        assert_eq!(
-            command_prefix_for_tool_input(
-                "exec_command",
-                &serde_json::json!({
-                    "cmd": "git status",
-                    "prefix_rule": ["git"]
-                })
-            ),
-            None
-        );
+    fn shell_family_banned_prefix_rule_is_not_offered() {
+        for tool_name in ["exec_command", "shell_command", "bash"] {
+            assert_eq!(
+                command_prefix_for_tool_input(
+                    tool_name,
+                    &serde_json::json!({
+                        "cmd": "git status",
+                        "command": "git status",
+                        "prefix_rule": ["git"]
+                    })
+                ),
+                None,
+                "{tool_name}"
+            );
+        }
     }
 
     fn strs(tokens: &[&str]) -> Vec<String> {
@@ -3043,6 +3093,7 @@ deny = ["/etc/passwd"]
             PermissionChecker::always_allow(),
             ToolRuntimeContext::default(),
             ToolExecutionOptions {
+                output_store: None,
                 budgets: ToolBudgets {
                     output_limit_bytes: 7,
                     wall_time_limit_ms: Some(11),
@@ -3100,6 +3151,7 @@ deny = ["/etc/passwd"]
             PermissionChecker::always_allow(),
             ToolRuntimeContext::default(),
             ToolExecutionOptions {
+                output_store: None,
                 budgets: ToolBudgets {
                     output_limit_bytes: 7,
                     wall_time_limit_ms: Some(11),

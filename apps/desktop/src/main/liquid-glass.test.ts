@@ -30,7 +30,7 @@ describe("resolveWindowChrome", () => {
 				titleBarOverlay: {
 					color: "#00000000",
 					symbolColor: "#f4f4f5",
-					height: 40,
+					height: 32,
 				},
 			},
 		})
@@ -53,7 +53,7 @@ describe("resolveWindowChrome", () => {
 				titleBarOverlay: {
 					color: "#00000000",
 					symbolColor: "#f4f4f5",
-					height: 40,
+					height: 32,
 				},
 			},
 		})
@@ -76,7 +76,7 @@ describe("resolveWindowChrome", () => {
 				titleBarOverlay: {
 					color: "#00000000",
 					symbolColor: "#f4f4f5",
-					height: 40,
+					height: 32,
 				},
 			},
 		})
@@ -102,7 +102,7 @@ describe("resolveWindowChrome", () => {
 		expect(resolveTitleBarOverlay(false)).toEqual({
 			color: "#00000000",
 			symbolColor: "#111111",
-			height: 40,
+			height: 32,
 		})
 	})
 

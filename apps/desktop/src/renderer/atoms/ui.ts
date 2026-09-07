@@ -1,6 +1,7 @@
 import { atom } from "jotai"
 import { atomFamily, atomWithStorage } from "jotai/utils"
-import type { FileDiff } from "../lib/types"
+import type { FileDiff, WorkspaceChangeScope } from "../lib/types"
+import { REVIEW_PANEL_DEFAULT_WIDTH_PX } from "../lib/review-panel-width"
 
 export const commandPaletteOpenAtom = atom(false)
 
@@ -89,6 +90,54 @@ export const sessionAtBottomFamily = atomFamily((sessionId: string) =>
 /** Whether the review panel is open (resets to closed on app start) */
 export const reviewPanelOpenAtom = atom(false)
 
+/** Kind of view hosted in a right-panel browser tab. */
+export type RightPanelTabKind = "changes" | "terminal"
+
+export type RightPanelTab = {
+	id: string
+	kind: RightPanelTabKind
+	title: string
+}
+
+export type RightPanelTabsState = {
+	tabs: RightPanelTab[]
+	activeId: string
+}
+
+const DEFAULT_CHANGES_TAB: RightPanelTab = {
+	id: "changes-main",
+	kind: "changes",
+	title: "Changes",
+}
+
+export const DEFAULT_RIGHT_PANEL_CHANGES_TAB = DEFAULT_CHANGES_TAB
+
+export const rightPanelTabsAtom = atom<RightPanelTabsState>({
+	tabs: [DEFAULT_CHANGES_TAB],
+	activeId: DEFAULT_CHANGES_TAB.id,
+})
+
+/** @deprecated Prefer rightPanelTabsAtom; kept for any leftover single-tab reads. */
+export type RightPanelTabId = RightPanelTabKind
+export const rightPanelTabAtom = atom(
+	(get) => {
+		const state = get(rightPanelTabsAtom)
+		return state.tabs.find((tab) => tab.id === state.activeId)?.kind ?? "changes"
+	},
+	(_get, set, kind: RightPanelTabKind) => {
+		set(rightPanelTabsAtom, (prev) => {
+			const existing = prev.tabs.find((tab) => tab.kind === kind)
+			if (existing) return { ...prev, activeId: existing.id }
+			const next: RightPanelTab = {
+				id: `${kind}-${Date.now().toString(36)}`,
+				kind,
+				title: kind === "changes" ? "Changes" : kind === "terminal" ? "Terminal" : kind,
+			}
+			return { tabs: [...prev.tabs, next], activeId: next.id }
+		})
+	},
+)
+
 /** Session-header context occupancy overlay (aligned to the conversation column). */
 export const contextUsageOpenAtom = atom(false)
 
@@ -119,12 +168,56 @@ export interface ReviewPanelSettings {
 	diffStyle: DiffStyle
 	/** Whether the review panel is expanded to full width */
 	expanded: boolean
+	/** User-resized panel width in pixels (ignored while expanded) */
+	widthPx: number
+	/** Server-side `--ignore-all-space` for git-backed scopes */
+	ignoreWhitespace: boolean
+	/** Wrap long diff lines instead of horizontal scrolling */
+	wordWrap: boolean
 }
 
 export const reviewPanelSettingsAtom = atomWithStorage<ReviewPanelSettings>(
 	"devo:review-panel-settings",
-	{ diffStyle: "unified", expanded: false },
+	{
+		diffStyle: "unified",
+		expanded: false,
+		widthPx: REVIEW_PANEL_DEFAULT_WIDTH_PX,
+		ignoreWhitespace: false,
+		wordWrap: false,
+	},
 )
+
+/**
+ * Per-workspace Changes UI (scope, expand toggles, find). Shared across
+ * sessions in the same project directory; survives panel hide / tab remounts.
+ */
+export type ReviewPanelWorkspaceUi = {
+	scope: WorkspaceChangeScope
+	baseBranch: string | null
+	/** Expanded/collapsed overrides keyed by scope, then file path. */
+	userTogglesByScope: Partial<Record<WorkspaceChangeScope, Record<string, boolean>>>
+	filterOpen: boolean
+	filterQuery: string
+}
+
+const DEFAULT_REVIEW_PANEL_WORKSPACE_UI: ReviewPanelWorkspaceUi = {
+	// Default to working-tree scope; lists load via Electron local git (IPC).
+	// "turn" still uses the Devo server (checkpoint baseline).
+	scope: "uncommitted",
+	baseBranch: null,
+	userTogglesByScope: {},
+	filterOpen: false,
+	filterQuery: "",
+}
+
+export const reviewPanelWorkspaceUiFamily = atomFamily((_directory: string) =>
+	atom<ReviewPanelWorkspaceUi>(DEFAULT_REVIEW_PANEL_WORKSPACE_UI),
+)
+
+/** @deprecated Use reviewPanelWorkspaceUiFamily — kept for any leftover imports. */
+export type ReviewPanelSessionUi = ReviewPanelWorkspaceUi
+/** @deprecated Use reviewPanelWorkspaceUiFamily */
+export const reviewPanelSessionUiFamily = reviewPanelWorkspaceUiFamily
 
 /** Per-session diff data from the Devo API */
 export const sessionDiffFamily = atomFamily((_sessionId: string) => atom<FileDiff[]>([]))

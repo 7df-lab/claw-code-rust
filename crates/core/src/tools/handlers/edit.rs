@@ -370,6 +370,7 @@ mod tests {
 
     fn ctx(root: &Path, ledger: Arc<FileReadLedger>) -> ToolContext {
         ToolContext {
+            output_store: None,
             tool_call_id: ToolCallId("call-1".to_string()),
             session_id: "session-1".to_string(),
             turn_id: Some("turn-1".to_string()),

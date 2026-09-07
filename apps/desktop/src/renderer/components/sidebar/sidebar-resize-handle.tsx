@@ -27,10 +27,20 @@ export function SidebarResizeHandle({
 }: SidebarResizeHandleProps) {
 	const { open } = useSidebar()
 	const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+	const latestWidthRef = useRef(width)
+	const rafRef = useRef<number | null>(null)
+
+	useEffect(() => {
+		latestWidthRef.current = width
+	}, [width])
 
 	const endDrag = useCallback(() => {
 		if (!dragRef.current) return
 		dragRef.current = null
+		if (rafRef.current != null) {
+			cancelAnimationFrame(rafRef.current)
+			rafRef.current = null
+		}
 		onResizingChange?.(false)
 		document.body.style.removeProperty("cursor")
 		document.body.style.removeProperty("user-select")
@@ -64,7 +74,13 @@ export function SidebarResizeHandle({
 			const next = clampSidebarWidth(drag.startWidth + (event.clientX - drag.startX), {
 				windowWidth: window.innerWidth,
 			})
-			onWidthChange(next)
+			latestWidthRef.current = next
+			// Coalesce to one React update per frame — sidebar reflow is heavier than the right rail.
+			if (rafRef.current != null) return
+			rafRef.current = requestAnimationFrame(() => {
+				rafRef.current = null
+				onWidthChange(latestWidthRef.current)
+			})
 		},
 		[onWidthChange],
 	)
@@ -74,9 +90,14 @@ export function SidebarResizeHandle({
 			if (event.currentTarget.hasPointerCapture(event.pointerId)) {
 				event.currentTarget.releasePointerCapture(event.pointerId)
 			}
+			if (rafRef.current != null) {
+				cancelAnimationFrame(rafRef.current)
+				rafRef.current = null
+				onWidthChange(latestWidthRef.current)
+			}
 			endDrag()
 		},
-		[endDrag],
+		[endDrag, onWidthChange],
 	)
 
 	const handleDoubleClick = useCallback(() => {
@@ -97,10 +118,17 @@ export function SidebarResizeHandle({
 			aria-valuenow={width}
 			data-slot="sidebar-resize-handle"
 			className={cn(
-				"absolute inset-y-0 z-40 w-3 -translate-x-1/2 cursor-col-resize touch-none bg-transparent",
+				// Hit target stays w-3; paint a thin center line so it matches the right rail
+				// and does not flood the Electron titlebar (handle starts below it).
+				"absolute bottom-0 z-30 w-3 -translate-x-1/2 cursor-col-resize touch-none bg-transparent",
+				"after:pointer-events-none after:absolute after:inset-y-0 after:left-1/2 after:w-0.5 after:-translate-x-1/2 after:rounded-full after:content-['']",
+				"hover:after:bg-primary/25 active:after:bg-primary/35",
 				className,
 			)}
-			style={{ left: "var(--sidebar-width)" }}
+			style={{
+				left: "var(--sidebar-width)",
+				top: "var(--devo-titlebar-height, 32px)",
+			}}
 			onPointerDown={handlePointerDown}
 			onPointerMove={handlePointerMove}
 			onPointerUp={handlePointerUp}

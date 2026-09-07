@@ -1,3 +1,4 @@
+mod turn_recovery;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
@@ -246,6 +247,7 @@ pub(crate) struct BottomPaneParams {
 }
 
 pub(crate) struct BottomPane {
+    recovery_panel: turn_recovery::TurnRecoveryPanel,
     composer: ChatComposer,
     view_stack: Vec<Box<dyn BottomPaneView>>,
     app_event_tx: AppEventSender,
@@ -298,6 +300,7 @@ impl BottomPane {
         let placeholder_text = composer_tip_placeholder(Duration::ZERO).unwrap_or(placeholder_text);
         composer.set_placeholder_text(placeholder_text.clone());
         let pane = Self {
+            recovery_panel: Default::default(),
             composer,
             view_stack: Vec::new(),
             app_event_tx,
@@ -367,11 +370,49 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_turn_recovery(
+        &mut self,
+        recovery: Option<devo_protocol::native::rpc_turn::TurnRecovery>,
+        error: Option<String>,
+    ) {
+        if recovery.is_some() {
+            self.status = None;
+            self.is_task_running = false;
+        }
+        self.recovery_panel = turn_recovery::TurnRecoveryPanel {
+            recovery,
+            error,
+            pending: false,
+        };
+        self.request_redraw();
+    }
+
     pub(crate) fn handle_key_event(&mut self, key: KeyEvent) -> InputResult {
         if !self.view_stack.is_empty() {
             return self.handle_view_key_event(key);
         }
 
+        if let Some(recovery) = self.recovery_panel.recovery.clone() {
+            if key.code == KeyCode::Enter || key.code == KeyCode::Esc {
+                return InputResult::None;
+            }
+            if !self.recovery_panel.pending
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.kind, KeyEventKind::Press)
+            {
+                let event = match key.code {
+                    KeyCode::Char('r') => Some(AppEvent::ContinueTurnRecovery { recovery }),
+                    KeyCode::Char('x') => Some(AppEvent::CancelTurnRecovery),
+                    _ => None,
+                };
+                if let Some(event) = event {
+                    self.recovery_panel.pending = true;
+                    self.app_event_tx.send(event);
+                    self.request_redraw();
+                    return InputResult::None;
+                }
+            }
+        }
         if is_input_mode_cycle_key(key) && !self.composer.popup_active() {
             let previous = self.input_mode;
             self.cycle_input_mode();
@@ -1152,6 +1193,7 @@ impl BottomPane {
             children.push(status);
         }
         if !view.replaces_composer() {
+            children.push(&self.recovery_panel);
             children.push(&self.composer);
         }
         children.push(view);
@@ -1393,6 +1435,7 @@ impl Renderable for BottomPane {
             children.push(&self.unified_exec_footer);
         }
         children.push(&self.pending_thread_approvals);
+        children.push(&self.recovery_panel);
         children.push(&self.composer);
         let pending_queue = PendingQueueList::new(&self.pending_queue);
         if pending_queue.desired_height(area.width) > 0 {
@@ -1415,6 +1458,7 @@ impl Renderable for BottomPane {
             children.push(&self.unified_exec_footer);
         }
         children.push(&self.pending_thread_approvals);
+        children.push(&self.recovery_panel);
         children.push(&self.composer);
         let pending_queue = PendingQueueList::new(&self.pending_queue);
         if pending_queue.desired_height(width) > 0 {
@@ -1451,6 +1495,7 @@ impl Renderable for BottomPane {
             children.push(&self.unified_exec_footer);
         }
         children.push(&self.pending_thread_approvals);
+        children.push(&self.recovery_panel);
         children.push(&self.composer);
         // Queue renders below the composer and does not own the caret.
         self.child_cursor_pos(area, &children)

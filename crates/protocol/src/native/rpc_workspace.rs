@@ -1,7 +1,7 @@
 //! Native `workspace/changes/read`.
 //!
-//! The desktop client consumes this read model (branch / uncommitted /
-//! turn-scoped diffs). Types mirror the legacy `workspace_changes` shapes
+//! The desktop client consumes this read model (branch / staged / unstaged /
+//! uncommitted / turn-scoped diffs). Types mirror the legacy `workspace_changes` shapes
 //! with native camelCase field names and ids; the legacy enums are reused
 //! directly (their wire values stay snake_case inside otherwise camelCase
 //! payloads — an accepted inconsistency to keep one vocabulary).
@@ -42,6 +42,20 @@ pub struct WorkspaceChangesReadParams {
     pub diff_detail: WorkspaceDiffDetail,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_diff_bytes: Option<u64>,
+    /// Server-side `--ignore-all-space` for the git-backed scopes
+    /// (branch/staged/unstaged/uncommitted). Ignored for the turn scope,
+    /// whose finalized diffs are precomputed artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_whitespace: Option<bool>,
+    /// When set, Full (and Summary filtering) only considers these relative
+    /// paths. Used by expand-on-demand so clients never wait on a whole-tree
+    /// unified diff over stdio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths: Option<Vec<PathBuf>>,
+    /// When true with path-scoped Full, attach per-file `old_text`/`new_text`
+    /// so clients can mount expandable MultiFileDiff views.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_file_sides: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

@@ -14,9 +14,11 @@ import { terminalNewTabNonceAtom } from "../atoms/terminal";
 import { isElectron } from "../services/backend";
 
 interface DesktopTerminalPanelProps {
-	open: boolean;
-	directory: string | null | undefined;
-	onOpenChange: (open: boolean) => void;
+	open: boolean
+	directory: string | null | undefined
+	onOpenChange: (open: boolean) => void
+	/** Fill a parent pane (right rail) instead of the bottom dock. */
+	embedded?: boolean
 }
 
 type TerminalStatus = "idle" | "starting" | "running" | "exited" | "error";
@@ -129,6 +131,7 @@ export function DesktopTerminalPanel({
 	open,
 	directory,
 	onOpenChange,
+	embedded = false,
 }: DesktopTerminalPanelProps) {
 	const runtimesRef = useRef(new Map<string, TerminalRuntime>());
 	const tabsRef = useRef<TerminalTab[]>([]);
@@ -404,22 +407,24 @@ export function DesktopTerminalPanel({
 	const newTabNonce = useAtomValue(terminalNewTabNonceAtom);
 	const previousNewTabNonceRef = useRef(newTabNonce);
 	useEffect(() => {
-		if (newTabNonce === previousNewTabNonceRef.current) return;
-		previousNewTabNonceRef.current = newTabNonce;
-		if (open) addTerminalTab();
-	}, [addTerminalTab, newTabNonce, open]);
+		if (newTabNonce === previousNewTabNonceRef.current) return
+		previousNewTabNonceRef.current = newTabNonce
+		// Side-rail Terminal is a single session; extra sessions are new right-panel tabs.
+		if (open && !embedded) addTerminalTab()
+	}, [addTerminalTab, embedded, newTabNonce, open])
 
 	useEffect(() => {
-		if (!open || !activeTabId || height <= 0) return;
+		if (!open || !activeTabId) return
+		if (!embedded && height <= 0) return
 		requestAnimationFrame(() => {
-			resizeAndStartTab(activeTabId);
-			const runtime = runtimesRef.current.get(activeTabId);
+			resizeAndStartTab(activeTabId)
+			const runtime = runtimesRef.current.get(activeTabId)
 			if (runtime) {
-				refreshTerminal(runtime.terminal);
-				runtime.terminal.focus();
+				refreshTerminal(runtime.terminal)
+				runtime.terminal.focus()
 			}
-		});
-	}, [activeTabId, height, open, resizeAndStartTab]);
+		})
+	}, [activeTabId, embedded, height, open, resizeAndStartTab])
 
 	useEffect(() => {
 		if (!open) return;
@@ -465,114 +470,127 @@ export function DesktopTerminalPanel({
 		tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null;
 	const activeStatusLabel = activeTab ? statusLabel(activeTab.status) : "";
 
-	if (!getTerminalBridge()) return null;
+	if (!getTerminalBridge()) return null
 
 	return (
 		<section
 			data-slot="desktop-terminal-panel"
 			data-state={open ? "open" : "closed"}
-			className="flex shrink-0 flex-col overflow-hidden border-t border-border bg-background transition-[height] duration-150"
-			style={{ height: open ? height : 0 }}
+			data-embedded={embedded ? "true" : undefined}
+			className={
+				embedded
+					? "flex h-full min-h-0 w-full flex-col overflow-hidden bg-background"
+					: "flex shrink-0 flex-col overflow-hidden border-t border-border bg-background transition-[height] duration-150"
+			}
+			style={embedded ? undefined : { height: open ? height : 0 }}
 			aria-hidden={!open}
 		>
-			<div
-				className="h-1 cursor-ns-resize bg-transparent hover:bg-primary/20"
-				onPointerDown={handleResizePointerDown}
-			/>
-			<div className="flex h-10 shrink-0 items-center justify-between border-b border-border/70 px-3">
-				<div className="flex min-w-0 items-center gap-1">
-					<div className="flex min-w-0 items-center gap-1 overflow-x-auto">
-						{tabs.map((tab) => {
-							const isActive = tab.id === activeTabId;
-							const terminalTitle = tab.cwd ?? directory ?? "Terminal";
-							const folderName = folderNameLabel(terminalTitle);
-							return (
-								<div
-									key={tab.id}
-									className={`group flex h-7 min-w-0 max-w-[22rem] shrink-0 items-center gap-1 rounded-md px-2 transition-colors ${
-										isActive
-											? "bg-muted text-foreground"
-											: "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-									}`}
-								>
-									<button
-										type="button"
-										className="flex min-w-0 items-center gap-2 focus-visible:outline-none"
-										style={{ fontSize: TERMINAL_FONT_SIZE }}
-										title={terminalTitle}
-										onClick={() => setActiveTabState(tab.id)}
-									>
-										<PanelBottomIcon
-											className="shrink-0 text-muted-foreground"
-											style={{
-												height: TERMINAL_FONT_SIZE,
-												width: TERMINAL_FONT_SIZE,
-											}}
-											aria-hidden="true"
+			{embedded ? null : (
+				<>
+					<div
+						className="h-1 cursor-ns-resize bg-transparent hover:bg-primary/20"
+						onPointerDown={handleResizePointerDown}
+					/>
+					<div className="flex h-10 shrink-0 items-center justify-between border-b border-border/70 px-3">
+						<div className="flex min-w-0 items-center gap-1">
+							<div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+								{tabs.map((tab) => {
+									const isActive = tab.id === activeTabId
+									const terminalTitle = tab.cwd ?? directory ?? "Terminal"
+									const folderName = folderNameLabel(terminalTitle)
+									return (
+										<div
+											key={tab.id}
+											className={`group flex h-7 min-w-0 max-w-[22rem] shrink-0 items-center gap-1 rounded-md px-2 transition-colors ${
+												isActive
+													? "bg-muted text-foreground"
+													: "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+											}`}
+										>
+											<button
+												type="button"
+												className="flex min-w-0 items-center gap-2 focus-visible:outline-none"
+												style={{ fontSize: TERMINAL_FONT_SIZE }}
+												title={terminalTitle}
+												onClick={() => setActiveTabState(tab.id)}
+											>
+												<PanelBottomIcon
+													className="shrink-0 text-muted-foreground"
+													style={{
+														height: TERMINAL_FONT_SIZE,
+														width: TERMINAL_FONT_SIZE,
+													}}
+													aria-hidden="true"
+												/>
+												<span className="truncate font-medium">{folderName}</span>
+											</button>
+											<button
+												type="button"
+												aria-label="Close"
+												className="grid size-4 shrink-0 place-items-center rounded-sm text-muted-foreground opacity-0 transition group-hover:opacity-100 hover:bg-background/80 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+												onClick={(event) => {
+													event.stopPropagation()
+													closeTab(tab.id, { closeSession: true })
+												}}
+											>
+												<XIcon className="size-3" aria-hidden="true" />
+											</button>
+										</div>
+									)
+								})}
+							</div>
+							<Tooltip>
+								<TooltipTrigger
+									aria-label="New terminal"
+									render={
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											className="size-7 shrink-0 rounded-md hover:bg-muted hover:text-foreground"
+											onClick={addTerminalTab}
 										/>
-										<span className="truncate font-medium">
-											{folderName}
-										</span>
-									</button>
-									<button
-										type="button"
-										aria-label="Close"
-										className="grid size-4 shrink-0 place-items-center rounded-sm text-muted-foreground opacity-0 transition group-hover:opacity-100 hover:bg-background/80 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-										onClick={(event) => {
-											event.stopPropagation();
-											closeTab(tab.id, { closeSession: true });
-										}}
-									>
-										<XIcon className="size-3" aria-hidden="true" />
-									</button>
-								</div>
-							);
-						})}
+									}
+								>
+									<PlusIcon className="size-3.5" aria-hidden="true" />
+								</TooltipTrigger>
+								<TooltipContent>New terminal</TooltipContent>
+							</Tooltip>
+							{activeStatusLabel ? (
+								<span className="shrink-0 pl-1 text-xs text-muted-foreground">
+									{activeStatusLabel}
+								</span>
+							) : null}
+						</div>
+						<div className="flex items-center gap-1">
+							<Tooltip>
+								<TooltipTrigger
+									aria-label="Close"
+									render={
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											className="size-7"
+											onClick={closePanel}
+										/>
+									}
+								>
+									<XIcon className="size-3.5" aria-hidden="true" />
+								</TooltipTrigger>
+								<TooltipContent>Close</TooltipContent>
+							</Tooltip>
+						</div>
 					</div>
-					<Tooltip>
-						<TooltipTrigger
-							aria-label="New terminal"
-							render={
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon"
-									className="size-7 shrink-0 rounded-md hover:bg-muted hover:text-foreground"
-									onClick={addTerminalTab}
-								/>
-							}
-						>
-							<PlusIcon className="size-3.5" aria-hidden="true" />
-						</TooltipTrigger>
-						<TooltipContent>New terminal</TooltipContent>
-					</Tooltip>
-					{activeStatusLabel && (
-						<span className="shrink-0 pl-1 text-xs text-muted-foreground">
-							{activeStatusLabel}
-						</span>
-					)}
-				</div>
-				<div className="flex items-center gap-1">
-					<Tooltip>
-						<TooltipTrigger
-							aria-label="Close"
-							render={
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon"
-									className="size-7"
-									onClick={closePanel}
-								/>
-							}
-						>
-							<XIcon className="size-3.5" aria-hidden="true" />
-						</TooltipTrigger>
-						<TooltipContent>Close</TooltipContent>
-					</Tooltip>
-				</div>
-			</div>
-			<div className="box-border min-h-0 flex-1 overflow-hidden bg-background px-3 pt-2 pb-4">
+				</>
+			)}
+			<div
+				className={
+					embedded
+						? "box-border min-h-0 flex-1 overflow-hidden bg-background p-2"
+						: "box-border min-h-0 flex-1 overflow-hidden bg-background px-3 pt-2 pb-4"
+				}
+			>
 				<div className="relative h-full min-h-0 min-w-0 overflow-hidden [&_.xterm]:h-full [&_.xterm-scrollable-element]:!bg-transparent [&_.xterm-viewport]:!bg-background">
 					{tabs.map((tab) => (
 						<div
@@ -586,5 +604,5 @@ export function DesktopTerminalPanel({
 				</div>
 			</div>
 		</section>
-	);
+	)
 }

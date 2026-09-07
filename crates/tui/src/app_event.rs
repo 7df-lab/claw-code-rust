@@ -76,6 +76,10 @@ pub(crate) enum SubagentDebugStep {
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum AppEvent {
+    ContinueTurnRecovery {
+        recovery: devo_protocol::native::rpc_turn::TurnRecovery,
+    },
+    CancelTurnRecovery,
     /// Request a redraw on the next frame.
     Redraw,
 

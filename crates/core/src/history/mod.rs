@@ -1,5 +1,7 @@
 pub mod compaction;
 mod context_insertion;
+mod transactions;
+pub use transactions::response_items_to_messages;
 pub mod normalize;
 pub mod summarizer;
 
